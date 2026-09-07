@@ -1,0 +1,16 @@
+[Unit]
+Description=swayrx VNC server for the sway session
+Documentation=https://github.com/andrewtheguy/swayrx
+PartOf=sway-session.target
+After=sway-session.target
+
+[Service]
+Type=simple
+# A custom XKB layout directory, if the [xkb] layout needs one:
+# Environment=XKB_CONFIG_EXTRA_PATH=/etc/xkb
+ExecStart=/usr/bin/swayrx
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=sway-session.target

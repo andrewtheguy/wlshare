@@ -1,0 +1,53 @@
+[package]
+name = "swayrx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A VNC server for a sway desktop that reports its pixel density to the remotex gateway"
+
+[[bin]]
+name = "swayrx"
+path = "src/main.rs"
+
+[dependencies]
+swayrx-rfb = { path = "../swayrx-rfb" }
+anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+
+# The Wayland side. wayland-client dlopens libwayland-client at runtime.
+wayland-client = { version = "0.31", features = ["log"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+# The keymap the virtual keyboard uploads, and the keysym -> keycode lookup.
+xkbcommon = "0.9"
+# wl_shm buffers: a memfd, mapped.
+rustix = { version = "1", features = ["fs", "mm", "pipe"] }
+memmap2 = "0.9"
+
+# `cargo deb -p swayrx` (scripts/build-debs.sh runs it in Docker per architecture).
+[package.metadata.deb]
+name = "swayrx"
+maintainer = "Andrew Chen <andrew@jaanuu.com>"
+extended-description = """A VNC server for a sway desktop that captures one output through
+wlr-screencopy, serves it over RFB 3.8 with ZRLE, and reports the output's
+pixel density to the remotex gateway over a private extension."""
+section = "net"
+priority = "optional"
+# wayland-client loads libwayland-client at runtime, so dpkg-shlibdeps cannot see it.
+depends = "$auto, libwayland-client0 (>= 1.20)"
+assets = [
+    ["target/release/swayrx", "usr/bin/", "755"],
+    ["../../packaging/swayrx.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/config.example.toml", "usr/share/doc/swayrx/", "644"],
+    ["../../README.md", "usr/share/doc/swayrx/", "644"],
+    ["../../docs/architecture.md", "usr/share/doc/swayrx/", "644"],
+]

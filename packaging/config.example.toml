@@ -1,0 +1,32 @@
+# swayrx configuration: $XDG_CONFIG_HOME/swayrx/config.toml by default.
+# Every key is optional; the values shown are the defaults unless noted.
+
+# Where clients connect. The session is not encrypted: keep this on loopback or
+# a VPN address, or put an SSH tunnel in front.
+listen = "127.0.0.1:5900"
+
+# A file holding the VncAuth password (only its first eight bytes count). Absent
+# means no authentication at all.
+# password_file = "/home/me/.config/swayrx/password"
+
+# The output to share, by name (`swaymsg -t get_outputs`). Absent means the first
+# output the compositor lists. Only a HEADLESS-* output is ever resized or
+# rescaled for a client.
+# output = "HEADLESS-1"
+
+# Whether clients may resize the output and set its scale.
+resize = true
+
+# The most frames captured per second.
+max_fps = 60
+
+# The desktop name clients see.
+name = "sway"
+
+# The keymap the virtual keyboard uploads and keysyms are resolved through, as
+# XKB rules/model/layout/variant/options names. Empty means the library default.
+# A custom layout directory is named by XKB_CONFIG_EXTRA_PATH in the environment.
+[xkb]
+# layout = "us"
+# variant = ""
+# options = ""

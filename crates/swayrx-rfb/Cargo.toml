@@ -1,0 +1,19 @@
+[package]
+name = "swayrx-rfb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The RFB wire swayrx speaks: message parsing and building, VncAuth, the ZRLE encoder and the density extension"
+
+# Platform-independent and dependency-light on purpose: this crate is where the
+# bytes on the wire are decided, and it must build and unit-test on any OS,
+# because the daemon crate never does off a Wayland session.
+[dependencies]
+thiserror.workspace = true
+# ZRLE's per-client deflate stream. zlib-rs is the fastest backend and pure Rust.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# Classic VNC authentication is DES over a 16-byte challenge, nothing more.
+des = "0.9"
+# Sixteen random bytes for the VncAuth challenge.
+getrandom = "0.3"
