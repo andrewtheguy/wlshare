@@ -16,7 +16,9 @@
 //! Without Fence, TCP's own backpressure paces it.
 //!
 //! A size change goes out first, as its own update, and the whole framebuffer
-//! follows in the next.
+//! follows in the next. A client that negotiated neither ExtendedDesktopSize nor
+//! DesktopSize cannot be told and is disconnected at its next update instead of
+//! being sent pixels at a size it does not know.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,7 +51,7 @@ const MAX_RECTS: usize = 32;
 pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: Arc<SessionConfig>) -> anyhow::Result<()> {
     socket.set_nodelay(true)?;
     let (mut reader, mut writer) = socket.into_split();
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(&mut reader, &mut writer, &config))
+    let shared_desktop = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(&mut reader, &mut writer, &config))
         .await
         .map_err(|_| anyhow::anyhow!("the handshake took over {HANDSHAKE_TIMEOUT:?}"))??;
     let (width, height) = {
@@ -57,8 +59,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         (fb.width, fb.height)
     };
     writer.write_all(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
-    info!("client {}: authenticated; desktop {width}x{height}", id.0);
-    shared.command(Command::ClientJoined(id));
+    info!("client {}: authenticated; desktop {width}x{height}{}", id.0, if shared_desktop { "" } else { ", to itself" });
+    shared.command(Command::ClientJoined { id, shared: shared_desktop });
 
     let events = shared.events.subscribe();
     let frames = shared.frame_tx.subscribe();
@@ -89,7 +91,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     session.pump(reader, writer).await
 }
 
-async fn handshake(reader: &mut OwnedReadHalf, writer: &mut OwnedWriteHalf, config: &SessionConfig) -> anyhow::Result<()> {
+/// RFB 3.8 version, security and ClientInit; `Ok(shared)` is the ClientInit flag.
+async fn handshake(reader: &mut OwnedReadHalf, writer: &mut OwnedWriteHalf, config: &SessionConfig) -> anyhow::Result<bool> {
     writer.write_all(msg::PROTOCOL_VERSION).await?;
     let mut version = [0u8; 12];
     reader.read_exact(&mut version).await.context("reading the client's version")?;
@@ -118,8 +121,8 @@ async fn handshake(reader: &mut OwnedReadHalf, writer: &mut OwnedWriteHalf, conf
         }
     }
     writer.write_all(&msg::security_ok()).await?;
-    let _shared = reader.read_u8().await.context("reading ClientInit")?;
-    Ok(())
+    let shared = reader.read_u8().await.context("reading ClientInit")?;
+    Ok(shared != 0)
 }
 
 struct Session {
@@ -237,8 +240,8 @@ impl Session {
                     _ => incremental,
                 });
             }
-            ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { keysym, down }),
-            ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { buttons, x, y }),
+            ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { client: self.id, keysym, down }),
+            ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
             ClientMsg::CutText(bytes) => self.shared.command(Command::SetClipboard(msg::latin1_to_string(&bytes))),
             ClientMsg::ExtendedCutText(_) => debug!("client {}: extended clipboard is not spoken here; ignored", self.id.0),
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
@@ -314,6 +317,11 @@ impl Session {
             Event::Clipboard(text) => {
                 writer.write_all(&msg::server_cut_text(&text)).await?;
             }
+            Event::Exclusive { keep } => {
+                if keep != self.id {
+                    anyhow::bail!("client {} took the desktop to itself", keep.0);
+                }
+            }
         }
         Ok(())
     }
@@ -335,15 +343,24 @@ impl Session {
 
     /// Send pixels if the client wants some and something has changed.
     async fn maybe_update(&mut self, writer: &mut OwnedWriteHalf) -> anyhow::Result<()> {
-        if self.announce_eds {
-            self.announce_eds = false;
-            let size = self.known_size;
-            self.send_eds(writer, msg::EDS_REASON_SERVER, msg::EDS_STATUS_OK, size).await?;
-        }
         let wants = self.continuous || self.pending.is_some();
         if !wants || self.fence_outstanding {
             return Ok(());
         }
+        // The ExtendedDesktopSize announcement is an update like any other, so
+        // it waits for a request. Sent as its own update ahead of the pixels;
+        // when there are none to send it is the request's whole answer.
+        let announced = self.announce_eds;
+        if announced {
+            self.announce_eds = false;
+            let size = self.known_size;
+            self.send_eds(writer, msg::EDS_REASON_SERVER, msg::EDS_STATUS_OK, size).await?;
+        }
+        let answered = |this: &mut Self| {
+            if announced {
+                this.pending = None;
+            }
+        };
 
         // Under the lock: decide, and copy the pixels out. Encoding happens after.
         let mut pieces: Vec<Piece> = Vec::new();
@@ -353,6 +370,8 @@ impl Session {
         {
             let fb = self.shared.framebuffer.lock().unwrap();
             if !fb.painted {
+                drop(fb);
+                answered(self);
                 return Ok(());
             }
             size = (fb.width, fb.height);
@@ -365,7 +384,11 @@ impl Session {
                 vec![Rect::whole(fb.width, fb.height)]
             } else {
                 match fb.damage_since(self.seen) {
-                    Some(rects) if rects.is_empty() => return Ok(()),
+                    Some(rects) if rects.is_empty() => {
+                        drop(fb);
+                        answered(self);
+                        return Ok(());
+                    }
                     Some(rects) => rects,
                     None => vec![Rect::whole(fb.width, fb.height)],
                 }
@@ -398,7 +421,11 @@ impl Session {
                 update.extend_from_slice(&msg::desktop_size_rect(size.0, size.1));
                 writer.write_all(&update).await?;
             } else {
-                warn!("client {}: the desktop is now {}x{} and the client cannot be told", self.id.0, size.0, size.1);
+                anyhow::bail!(
+                    "the desktop is now {}x{} and the client negotiated neither ExtendedDesktopSize nor DesktopSize to be told",
+                    size.0,
+                    size.1
+                );
             }
         }
 

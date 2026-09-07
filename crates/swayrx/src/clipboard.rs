@@ -1,10 +1,11 @@
 //! The compositor's clipboard through wlr-data-control, both ways, text only.
 //!
 //! A selection the compositor announces is read into a pipe on its own thread
-//! and forwarded to clients as latin-1 cut text. Text from a client is offered
-//! as a data source and becomes the selection; the compositor then announces
-//! that selection back, which is ignored while the source is ours, so a paste
-//! never echoes.
+//! and forwarded to clients as latin-1 cut text; a selection that is cleared or
+//! stops being text is forwarded as empty text, so a client never keeps what the
+//! compositor no longer has. Text from a client is offered as a data source and
+//! becomes the selection; the compositor then announces that selection back,
+//! which is ignored while the source is ours, so a paste never echoes.
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -68,15 +69,23 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Compositor {
                 state.clipboard.offers.insert(id.id(), Vec::new());
             }
             zwlr_data_control_device_v1::Event::Selection { id } => {
-                let Some(offer) = id else { return };
-                let mimes = state.clipboard.offers.remove(&offer.id()).unwrap_or_default();
                 if state.clipboard.source.is_some() {
                     // Our own selection coming back.
-                    offer.destroy();
+                    if let Some(offer) = id {
+                        state.clipboard.offers.remove(&offer.id());
+                        offer.destroy();
+                    }
                     return;
                 }
+                let Some(offer) = id else {
+                    debug!("the selection was cleared");
+                    state.shared().emit(Event::Clipboard(String::new()));
+                    return;
+                };
+                let mimes = state.clipboard.offers.remove(&offer.id()).unwrap_or_default();
                 let Some(mime) = TEXT_MIMES.iter().find(|m| mimes.iter().any(|have| have == *m)) else {
                     debug!("a selection with no text: {mimes:?}");
+                    state.shared().emit(Event::Clipboard(String::new()));
                     offer.destroy();
                     return;
                 };

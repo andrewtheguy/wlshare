@@ -277,12 +277,19 @@ impl Compositor {
 
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::ClientJoined(id) => {
+            Command::ClientJoined { id, shared } => {
+                if !shared && !self.clients.is_empty() {
+                    info!("client {} asked for the desktop to itself; disconnecting {} other client(s)", id.0, self.clients.len());
+                    self.shared().emit(Event::Exclusive { keep: id });
+                }
                 self.clients.insert(id);
                 self.start_capture();
             }
             Command::ClientLeft(id) => {
-                self.clients.remove(&id);
+                if !self.clients.remove(&id) {
+                    // A connection that never got past the handshake held nothing.
+                    return;
+                }
                 if self.layout_owner == Some(id) {
                     debug!("client {} released the layout", id.0);
                     self.layout_owner = None;
@@ -291,24 +298,24 @@ impl Compositor {
                     self.pending_resize = None;
                 }
                 if let Some(input) = &mut self.input {
-                    input.release_all();
+                    input.release_client(id);
                 }
                 if self.clients.is_empty() {
                     self.stop_capture();
                 }
             }
-            Command::Key { keysym, down } => {
+            Command::Key { client, keysym, down } => {
                 if let Some(input) = &mut self.input {
-                    input.key(keysym, down);
+                    input.key(client, keysym, down);
                 }
             }
-            Command::Pointer { buttons, x, y } => {
+            Command::Pointer { client, buttons, x, y } => {
                 let extent = {
                     let fb = self.shared().framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
                 if let Some(input) = &mut self.input {
-                    input.pointer(buttons, x, y, extent);
+                    input.pointer(client, buttons, x, y, extent);
                 }
             }
             Command::Resize { client, width, height } => self.resize(client, width, height),

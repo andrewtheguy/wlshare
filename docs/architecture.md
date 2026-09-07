@@ -52,7 +52,13 @@ negotiates both ContinuousUpdates and Fence.
 A size change goes out first, as its own update — an ExtendedDesktopSize
 rectangle whose reason says who asked (the server, this client, another
 client), or a DesktopSize rectangle for a client without the extension — and the
-whole framebuffer follows in the next update.
+whole framebuffer follows in the next update. A client that negotiated neither
+cannot be told and is disconnected at its next update rather than sent pixels at
+a size it does not know. The ExtendedDesktopSize announcement that answers the pseudo-encoding is an
+update too, and waits for a request like any other.
+
+The desktop is shared unless a client clears the ClientInit flag, which
+disconnects every other client, as RFB has it.
 
 ## The density extension
 
@@ -97,15 +103,23 @@ reconfigured.
 Key events carry X11 keysyms. The server compiles the configured XKB keymap,
 uploads it to the virtual keyboard, and searches the same keymap for a keycode
 producing each keysym, preferring the lowest shift level. Modifier state is
-tracked with `xkb_state` and sent after every key. Pointer events arrive in
-framebuffer pixels and are injected as absolute positions against the
-framebuffer's extent, which the virtual pointer maps onto the shared output.
-Wheel "buttons" become discrete axis events.
+tracked with `xkb_state` and sent after every key. A keysym names a character
+the client has already cased — remotex never forwards Caps Lock and sends `A` or
+`a` as the browser resolved it — so before each press the server checks what the
+keycode would produce under the current modifiers, and presses Shift or lets a
+held Shift go around the key when the keycode alone would type the other case.
+Keys and buttons are held per client: a client leaving releases its own and
+nothing another client holds, and a connection that never finished the
+handshake releases nothing. Pointer events arrive in framebuffer pixels and are
+injected as absolute positions against the framebuffer's extent, which the
+virtual pointer maps onto the shared output; the compositor sees the union of
+every client's button mask. Wheel "buttons" become discrete axis events.
 
 Clipboard text from the compositor is read off the loop into a pipe and sent as
-latin-1 `ServerCutText`. A client's `ClientCutText` becomes a data source that
-takes the selection; the compositor announcing that selection back is ignored
-while the source is ours. Extended Clipboard is recognised and not yet spoken.
+latin-1 `ServerCutText`; a selection that is cleared or stops being text is sent
+as empty text. A client's `ClientCutText` becomes a data source that takes the
+selection; the compositor announcing that selection back is ignored while the
+source is ours. Extended Clipboard is recognised and not yet spoken.
 
 ## Security
 

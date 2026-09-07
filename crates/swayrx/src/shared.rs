@@ -22,12 +22,15 @@ pub struct ClientId(pub u64);
 /// What the compositor thread is asked to do.
 #[derive(Debug)]
 pub enum Command {
-    /// A client connected; capture runs while there is at least one.
-    ClientJoined(ClientId),
-    /// A client left: capture may stop, and the layout is released if it held it.
+    /// A client connected; capture runs while there is at least one. `shared`
+    /// is the ClientInit flag: a client that clears it asks for the desktop to
+    /// itself, and the others are disconnected.
+    ClientJoined { id: ClientId, shared: bool },
+    /// A client left: its input is let go, capture may stop, and the layout is
+    /// released if it held it. Sent for every connection, joined or not.
     ClientLeft(ClientId),
-    Key { keysym: u32, down: bool },
-    Pointer { buttons: u8, x: u16, y: u16 },
+    Key { client: ClientId, keysym: u32, down: bool },
+    Pointer { client: ClientId, buttons: u8, x: u16, y: u16 },
     /// SetDesktopSize: the client wants the desktop `width`×`height` pixels.
     Resize { client: ClientId, width: u16, height: u16 },
     /// ClientDensity: the client wants the output drawn at `scale`.
@@ -44,8 +47,12 @@ pub enum Event {
     Geometry { to: Option<ClientId> },
     /// A client's SetDesktopSize was refused with an ExtendedDesktopSize status.
     ResizeRefused { client: ClientId, status: u16 },
-    /// Text arrived on the compositor's clipboard.
+    /// Text arrived on the compositor's clipboard — or left it: empty when the
+    /// selection was cleared or is no longer text.
     Clipboard(String),
+    /// A client took the desktop to itself with ClientInit; every other client
+    /// is disconnected.
+    Exclusive { keep: ClientId },
 }
 
 /// The captured output as the sessions describe it to clients: the framebuffer's
