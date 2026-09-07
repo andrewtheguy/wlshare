@@ -47,5 +47,8 @@ crate; build the daemon with `cargo build --release -p swayrx` on a Linux host
 with `libwayland-dev`, `libxkbcommon-dev` and `pkg-config`.
 
 Packages for Debian trixie on amd64 and arm64 are built in Docker by
-`scripts/build-debs.sh` and released by the **Build and release packages**
-workflow, tagged `trixie-<YYYYMMDD>-<N>`.
+`scripts/build-debs.sh`, into `dist/<arch>/swayrx-trixie-<arch>.deb`. The
+**Release swayrx** workflow builds the same and publishes them as the GitHub
+release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
+before running the workflow. The package version is the crate's, and the
+distribution is in the file name only.

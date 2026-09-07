@@ -33,7 +33,8 @@ xkbcommon = "0.9"
 rustix = { version = "1", features = ["fs", "mm", "pipe"] }
 memmap2 = "0.9"
 
-# `cargo deb -p swayrx` (scripts/build-debs.sh runs it in Docker per architecture).
+# `cargo deb -p swayrx` (scripts/build-debs.sh runs it in Docker per architecture;
+# the package version is the crate's, and the file is named swayrx-trixie-<arch>.deb).
 [package.metadata.deb]
 name = "swayrx"
 maintainer = "Andrew Chen <andrew@jaanuu.com>"

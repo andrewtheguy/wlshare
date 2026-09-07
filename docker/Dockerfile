@@ -19,16 +19,17 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-too
 WORKDIR /build
 COPY . /build
 
-# SWAYRX_BUILD is <YYYYMMDD>-<N>, the tail of the release tag trixie-<YYYYMMDD>-<N>;
-# the package version is <crate version>~trixie<YYYYMMDD>.<N>, so a later build
-# always sorts newer for dpkg.
-ARG SWAYRX_BUILD
+# The package version is the crate's, as cargo-deb writes it (<version>-1); the
+# distribution the package was built for is in the file name only, so the
+# release asset is swayrx-trixie-<arch>.deb whatever the version.
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"swayrx","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
-    build="${SWAYRX_BUILD:-$(date -u +%Y%m%d)-0}"; \
-    deb_version="${version}~trixie$(echo "$build" | tr '-' '.')"; \
+    arch="$(dpkg --print-architecture)"; \
     cargo build --release -p swayrx; \
-    cargo deb -p swayrx --no-build --deb-version "$deb_version" -o /out/; \
+    [ "$(target/release/swayrx --version)" = "swayrx ${version}" ]; \
+    mkdir -p /out; \
+    cargo deb -p swayrx --no-build -o "/out/swayrx-trixie-${arch}.deb"; \
+    [ "$(dpkg-deb --field "/out/swayrx-trixie-${arch}.deb" Version)" = "${version}-1" ]; \
     cd /out && sha256sum ./*.deb | sed 's#  \./#  #' > SHA256SUMS && cat SHA256SUMS
 
 FROM scratch

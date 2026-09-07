@@ -26,7 +26,7 @@ use clap::Parser;
 use log::{error, info};
 
 #[derive(Parser, Debug)]
-#[command(name = "swayrx", about = "A VNC server for a sway desktop, with pixel density on the wire")]
+#[command(name = "swayrx", version, about = "A VNC server for a sway desktop, with pixel density on the wire")]
 struct Args {
     /// The configuration file (default: $XDG_CONFIG_HOME/swayrx/config.toml).
     #[arg(short, long)]

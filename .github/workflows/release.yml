@@ -1,9 +1,9 @@
-name: Build and release packages
+name: Release swayrx
 
-# Builds the swayrx .deb for Debian trixie on amd64 and arm64 with the same Docker
-# build scripts/build-debs.sh runs locally, and publishes them as a GitHub release
-# tagged trixie-<YYYYMMDD>-<N>. The tag names the distribution and the build; the
-# package version is <crate version>~trixie<YYYYMMDD>.<N>. Run it by hand.
+# Builds the .deb for Debian trixie on amd64 and arm64 with the same Docker build
+# scripts/build-debs.sh runs locally, and publishes them as the GitHub release
+# v<version>, where the version is the workspace's in Cargo.toml. Run it by hand;
+# bump the version first.
 on:
   workflow_dispatch:
 
@@ -13,68 +13,100 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    # Two runs on the same day must not pick the same revision.
-    concurrency:
-      group: release-tag
-      cancel-in-progress: false
     outputs:
-      build: ${{ steps.tag.outputs.build }}
-      tag: ${{ steps.tag.outputs.tag }}
-    env:
-      GH_TOKEN: ${{ github.token }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
-      - name: Resolve the release tag
-        id: tag
+      - uses: actions/checkout@v4
+
+      - name: Determine and validate version
+        id: version
         run: |
-          set -euo pipefail
-          date="$(date -u +%Y%m%d)"
-          n=1
-          while gh release view "trixie-${date}-${n}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; do
-            n=$((n + 1))
-          done
-          echo "build=${date}-${n}" >> "$GITHUB_OUTPUT"
-          echo "tag=trixie-${date}-${n}" >> "$GITHUB_OUTPUT"
-      - name: Create the draft release
+          # A real TOML parse and a semver check, not grep. `[workspace.package]`:
+          # every crate inherits that one version, so it is the only literal.
+          VERSION=$(python3 -c '
+          import re, sys, tomllib
+          with open("Cargo.toml", "rb") as f:
+              version = tomllib.load(f)["workspace"]["package"]["version"]
+          if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version):
+              sys.exit(f"invalid version in Cargo.toml: {version!r}")
+          print(version)
+          ')
+          TAG="v${VERSION}"
+          echo "Release tag: ${TAG}"
+          IS_PRERELEASE="false"
+          [ "$GITHUB_REF_NAME" = "main" ] || IS_PRERELEASE="true"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Abort if tag already exists
         run: |
-          set -euo pipefail
-          gh release create "${{ steps.tag.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" \
-            --draft --target "${GITHUB_SHA}" --title "${{ steps.tag.outputs.tag }}" \
-            --notes "swayrx for Debian trixie, build ${{ steps.tag.outputs.build }}, for amd64 and arm64. Install with dpkg -i and enable swayrx.service as a user unit in the sway session."
+          if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} already exists on remote. Bump the version in Cargo.toml first."
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # A draft does not create the tag, so a draft left by a failed run is the
+          # one thing that can collide here; real tags are caught above.
+          if gh release view "${{ steps.version.outputs.tag }}" --json isDraft --jq '.isDraft' 2>/dev/null | grep -qx true; then
+            echo "Deleting stale draft release ${{ steps.version.outputs.tag }}"
+            gh release delete "${{ steps.version.outputs.tag }}" --yes
+          fi
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --draft \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            ${{ steps.version.outputs.is_prerelease == 'true' && '--prerelease' || '' }}
 
   build:
     needs: prepare
     strategy:
+      fail-fast: false
       matrix:
-        arch: [amd64, arm64]
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build the package
-        run: SWAYRX_BUILD='${{ needs.prepare.outputs.build }}' ./scripts/build-debs.sh ${{ matrix.arch }}
+      - name: Build the package (${{ matrix.arch }})
+        run: ./scripts/build-debs.sh ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
-          name: debs-${{ matrix.arch }}
-          path: output/trixie/${{ matrix.arch }}/*
+          name: swayrx-${{ matrix.arch }}
+          path: dist/${{ matrix.arch }}/*
           if-no-files-found: error
 
-  release:
+  publish:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Publish the release
+      - name: Upload artifacts to the draft release
         run: |
           set -euo pipefail
           mkdir -p release
           for arch in amd64 arm64; do
-            cp artifacts/debs-${arch}/*.deb release/
-            cat artifacts/debs-${arch}/SHA256SUMS >> release/SHA256SUMS
+            cp artifacts/swayrx-${arch}/*.deb release/
+            cat artifacts/swayrx-${arch}/SHA256SUMS >> release/SHA256SUMS
           done
           cat release/SHA256SUMS
-          gh release upload "${{ needs.prepare.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" release/*
-          gh release edit "${{ needs.prepare.outputs.tag }}" --repo "${GITHUB_REPOSITORY}" --draft=false
+          gh release upload "${{ needs.prepare.outputs.tag }}" release/*
+      - name: Publish release (removes the draft, creates the tag)
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false
