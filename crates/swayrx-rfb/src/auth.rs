@@ -47,13 +47,40 @@ pub fn verify(password: &str, challenge: &[u8; 16], given: &[u8; 16]) -> bool {
 mod tests {
     use super::*;
 
-    /// A vector produced by an independent client implementation: challenge of
-    /// zeros, password "test", the DES-with-reversed-key-bits convention.
+    /// Responses computed outside this crate, so a wrong key derivation cannot
+    /// agree with itself and pass: the bits were reversed by hand and the two
+    /// ECB blocks encrypted with OpenSSL, not with `des`.
+    ///
+    /// "test" pads to `74 65 73 74 00 00 00 00`, which reverses byte by byte to
+    /// the key `2e a6 ce 2e 00 00 00 00`; "swayrx!!" fills all eight bytes and so
+    /// leaves no zero half, which is what makes it worth having as well.
     #[test]
-    fn a_known_response_verifies() {
+    fn responses_match_vectors_computed_elsewhere() {
+        for (password, challenge, want) in [
+            (
+                "test",
+                *b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f",
+                *b"\x51\xa8\x9f\xa0\x01\x3d\x72\xc6\x55\x01\x95\x13\xaf\x52\xc2\x0c",
+            ),
+            (
+                "swayrx!!",
+                *b"\x01\x23\x45\x67\x89\xab\xcd\xef\xfe\xdc\xba\x98\x76\x54\x32\x10",
+                *b"\x22\x6b\x43\xbc\x23\xdd\x33\x48\x77\x26\xcf\x17\x93\x72\x8e\xfc",
+            ),
+        ] {
+            assert_eq!(response(password, &challenge), want, "response to {password}");
+            assert!(verify(password, &challenge, &want));
+        }
+    }
+
+    /// The other half of the vectors above: a response is only good for the
+    /// password and the challenge it was made from.
+    #[test]
+    fn a_response_is_bound_to_its_password_and_challenge() {
         let challenge = [0u8; 16];
         let r = response("test", &challenge);
-        // DES(key = reversed("test\0\0\0\0")) of a zero block, twice.
+        // Both blocks are the same plaintext under the same key, so ECB gives
+        // the same ciphertext twice -- the one place that property is visible.
         assert_eq!(r[..8], r[8..]);
         assert!(verify("test", &challenge, &r));
         assert!(!verify("tesT", &challenge, &r));
