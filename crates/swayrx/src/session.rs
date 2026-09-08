@@ -19,8 +19,17 @@
 //! follows in the next. A client that negotiated neither ExtendedDesktopSize nor
 //! DesktopSize cannot be told and is disconnected at its next update instead of
 //! being sent pixels at a size it does not know.
+//!
+//! ## The transport
+//!
+//! The handshake decides what the socket carries afterwards: RFB bytes as they
+//! are, or — after RSA-AES — RFB bytes inside AES-EAX frames. The session sees
+//! a [`Reader`] and a [`Writer`] either way; the writer takes whole messages,
+//! which is what a frame is cut from.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -28,18 +37,60 @@ use log::{debug, info, warn};
 use swayrx_rfb::density::{from_fixed, output_scale};
 use swayrx_rfb::msg::{self, ClientMsg, Screen};
 use swayrx_rfb::pixel::PixelFormat;
+use swayrx_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use swayrx_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use swayrx_rfb::{auth, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::broadcast;
 
 use crate::framebuffer::{Rect, ResizeOrigin};
+use crate::pam;
 use crate::shared::{ClientId, Command, Event, Shared};
 
+/// What the server offers at the security step, and what it checks the client
+/// against. The two types are independent — a server may offer either, both or
+/// neither — and the client picks by what it holds: an account for RSA-AES, the
+/// server's own password for VncAuth. With neither configured, anyone who
+/// reaches the port is in.
+#[derive(Default)]
+pub struct Security {
+    /// VncAuth with this password; the session is in the clear.
+    pub vnc_auth: Option<String>,
+    /// RSA-AES at both widths, the login checked by PAM.
+    pub rsa_aes: Option<RsaAes>,
+}
+
+/// RSA-AES's half of [`Security`]: the server key, the PAM service the
+/// credentials go to, and the one username accepted — `account`, the process's
+/// own.
+pub struct RsaAes {
+    pub key: Arc<ServerKey>,
+    pub service: String,
+    pub account: String,
+}
+
+impl Security {
+    /// The security types to list, RSA-AES first at its wider width, and
+    /// `None` alone when nothing is configured.
+    pub fn offered(&self) -> Vec<u8> {
+        let mut types = Vec::with_capacity(3);
+        if self.rsa_aes.is_some() {
+            types.extend([rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]);
+        }
+        if self.vnc_auth.is_some() {
+            types.push(auth::SECURITY_VNC_AUTH);
+        }
+        if types.is_empty() {
+            types.push(auth::SECURITY_NONE);
+        }
+        types
+    }
+}
+
 pub struct SessionConfig {
-    pub password: Option<String>,
+    pub security: Security,
     pub name: String,
     pub resize: bool,
 }
@@ -48,17 +99,49 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The most rectangles one update carries before they collapse into one.
 const MAX_RECTS: usize = 32;
 
+/// The socket's read side, opened frame by frame after RSA-AES.
+pub enum Reader {
+    Plain(OwnedReadHalf),
+    Sealed(FrameReader<OwnedReadHalf>),
+}
+
+impl AsyncRead for Reader {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(r) => Pin::new(r).poll_read(cx, buf),
+            Self::Sealed(r) => Pin::new(r).poll_read(cx, buf),
+        }
+    }
+}
+
+/// The socket's write side: whole messages, each sealed into frames after
+/// RSA-AES.
+pub struct Writer {
+    inner: OwnedWriteHalf,
+    sealer: Option<Sealer>,
+}
+
+impl Writer {
+    async fn send(&mut self, message: &[u8]) -> std::io::Result<()> {
+        match &mut self.sealer {
+            Some(sealer) => self.inner.write_all(&sealer.frame(message)).await,
+            None => self.inner.write_all(message).await,
+        }
+    }
+}
+
 pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: Arc<SessionConfig>) -> anyhow::Result<()> {
     socket.set_nodelay(true)?;
-    let (mut reader, mut writer) = socket.into_split();
-    let shared_desktop = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(&mut reader, &mut writer, &config))
+    let peer = socket.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let (reader, writer) = socket.into_split();
+    let (reader, mut writer, shared_desktop) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(reader, writer, &config, &peer))
         .await
         .map_err(|_| anyhow::anyhow!("the handshake took over {HANDSHAKE_TIMEOUT:?}"))??;
     let (width, height) = {
         let fb = shared.framebuffer.lock().unwrap();
         (fb.width, fb.height)
     };
-    writer.write_all(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
+    writer.send(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
     info!("client {}: authenticated; desktop {width}x{height}{}", id.0, if shared_desktop { "" } else { ", to itself" });
     shared.command(Command::ClientJoined { id, shared: shared_desktop });
 
@@ -91,8 +174,9 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     session.pump(reader, writer).await
 }
 
-/// RFB 3.8 version, security and ClientInit; `Ok(shared)` is the ClientInit flag.
-async fn handshake(reader: &mut OwnedReadHalf, writer: &mut OwnedWriteHalf, config: &SessionConfig) -> anyhow::Result<bool> {
+/// RFB 3.8 version, security and ClientInit. Returns the transport the rest of
+/// the session runs over and the ClientInit shared flag.
+async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer, bool)> {
     writer.write_all(msg::PROTOCOL_VERSION).await?;
     let mut version = [0u8; 12];
     reader.read_exact(&mut version).await.context("reading the client's version")?;
@@ -101,28 +185,52 @@ async fn handshake(reader: &mut OwnedReadHalf, writer: &mut OwnedWriteHalf, conf
         writer.write_all(&msg::security_refusal(reason)).await?;
         anyhow::bail!("client version {:?}; {reason}", String::from_utf8_lossy(&version).trim_end());
     }
-    let wanted = if config.password.is_some() { auth::SECURITY_VNC_AUTH } else { auth::SECURITY_NONE };
-    writer.write_all(&msg::security_types(&[wanted])).await?;
+    let offered = config.security.offered();
+    writer.write_all(&msg::security_types(&offered)).await?;
     let chosen = reader.read_u8().await.context("reading the security type")?;
-    if chosen != wanted {
+    if !offered.contains(&chosen) {
         writer.write_all(&msg::security_failed("unsupported security type")).await?;
-        anyhow::bail!("client chose security type {chosen}, not {wanted}");
+        anyhow::bail!("client chose security type {chosen}, not one of {offered:?}");
     }
-    if let Some(password) = &config.password {
-        let challenge = auth::challenge();
-        writer.write_all(&challenge).await?;
-        let mut response = [0u8; 16];
-        reader.read_exact(&mut response).await.context("reading the VncAuth response")?;
-        if !auth::verify(password, &challenge, &response) {
-            // Slow a guesser down before saying no.
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            writer.write_all(&msg::security_failed("authentication failed")).await?;
-            anyhow::bail!("authentication failed");
+    // `chosen` is one of `offered`, so the branch it names is configured.
+    let (mut reader, mut writer) = match chosen {
+        auth::SECURITY_NONE => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
+        auth::SECURITY_VNC_AUTH => {
+            let password = config.security.vnc_auth.as_ref().expect("VncAuth was offered");
+            let challenge = auth::challenge();
+            writer.write_all(&challenge).await?;
+            let mut response = [0u8; 16];
+            reader.read_exact(&mut response).await.context("reading the VncAuth response")?;
+            if !auth::verify(password, &challenge, &response) {
+                // Slow a guesser down before saying no.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                writer.write_all(&msg::security_failed("authentication failed")).await?;
+                anyhow::bail!("authentication failed");
+            }
+            (Reader::Plain(reader), Writer { inner: writer, sealer: None })
         }
-    }
-    writer.write_all(&msg::security_ok()).await?;
+        _ => {
+            let RsaAes { key, service, account } = config.security.rsa_aes.as_ref().expect("RSA-AES was offered");
+            let strength = rsa_aes::Strength::of(chosen).expect("one of the two offered");
+            let (credentials, session) = rsa_aes::authenticate(&mut reader, &mut writer, strength, key).await.context("RSA-AES key exchange")?;
+            // Everything from here on is inside the frames, the refusal included.
+            let mut writer = Writer { inner: writer, sealer: Some(session.sealer) };
+            let reader = Reader::Sealed(FrameReader::new(reader, session.opener));
+            let (service, account, peer) = (service.clone(), account.clone(), peer.to_owned());
+            let checked = tokio::task::spawn_blocking(move || pam::check(&service, &account, &credentials.username, &credentials.password, &peer))
+                .await
+                .context("the PAM check did not finish")?;
+            if let Err(refused) = checked {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                writer.send(&msg::security_failed("authentication failed")).await?;
+                anyhow::bail!("login refused: {refused}");
+            }
+            (reader, writer)
+        }
+    };
+    writer.send(&msg::security_ok()).await?;
     let shared = reader.read_u8().await.context("reading ClientInit")?;
-    Ok(shared != 0)
+    Ok((reader, writer, shared != 0))
 }
 
 struct Session {
@@ -161,7 +269,7 @@ struct Piece {
 }
 
 impl Session {
-    async fn pump(&mut self, mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf) -> anyhow::Result<()> {
+    async fn pump(&mut self, mut reader: Reader, mut writer: Writer) -> anyhow::Result<()> {
         let mut inbuf: Vec<u8> = Vec::with_capacity(4096);
         loop {
             self.maybe_update(&mut writer).await?;
@@ -192,7 +300,7 @@ impl Session {
         }
     }
 
-    async fn handle(&mut self, message: ClientMsg, writer: &mut OwnedWriteHalf) -> anyhow::Result<()> {
+    async fn handle(&mut self, message: ClientMsg, writer: &mut Writer) -> anyhow::Result<()> {
         match message {
             ClientMsg::SetPixelFormat(format) => {
                 format.check().map_err(|e| anyhow::anyhow!("the client's pixel format cannot be produced: {e}"))?;
@@ -227,7 +335,7 @@ impl Session {
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
-                    writer.write_all(&msg::end_of_continuous_updates()).await?;
+                    writer.send(&msg::end_of_continuous_updates()).await?;
                 }
                 if self.density {
                     // Every SetEncodings that lists the extension is answered.
@@ -247,7 +355,7 @@ impl Session {
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
                 self.continuous = enable && self.continuous_supported;
                 if !enable {
-                    writer.write_all(&msg::end_of_continuous_updates()).await?;
+                    writer.send(&msg::end_of_continuous_updates()).await?;
                 }
                 debug!("client {}: continuous updates {}", self.id.0, if self.continuous { "on" } else { "off" });
             }
@@ -256,7 +364,7 @@ impl Session {
                     // The client's own fence: nothing is reordered here, so every
                     // flag it asks for holds, and the echo is the whole answer.
                     let echo = flags & (msg::FENCE_BLOCK_BEFORE | msg::FENCE_BLOCK_AFTER | msg::FENCE_SYNC_NEXT);
-                    writer.write_all(&msg::fence(echo, &payload)).await?;
+                    writer.send(&msg::fence(echo, &payload)).await?;
                 } else {
                     self.fence_outstanding = false;
                 }
@@ -298,7 +406,7 @@ impl Session {
         Ok(())
     }
 
-    async fn handle_event(&mut self, event: Event, writer: &mut OwnedWriteHalf) -> anyhow::Result<()> {
+    async fn handle_event(&mut self, event: Event, writer: &mut Writer) -> anyhow::Result<()> {
         match event {
             Event::Geometry { to } => {
                 if self.density && to.is_none_or(|c| c == self.id) {
@@ -315,7 +423,7 @@ impl Session {
                 }
             }
             Event::Clipboard(text) => {
-                writer.write_all(&msg::server_cut_text(&text)).await?;
+                writer.send(&msg::server_cut_text(&text)).await?;
             }
             Event::Exclusive { keep } => {
                 if keep != self.id {
@@ -326,23 +434,23 @@ impl Session {
         Ok(())
     }
 
-    async fn send_geometry(&mut self, writer: &mut OwnedWriteHalf) -> anyhow::Result<()> {
+    async fn send_geometry(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
         let g = self.shared.geometry();
         debug!("client {}: reporting {}x{} at scale {:.2}", self.id.0, g.width, g.height, g.scale);
-        writer.write_all(&output_scale(g.width, g.height, g.scale)).await?;
+        writer.send(&output_scale(g.width, g.height, g.scale)).await?;
         Ok(())
     }
 
     /// One ExtendedDesktopSize rectangle as its own update.
-    async fn send_eds(&mut self, writer: &mut OwnedWriteHalf, reason: u16, status: u16, size: (u16, u16)) -> anyhow::Result<()> {
+    async fn send_eds(&mut self, writer: &mut Writer, reason: u16, status: u16, size: (u16, u16)) -> anyhow::Result<()> {
         let mut update = msg::update_header(1).to_vec();
         update.extend_from_slice(&msg::extended_desktop_size_rect(reason, status, size.0, size.1, &[Screen::whole(size.0, size.1)]));
-        writer.write_all(&update).await?;
+        writer.send(&update).await?;
         Ok(())
     }
 
     /// Send pixels if the client wants some and something has changed.
-    async fn maybe_update(&mut self, writer: &mut OwnedWriteHalf) -> anyhow::Result<()> {
+    async fn maybe_update(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
         let wants = self.continuous || self.pending.is_some();
         if !wants || self.fence_outstanding {
             return Ok(());
@@ -419,7 +527,7 @@ impl Session {
             } else if self.desktop_size_supported {
                 let mut update = msg::update_header(1).to_vec();
                 update.extend_from_slice(&msg::desktop_size_rect(size.0, size.1));
-                writer.write_all(&update).await?;
+                writer.send(&update).await?;
             } else {
                 anyhow::bail!(
                     "the desktop is now {}x{} and the client negotiated neither ExtendedDesktopSize nor DesktopSize to be told",
@@ -449,9 +557,32 @@ impl Session {
             self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
             self.fence_outstanding = true;
         }
-        writer.write_all(&self.out).await.context("writing an update")?;
+        writer.send(&self.out).await.context("writing an update")?;
         self.seen = generation;
         self.pending = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    /// The client picks by what it holds, so each configured type is on the
+    /// list — RSA-AES ahead of VncAuth, its wider width first — and an
+    /// unauthenticated server lists None alone.
+    #[test]
+    fn the_offer_lists_every_configured_type_and_none_for_nothing() {
+        let pam = || RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "swayrx".into(), account: "me".into() };
+        assert_eq!(Security::default().offered(), vec![auth::SECURITY_NONE]);
+        assert_eq!(Security { vnc_auth: Some("pw".into()), rsa_aes: None }.offered(), vec![auth::SECURITY_VNC_AUTH]);
+        assert_eq!(
+            Security { vnc_auth: None, rsa_aes: Some(pam()) }.offered(),
+            vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]
+        );
+        assert_eq!(
+            Security { vnc_auth: Some("pw".into()), rsa_aes: Some(pam()) }.offered(),
+            vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128, auth::SECURITY_VNC_AUTH]
+        );
     }
 }

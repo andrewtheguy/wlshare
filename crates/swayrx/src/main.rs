@@ -15,6 +15,7 @@ mod config;
 mod framebuffer;
 mod input;
 mod outputs;
+mod pam;
 mod session;
 mod shared;
 
@@ -24,6 +25,9 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::Parser;
 use log::{error, info};
+use swayrx_rfb::rsa_aes::ServerKey;
+
+use crate::session::{RsaAes, Security};
 
 #[derive(Parser, Debug)]
 #[command(name = "swayrx", version, about = "A VNC server for a sway desktop, with pixel density on the wire")]
@@ -49,32 +53,85 @@ fn main() -> anyhow::Result<()> {
     if let Some(listen) = args.listen {
         config.listen = listen;
     }
-    let password = config.password()?;
-    if password.is_none() {
-        info!("no password_file: accepting clients without authentication");
-    }
+    let security = security(&config, &path)?;
 
     // The compositor thread comes up first and hands back what it learned about
     // the output, so ServerInit can name a size before the first frame.
     let (compositor, shared) = compositor::start(&config)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let result = runtime.block_on(serve(config, password, shared.clone(), compositor));
+    let result = runtime.block_on(serve(config, security, shared.clone(), compositor));
     if let Err(e) = &result {
         error!("{e:#}");
     }
     result
 }
 
+/// What the configuration says about who may connect, with the RSA-AES key
+/// loaded — or generated and written, on a first start — when PAM is on.
+fn security(config: &config::Config, config_path: &std::path::Path) -> anyhow::Result<Security> {
+    let vnc_auth = config.password()?;
+    let rsa_aes = match &config.pam {
+        Some(pam) => Some(rsa_aes(pam, config.rsa_key_file(config_path).expect("[pam] is set"))?),
+        None => None,
+    };
+    match (&vnc_auth, &rsa_aes) {
+        (None, None) => info!("neither password_file nor [pam]: accepting clients without authentication"),
+        (Some(_), None) => info!("VncAuth with the password from password_file"),
+        (None, Some(_)) => info!("RSA-AES only: a client needs the account's login"),
+        (Some(_), Some(_)) => info!("RSA-AES and VncAuth both offered: an account's login, or the password from password_file"),
+    }
+    Ok(Security { vnc_auth, rsa_aes })
+}
+
+/// The RSA-AES half of the security: the key from `key_path`, generated there
+/// on first start, and the account whose login PAM will be asked about.
+fn rsa_aes(pam: &config::Pam, key_path: std::path::PathBuf) -> anyhow::Result<RsaAes> {
+    let key = match std::fs::read_to_string(&key_path) {
+        Ok(pem) => ServerKey::from_pem(&pem).with_context(|| format!("{} is not a PKCS#8 PEM RSA key", key_path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            info!("generating a {}-bit RSA key into {}", swayrx_rfb::rsa_aes::SERVER_KEY_BITS, key_path.display());
+            let key = ServerKey::generate().context("generating the RSA key")?;
+            if let Some(dir) = key_path.parent() {
+                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+            }
+            write_private(&key_path, key.to_pem().context("encoding the RSA key")?.as_bytes())?;
+            key
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", key_path.display())),
+    };
+    let account = pam::process_user()?;
+    info!(
+        "RSA-AES with PAM service {:?}: the login is {account:?}'s; server key {} bits, fingerprint {}",
+        pam.service,
+        key.bits(),
+        key.fingerprint()
+    );
+    Ok(RsaAes { key: Arc::new(key), service: pam.service.clone(), account })
+}
+
+/// Write a file only its owner can read, created fresh.
+fn write_private(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    file.write_all(contents).with_context(|| format!("writing {}", path.display()))
+}
+
 async fn serve(
     config: config::Config,
-    password: Option<String>,
+    security: Security,
     shared: Arc<shared::Shared>,
     mut compositor: compositor::Handle,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen).await.with_context(|| format!("listening on {}", config.listen))?;
     info!("listening on {}", config.listen);
-    let session_config = Arc::new(session::SessionConfig { password, name: config.name.clone(), resize: config.resize });
+    let session_config = Arc::new(session::SessionConfig { security, name: config.name.clone(), resize: config.resize });
     loop {
         tokio::select! {
             accepted = listener.accept() => {

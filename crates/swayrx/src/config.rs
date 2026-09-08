@@ -14,9 +14,16 @@ pub struct Config {
     /// loopback or a VPN address unless something in front of it encrypts.
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
-    /// A file holding the VncAuth password; absent means no authentication.
-    /// Only the first eight bytes count, as VncAuth has it.
+    /// A file holding the VncAuth password, for clients that know the
+    /// server's own password and nothing about the account. Only the first
+    /// eight bytes count, as VncAuth has it, and the session stays in the
+    /// clear.
     pub password_file: Option<PathBuf>,
+    /// RSA-AES with the system login: the client names the account swayrx
+    /// runs as and gives its password, PAM checks the two, and the session is
+    /// encrypted. With `password_file` as well, both types are offered and the
+    /// client chooses; with neither, anyone who reaches the port is in.
+    pub pam: Option<Pam>,
     /// The output to capture, by name (`swaymsg -t get_outputs`); absent means
     /// the first one the compositor lists.
     pub output: Option<String>,
@@ -53,6 +60,23 @@ pub struct Xkb {
     pub options: String,
 }
 
+/// The `[pam]` table: RSA-AES security with the credentials checked by PAM.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Pam {
+    /// The PAM service name, which is the stack under `/etc/pam.d`.
+    #[serde(default = "default_pam_service")]
+    pub service: String,
+    /// The server's RSA key as PKCS#8 PEM, generated on first start when the
+    /// file is missing. Absent means `rsa_key.pem` beside the configuration
+    /// file.
+    pub rsa_key_file: Option<PathBuf>,
+}
+
+fn default_pam_service() -> String {
+    "swayrx".to_owned()
+}
+
 fn default_listen() -> SocketAddr {
     "127.0.0.1:5900".parse().unwrap()
 }
@@ -75,6 +99,13 @@ impl Config {
         let config: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         anyhow::ensure!(config.max_fps > 0, "max_fps must be at least 1");
         Ok(config)
+    }
+
+    /// Where the RSA-AES key lives when `[pam]` is set: the configured path, or
+    /// `rsa_key.pem` beside the configuration file at `config_path`.
+    pub fn rsa_key_file(&self, config_path: &Path) -> Option<PathBuf> {
+        let pam = self.pam.as_ref()?;
+        Some(pam.rsa_key_file.clone().unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")))
     }
 
     /// The VncAuth password, trimmed of a trailing newline, or `None` for a
@@ -109,6 +140,19 @@ mod tests {
         assert_eq!(c.max_fps, 60);
         assert_eq!(c.name, "sway");
         assert!(c.xkb.layout.is_empty());
+    }
+
+    #[test]
+    fn pam_defaults_its_service_and_key_beside_the_config() {
+        let c: Config = toml::from_str("[pam]\n").unwrap();
+        let pam = c.pam.as_ref().unwrap();
+        assert_eq!(pam.service, "swayrx");
+        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/etc/x/rsa_key.pem")));
+        let c: Config = toml::from_str("[pam]\nservice = \"vnc\"\nrsa_key_file = \"/k.pem\"").unwrap();
+        assert_eq!(c.pam.as_ref().unwrap().service, "vnc");
+        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/k.pem")));
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), None);
     }
 
     #[test]
