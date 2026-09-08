@@ -30,8 +30,7 @@ pub fn response(password: &str, challenge: &[u8; 16]) -> [u8; 16] {
     }
     let cipher = Des::new_from_slice(&key).expect("an 8-byte DES key");
     let mut out = *challenge;
-    for block in out.chunks_exact_mut(8) {
-        let block: &mut [u8; 8] = block.try_into().expect("an 8-byte block");
+    for block in out.as_chunks_mut::<8>().0 {
         cipher.encrypt_block(block.into());
     }
     out

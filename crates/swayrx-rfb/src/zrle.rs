@@ -123,8 +123,8 @@ pub fn encode_raw_rect(pixels: &[u8], stride: usize, width: usize, height: usize
         if format.is_native() {
             out.extend_from_slice(line);
         } else {
-            for px in line.chunks_exact(4) {
-                out.extend_from_slice(&format.pixel_bytes(format.value([px[0], px[1], px[2], px[3]])));
+            for px in line.as_chunks::<4>().0 {
+                out.extend_from_slice(&format.pixel_bytes(format.value(*px)));
             }
         }
     }
@@ -502,7 +502,7 @@ mod tests {
     }
 
     fn expected(fb: &[u8], format: &PixelFormat) -> Vec<u32> {
-        fb.chunks_exact(4).map(|p| format.value([p[0], p[1], p[2], p[3]])).collect()
+        fb.as_chunks::<4>().0.iter().map(|p| format.value(*p)).collect()
     }
 
     fn round_trip(w: usize, h: usize, format: PixelFormat, f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
