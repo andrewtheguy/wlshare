@@ -22,7 +22,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 use crate::compositor::Compositor;
-use crate::framebuffer::{FrameLayout, Rect, ResizeOrigin};
+use crate::framebuffer::{BGRX, FrameLayout, Rect, ResizeOrigin};
 
 /// A `wl_shm` buffer the compositor copies a frame into.
 struct ShmBuffer {
@@ -162,27 +162,40 @@ impl Compositor {
     }
 }
 
-/// Whether a frame in `format` needs its red and blue swapped to become the
-/// framebuffer's XRGB8888, or `None` when this server cannot read it at all.
+/// Where the framebuffer's `B, G, R, X` bytes sit in a pixel of `format`, or
+/// `None` when this server cannot read it at all.
 ///
-/// Only the 32-bit orders with the unused byte last are here. The compositor
-/// offers exactly what its renderer prefers to read back, which for wlroots is
-/// one of these two: XRGB8888 under pixman, XBGR8888 under GLES2 on a driver
-/// whose GL_IMPLEMENTATION_COLOR_READ_FORMAT is RGBA, as Mesa's Intel one is.
-fn swapped_rb(format: wl_shm::Format) -> Option<bool> {
+/// These are the eight 32-bit orders at eight bits a channel, which is every
+/// format wlroots' screencopy can offer for one: GLES2 and Vulkan report
+/// XRGB8888, ARGB8888, XBGR8888 or ABGR8888, and pixman additionally reports
+/// the four with the unused byte first. Everything past this table -- 10-bit,
+/// 16-bit, 565, 5551, and the packed 24-bit orders -- is a conversion rather
+/// than a rearrangement, and none is reachable from a compositor an ordinary
+/// desktop runs; see docs/architecture.md.
+///
+/// The DRM names read most significant byte first, so each one is its own
+/// memory order reversed on a little-endian machine, which is the only kind
+/// wl_shm describes.
+fn channel_bytes(format: wl_shm::Format) -> Option<[u8; 4]> {
     match format {
-        wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888 => Some(false),
-        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => Some(true),
+        // In memory: B, G, R, X -- the framebuffer's own order.
+        wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888 => Some(BGRX),
+        // R, G, B, X
+        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => Some([2, 1, 0, 3]),
+        // X, B, G, R
+        wl_shm::Format::Rgbx8888 | wl_shm::Format::Rgba8888 => Some([1, 2, 3, 0]),
+        // X, R, G, B
+        wl_shm::Format::Bgrx8888 | wl_shm::Format::Bgra8888 => Some([3, 2, 1, 0]),
         _ => None,
     }
 }
 
 /// How much this server would rather have `format`: a straight copy over a
-/// channel swap over nothing it can use.
+/// rearrangement over nothing it can use.
 fn rank(format: wl_shm::Format) -> u8 {
-    match swapped_rb(format) {
-        Some(false) => 2,
-        Some(true) => 1,
+    match channel_bytes(format) {
+        Some(BGRX) => 2,
+        Some(_) => 1,
         None => 0,
     }
 }
@@ -211,12 +224,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                     state.capture_failed(frame);
                     return;
                 };
-                let Some(swapped_rb) = swapped_rb(format) else {
-                    error!("the compositor offers frames only as {format:?}; this server needs XRGB8888, ARGB8888, XBGR8888 or ABGR8888");
+                let Some(bytes) = channel_bytes(format) else {
+                    error!("the compositor offers frames only as {format:?}; this server needs a 32-bit format at eight bits a channel: XRGB8888, XBGR8888, RGBX8888, BGRX8888 or one of their alpha spellings");
                     state.capture_failed(frame);
                     return;
                 };
-                state.capture.layout.swapped_rb = swapped_rb;
+                state.capture.layout.bytes = bytes;
                 if !state.capture.buffer.as_ref().is_some_and(|b| b.matches(width, height, stride, format)) {
                     match ShmBuffer::new(&state.shm, qh, width, height, stride, format) {
                         Ok(b) => {

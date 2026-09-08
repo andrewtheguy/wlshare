@@ -103,6 +103,9 @@ pub enum ResizeOrigin {
 
 const LOG_LIMIT: usize = 512;
 
+/// The framebuffer's own byte order: a pixel already `B, G, R, X`.
+pub const BGRX: [u8; 4] = [0, 1, 2, 3];
+
 /// How a captured frame is laid out, next to the framebuffer's own top-row-first
 /// XRGB8888.
 ///
@@ -110,16 +113,25 @@ const LOG_LIMIT: usize = 512;
 /// server asks for: wlr-screencopy reports y-invert per frame, and the one shm
 /// format it offers is whatever its renderer prefers to read back. wlroots'
 /// GLES2 renderer takes that from Mesa's GL_IMPLEMENTATION_COLOR_READ_FORMAT,
-/// which on Intel is RGBA and so lands on XBGR8888, while its pixman renderer
-/// says XRGB8888. Neither is wrong, so both are handled here rather than in the
-/// encoders: past this point a frame is always XRGB8888, rows top down.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// which on Intel is RGBA and so lands on XBGR8888; its pixman renderer reports
+/// the output texture's own format, which is any of the eight 32-bit orders.
+/// None of them is wrong, so all of them are straightened out here rather than
+/// in the encoders: past this point a frame is always XRGB8888, rows top down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameLayout {
     /// The frame's first row is its bottom one.
     pub flipped: bool,
-    /// The frame is XBGR8888 or ABGR8888 where the framebuffer is XRGB8888:
-    /// red and blue trade places on the way in.
-    pub swapped_rb: bool,
+    /// Where each of the framebuffer's four bytes is found in the frame's own
+    /// pixel, so [`BGRX`] is a frame that needs no rearranging. Both are four
+    /// bytes per pixel, which is what makes every one of these a permutation
+    /// rather than a conversion.
+    pub bytes: [u8; 4],
+}
+
+impl Default for FrameLayout {
+    fn default() -> Self {
+        Self { flipped: false, bytes: BGRX }
+    }
 }
 
 pub struct Framebuffer {
@@ -184,17 +196,13 @@ impl Framebuffer {
                 let s = src_row * stride + x0;
                 let d = row * row_bytes + x0;
                 let (dst, frame) = (&mut self.pixels[d..d + len], &src[s..s + len]);
-                if layout.swapped_rb {
-                    // Both are four bytes per pixel with the unused byte last,
-                    // so only the two colour bytes at either end move.
-                    for (out, px) in dst.chunks_exact_mut(4).zip(frame.chunks_exact(4)) {
-                        out[0] = px[2];
-                        out[1] = px[1];
-                        out[2] = px[0];
-                        out[3] = px[3];
-                    }
-                } else {
+                if layout.bytes == BGRX {
                     dst.copy_from_slice(frame);
+                } else {
+                    let from = layout.bytes.map(usize::from);
+                    for (out, px) in dst.as_chunks_mut::<4>().0.iter_mut().zip(frame.as_chunks::<4>().0) {
+                        *out = from.map(|i| px[i]);
+                    }
                 }
             }
             noted.push(r);
@@ -281,31 +289,34 @@ mod tests {
     }
 
     #[test]
-    fn a_swapped_frame_arrives_with_red_and_blue_the_right_way_round() {
-        // One pixel, XBGR8888 in memory: R=1, G=2, B=3, unused=4. The
-        // framebuffer wants it as B, G, R, X.
-        let mut fb = Framebuffer::new(1, 1);
-        fb.apply(&[1, 2, 3, 4], 4, &[Rect::whole(1, 1)], FrameLayout { flipped: false, swapped_rb: true });
-        assert_eq!(fb.pixels, vec![3, 2, 1, 4]);
-
-        // The same frame read straight through is the identity, so the two
-        // paths differ only in the two colour bytes.
-        let mut fb = Framebuffer::new(1, 1);
-        fb.apply(&[1, 2, 3, 4], 4, &[Rect::whole(1, 1)], FrameLayout::default());
-        assert_eq!(fb.pixels, vec![1, 2, 3, 4]);
+    fn every_byte_order_arrives_as_the_framebuffers_own() {
+        // The same pixel -- blue 10, green 20, red 30, unused 40 -- written out
+        // in each of the four orders wlr-screencopy can offer, and each one has
+        // to land as the framebuffer's B, G, R, X.
+        let want = vec![10, 20, 30, 40];
+        for (name, frame, bytes) in [
+            ("XRGB8888/ARGB8888", [10, 20, 30, 40], BGRX),
+            ("XBGR8888/ABGR8888", [30, 20, 10, 40], [2, 1, 0, 3]),
+            ("RGBX8888/RGBA8888", [40, 10, 20, 30], [1, 2, 3, 0]),
+            ("BGRX8888/BGRA8888", [40, 30, 20, 10], [3, 2, 1, 0]),
+        ] {
+            let mut fb = Framebuffer::new(1, 1);
+            fb.apply(&frame, 4, &[Rect::whole(1, 1)], FrameLayout { flipped: false, bytes });
+            assert_eq!(fb.pixels, want, "{name}");
+        }
     }
 
     #[test]
-    fn a_swapped_frame_flips_and_swaps_together_and_only_where_damaged() {
+    fn a_rearranged_frame_flips_and_reorders_together_and_only_where_damaged() {
         // Two rows of two pixels, bottom row first, red and blue reversed. Only
         // the top-left pixel is damaged, and after the flip that is the frame's
-        // *last* row -- so the pixel that lands is [30, 20, 10, 40] swapped.
+        // *last* row -- so the pixel that lands is [30, 20, 10, 40] reordered.
         let mut fb = Framebuffer::new(2, 2);
         let frame: Vec<u8> = vec![
             1, 2, 3, 4, 5, 6, 7, 8, // frame row 0 = framebuffer row 1
             10, 20, 30, 40, 50, 60, 70, 80, // frame row 1 = framebuffer row 0
         ];
-        fb.apply(&frame, 8, &[Rect { x: 0, y: 0, width: 1, height: 1 }], FrameLayout { flipped: true, swapped_rb: true });
+        fb.apply(&frame, 8, &[Rect { x: 0, y: 0, width: 1, height: 1 }], FrameLayout { flipped: true, bytes: [2, 1, 0, 3] });
         assert_eq!(&fb.pixels[0..4], &[30, 20, 10, 40]);
         assert_eq!(&fb.pixels[4..16], &[0; 12], "nothing outside the damage is touched");
     }

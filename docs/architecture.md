@@ -29,17 +29,6 @@ something changed, so an idle desktop costs nothing. Damaged rectangles are
 copied into the framebuffer under its lock, the generation counter advances,
 and every session is woken through a `watch`.
 
-The framebuffer is always XRGB8888 with its rows top down, but a captured frame
-need not be either, so `FrameLayout` records how the frame in flight differs and
-the copy straightens it out. Both differences come from the compositor rather
-than from anything asked of it: y-invert is reported per frame, and the single
-shm format offered is whatever the renderer prefers to read back -- XRGB8888
-under wlroots' pixman renderer, XBGR8888 under its GLES2 one on a driver whose
-`GL_IMPLEMENTATION_COLOR_READ_FORMAT` is RGBA, as Mesa's Intel driver has. So a
-compositor on an Intel iGPU hands over red and blue the other way round from one
-compositing in software, and only this copy knows it: past it a frame is
-XRGB8888, rows top down, and the encoders need no cases.
-
 The framebuffer keeps a log of `(generation, rect)`. A session asks for the
 damage after the generation it last sent and gets the merged union; a session
 behind the log, or one that has seen nothing yet, gets the whole framebuffer.
@@ -48,6 +37,56 @@ it, so encoding a slow client's update never holds up a capture.
 
 The pointer is composited into the frame (`overlay_cursor`). No cursor shape is
 sent; a client that lists the Cursor pseudo-encoding simply never receives one.
+
+### Frame layout
+
+The framebuffer is always XRGB8888 with its rows top down, but a captured frame
+need not be either, so `FrameLayout` records how the frame in flight differs and
+the copy straightens it out. Both differences come from the compositor rather
+than from anything asked of it: y-invert is reported per frame, and the single
+shm format offered is whatever the renderer prefers to read back. So a
+compositor on an Intel iGPU hands over red and blue the other way round from one
+compositing in software, and only this copy knows it: past it a frame is
+XRGB8888, rows top down, and the encoders need no cases.
+
+`FrameLayout::bytes` is a permutation, not a conversion -- where each of the
+framebuffer's four bytes sits in the frame's own pixel -- so what it can absorb
+is every 32-bit order at eight bits a channel and nothing else:
+
+| offered by the compositor | in memory  | from |
+| ------------------------- | ---------- | ---- |
+| `XRGB8888`, `ARGB8888`    | `B G R X`  | pixman, GLES2, Vulkan |
+| `XBGR8888`, `ABGR8888`    | `R G B X`  | pixman, GLES2, Vulkan |
+| `RGBX8888`, `RGBA8888`    | `X B G R`  | pixman |
+| `BGRX8888`, `BGRA8888`    | `X R G B`  | pixman |
+
+That is the whole of what wlroots' screencopy can offer for a desktop: its
+GLES2 renderer resolves `GL_IMPLEMENTATION_COLOR_READ_FORMAT` to one of the
+first four, its Vulkan renderer reports the texture's own format, and its pixman
+renderer reports the output texture's, which adds the four with the unused byte
+first.
+
+#### What is deliberately not handled
+
+wlroots can in principle report formats outside that table, and each would need
+a real conversion into the framebuffer's eight bits a channel rather than a
+rearrangement of bytes:
+
+- **10-bit** (`XRGB2101010` and its seven siblings). Reachable on a deep-colour
+  output; the one entry here with a plausible future. It needs the channels
+  narrowed, and the honest version of that is its own path, not a widening of
+  the permutation.
+- **Packed 24-bit** (`RGB888`, `BGR888`) at three bytes per pixel, which the
+  four-byte stride arithmetic in `Framebuffer::apply` assumes away.
+- **16-bit** (`RGBA4444` and its siblings), which only very old GLES drivers
+  report.
+- **`RGB565`, `BGR565`, the 5551 family, and `XBGR16161616`(`F`)**. wlroots can
+  report these, but neatvnc has no case for them either, so they are not a gap
+  against wayvnc so much as a gap in every wlroots VNC server.
+
+None of these is reachable from sway on an ordinary desktop, and an unhandled
+format is not silent: the capture logs what was offered and what was wanted, and
+retries rather than serving a frozen picture.
 
 ## Sending pixels
 
