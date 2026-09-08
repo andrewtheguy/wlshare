@@ -5,10 +5,12 @@
 # a VPN address, or put an SSH tunnel in front.
 listen = "127.0.0.1:5900"
 
-# Who may connect: one of the two below, or neither for no authentication at all.
+# Who may connect: either of the two below, both (the server offers both and the
+# client picks by what it holds), or neither for no authentication at all.
 #
 # VncAuth: a file holding the server's password (only its first eight bytes
-# count). The login is checked, the session stays in the clear.
+# count), for a client that knows the password and nothing about the account.
+# The login is checked, the session stays in the clear.
 # password_file = "/home/me/.config/swayrx/password"
 #
 # RSA-AES with the system login: the client sends the username and password of

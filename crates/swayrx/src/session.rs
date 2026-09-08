@@ -49,16 +49,44 @@ use crate::framebuffer::{Rect, ResizeOrigin};
 use crate::pam;
 use crate::shared::{ClientId, Command, Event, Shared};
 
-/// The one security type the server offers, and what it checks the client
-/// against.
-pub enum Security {
-    /// Anyone who reaches the port is in.
-    None,
+/// What the server offers at the security step, and what it checks the client
+/// against. The two types are independent — a server may offer either, both or
+/// neither — and the client picks by what it holds: an account for RSA-AES, the
+/// server's own password for VncAuth. With neither configured, anyone who
+/// reaches the port is in.
+#[derive(Default)]
+pub struct Security {
     /// VncAuth with this password; the session is in the clear.
-    VncAuth(String),
-    /// RSA-AES at both widths, the credentials checked by PAM under `service`
-    /// and the username required to be `account`, the process's own.
-    RsaAes { key: Arc<ServerKey>, service: String, account: String },
+    pub vnc_auth: Option<String>,
+    /// RSA-AES at both widths, the login checked by PAM.
+    pub rsa_aes: Option<RsaAes>,
+}
+
+/// RSA-AES's half of [`Security`]: the server key, the PAM service the
+/// credentials go to, and the one username accepted — `account`, the process's
+/// own.
+pub struct RsaAes {
+    pub key: Arc<ServerKey>,
+    pub service: String,
+    pub account: String,
+}
+
+impl Security {
+    /// The security types to list, RSA-AES first at its wider width, and
+    /// `None` alone when nothing is configured.
+    pub fn offered(&self) -> Vec<u8> {
+        let mut types = Vec::with_capacity(3);
+        if self.rsa_aes.is_some() {
+            types.extend([rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]);
+        }
+        if self.vnc_auth.is_some() {
+            types.push(auth::SECURITY_VNC_AUTH);
+        }
+        if types.is_empty() {
+            types.push(auth::SECURITY_NONE);
+        }
+        types
+    }
 }
 
 pub struct SessionConfig {
@@ -157,20 +185,18 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
         writer.write_all(&msg::security_refusal(reason)).await?;
         anyhow::bail!("client version {:?}; {reason}", String::from_utf8_lossy(&version).trim_end());
     }
-    let offered: &[u8] = match &config.security {
-        Security::None => &[auth::SECURITY_NONE],
-        Security::VncAuth(_) => &[auth::SECURITY_VNC_AUTH],
-        Security::RsaAes { .. } => &[rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128],
-    };
-    writer.write_all(&msg::security_types(offered)).await?;
+    let offered = config.security.offered();
+    writer.write_all(&msg::security_types(&offered)).await?;
     let chosen = reader.read_u8().await.context("reading the security type")?;
     if !offered.contains(&chosen) {
         writer.write_all(&msg::security_failed("unsupported security type")).await?;
         anyhow::bail!("client chose security type {chosen}, not one of {offered:?}");
     }
-    let (mut reader, mut writer) = match &config.security {
-        Security::None => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
-        Security::VncAuth(password) => {
+    // `chosen` is one of `offered`, so the branch it names is configured.
+    let (mut reader, mut writer) = match chosen {
+        auth::SECURITY_NONE => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
+        auth::SECURITY_VNC_AUTH => {
+            let password = config.security.vnc_auth.as_ref().expect("VncAuth was offered");
             let challenge = auth::challenge();
             writer.write_all(&challenge).await?;
             let mut response = [0u8; 16];
@@ -183,7 +209,8 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
             }
             (Reader::Plain(reader), Writer { inner: writer, sealer: None })
         }
-        Security::RsaAes { key, service, account } => {
+        _ => {
+            let RsaAes { key, service, account } = config.security.rsa_aes.as_ref().expect("RSA-AES was offered");
             let strength = rsa_aes::Strength::of(chosen).expect("one of the two offered");
             let (credentials, session) = rsa_aes::authenticate(&mut reader, &mut writer, strength, key).await.context("RSA-AES key exchange")?;
             // Everything from here on is inside the frames, the refusal included.
@@ -534,5 +561,28 @@ impl Session {
         self.seen = generation;
         self.pending = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    /// The client picks by what it holds, so each configured type is on the
+    /// list — RSA-AES ahead of VncAuth, its wider width first — and an
+    /// unauthenticated server lists None alone.
+    #[test]
+    fn the_offer_lists_every_configured_type_and_none_for_nothing() {
+        let pam = || RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "swayrx".into(), account: "me".into() };
+        assert_eq!(Security::default().offered(), vec![auth::SECURITY_NONE]);
+        assert_eq!(Security { vnc_auth: Some("pw".into()), rsa_aes: None }.offered(), vec![auth::SECURITY_VNC_AUTH]);
+        assert_eq!(
+            Security { vnc_auth: None, rsa_aes: Some(pam()) }.offered(),
+            vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]
+        );
+        assert_eq!(
+            Security { vnc_auth: Some("pw".into()), rsa_aes: Some(pam()) }.offered(),
+            vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128, auth::SECURITY_VNC_AUTH]
+        );
     }
 }

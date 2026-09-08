@@ -14,13 +14,15 @@ pub struct Config {
     /// loopback or a VPN address unless something in front of it encrypts.
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
-    /// A file holding the VncAuth password; absent means no authentication
-    /// unless `[pam]` is set. Only the first eight bytes count, as VncAuth has
-    /// it, and the session stays in the clear.
+    /// A file holding the VncAuth password, for clients that know the
+    /// server's own password and nothing about the account. Only the first
+    /// eight bytes count, as VncAuth has it, and the session stays in the
+    /// clear.
     pub password_file: Option<PathBuf>,
     /// RSA-AES with the system login: the client names the account swayrx
     /// runs as and gives its password, PAM checks the two, and the session is
-    /// encrypted. Exclusive with `password_file`.
+    /// encrypted. With `password_file` as well, both types are offered and the
+    /// client chooses; with neither, anyone who reaches the port is in.
     pub pam: Option<Pam>,
     /// The output to capture, by name (`swaymsg -t get_outputs`); absent means
     /// the first one the compositor lists.
@@ -96,11 +98,6 @@ impl Config {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         anyhow::ensure!(config.max_fps > 0, "max_fps must be at least 1");
-        anyhow::ensure!(
-            config.password_file.is_none() || config.pam.is_none(),
-            "{} sets both password_file and [pam]; a server offers VncAuth or RSA-AES, not both",
-            path.display()
-        );
         Ok(config)
     }
 

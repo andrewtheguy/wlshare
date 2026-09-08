@@ -125,10 +125,13 @@ source is ours. Extended Clipboard is recognised and not yet spoken.
 
 ## Security
 
-RFB 3.8 with exactly one security type on offer, the configuration's: None,
-VncAuth from `password_file`, or RSA-AES from `[pam]` (offered at both widths,
-`RA2_256` first, the client choosing). VncAuth protects the login and nothing
-after it, so with it the listen address is a loopback or VPN address by design.
+RFB 3.8 with the configuration's types on offer: RSA-AES from `[pam]` at both
+widths, `RA2_256` first, then VncAuth from `password_file`, and None alone when
+neither is set. The two are independent and the client chooses, the way a Mac
+offers its account login beside its VNC password: a client holding the
+account takes RSA-AES, one holding only the server's password takes VncAuth.
+VncAuth protects the login and nothing after it, so with it the listen address
+is a loopback or VPN address by design.
 
 RSA-AES is RealVNC's type as `rfbproto` documents it and TigerVNC, neatvnc and
 the remotex gateway speak it: the server's RSA key and a fresh client key are
