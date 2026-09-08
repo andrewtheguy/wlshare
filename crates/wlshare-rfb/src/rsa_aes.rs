@@ -4,10 +4,11 @@
 //!
 //! The types are RealVNC's, documented in the community `rfbproto` and spoken
 //! on the open side by TigerVNC, neatvnc and the remotex gateway, whose client
-//! this server was written against. VncAuth proves knowledge of a machine's
-//! secret and encrypts nothing; RSA-AES carries a username and a password, so
-//! they can be checked against the system's accounts, and every byte after the
-//! key exchange is inside AES-EAX.
+//! this server was written against. RSA-AES carries a username and a password,
+//! so they can be checked against the system's accounts, and every byte after
+//! the key exchange is inside AES-EAX — which classic VncAuth, deliberately not
+//! spoken here, never did: it proves knowledge of a machine's secret and
+//! encrypts nothing.
 //!
 //! ## The exchange
 //!
@@ -60,7 +61,7 @@
 //! which this module logs at startup and the remotex gateway logs on every
 //! connection — is stable and an operator can compare the two. Against an
 //! active middle-man the pinning is the client's to do; against a passive one
-//! the session is encrypted, which VncAuth's never was.
+//! the session is encrypted.
 //!
 //! ## The frame
 //!
@@ -114,8 +115,8 @@ const HEADER: usize = 2;
 const TAG: usize = 16;
 
 /// RSA-AES subtype 1: the server wants a username and a password. The only
-/// subtype this server sends; subtype 2, a password alone, is what VncAuth
-/// already is.
+/// subtype this server sends; subtype 2, a password alone, would name nobody,
+/// and the desktop behind the port is one account's.
 const SUBTYPE_USER_PASS: u8 = 1;
 
 /// Which of the two types was chosen, deciding the hash, the key length and

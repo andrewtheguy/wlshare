@@ -1,17 +1,14 @@
 # wlshare configuration: $XDG_CONFIG_HOME/wlshare/config.toml by default.
 # Every key is optional; the values shown are the defaults unless noted.
 
-# Where clients connect. The session is not encrypted: keep this on loopback or
-# a VPN address, or put an SSH tunnel in front.
+# Where clients connect. Without [pam] below the session is unauthenticated and
+# not encrypted: keep this on loopback or a VPN address, or put an SSH tunnel in
+# front.
 listen = "127.0.0.1:5900"
 
-# Who may connect: either of the two below, both (the server offers both and the
-# client picks by what it holds), or neither for no authentication at all.
-#
-# VncAuth: a file holding the server's password (only its first eight bytes
-# count), for a client that knows the password and nothing about the account.
-# The login is checked, the session stays in the clear.
-# password_file = "/home/me/.config/wlshare/password"
+# Who may connect: the account's login over RSA-AES, or -- with the table left
+# out -- anyone who reaches the port. Classic VncAuth is not offered: it names
+# nobody and leaves the session in the clear.
 #
 # RSA-AES with the system login: the client sends the username and password of
 # the account wlshare runs as -- no other account is accepted -- and PAM checks

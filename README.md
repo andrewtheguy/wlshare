@@ -16,9 +16,9 @@ keyboard, virtual pointer, and `wlr-data-control` protocols when the compositor
 offers them.
 
 Any VNC client that decodes ZRLE can connect. The density extension is asked for
-by the client and stays silent otherwise; remotex asks for it under
-`subtype = "wlshare"`. See [`docs/architecture.md`](docs/architecture.md) for
-how it works and what it deliberately leaves out.
+by the client and stays silent otherwise; remotex asks for it on every plain
+`vnc` target. See [`docs/architecture.md`](docs/architecture.md) for how it
+works and what it deliberately leaves out.
 
 ## Running
 
@@ -39,19 +39,16 @@ Configuration is one TOML file, `$XDG_CONFIG_HOME/wlshare/config.toml` by
 default; every key has a default and [`packaging/config.example.toml`](packaging/config.example.toml)
 lists them.
 
-Who may connect is two independent settings, offered together the way macOS
-Screen Sharing offers an account login beside its VNC password. Nothing set:
-anyone who reaches the port is in. `password_file`: VncAuth with the server's
-own password, for a client that knows the password and nothing about the
-account; the login is checked and the session is in the clear, so `listen`
-stays on loopback or behind a VPN or an SSH tunnel. `[pam]`: RSA-AES, RealVNC's
-security type that TigerVNC and remotex speak — the client sends the username
-and password of the account wlshare runs as, PAM checks them under the service
-`wlshare` (the package installs `/etc/pam.d/wlshare`), and everything after the key
-exchange is encrypted. No other account is accepted, since the desktop behind
-the port is that one user's. With both set the server lists both and the client
-picks by what it holds; remotex's `subtype = "wlshare"` target always brings the
-account, and its plain `vnc` target the password.
+Who may connect is one setting. Nothing set: anyone who reaches the port is in,
+and the session is in the clear, so `listen` stays on loopback or behind a VPN
+or an SSH tunnel. `[pam]`: RSA-AES, RealVNC's security type that TigerVNC and
+remotex speak — the client sends the username and password of the account
+wlshare runs as, PAM checks them under the service `wlshare` (the package
+installs `/etc/pam.d/wlshare`), and everything after the key exchange is
+encrypted. No other account is accepted, since the desktop behind the port is
+that one user's. Classic VncAuth is deliberately not offered: it names nobody,
+proves only knowledge of a machine's secret, and leaves the session in the
+clear.
 The server's RSA key is generated on first start into `rsa_key_file` and its
 fingerprint logged, so it can be compared with the one the client shows.
 Because the password PAM verifies is the account's, the stack can pass it on —

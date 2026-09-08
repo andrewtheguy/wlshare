@@ -70,18 +70,15 @@ fn main() -> anyhow::Result<()> {
 /// What the configuration says about who may connect, with the RSA-AES key
 /// loaded — or generated and written, on a first start — when PAM is on.
 fn security(config: &config::Config, config_path: &std::path::Path) -> anyhow::Result<Security> {
-    let vnc_auth = config.password()?;
     let rsa_aes = match &config.pam {
         Some(pam) => Some(rsa_aes(pam, config.rsa_key_file(config_path).expect("[pam] is set"))?),
         None => None,
     };
-    match (&vnc_auth, &rsa_aes) {
-        (None, None) => info!("neither password_file nor [pam]: accepting clients without authentication"),
-        (Some(_), None) => info!("VncAuth with the password from password_file"),
-        (None, Some(_)) => info!("RSA-AES only: a client needs the account's login"),
-        (Some(_), Some(_)) => info!("RSA-AES and VncAuth both offered: an account's login, or the password from password_file"),
+    match &rsa_aes {
+        None => info!("no [pam] table: accepting clients without authentication, in the clear"),
+        Some(_) => info!("RSA-AES: a client needs the account's login"),
     }
-    Ok(Security { vnc_auth, rsa_aes })
+    Ok(Security { rsa_aes })
 }
 
 /// The RSA-AES half of the security: the key from `key_path`, generated there
