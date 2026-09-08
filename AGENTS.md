@@ -1,5 +1,7 @@
 # Repository instructions
 
+- Strict no backward-compatibility or legacy paths no matter what.
+
 - Two crates: `swayrx-rfb` (protocol, platform-independent, tested by a bare
   `cargo test`) and `swayrx` (the daemon, Linux + Wayland only). After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
