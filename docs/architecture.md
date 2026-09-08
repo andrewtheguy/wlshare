@@ -12,7 +12,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 ```
 
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
-  and building, VncAuth, RSA-AES and its frames, the ZRLE encoder, the density
+  and building, RSA-AES and its frames, the ZRLE encoder, the density
   extension. It has no platform dependency and its tests decode every encoder's
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
@@ -177,12 +177,11 @@ source is ours. Extended Clipboard is recognised and not yet spoken.
 ## Security
 
 RFB 3.8 with the configuration's types on offer: RSA-AES from `[pam]` at both
-widths, `RA2_256` first, then VncAuth from `password_file`, and None alone when
-neither is set. The two are independent and the client chooses, the way a Mac
-offers its account login beside its VNC password: a client holding the
-account takes RSA-AES, one holding only the server's password takes VncAuth.
-VncAuth protects the login and nothing after it, so with it the listen address
-is a loopback or VPN address by design.
+widths, `RA2_256` first, or None alone when it is not set. Classic VncAuth is
+deliberately absent: it proves knowledge of a machine's secret, names nobody,
+and protects the login and nothing after it. Without `[pam]` the session is
+open and in the clear, so the listen address is a loopback or VPN address by
+design.
 
 RSA-AES is RealVNC's type as `rfbproto` documents it and TigerVNC, neatvnc and
 the remotex gateway speak it: the server's RSA key and a fresh client key are
@@ -190,8 +189,8 @@ exchanged in the clear, each side seals a random to the other's key, the two
 randoms derive one AES-EAX key per direction, and from there every byte in both
 directions travels in frames of `u16 len || ciphertext || tag` under a counter
 nonce. Inside the frames each side proves the keys it saw with a hash, the
-server asks for a username and a password (subtype 1; a password alone is what
-VncAuth already is), and RFB's SecurityResult, ClientInit and everything after
+server asks for a username and a password (subtype 1; a password alone would
+name nobody), and RFB's SecurityResult, ClientInit and everything after
 follow. `crates/wlshare-rfb/src/rsa_aes.rs` has the exchange byte by byte.
 
 The server's key is long-lived — generated once into `rsa_key_file`, logged as

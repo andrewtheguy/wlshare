@@ -39,7 +39,7 @@ use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
-use wlshare_rfb::{auth, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE};
+use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -50,14 +50,11 @@ use crate::pam;
 use crate::shared::{ClientId, Command, Event, Shared};
 
 /// What the server offers at the security step, and what it checks the client
-/// against. The two types are independent — a server may offer either, both or
-/// neither — and the client picks by what it holds: an account for RSA-AES, the
-/// server's own password for VncAuth. With neither configured, anyone who
-/// reaches the port is in.
+/// against: RSA-AES with the account's login, or nothing at all, in which case
+/// anyone who reaches the port is in. Classic VncAuth is deliberately not
+/// offered — it names nobody and leaves the session in the clear.
 #[derive(Default)]
 pub struct Security {
-    /// VncAuth with this password; the session is in the clear.
-    pub vnc_auth: Option<String>,
     /// RSA-AES at both widths, the login checked by PAM.
     pub rsa_aes: Option<RsaAes>,
 }
@@ -72,20 +69,13 @@ pub struct RsaAes {
 }
 
 impl Security {
-    /// The security types to list, RSA-AES first at its wider width, and
-    /// `None` alone when nothing is configured.
+    /// The security types to list: RSA-AES at its wider width first, or `None`
+    /// alone when nothing is configured.
     pub fn offered(&self) -> Vec<u8> {
-        let mut types = Vec::with_capacity(3);
-        if self.rsa_aes.is_some() {
-            types.extend([rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]);
+        match self.rsa_aes {
+            Some(_) => vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128],
+            None => vec![msg::SECURITY_NONE],
         }
-        if self.vnc_auth.is_some() {
-            types.push(auth::SECURITY_VNC_AUTH);
-        }
-        if types.is_empty() {
-            types.push(auth::SECURITY_NONE);
-        }
-        types
     }
 }
 
@@ -194,21 +184,7 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
     }
     // `chosen` is one of `offered`, so the branch it names is configured.
     let (mut reader, mut writer) = match chosen {
-        auth::SECURITY_NONE => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
-        auth::SECURITY_VNC_AUTH => {
-            let password = config.security.vnc_auth.as_ref().expect("VncAuth was offered");
-            let challenge = auth::challenge();
-            writer.write_all(&challenge).await?;
-            let mut response = [0u8; 16];
-            reader.read_exact(&mut response).await.context("reading the VncAuth response")?;
-            if !auth::verify(password, &challenge, &response) {
-                // Slow a guesser down before saying no.
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                writer.write_all(&msg::security_failed("authentication failed")).await?;
-                anyhow::bail!("authentication failed");
-            }
-            (Reader::Plain(reader), Writer { inner: writer, sealer: None })
-        }
+        msg::SECURITY_NONE => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
         _ => {
             let RsaAes { key, service, account } = config.security.rsa_aes.as_ref().expect("RSA-AES was offered");
             let strength = rsa_aes::Strength::of(chosen).expect("one of the two offered");
@@ -568,21 +544,15 @@ impl Session {
 mod security_tests {
     use super::*;
 
-    /// The client picks by what it holds, so each configured type is on the
-    /// list — RSA-AES ahead of VncAuth, its wider width first — and an
-    /// unauthenticated server lists None alone.
+    /// A `[pam]` table lists RSA-AES at both widths, the wider first, and
+    /// nothing else; an unauthenticated server lists None alone.
     #[test]
-    fn the_offer_lists_every_configured_type_and_none_for_nothing() {
-        let pam = || RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "wlshare".into(), account: "me".into() };
-        assert_eq!(Security::default().offered(), vec![auth::SECURITY_NONE]);
-        assert_eq!(Security { vnc_auth: Some("pw".into()), rsa_aes: None }.offered(), vec![auth::SECURITY_VNC_AUTH]);
+    fn the_offer_is_rsa_aes_or_none() {
+        let pam = RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "wlshare".into(), account: "me".into() };
+        assert_eq!(Security::default().offered(), vec![msg::SECURITY_NONE]);
         assert_eq!(
-            Security { vnc_auth: None, rsa_aes: Some(pam()) }.offered(),
+            Security { rsa_aes: Some(pam) }.offered(),
             vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]
-        );
-        assert_eq!(
-            Security { vnc_auth: Some("pw".into()), rsa_aes: Some(pam()) }.offered(),
-            vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128, auth::SECURITY_VNC_AUTH]
         );
     }
 }

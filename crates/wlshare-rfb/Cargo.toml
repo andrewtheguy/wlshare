@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The RFB wire wlshare speaks: message parsing and building, VncAuth, the ZRLE encoder and the density extension"
+description = "The RFB wire wlshare speaks: message parsing and building, RSA-AES, the ZRLE encoder and the density extension"
 
 # Platform-independent and dependency-light on purpose: this crate is where the
 # bytes on the wire are decided, and it must build and unit-test on any OS,
@@ -13,10 +13,6 @@ description = "The RFB wire wlshare speaks: message parsing and building, VncAut
 thiserror.workspace = true
 # ZRLE's per-client deflate stream. zlib-rs is the fastest backend and pure Rust.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-# Classic VNC authentication is DES over a 16-byte challenge, nothing more.
-des = "0.9"
-# Sixteen random bytes for the VncAuth challenge.
-getrandom = "0.3"
 # RSA-AES: the async reader and writer the exchange and its frames run over.
 tokio = { version = "1", default-features = false, features = ["io-util"] }
 # RSA-AES: RSA-PKCS#1 v1.5 around the two randoms, with `encoding` for the

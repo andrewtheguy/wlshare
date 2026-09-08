@@ -223,6 +223,9 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
 /// The version banner, ours and the one a client must answer with.
 pub const PROTOCOL_VERSION: &[u8; 12] = b"RFB 003.008\n";
 
+/// Security type 1: no authentication, offered alone when nothing is configured.
+pub const SECURITY_NONE: u8 = 1;
+
 /// The security types on offer: a count, then the types.
 pub fn security_types(types: &[u8]) -> Vec<u8> {
     let mut msg = vec![types.len() as u8];
@@ -435,7 +438,7 @@ mod tests {
         assert_eq!(init.len(), 31);
         assert_eq!(&init[..4], &[0, 8, 0, 4]);
         assert_eq!(&init[20..], &[0, 0, 0, 7, b'd', b'e', b's', b'k', b't', b'o', b'p']);
-        assert_eq!(security_types(&[2]), vec![1, 2]);
+        assert_eq!(security_types(&[SECURITY_NONE, 5]), vec![2, 1, 5]);
         assert_eq!(security_failed("no"), vec![0, 0, 0, 1, 0, 0, 0, 2, b'n', b'o']);
     }
 }

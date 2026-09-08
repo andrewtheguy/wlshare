@@ -31,12 +31,12 @@
 //! - **The density extension**, one pseudo-encoding and one message type, which
 //!   is how a client learns the scale the framebuffer is drawn at and asks for
 //!   the one it wants ([`density`]).
-//! - **None, VncAuth, and RSA-AES** for security. The first two are RFC 6143's;
-//!   the third is RealVNC's, and the one way a client can name an account and
-//!   have the session encrypted ([`rsa_aes`]). Which is offered is the daemon's
-//!   configuration; the crate speaks all three.
+//! - **None and RSA-AES** for security. The first is RFC 6143's; the second is
+//!   RealVNC's, and the one way a client can name an account and have the
+//!   session encrypted ([`rsa_aes`]). Classic VncAuth is deliberately absent: it
+//!   names nobody and encrypts nothing after the login. Which is offered is the
+//!   daemon's configuration; the crate speaks both.
 
-pub mod auth;
 pub mod density;
 pub mod msg;
 pub mod pixel;

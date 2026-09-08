@@ -10,19 +10,14 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Where to accept clients. The session is not encrypted, so this is a
-    /// loopback or a VPN address unless something in front of it encrypts.
+    /// Where to accept clients. Without `[pam]` the session is unauthenticated
+    /// and not encrypted, so this is a loopback or a VPN address unless
+    /// something in front of it encrypts.
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
-    /// A file holding the VncAuth password, for clients that know the
-    /// server's own password and nothing about the account. Only the first
-    /// eight bytes count, as VncAuth has it, and the session stays in the
-    /// clear.
-    pub password_file: Option<PathBuf>,
     /// RSA-AES with the system login: the client names the account wlshare
     /// runs as and gives its password, PAM checks the two, and the session is
-    /// encrypted. With `password_file` as well, both types are offered and the
-    /// client chooses; with neither, anyone who reaches the port is in.
+    /// encrypted. Without it, anyone who reaches the port is in.
     pub pam: Option<Pam>,
     /// The output to capture, by its `wl_output` name; absent means the first
     /// one the compositor lists.
@@ -106,16 +101,6 @@ impl Config {
     pub fn rsa_key_file(&self, config_path: &Path) -> Option<PathBuf> {
         let pam = self.pam.as_ref()?;
         Some(pam.rsa_key_file.clone().unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")))
-    }
-
-    /// The VncAuth password, trimmed of a trailing newline, or `None` for a
-    /// server without authentication.
-    pub fn password(&self) -> anyhow::Result<Option<String>> {
-        let Some(path) = &self.password_file else { return Ok(None) };
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let password = text.trim_end_matches(['\r', '\n']).to_owned();
-        anyhow::ensure!(!password.is_empty(), "{} is empty", path.display());
-        Ok(Some(password))
     }
 }
 
