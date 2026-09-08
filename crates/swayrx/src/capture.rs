@@ -22,7 +22,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 use crate::compositor::Compositor;
-use crate::framebuffer::{Rect, ResizeOrigin};
+use crate::framebuffer::{BGRX, FrameLayout, Rect, ResizeOrigin};
 
 /// A `wl_shm` buffer the compositor copies a frame into.
 struct ShmBuffer {
@@ -70,7 +70,9 @@ pub struct Capture {
     /// The frame the compositor announced, before its buffer is ready.
     announced: Option<(u32, u32, u32, wl_shm::Format)>,
     damage: Vec<Rect>,
-    y_invert: bool,
+    /// How the frame in flight differs from the framebuffer's own layout, from
+    /// the format announced for it and its y-invert flag.
+    layout: FrameLayout,
     last_ready: Option<Instant>,
     timer: Option<RegistrationToken>,
     failures: u32,
@@ -85,7 +87,7 @@ impl Compositor {
         let Some(manager) = &self.capture.manager else { return };
         let Some(output) = self.outputs.selected() else { return };
         self.capture.damage.clear();
-        self.capture.y_invert = false;
+        self.capture.layout = FrameLayout::default();
         self.capture.announced = None;
         // The pointer is composited into the frame: this server sends no cursor
         // shape of its own.
@@ -151,16 +153,50 @@ impl Compositor {
                 // A frame without a damage report: everything may have changed.
                 damage.push(Rect::whole(width, height));
             }
-            if self.capture.y_invert {
-                fb.apply_flipped(&buffer.map, buffer.stride as usize, &damage);
-            } else {
-                fb.apply(&buffer.map, buffer.stride as usize, &damage);
-            }
+            fb.apply(&buffer.map, buffer.stride as usize, &damage, self.capture.layout);
             fb.generation
         };
         self.shared().frame_changed(generation);
         self.capture.last_ready = Some(Instant::now());
         self.capture.failures = 0;
+    }
+}
+
+/// Where the framebuffer's `B, G, R, X` bytes sit in a pixel of `format`, or
+/// `None` when this server cannot read it at all.
+///
+/// These are the eight 32-bit orders at eight bits a channel, which is every
+/// format wlroots' screencopy can offer for one: GLES2 and Vulkan report
+/// XRGB8888, ARGB8888, XBGR8888 or ABGR8888, and pixman additionally reports
+/// the four with the unused byte first. Everything past this table -- 10-bit,
+/// 16-bit, 565, 5551, and the packed 24-bit orders -- is a conversion rather
+/// than a rearrangement, and none is reachable from a compositor an ordinary
+/// desktop runs; see docs/architecture.md.
+///
+/// The DRM names read most significant byte first, so each one is its own
+/// memory order reversed on a little-endian machine, which is the only kind
+/// wl_shm describes.
+fn channel_bytes(format: wl_shm::Format) -> Option<[u8; 4]> {
+    match format {
+        // In memory: B, G, R, X -- the framebuffer's own order.
+        wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888 => Some(BGRX),
+        // R, G, B, X
+        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => Some([2, 1, 0, 3]),
+        // X, B, G, R
+        wl_shm::Format::Rgbx8888 | wl_shm::Format::Rgba8888 => Some([1, 2, 3, 0]),
+        // X, R, G, B
+        wl_shm::Format::Bgrx8888 | wl_shm::Format::Bgra8888 => Some([3, 2, 1, 0]),
+        _ => None,
+    }
+}
+
+/// How much this server would rather have `format`: a straight copy over a
+/// rearrangement over nothing it can use.
+fn rank(format: wl_shm::Format) -> u8 {
+    match channel_bytes(format) {
+        Some(BGRX) => 2,
+        Some(_) => 1,
+        None => 0,
     }
 }
 
@@ -173,7 +209,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
         match event {
             zwlr_screencopy_frame_v1::Event::Buffer { format, width, height, stride } => {
                 let WEnum::Value(format) = format else { return };
-                if state.capture.announced.is_none() || matches!(format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888) {
+                // The compositor lists every format it can copy into, in no
+                // order this server may rely on. Keep the best one seen so far,
+                // and the first of them regardless -- an unusable format still
+                // has to reach the error below, which names it.
+                let better = state.capture.announced.is_none_or(|(.., current)| rank(format) > rank(current));
+                if better {
                     state.capture.announced = Some((width, height, stride, format));
                 }
             }
@@ -183,11 +224,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                     state.capture_failed(frame);
                     return;
                 };
-                if !matches!(format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888) {
-                    error!("the compositor offers frames only as {format:?}; this server needs XRGB8888 or ARGB8888");
+                let Some(bytes) = channel_bytes(format) else {
+                    error!("the compositor offers frames only as {format:?}; this server needs a 32-bit format at eight bits a channel: XRGB8888, XBGR8888, RGBX8888, BGRX8888 or one of their alpha spellings");
                     state.capture_failed(frame);
                     return;
-                }
+                };
+                state.capture.layout.bytes = bytes;
                 if !state.capture.buffer.as_ref().is_some_and(|b| b.matches(width, height, stride, format)) {
                     match ShmBuffer::new(&state.shm, qh, width, height, stride, format) {
                         Ok(b) => {
@@ -205,7 +247,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                 frame.copy_with_damage(&buffer.buffer);
             }
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {
-                state.capture.y_invert = flags.into_result().is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
+                state.capture.layout.flipped = flags.into_result().is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
             }
             zwlr_screencopy_frame_v1::Event::Damage { x, y, width, height } => {
                 state.capture.damage.push(Rect {
