@@ -985,7 +985,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "swayrx"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "calloop",
@@ -998,6 +998,7 @@ dependencies = [
  "rustix",
  "serde",
  "swayrx-rfb",
+ "thiserror",
  "tokio",
  "toml",
  "wayland-client",
@@ -1009,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "swayrx-rfb"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "aes",
  "des",
