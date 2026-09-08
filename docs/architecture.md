@@ -23,11 +23,22 @@ sway ── Wayland socket ──▶ compositor thread ──▶ Framebuffer ─
 
 ## Capture
 
-wlr-screencopy `copy_with_damage` into a `wl_shm` XRGB8888 buffer, one frame in
-flight, paced by `max_fps`. The compositor answers a damage-only copy only when
+wlr-screencopy `copy_with_damage` into a `wl_shm` buffer, one frame in flight,
+paced by `max_fps`. The compositor answers a damage-only copy only when
 something changed, so an idle desktop costs nothing. Damaged rectangles are
 copied into the framebuffer under its lock, the generation counter advances,
 and every session is woken through a `watch`.
+
+The framebuffer is always XRGB8888 with its rows top down, but a captured frame
+need not be either, so `FrameLayout` records how the frame in flight differs and
+the copy straightens it out. Both differences come from the compositor rather
+than from anything asked of it: y-invert is reported per frame, and the single
+shm format offered is whatever the renderer prefers to read back -- XRGB8888
+under wlroots' pixman renderer, XBGR8888 under its GLES2 one on a driver whose
+`GL_IMPLEMENTATION_COLOR_READ_FORMAT` is RGBA, as Mesa's Intel driver has. So a
+compositor on an Intel iGPU hands over red and blue the other way round from one
+compositing in software, and only this copy knows it: past it a frame is
+XRGB8888, rows top down, and the encoders need no cases.
 
 The framebuffer keeps a log of `(generation, rect)`. A session asks for the
 damage after the generation it last sent and gets the merged union; a session

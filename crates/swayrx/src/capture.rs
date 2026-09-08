@@ -22,7 +22,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 use crate::compositor::Compositor;
-use crate::framebuffer::{Rect, ResizeOrigin};
+use crate::framebuffer::{FrameLayout, Rect, ResizeOrigin};
 
 /// A `wl_shm` buffer the compositor copies a frame into.
 struct ShmBuffer {
@@ -70,7 +70,9 @@ pub struct Capture {
     /// The frame the compositor announced, before its buffer is ready.
     announced: Option<(u32, u32, u32, wl_shm::Format)>,
     damage: Vec<Rect>,
-    y_invert: bool,
+    /// How the frame in flight differs from the framebuffer's own layout, from
+    /// the format announced for it and its y-invert flag.
+    layout: FrameLayout,
     last_ready: Option<Instant>,
     timer: Option<RegistrationToken>,
     failures: u32,
@@ -85,7 +87,7 @@ impl Compositor {
         let Some(manager) = &self.capture.manager else { return };
         let Some(output) = self.outputs.selected() else { return };
         self.capture.damage.clear();
-        self.capture.y_invert = false;
+        self.capture.layout = FrameLayout::default();
         self.capture.announced = None;
         // The pointer is composited into the frame: this server sends no cursor
         // shape of its own.
@@ -151,16 +153,37 @@ impl Compositor {
                 // A frame without a damage report: everything may have changed.
                 damage.push(Rect::whole(width, height));
             }
-            if self.capture.y_invert {
-                fb.apply_flipped(&buffer.map, buffer.stride as usize, &damage);
-            } else {
-                fb.apply(&buffer.map, buffer.stride as usize, &damage);
-            }
+            fb.apply(&buffer.map, buffer.stride as usize, &damage, self.capture.layout);
             fb.generation
         };
         self.shared().frame_changed(generation);
         self.capture.last_ready = Some(Instant::now());
         self.capture.failures = 0;
+    }
+}
+
+/// Whether a frame in `format` needs its red and blue swapped to become the
+/// framebuffer's XRGB8888, or `None` when this server cannot read it at all.
+///
+/// Only the 32-bit orders with the unused byte last are here. The compositor
+/// offers exactly what its renderer prefers to read back, which for wlroots is
+/// one of these two: XRGB8888 under pixman, XBGR8888 under GLES2 on a driver
+/// whose GL_IMPLEMENTATION_COLOR_READ_FORMAT is RGBA, as Mesa's Intel one is.
+fn swapped_rb(format: wl_shm::Format) -> Option<bool> {
+    match format {
+        wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888 => Some(false),
+        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => Some(true),
+        _ => None,
+    }
+}
+
+/// How much this server would rather have `format`: a straight copy over a
+/// channel swap over nothing it can use.
+fn rank(format: wl_shm::Format) -> u8 {
+    match swapped_rb(format) {
+        Some(false) => 2,
+        Some(true) => 1,
+        None => 0,
     }
 }
 
@@ -173,7 +196,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
         match event {
             zwlr_screencopy_frame_v1::Event::Buffer { format, width, height, stride } => {
                 let WEnum::Value(format) = format else { return };
-                if state.capture.announced.is_none() || matches!(format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888) {
+                // The compositor lists every format it can copy into, in no
+                // order this server may rely on. Keep the best one seen so far,
+                // and the first of them regardless -- an unusable format still
+                // has to reach the error below, which names it.
+                let better = state.capture.announced.is_none_or(|(.., current)| rank(format) > rank(current));
+                if better {
                     state.capture.announced = Some((width, height, stride, format));
                 }
             }
@@ -183,11 +211,12 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                     state.capture_failed(frame);
                     return;
                 };
-                if !matches!(format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888) {
-                    error!("the compositor offers frames only as {format:?}; this server needs XRGB8888 or ARGB8888");
+                let Some(swapped_rb) = swapped_rb(format) else {
+                    error!("the compositor offers frames only as {format:?}; this server needs XRGB8888, ARGB8888, XBGR8888 or ABGR8888");
                     state.capture_failed(frame);
                     return;
-                }
+                };
+                state.capture.layout.swapped_rb = swapped_rb;
                 if !state.capture.buffer.as_ref().is_some_and(|b| b.matches(width, height, stride, format)) {
                     match ShmBuffer::new(&state.shm, qh, width, height, stride, format) {
                         Ok(b) => {
@@ -205,7 +234,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                 frame.copy_with_damage(&buffer.buffer);
             }
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {
-                state.capture.y_invert = flags.into_result().is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
+                state.capture.layout.flipped = flags.into_result().is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
             }
             zwlr_screencopy_frame_v1::Event::Damage { x, y, width, height } => {
                 state.capture.damage.push(Rect {
