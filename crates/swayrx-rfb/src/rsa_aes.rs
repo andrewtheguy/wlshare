@@ -14,11 +14,14 @@
 //! ```text
 //! server → client   u32 bits || modulus || exponent        the server's RSA key
 //! client → server   u32 bits || modulus || exponent        the client's, fresh per session
-//! client → server   u16 len  || RSA-PKCS1v15(server key, client random)
 //! server → client   u16 len  || RSA-PKCS1v15(client key, server random)
+//! client → server   u16 len  || RSA-PKCS1v15(server key, client random)
 //! ```
 //!
-//! Both randoms known, each direction gets its own AES key:
+//! The server speaks first at every step, as the protocol has it and as
+//! TigerVNC's server does, so a client that waits for each server message
+//! before answering never waits on a server doing the same. Both randoms known,
+//! each direction gets its own AES key:
 //!
 //! ```text
 //! client → server   H(server random || client random)[..key]
@@ -27,11 +30,23 @@
 //!
 //! `H` is SHA-1 for the 128-bit type and SHA-256 for the 256-bit one, the random
 //! is 16 or 32 bytes to match, and from here every byte in both directions is a
-//! [frame](Sealer::frame). Inside the frames: the client's hash of the two public
-//! keys, the server's hash of them the other way round (which binds the session
+//! [frame](Sealer::frame). Inside the frames: the server's hash of the two public
+//! keys, the client's hash of them the other way round (which binds the session
 //! to the keys that were actually sent — a middle-man's substitution shows up
 //! here), a one-byte subtype saying the server wants a username and a password,
 //! the credentials, then RFB's own SecurityResult and everything after it.
+//!
+//! ## The client random as an oracle
+//!
+//! RSA-PKCS#1 v1.5 is the padding the protocol fixes, and a server that says
+//! whether a ciphertext unpadded is the oracle Bleichenbacher's attack needs —
+//! against a key that is the same for every connection. So the decryption is
+//! blinded, and it never fails: a ciphertext that does not unpad, or unpads to
+//! the wrong length, yields a random derived from a per-process secret and the
+//! ciphertext itself, and the exchange goes on to the hash step exactly as it
+//! would have. The client's hash frame then fails its tag, which is all a
+//! wrong ciphertext ever looks like from outside, and is what an honest client
+//! with a wrong key would have got too.
 //!
 //! ## What the server's key is worth
 //!
@@ -225,6 +240,10 @@ pub enum Error {
 pub struct ServerKey {
     private: RsaPrivateKey,
     wire: WireKey,
+    /// What stands in for a client random that did not decrypt, mixed with the
+    /// ciphertext so the substitute is consistent for a repeated ciphertext and
+    /// unpredictable to whoever sent it. Fresh per process.
+    reject_secret: [u8; 32],
 }
 
 impl ServerKey {
@@ -236,7 +255,20 @@ impl ServerKey {
 
     fn new(private: RsaPrivateKey) -> Self {
         let wire = WireKey::of_public(private.as_public_key());
-        Self { private, wire }
+        let mut reject_secret = [0u8; 32];
+        rand::rng().fill_bytes(&mut reject_secret);
+        Self { private, wire, reject_secret }
+    }
+
+    /// The client random out of its ciphertext — or, for a ciphertext that does
+    /// not decrypt to a random of the right length, a substitute nothing outside
+    /// can tell from one. Blinded, and never an error.
+    fn open_client_random(&self, sealed: &[u8], strength: Strength) -> Vec<u8> {
+        let want = strength.random_len();
+        match self.private.decrypt_blinded(&mut rand::rng(), Pkcs1v15Encrypt, sealed) {
+            Ok(random) if random.len() == want => random,
+            _ => Sha256::new().chain_update(self.reject_secret).chain_update(sealed).finalize()[..want].to_vec(),
+        }
     }
 
     /// The key as a PKCS#8 PEM document (`BEGIN PRIVATE KEY`), for the file.
@@ -291,7 +323,6 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     let client_wire = read_client_key(reader).await?;
     let client_key = client_wire.public_key()?;
-    let client_random = read_client_random(reader, key, strength).await?;
 
     let mut server_random = vec![0u8; strength.random_len()];
     rand::rng().fill_bytes(&mut server_random);
@@ -309,21 +340,22 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     out.extend_from_slice(&sealed_random);
     writer.write_all(&out).await?;
 
+    let client_random = read_client_random(reader, key, strength).await?;
+
     let send_key = strength.hash(&[&client_random, &server_random]);
     let recv_key = strength.hash(&[&server_random, &client_random]);
     let key_len = strength.random_len();
     let mut sealer = Sealer::new(strength.cipher(&send_key[..key_len]));
-    let mut frames = FrameReader::new(reader, Opener::new(strength.cipher(&recv_key[..key_len])));
+    let server_hash = strength.hash(&[&key.wire.0, &client_wire.0]);
+    writer.write_all(&sealer.frame(&server_hash)).await?;
 
-    let mut client_hash = vec![0u8; strength.hash(&[]).len()];
+    let mut frames = FrameReader::new(reader, Opener::new(strength.cipher(&recv_key[..key_len])));
+    let mut client_hash = vec![0u8; server_hash.len()];
     frames.read_exact(&mut client_hash).await?;
     if client_hash != strength.hash(&[&client_wire.0, &key.wire.0]) {
         return Err(Error::Tampered);
     }
-    let server_hash = strength.hash(&[&key.wire.0, &client_wire.0]);
-    let mut out = sealer.frame(&server_hash);
-    out.extend(sealer.frame(&[SUBTYPE_USER_PASS]));
-    writer.write_all(&out).await?;
+    writer.write_all(&sealer.frame(&[SUBTYPE_USER_PASS])).await?;
 
     let username = read_field(&mut frames).await?;
     let password = read_field(&mut frames).await?;
@@ -355,18 +387,7 @@ async fn read_client_random<R: AsyncRead + Unpin>(reader: &mut R, key: &ServerKe
     }
     let mut sealed = vec![0u8; len];
     reader.read_exact(&mut sealed).await?;
-    let random = key
-        .private
-        .decrypt(Pkcs1v15Encrypt, &sealed)
-        .map_err(|e| Error::Protocol(format!("decrypting the client random failed: {e}")))?;
-    if random.len() != strength.random_len() {
-        return Err(Error::Protocol(format!(
-            "the client random is {} bytes, not {}",
-            random.len(),
-            strength.random_len()
-        )));
-    }
-    Ok(random)
+    Ok(key.open_client_random(&sealed, strength))
 }
 
 /// One credential: a byte of length, then that many bytes of text.
@@ -693,14 +714,16 @@ mod tests {
 
     /// The client side of the exchange, written from the specification rather
     /// than by calling the server's helpers, so a mistake in one cannot be
-    /// agreed with by the other. Sends the credentials, then reads the
-    /// SecurityResult and a message behind it and echoes a message back.
+    /// agreed with by the other. Strictly lockstep: it waits for each server
+    /// message before answering, which is what proves the server speaks first
+    /// at every step. Sends the credentials, then reads the SecurityResult and a
+    /// message behind it and echoes a message back.
     async fn scripted_client<S: AsyncRead + AsyncWrite + Unpin>(
         mut sock: S,
         strength: Strength,
         username: &str,
         password: &str,
-        lie_in_hash: bool,
+        misbehave: Misbehave,
     ) -> Result<(u32, Vec<u8>), io::Error> {
         let client_key = RsaPrivateKey::new(&mut rand::rng(), 1024).unwrap();
         let bits = client_key.n().bits();
@@ -719,39 +742,45 @@ mod tests {
             BoxedUint::from_be_slice_vartime(&server_wire[4 + server_size..]),
         )
         .unwrap();
-
-        let random_len = strength.random_len();
-        let mut client_random = vec![0u8; random_len];
-        rand::rng().fill_bytes(&mut client_random);
-        let sealed = server_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &client_random).unwrap();
-        let mut out = client_wire.clone();
-        out.extend((sealed.len() as u16).to_be_bytes());
-        out.extend(&sealed);
-        sock.write_all(&out).await?;
+        sock.write_all(&client_wire).await?;
 
         let len = usize::from(sock.read_u16().await?);
         assert_eq!(len, size);
         let mut sealed = vec![0u8; len];
         sock.read_exact(&mut sealed).await?;
         let server_random = client_key.decrypt(Pkcs1v15Encrypt, &sealed).unwrap();
+        let random_len = strength.random_len();
         assert_eq!(server_random.len(), random_len);
+
+        let mut client_random = vec![0u8; random_len];
+        rand::rng().fill_bytes(&mut client_random);
+        let mut sealed = server_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &client_random).unwrap();
+        if misbehave == Misbehave::GarbageRandom {
+            rand::rng().fill_bytes(&mut sealed);
+            sealed[0] = 0;
+        }
+        let mut out = (sealed.len() as u16).to_be_bytes().to_vec();
+        out.extend(&sealed);
+        sock.write_all(&out).await?;
 
         // The client's send key is H(server || client); its receive key the reverse.
         let send = strength.hash(&[&server_random, &client_random]);
         let recv = strength.hash(&[&client_random, &server_random]);
         let mut sealer = Sealer::new(strength.cipher(&send[..random_len]));
+        let mut frames = FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
+        let mut server_hash = vec![0u8; strength.hash(&[]).len()];
+        frames.read_exact(&mut server_hash).await?;
+        assert_eq!(server_hash, strength.hash(&[&server_wire, &client_wire]));
+
+        let (sock, opener) = frames.into_parts();
         let mut client_hash = strength.hash(&[&client_wire, &server_wire]);
-        if lie_in_hash {
+        if misbehave == Misbehave::LieInHash {
             client_hash[0] ^= 1;
         }
         sock.write_all(&sealer.frame(&client_hash)).await?;
 
-        let mut frames = FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
-        let mut server_hash = vec![0u8; client_hash.len()];
-        frames.read_exact(&mut server_hash).await?;
-        assert_eq!(server_hash, strength.hash(&[&server_wire, &client_wire]));
+        let mut frames = FrameReader::new(sock, opener);
         assert_eq!(frames.read_u8().await?, SUBTYPE_USER_PASS);
-
         let (sock, opener) = frames.into_parts();
         let mut credentials = vec![username.len() as u8];
         credentials.extend(username.as_bytes());
@@ -768,12 +797,21 @@ mod tests {
         Ok((result, after.to_vec()))
     }
 
-    async fn exchange(strength: Strength, username: &str, password: &str, lie_in_hash: bool) -> (Result<Credentials, Error>, Result<(u32, Vec<u8>), io::Error>) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Misbehave {
+        No,
+        /// A client random that is not a ciphertext of anything.
+        GarbageRandom,
+        /// A key hash over other keys.
+        LieInHash,
+    }
+
+    async fn exchange(strength: Strength, username: &str, password: &str, misbehave: Misbehave) -> (Result<Credentials, Error>, Result<(u32, Vec<u8>), io::Error>) {
         let key = test_key();
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let username = username.to_owned();
         let password = password.to_owned();
-        let client = tokio::spawn(async move { scripted_client(client_sock, strength, &username, &password, lie_in_hash).await });
+        let client = tokio::spawn(async move { scripted_client(client_sock, strength, &username, &password, misbehave).await });
 
         // The halves live inside the block, so a server that gives up drops them
         // and the client reads a hang-up instead of waiting for a hash forever.
@@ -797,7 +835,7 @@ mod tests {
     #[tokio::test]
     async fn the_exchange_authenticates_against_a_client_written_from_the_specification() {
         for strength in [Strength::Aes128, Strength::Aes256] {
-            let (server, client) = exchange(strength, "andrew", "hunter2", false).await;
+            let (server, client) = exchange(strength, "andrew", "hunter2", Misbehave::No).await;
             let credentials = server.unwrap();
             assert_eq!(credentials.username, "andrew");
             assert_eq!(credentials.password, "hunter2");
@@ -809,9 +847,40 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_hash_over_other_keys_ends_the_exchange() {
-        let (server, client) = exchange(Strength::Aes256, "andrew", "hunter2", true).await;
+        let (server, client) = exchange(Strength::Aes256, "andrew", "hunter2", Misbehave::LieInHash).await;
         assert!(matches!(server, Err(Error::Tampered)), "{server:?}");
         assert!(client.is_err());
+    }
+
+    /// A client random that does not decrypt is not reported as such: the
+    /// server sends its hash as if it had, and the exchange fails where any
+    /// wrong key would — at the client's hash frame, whose tag cannot check.
+    #[tokio::test]
+    async fn a_ciphertext_that_does_not_decrypt_fails_at_the_hash_like_any_wrong_key() {
+        let (server, client) = exchange(Strength::Aes128, "andrew", "hunter2", Misbehave::GarbageRandom).await;
+        // The client's hash frame does not open under the substitute keys — or,
+        // this lockstep client having failed on the server's hash first and hung
+        // up, never arrives. Either is the hash step; neither names the random.
+        match server {
+            Err(Error::Io(e)) => assert!(matches!(e.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof), "{e}"),
+            other => panic!("expected a failure at the hash step, got {other:?}"),
+        }
+        // The client got as far as the server's hash, so the server did send it.
+        let err = client.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+
+    #[test]
+    fn a_rejected_random_is_consistent_per_ciphertext_and_differs_between_them() {
+        let key = test_key();
+        let a = key.open_client_random(&[1u8; 128], Strength::Aes256);
+        let b = key.open_client_random(&[1u8; 128], Strength::Aes256);
+        let c = key.open_client_random(&[2u8; 128], Strength::Aes256);
+        assert_eq!(a.len(), 32);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        // Another key's secret gives another substitute for the same bytes.
+        assert_ne!(a, test_key().open_client_random(&[1u8; 128], Strength::Aes256));
     }
 
     #[tokio::test]
