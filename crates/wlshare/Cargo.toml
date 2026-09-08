@@ -1,17 +1,17 @@
 [package]
-name = "swayrx"
+name = "wlshare"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "A VNC server for a sway desktop that reports its pixel density to the remotex gateway"
+description = "A VNC server for wlroots-based Wayland compositors that reports pixel density to the remotex gateway"
 
 [[bin]]
-name = "swayrx"
+name = "wlshare"
 path = "src/main.rs"
 
 [dependencies]
-swayrx-rfb = { path = "../swayrx-rfb" }
+wlshare-rfb = { path = "../wlshare-rfb" }
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true
@@ -36,12 +36,12 @@ memmap2 = "0.9"
 # The PAM conversation's allocations and the process's passwd entry (pam.rs).
 libc = "0.2"
 
-# `cargo deb -p swayrx` (scripts/build-debs.sh runs it in Docker per architecture;
-# the package version is the crate's, and the file is named swayrx-trixie-<arch>.deb).
+# `cargo deb -p wlshare` (scripts/build-debs.sh runs it in Docker per architecture;
+# the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).
 [package.metadata.deb]
-name = "swayrx"
+name = "wlshare"
 maintainer = "Andrew Chen <andrew@jaanuu.com>"
-extended-description = """A VNC server for a sway desktop that captures one output through
+extended-description = """A VNC server for wlroots-based Wayland compositors that captures one output through
 wlr-screencopy, serves it over RFB 3.8 with ZRLE, and reports the output's
 pixel density to the remotex gateway over a private extension."""
 section = "net"
@@ -50,12 +50,12 @@ priority = "optional"
 depends = "$auto, libwayland-client0 (>= 1.20)"
 # The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
 # edits survive an upgrade.
-conf-files = ["/etc/pam.d/swayrx"]
+conf-files = ["/etc/pam.d/wlshare"]
 assets = [
-    ["target/release/swayrx", "usr/bin/", "755"],
-    ["../../packaging/swayrx.service", "usr/lib/systemd/user/", "644"],
-    ["../../packaging/pam.d/swayrx", "etc/pam.d/", "644"],
-    ["../../packaging/config.example.toml", "usr/share/doc/swayrx/", "644"],
-    ["../../README.md", "usr/share/doc/swayrx/", "644"],
-    ["../../docs/architecture.md", "usr/share/doc/swayrx/", "644"],
+    ["target/release/wlshare", "usr/bin/", "755"],
+    ["../../packaging/wlshare.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/pam.d/wlshare", "etc/pam.d/", "644"],
+    ["../../packaging/config.example.toml", "usr/share/doc/wlshare/", "644"],
+    ["../../README.md", "usr/share/doc/wlshare/", "644"],
+    ["../../docs/architecture.md", "usr/share/doc/wlshare/", "644"],
 ]

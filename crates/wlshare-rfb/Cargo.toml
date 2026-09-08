@@ -1,10 +1,10 @@
 [package]
-name = "swayrx-rfb"
+name = "wlshare-rfb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The RFB wire swayrx speaks: message parsing and building, VncAuth, the ZRLE encoder and the density extension"
+description = "The RFB wire wlshare speaks: message parsing and building, VncAuth, the ZRLE encoder and the density extension"
 
 # Platform-independent and dependency-light on purpose: this crate is where the
 # bytes on the wire are decided, and it must build and unit-test on any OS,

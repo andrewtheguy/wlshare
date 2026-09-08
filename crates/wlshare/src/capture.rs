@@ -39,7 +39,7 @@ struct ShmBuffer {
 impl ShmBuffer {
     fn new(shm: &WlShm, qh: &QueueHandle<Compositor>, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> anyhow::Result<Self> {
         let size = stride as usize * height as usize;
-        let fd = rustix::fs::memfd_create("swayrx-frame", rustix::fs::MemfdFlags::CLOEXEC)?;
+        let fd = rustix::fs::memfd_create("wlshare-frame", rustix::fs::MemfdFlags::CLOEXEC)?;
         rustix::fs::ftruncate(&fd, size as u64)?;
         // SAFETY: the mapping covers a memfd this process owns, sized just above;
         // the compositor writes it only between `copy` and `ready`, when this

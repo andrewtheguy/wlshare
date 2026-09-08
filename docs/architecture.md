@@ -1,21 +1,22 @@
 # Architecture
 
-swayrx is one process with two halves and one shared framebuffer between them.
+wlshare connects to a wlroots-based Wayland compositor through its public
+protocols. It is one process with two halves and one shared framebuffer between them.
 
 ```text
-sway ── Wayland socket ──▶ compositor thread ──▶ Framebuffer ──▶ session tasks ──▶ TCP
-        screencopy           (calloop)            + damage log     (tokio)          RFB clients
-        output-management                        ◀── Commands ◀──
-        virtual keyboard/pointer
-        data-control
+wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ Framebuffer ──▶ session tasks ──▶ TCP
+                     screencopy           (calloop)            + damage log     (tokio)          RFB clients
+                     output-management                        ◀── Commands ◀──
+                     virtual keyboard/pointer
+                     data-control
 ```
 
-- `crates/swayrx-rfb` decides every byte on the wire: handshake, message parsing
+- `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
   and building, VncAuth, RSA-AES and its frames, the ZRLE encoder, the density
   extension. It has no platform dependency and its tests decode every encoder's
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
-- `crates/swayrx` is the daemon. `compositor.rs` is the Wayland thread and its
+- `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `outputs.rs`, `input.rs` and `clipboard.rs` are
   the protocols it speaks; `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `pam.rs` checks an RSA-AES login; `shared.rs` is
@@ -84,9 +85,9 @@ rearrangement of bytes:
   report these, but neatvnc has no case for them either, so they are not a gap
   against wayvnc so much as a gap in every wlroots VNC server.
 
-None of these is reachable from sway on an ordinary desktop, and an unhandled
-format is not silent: the capture logs what was offered and what was wanted, and
-retries rather than serving a frozen picture.
+None of these was reachable from Sway in the measured ordinary desktop, and an
+unhandled format is not silent: the capture logs what was offered and what was
+wanted, and retries rather than serving a frozen picture.
 
 ## Sending pixels
 
@@ -115,7 +116,7 @@ disconnects every other client, as RFB has it.
 ## The density extension
 
 Standard RFB has no word for pixel density. The extension is one pseudo-encoding,
-`0x53575258` (`SWRX`), and one message type, `0xE0`, in both directions; scales
+`0x574c5348` (`WLSH`), and one message type, `0xE0`, in both directions; scales
 are 16.16 unsigned fixed point.
 
 - **OutputScale**, server → client, ten bytes: type, padding, width and height
@@ -191,14 +192,14 @@ directions travels in frames of `u16 len || ciphertext || tag` under a counter
 nonce. Inside the frames each side proves the keys it saw with a hash, the
 server asks for a username and a password (subtype 1; a password alone is what
 VncAuth already is), and RFB's SecurityResult, ClientInit and everything after
-follow. `crates/swayrx-rfb/src/rsa_aes.rs` has the exchange byte by byte.
+follow. `crates/wlshare-rfb/src/rsa_aes.rs` has the exchange byte by byte.
 
 The server's key is long-lived — generated once into `rsa_key_file`, logged as
 RealVNC's eight-byte fingerprint at startup — because it is the one thing a
 client can pin; remotex logs the fingerprint it saw on every connection. The
 credentials go to PAM (`pam.rs`): `pam_authenticate` and `pam_acct_mgmt` under
 the configured service, nothing else. Before PAM is asked, the username must be
-the account the process runs as: swayrx injects input into one user's desktop,
+the account the process runs as: wlshare injects input into one user's desktop,
 and another account's password must not open it. A refusal is answered after a
 one-second delay with SecurityResult failed and the bare reason "authentication
 failed"; the actual reason is logged.

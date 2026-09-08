@@ -19,13 +19,13 @@ pub struct Config {
     /// eight bytes count, as VncAuth has it, and the session stays in the
     /// clear.
     pub password_file: Option<PathBuf>,
-    /// RSA-AES with the system login: the client names the account swayrx
+    /// RSA-AES with the system login: the client names the account wlshare
     /// runs as and gives its password, PAM checks the two, and the session is
     /// encrypted. With `password_file` as well, both types are offered and the
     /// client chooses; with neither, anyone who reaches the port is in.
     pub pam: Option<Pam>,
-    /// The output to capture, by name (`swaymsg -t get_outputs`); absent means
-    /// the first one the compositor lists.
+    /// The output to capture, by its `wl_output` name; absent means the first
+    /// one the compositor lists.
     pub output: Option<String>,
     /// Whether clients may resize the output and set its scale. Only a headless
     /// output is ever reconfigured.
@@ -74,7 +74,7 @@ pub struct Pam {
 }
 
 fn default_pam_service() -> String {
-    "swayrx".to_owned()
+    "wlshare".to_owned()
 }
 
 fn default_listen() -> SocketAddr {
@@ -90,7 +90,7 @@ fn default_max_fps() -> u32 {
 }
 
 fn default_name() -> String {
-    "sway".to_owned()
+    "wlshare".to_owned()
 }
 
 impl Config {
@@ -119,13 +119,13 @@ impl Config {
     }
 }
 
-/// The default configuration path: `$XDG_CONFIG_HOME/swayrx/config.toml`.
+/// The default configuration path: `$XDG_CONFIG_HOME/wlshare/config.toml`.
 pub fn default_path() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("swayrx").join("config.toml")
+    base.join("wlshare").join("config.toml")
 }
 
 #[cfg(test)]
@@ -138,7 +138,7 @@ mod tests {
         assert_eq!(c.listen, default_listen());
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
-        assert_eq!(c.name, "sway");
+        assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
     }
 
@@ -146,7 +146,7 @@ mod tests {
     fn pam_defaults_its_service_and_key_beside_the_config() {
         let c: Config = toml::from_str("[pam]\n").unwrap();
         let pam = c.pam.as_ref().unwrap();
-        assert_eq!(pam.service, "swayrx");
+        assert_eq!(pam.service, "wlshare");
         assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/etc/x/rsa_key.pem")));
         let c: Config = toml::from_str("[pam]\nservice = \"vnc\"\nrsa_key_file = \"/k.pem\"").unwrap();
         assert_eq!(c.pam.as_ref().unwrap().service, "vnc");

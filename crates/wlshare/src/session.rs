@@ -34,12 +34,12 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
-use swayrx_rfb::density::{from_fixed, output_scale};
-use swayrx_rfb::msg::{self, ClientMsg, Screen};
-use swayrx_rfb::pixel::PixelFormat;
-use swayrx_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
-use swayrx_rfb::zrle::{ZrleEncoder, encode_raw_rect};
-use swayrx_rfb::{auth, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE};
+use wlshare_rfb::density::{from_fixed, output_scale};
+use wlshare_rfb::msg::{self, ClientMsg, Screen};
+use wlshare_rfb::pixel::PixelFormat;
+use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
+use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
+use wlshare_rfb::{auth, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -573,7 +573,7 @@ mod security_tests {
     /// unauthenticated server lists None alone.
     #[test]
     fn the_offer_lists_every_configured_type_and_none_for_nothing() {
-        let pam = || RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "swayrx".into(), account: "me".into() };
+        let pam = || RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "wlshare".into(), account: "me".into() };
         assert_eq!(Security::default().offered(), vec![auth::SECURITY_NONE]);
         assert_eq!(Security { vnc_auth: Some("pw".into()), rsa_aes: None }.offered(), vec![auth::SECURITY_VNC_AUTH]);
         assert_eq!(

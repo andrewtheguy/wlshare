@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the swayrx .deb for Debian trixie with Docker buildx, one architecture per
-# call or amd64 and arm64 by default, into dist/<arch>/swayrx-trixie-<arch>.deb
+# Build the wlshare .deb for Debian trixie with Docker buildx, one architecture per
+# call or amd64 and arm64 by default, into dist/<arch>/wlshare-trixie-<arch>.deb
 # beside its SHA256SUMS.
 #
 #   ./scripts/build-debs.sh [arch ...]

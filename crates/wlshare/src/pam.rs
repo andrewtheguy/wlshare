@@ -1,13 +1,13 @@
 //! Checking an RSA-AES login against the system: PAM, and the one account it
 //! may name.
 //!
-//! swayrx runs as one user and injects input into that user's desktop, so the
+//! wlshare runs as one user and injects input into that user's desktop, so the
 //! only account whose password may open it is that user's — any other account's
 //! password would open somebody else's session. The check is here, before PAM is
 //! asked anything, and not left to the PAM stack.
 //!
 //! What PAM is asked is `pam_authenticate` and `pam_acct_mgmt`, under the
-//! service name from the configuration (`/etc/pam.d/swayrx` by default): is the
+//! service name from the configuration (`/etc/pam.d/wlshare` by default): is the
 //! password right, and may the account log in. No session is opened and no
 //! credentials are set, so a module that does its work in the session phase
 //! never runs here; a stack that wants the verified password for something —
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn another_account_is_refused_before_pam_is_asked() {
         let account = process_user().unwrap();
-        let err = check("swayrx", &account, &format!("not-{account}"), "x", "127.0.0.1").unwrap_err();
+        let err = check("wlshare", &account, &format!("not-{account}"), "x", "127.0.0.1").unwrap_err();
         assert!(err.to_string().contains("belongs to"), "{err}");
     }
 }

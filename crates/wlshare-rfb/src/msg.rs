@@ -353,7 +353,7 @@ mod tests {
         }
         buf.push(0xFF); // the next message's first byte, untouched
         let (msg, used) = parse(&buf).unwrap().unwrap();
-        assert_eq!(msg, ClientMsg::SetEncodings(vec![16, -313, 0x5357_5258]));
+        assert_eq!(msg, ClientMsg::SetEncodings(vec![16, -313, 0x574c_5348]));
         assert_eq!(used, 16);
     }
 
@@ -431,10 +431,10 @@ mod tests {
         assert_eq!(&rect[24..28], &[0, 8, 0, 4]);
         assert_eq!(fence(FENCE_REQUEST, &[1]), vec![248, 0, 0, 0, 0x80, 0, 0, 0, 1, 1]);
         assert_eq!(server_cut_text("é画"), vec![3, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'?']);
-        let init = server_init(8, 4, &PixelFormat::NATIVE, "sway");
-        assert_eq!(init.len(), 28);
+        let init = server_init(8, 4, &PixelFormat::NATIVE, "desktop");
+        assert_eq!(init.len(), 31);
         assert_eq!(&init[..4], &[0, 8, 0, 4]);
-        assert_eq!(&init[20..], &[0, 0, 0, 4, b's', b'w', b'a', b'y']);
+        assert_eq!(&init[20..], &[0, 0, 0, 7, b'd', b'e', b's', b'k', b't', b'o', b'p']);
         assert_eq!(security_types(&[2]), vec![1, 2]);
         assert_eq!(security_failed("no"), vec![0, 0, 0, 1, 0, 0, 0, 2, b'n', b'o']);
     }
