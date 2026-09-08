@@ -5,12 +5,12 @@ FROM ${BASE_IMAGE} AS build
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# The daemon links libwayland-client and libxkbcommon; cargo-deb reads the
-# resulting .so dependencies into the package's Depends.
+# The daemon links libwayland-client, libxkbcommon and libpam; cargo-deb reads
+# the resulting .so dependencies into the package's Depends.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config \
-        libwayland-dev libxkbcommon-dev dpkg-dev && \
+        libwayland-dev libxkbcommon-dev libpam0g-dev dpkg-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \

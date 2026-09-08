@@ -1,0 +1,13 @@
+# The PAM stack for swayrx's RSA-AES login (the [pam] table in its config).
+#
+# swayrx calls pam_authenticate() and pam_acct_mgmt() for the account it runs
+# as -- it refuses any other username before PAM is asked -- with the password
+# the client sent. It opens no session and sets no credentials, so a module
+# that does its work in the session phase never runs here. A stack that wants
+# the verified password for something else, such as unlocking a keyring, takes
+# it from the auth phase:
+#
+#   auth  optional  pam_exec.so expose_authtok quiet /path/to/unlock-script
+
+@include common-auth
+@include common-account

@@ -17,3 +17,19 @@ flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 des = "0.9"
 # Sixteen random bytes for the VncAuth challenge.
 getrandom = "0.3"
+# RSA-AES: the async reader and writer the exchange and its frames run over.
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+# RSA-AES: RSA-PKCS#1 v1.5 around the two randoms, with `encoding` for the
+# PKCS#8 PEM the server's key file holds; SHA-1 and SHA-256 for the two types'
+# key derivation and the fingerprint; AES-EAX for every byte after. The
+# release-candidate `rsa` is the line on `rand_core` 0.10 and `digest` 0.11.
+rsa = { version = "0.10.0-rc.18", default-features = false, features = ["std", "encoding"] }
+pkcs8 = { version = "0.11", default-features = false, features = ["pem", "std"] }
+rand = "0.10"
+aes = "0.9"
+eax = "0.6"
+sha1 = "0.11"
+sha2 = "0.11"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }

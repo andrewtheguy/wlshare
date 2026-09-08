@@ -11,13 +11,15 @@ sway ── Wayland socket ──▶ compositor thread ──▶ Framebuffer ─
 ```
 
 - `crates/swayrx-rfb` decides every byte on the wire: handshake, message parsing
-  and building, VncAuth, the ZRLE encoder, the density extension. It has no
-  platform dependency and its tests decode every encoder's output with an
-  independent decoder written from the RFC.
+  and building, VncAuth, RSA-AES and its frames, the ZRLE encoder, the density
+  extension. It has no platform dependency and its tests decode every encoder's
+  output with an independent decoder written from the RFC, and run the RSA-AES
+  exchange against a client written from the specification.
 - `crates/swayrx` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `outputs.rs`, `input.rs` and `clipboard.rs` are
   the protocols it speaks; `framebuffer.rs` is the shared pixels and damage;
-  `session.rs` is one client; `shared.rs` is what crosses between them.
+  `session.rs` is one client; `pam.rs` checks an RSA-AES login; `shared.rs` is
+  what crosses between them.
 
 ## Capture
 
@@ -123,9 +125,30 @@ source is ours. Extended Clipboard is recognised and not yet spoken.
 
 ## Security
 
-RFB 3.8 with None or VncAuth, chosen by whether `password_file` is set. VncAuth
-protects the login and nothing after it, so the listen address is a loopback or
-VPN address by design. RSA-AES is not implemented yet.
+RFB 3.8 with exactly one security type on offer, the configuration's: None,
+VncAuth from `password_file`, or RSA-AES from `[pam]` (offered at both widths,
+`RA2_256` first, the client choosing). VncAuth protects the login and nothing
+after it, so with it the listen address is a loopback or VPN address by design.
+
+RSA-AES is RealVNC's type as `rfbproto` documents it and TigerVNC, neatvnc and
+the remotex gateway speak it: the server's RSA key and a fresh client key are
+exchanged in the clear, each side seals a random to the other's key, the two
+randoms derive one AES-EAX key per direction, and from there every byte in both
+directions travels in frames of `u16 len || ciphertext || tag` under a counter
+nonce. Inside the frames each side proves the keys it saw with a hash, the
+server asks for a username and a password (subtype 1; a password alone is what
+VncAuth already is), and RFB's SecurityResult, ClientInit and everything after
+follow. `crates/swayrx-rfb/src/rsa_aes.rs` has the exchange byte by byte.
+
+The server's key is long-lived — generated once into `rsa_key_file`, logged as
+RealVNC's eight-byte fingerprint at startup — because it is the one thing a
+client can pin; remotex logs the fingerprint it saw on every connection. The
+credentials go to PAM (`pam.rs`): `pam_authenticate` and `pam_acct_mgmt` under
+the configured service, nothing else. Before PAM is asked, the username must be
+the account the process runs as: swayrx injects input into one user's desktop,
+and another account's password must not open it. A refusal is answered after a
+one-second delay with SecurityResult failed and the bare reason "authentication
+failed"; the actual reason is logged.
 
 ## Deliberately absent
 

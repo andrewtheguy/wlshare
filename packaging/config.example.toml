@@ -5,9 +5,21 @@
 # a VPN address, or put an SSH tunnel in front.
 listen = "127.0.0.1:5900"
 
-# A file holding the VncAuth password (only its first eight bytes count). Absent
-# means no authentication at all.
+# Who may connect: one of the two below, or neither for no authentication at all.
+#
+# VncAuth: a file holding the server's password (only its first eight bytes
+# count). The login is checked, the session stays in the clear.
 # password_file = "/home/me/.config/swayrx/password"
+#
+# RSA-AES with the system login: the client sends the username and password of
+# the account swayrx runs as -- no other account is accepted -- and PAM checks
+# them under the service below (/etc/pam.d/swayrx, installed with the package).
+# Every byte after the key exchange is encrypted. The server's RSA key is
+# generated on first start and kept in rsa_key_file; its fingerprint is logged
+# at startup, and a remotex gateway logs the one it saw, for comparing.
+# [pam]
+# service = "swayrx"
+# rsa_key_file = "/home/me/.config/swayrx/rsa_key.pem"   # default: beside this file
 
 # The output to share, by name (`swaymsg -t get_outputs`). Absent means the first
 # output the compositor lists. Only a HEADLESS-* output is ever resized or
