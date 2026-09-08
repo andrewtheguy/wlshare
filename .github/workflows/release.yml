@@ -1,4 +1,4 @@
-name: Release swayrx
+name: Release wlshare
 
 # Builds the .deb for Debian trixie on amd64 and arm64 with the same Docker build
 # scripts/build-debs.sh runs locally, and publishes them as the GitHub release
@@ -84,7 +84,7 @@ jobs:
         run: ./scripts/build-debs.sh ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
-          name: swayrx-${{ matrix.arch }}
+          name: wlshare-${{ matrix.arch }}
           path: dist/${{ matrix.arch }}/*
           if-no-files-found: error
 
@@ -103,8 +103,8 @@ jobs:
           set -euo pipefail
           mkdir -p release
           for arch in amd64 arm64; do
-            cp artifacts/swayrx-${arch}/*.deb release/
-            cat artifacts/swayrx-${arch}/SHA256SUMS >> release/SHA256SUMS
+            cp artifacts/wlshare-${arch}/*.deb release/
+            cat artifacts/wlshare-${arch}/SHA256SUMS >> release/SHA256SUMS
           done
           cat release/SHA256SUMS
           gh release upload "${{ needs.prepare.outputs.tag }}" release/*

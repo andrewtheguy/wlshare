@@ -52,7 +52,7 @@ mod tests {
     /// ECB blocks encrypted with OpenSSL, not with `des`.
     ///
     /// "test" pads to `74 65 73 74 00 00 00 00`, which reverses byte by byte to
-    /// the key `2e a6 ce 2e 00 00 00 00`; "swayrx!!" fills all eight bytes and so
+    /// the key `2e a6 ce 2e 00 00 00 00`; "wlshare!" fills all eight bytes and so
     /// leaves no zero half, which is what makes it worth having as well.
     #[test]
     fn responses_match_vectors_computed_elsewhere() {
@@ -63,9 +63,9 @@ mod tests {
                 *b"\x51\xa8\x9f\xa0\x01\x3d\x72\xc6\x55\x01\x95\x13\xaf\x52\xc2\x0c",
             ),
             (
-                "swayrx!!",
+                "wlshare!",
                 *b"\x01\x23\x45\x67\x89\xab\xcd\xef\xfe\xdc\xba\x98\x76\x54\x32\x10",
-                *b"\x22\x6b\x43\xbc\x23\xdd\x33\x48\x77\x26\xcf\x17\x93\x72\x8e\xfc",
+                *b"\xd1\x50\x33\xa6\x42\x59\x4f\xfc\xca\xde\xdf\x79\xb8\xfe\xfe\x00",
             ),
         ] {
             assert_eq!(response(password, &challenge), want, "response to {password}");

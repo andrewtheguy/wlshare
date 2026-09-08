@@ -337,9 +337,10 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                 debug!("output configuration succeeded ({kind:?})");
                 if let ConfigKind::Scale = kind {
                     // `succeeded` says nothing about whether a head changed: the
-                    // changes and their `done` follow when there are any, and sway
-                    // sends them first when it commits on the spot. One round trip
-                    // later, whatever it was going to send has arrived.
+                    // changes and their `done` follow when there are any. Sway, the
+                    // measured compositor, sends them first when it commits on the
+                    // spot. One round trip later, whatever the compositor was going
+                    // to send has arrived.
                     if state.outputs.scale_pending && !state.outputs.scale_changed_since_apply {
                         conn.display().sync(qh, ScaleSettle);
                     }
@@ -350,7 +351,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                 match kind {
                     ConfigKind::Resize { client } => {
                         state.pending_resize = None;
-                        state.shared().emit(Event::ResizeRefused { client: *client, status: swayrx_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
+                        state.shared().emit(Event::ResizeRefused { client: *client, status: wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
                     }
                     ConfigKind::Scale => {
                         state.outputs.scale_pending = false;

@@ -990,50 +990,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
-name = "swayrx"
-version = "0.0.3"
-dependencies = [
- "anyhow",
- "calloop",
- "calloop-wayland-source",
- "clap",
- "env_logger",
- "libc",
- "log",
- "memmap2",
- "rustix",
- "serde",
- "swayrx-rfb",
- "thiserror",
- "tokio",
- "toml",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-misc",
- "wayland-protocols-wlr",
- "xkbcommon",
-]
-
-[[package]]
-name = "swayrx-rfb"
-version = "0.0.3"
-dependencies = [
- "aes",
- "des",
- "eax",
- "flate2",
- "getrandom 0.3.4",
- "pkcs8",
- "rand",
- "rsa",
- "sha1",
- "sha2",
- "subtle",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1301,6 +1257,50 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "wlshare"
+version = "0.0.3"
+dependencies = [
+ "anyhow",
+ "calloop",
+ "calloop-wayland-source",
+ "clap",
+ "env_logger",
+ "libc",
+ "log",
+ "memmap2",
+ "rustix",
+ "serde",
+ "thiserror",
+ "tokio",
+ "toml",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "wlshare-rfb",
+ "xkbcommon",
+]
+
+[[package]]
+name = "wlshare-rfb"
+version = "0.0.3"
+dependencies = [
+ "aes",
+ "des",
+ "eax",
+ "flate2",
+ "getrandom 0.3.4",
+ "pkcs8",
+ "rand",
+ "rsa",
+ "sha1",
+ "sha2",
+ "subtle",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "xkbcommon"

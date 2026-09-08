@@ -123,7 +123,7 @@ impl Input {
         }
 
         let text = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
-        let fd = rustix::fs::memfd_create("swayrx-keymap", rustix::fs::MemfdFlags::CLOEXEC).context("memfd for the keymap")?;
+        let fd = rustix::fs::memfd_create("wlshare-keymap", rustix::fs::MemfdFlags::CLOEXEC).context("memfd for the keymap")?;
         let mut file = std::fs::File::from(fd);
         std::io::Write::write_all(&mut file, text.as_bytes())?;
         std::io::Write::write_all(&mut file, b"\0")?;

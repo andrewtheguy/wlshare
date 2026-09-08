@@ -1,11 +1,11 @@
-//! swayrx: a VNC server for a sway desktop that tells the remotex gateway what
-//! pixel density its framebuffer is drawn at.
+//! wlshare: a VNC server for wlroots-based Wayland compositors that tells the
+//! remotex gateway what pixel density its framebuffer is drawn at.
 //!
 //! Two halves. One thread owns the Wayland connection and everything on it —
 //! capture, outputs, input, clipboard — and runs a calloop that also polls a
 //! command channel ([`compositor`]). The tokio runtime accepts clients and runs
 //! one task per connection ([`session`]). They share the framebuffer and a few
-//! channels ([`shared`]), and every protocol byte comes from the `swayrx-rfb`
+//! channels ([`shared`]), and every protocol byte comes from the `wlshare-rfb`
 //! crate.
 
 mod capture;
@@ -25,14 +25,14 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::Parser;
 use log::{error, info};
-use swayrx_rfb::rsa_aes::ServerKey;
+use wlshare_rfb::rsa_aes::ServerKey;
 
 use crate::session::{RsaAes, Security};
 
 #[derive(Parser, Debug)]
-#[command(name = "swayrx", version, about = "A VNC server for a sway desktop, with pixel density on the wire")]
+#[command(name = "wlshare", version, about = "A VNC server for wlroots-based Wayland compositors, with pixel density on the wire")]
 struct Args {
-    /// The configuration file (default: $XDG_CONFIG_HOME/swayrx/config.toml).
+    /// The configuration file (default: $XDG_CONFIG_HOME/wlshare/config.toml).
     #[arg(short, long)]
     config: Option<PathBuf>,
     /// Listen on this address instead of the configured one.
@@ -90,7 +90,7 @@ fn rsa_aes(pam: &config::Pam, key_path: std::path::PathBuf) -> anyhow::Result<Rs
     let key = match std::fs::read_to_string(&key_path) {
         Ok(pem) => ServerKey::from_pem(&pem).with_context(|| format!("{} is not a PKCS#8 PEM RSA key", key_path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!("generating a {}-bit RSA key into {}", swayrx_rfb::rsa_aes::SERVER_KEY_BITS, key_path.display());
+            info!("generating a {}-bit RSA key into {}", wlshare_rfb::rsa_aes::SERVER_KEY_BITS, key_path.display());
             let key = ServerKey::generate().context("generating the RSA key")?;
             if let Some(dir) = key_path.parent() {
                 std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

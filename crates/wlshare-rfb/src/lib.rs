@@ -1,4 +1,4 @@
-//! The RFB wire swayrx speaks.
+//! The RFB wire wlshare speaks.
 //!
 //! Everything that decides bytes on the socket lives here and nowhere else: the
 //! handshake pieces, the client messages and how they parse, the server messages
@@ -65,5 +65,5 @@ pub const ENCODING_FENCE: i32 = -312;
 pub const ENCODING_CONTINUOUS_UPDATES: i32 = -313;
 /// Extended Clipboard pseudo-encoding. Recognised, not yet spoken.
 pub const ENCODING_EXTENDED_CLIPBOARD: i32 = 0xc0a1_e5ce_u32 as i32;
-/// The density extension's pseudo-encoding, the ASCII bytes `SWRX`.
-pub const ENCODING_DENSITY: i32 = 0x5357_5258;
+/// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
+pub const ENCODING_DENSITY: i32 = 0x574c_5348;

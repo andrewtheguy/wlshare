@@ -1,6 +1,6 @@
-# swayrx
+# wlshare
 
-A VNC server for a sway desktop, built for the
+A VNC server for wlroots-based Wayland compositors, built for the
 [remotex](https://github.com/andrewtheguy/remotex) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with ZRLE as its one pixel
 encoding, injects input through the virtual keyboard and pointer protocols,
@@ -8,26 +8,34 @@ shares the clipboard through wlr-data-control — and tells the client what pixe
 density the framebuffer is drawn at, which standard RFB cannot, so a `scale 2`
 output is shown sharp at 2x and a client's own density becomes the output's.
 
+It is compositor-independent within that protocol surface: any wlroots-based
+compositor exposing the required protocols is the same kind of peer.
+`wlr-screencopy` version 2 or later is required. Output resizing and rescaling
+additionally need `wlr-output-management`; input and clipboard use the virtual
+keyboard, virtual pointer, and `wlr-data-control` protocols when the compositor
+offers them.
+
 Any VNC client that decodes ZRLE can connect. The density extension is asked for
 by the client and stays silent otherwise; remotex asks for it under
-`subtype = "swayrx"`. See [`docs/architecture.md`](docs/architecture.md) for
+`subtype = "wlshare"`. See [`docs/architecture.md`](docs/architecture.md) for
 how it works and what it deliberately leaves out.
 
 ## Running
 
-swayrx runs inside the sway session it captures, as the user who owns it:
+wlshare runs inside the Wayland session it captures, as the user who owns it:
 
 ```sh
-WAYLAND_DISPLAY=wayland-1 swayrx --config ~/.config/swayrx/config.toml
+WAYLAND_DISPLAY=wayland-1 wlshare --config ~/.config/wlshare/config.toml
 ```
 
-or as the systemd user unit the package installs, started with the session:
+or as the systemd user unit the package installs, started with the graphical
+session after its environment contains `WAYLAND_DISPLAY`:
 
 ```sh
-systemctl --user enable --now swayrx.service
+systemctl --user enable --now wlshare.service
 ```
 
-Configuration is one TOML file, `$XDG_CONFIG_HOME/swayrx/config.toml` by
+Configuration is one TOML file, `$XDG_CONFIG_HOME/wlshare/config.toml` by
 default; every key has a default and [`packaging/config.example.toml`](packaging/config.example.toml)
 lists them.
 
@@ -38,11 +46,11 @@ own password, for a client that knows the password and nothing about the
 account; the login is checked and the session is in the clear, so `listen`
 stays on loopback or behind a VPN or an SSH tunnel. `[pam]`: RSA-AES, RealVNC's
 security type that TigerVNC and remotex speak — the client sends the username
-and password of the account swayrx runs as, PAM checks them under the service
-`swayrx` (the package installs `/etc/pam.d/swayrx`), and everything after the key
+and password of the account wlshare runs as, PAM checks them under the service
+`wlshare` (the package installs `/etc/pam.d/wlshare`), and everything after the key
 exchange is encrypted. No other account is accepted, since the desktop behind
 the port is that one user's. With both set the server lists both and the client
-picks by what it holds; remotex's `subtype = "swayrx"` target always brings the
+picks by what it holds; remotex's `subtype = "wlshare"` target always brings the
 account, and its plain `vnc` target the password.
 The server's RSA key is generated on first start into `rsa_key_file` and its
 fingerprint logged, so it can be compared with the one the client shows.
@@ -57,15 +65,15 @@ the server resolves the client's keysyms through the same keymap it uploads.
 
 ## Building
 
-The workspace has two crates: `swayrx-rfb`, the protocol, which builds and tests
-anywhere, and `swayrx`, the daemon, which needs libwayland and libxkbcommon and
-only runs under a Wayland compositor. A bare `cargo test` covers the protocol
-crate; build the daemon with `cargo build --release -p swayrx` on a Linux host
+The workspace has two crates: `wlshare-rfb`, the protocol, which builds and tests
+anywhere, and `wlshare`, the daemon, which needs libwayland and libxkbcommon and
+only runs under a wlroots-based Wayland compositor. A bare `cargo test` covers
+the protocol crate; build the daemon with `cargo build --release -p wlshare` on a Linux host
 with `libwayland-dev`, `libxkbcommon-dev`, `libpam0g-dev` and `pkg-config`.
 
 Packages for Debian trixie on amd64 and arm64 are built in Docker by
-`scripts/build-debs.sh`, into `dist/<arch>/swayrx-trixie-<arch>.deb`. The
-**Release swayrx** workflow builds the same and publishes them as the GitHub
+`scripts/build-debs.sh`, into `dist/<arch>/wlshare-trixie-<arch>.deb`. The
+**Release wlshare** workflow builds the same and publishes them as the GitHub
 release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
 before running the workflow. The package version is the crate's, and the
 distribution is in the file name only.

@@ -1,0 +1,16 @@
+[Unit]
+Description=wlshare VNC server for a wlroots-based Wayland session
+Documentation=https://github.com/andrewtheguy/wlshare
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# A custom XKB layout directory, if the [xkb] layout needs one:
+# Environment=XKB_CONFIG_EXTRA_PATH=/etc/xkb
+ExecStart=/usr/bin/wlshare
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
