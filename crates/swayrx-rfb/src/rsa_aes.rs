@@ -41,12 +41,17 @@
 //! RSA-PKCS#1 v1.5 is the padding the protocol fixes, and a server that says
 //! whether a ciphertext unpadded is the oracle Bleichenbacher's attack needs —
 //! against a key that is the same for every connection. So the decryption is
-//! blinded, and it never fails: a ciphertext that does not unpad, or unpads to
-//! the wrong length, yields a random derived from a per-process secret and the
-//! ciphertext itself, and the exchange goes on to the hash step exactly as it
-//! would have. The client's hash frame then fails its tag, which is all a
-//! wrong ciphertext ever looks like from outside, and is what an honest client
-//! with a wrong key would have got too.
+//! blinded, and it never fails, in what it returns or in how it gets there: the
+//! raw exponentiation is followed by this module's own unpadding, which checks
+//! the fixed shape `00 02 PS 00 random` with the random's known length in
+//! constant time and selects, byte by byte and without a branch, between the
+//! bytes found there and a substitute derived from a per-process secret and the
+//! ciphertext — the substitute computed for every ciphertext, valid or not. The
+//! exchange goes on to the hash step exactly as it would have, and the client's
+//! hash frame then fails its tag, which is all a wrong ciphertext ever looks like
+//! from outside, and is what an honest client with a wrong key would have got
+//! too. The `rsa` crate's own PKCS#1 v1.5 decryption is not used: it returns an
+//! error on bad padding, and an error is a branch.
 //!
 //! ## What the server's key is worth
 //!
@@ -79,11 +84,13 @@ use aes::{Aes128, Aes256};
 use eax::Eax;
 use eax::aead::{Aead as _, KeyInit as _, Payload};
 use rand::Rng as _;
+use rsa::hazmat::rsa_decrypt;
 use rsa::pkcs8::{DecodePrivateKey as _, EncodePrivateKey as _};
 use rsa::traits::PublicKeyParts as _;
 use rsa::{BoxedUint, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use sha1::{Digest as _, Sha1};
 use sha2::Sha256;
+use subtle::{ConditionallySelectable as _, ConstantTimeEq as _};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 
 /// RFB security type `RA2`: RSA key exchange, AES-128-EAX, SHA-1.
@@ -262,13 +269,40 @@ impl ServerKey {
 
     /// The client random out of its ciphertext — or, for a ciphertext that does
     /// not decrypt to a random of the right length, a substitute nothing outside
-    /// can tell from one. Blinded, and never an error.
+    /// can tell from one. Blinded, never an error, and without a branch on what
+    /// the padding looked like; see the module docs. `sealed` is exactly the
+    /// key's size, which the caller has checked against the public length field.
     fn open_client_random(&self, sealed: &[u8], strength: Strength) -> Vec<u8> {
         let want = strength.random_len();
-        match self.private.decrypt_blinded(&mut rand::rng(), Pkcs1v15Encrypt, sealed) {
-            Ok(random) if random.len() == want => random,
-            _ => Sha256::new().chain_update(self.reject_secret).chain_update(sealed).finalize()[..want].to_vec(),
+        let size = self.wire.size();
+        debug_assert_eq!(sealed.len(), size);
+        // Computed for every ciphertext, so that the work done is the same
+        // whether or not it is used.
+        let substitute = Sha256::new().chain_update(self.reject_secret).chain_update(sealed).finalize();
+        let substitute = &substitute[..want];
+        // The two refusals below are about the ciphertext as an integer — too
+        // long for the modulus, or not below it — which is public arithmetic on
+        // public bytes, not the padding.
+        let n = self.private.n();
+        let Some(em) = BoxedUint::from_be_slice(sealed, n.bits_precision())
+            .ok()
+            .and_then(|c| rsa_decrypt(Some(&mut rand::rng()), &self.private, &c).ok())
+        else {
+            return substitute.to_vec();
+        };
+        let em = em.to_be_bytes();
+        // The integer is below the modulus, so the bytes beyond the key's size
+        // are leading zeros.
+        let em = &em[em.len() - size..];
+        // EM = 00 || 02 || PS || 00 || M, with M the `want` bytes of a random
+        // and PS non-zero bytes filling the rest, so the separator has one
+        // place to be. Every byte is inspected whatever the earlier ones held.
+        let separator = size - want - 1;
+        let mut valid = em[0].ct_eq(&0) & em[1].ct_eq(&2) & em[separator].ct_eq(&0);
+        for byte in &em[2..separator] {
+            valid &= !byte.ct_eq(&0);
         }
+        (0..want).map(|i| u8::conditional_select(&substitute[i], &em[separator + 1 + i], valid)).collect()
     }
 
     /// The key as a PKCS#8 PEM document (`BEGIN PRIVATE KEY`), for the file.
@@ -868,6 +902,33 @@ mod tests {
         // The client got as far as the server's hash, so the server did send it.
         let err = client.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+
+    /// The shape the unpadding accepts is exactly PKCS#1 v1.5 with a message
+    /// of the random's length: a properly sealed random comes back as itself,
+    /// and a sealed message one byte short or long — valid PKCS#1, wrong
+    /// shape — comes back as the substitute, the same one the substitute
+    /// construction gives on its own.
+    #[test]
+    fn the_unpadding_accepts_a_random_of_the_right_length_and_nothing_else() {
+        let key = test_key();
+        let public = key.wire.public_key().unwrap();
+        for (len, strength) in [(32usize, Strength::Aes256), (16, Strength::Aes128)] {
+            let random: Vec<u8> = (0..len as u8).map(|i| i.wrapping_mul(37).wrapping_add(11)).collect();
+            let sealed = public.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &random).unwrap();
+            assert_eq!(key.open_client_random(&sealed, strength), random);
+            for wrong in [len - 1, len + 1] {
+                let message = vec![0xa5u8; wrong];
+                let sealed = public.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &message).unwrap();
+                let opened = key.open_client_random(&sealed, strength);
+                let substitute = Sha256::new().chain_update(key.reject_secret).chain_update(&sealed).finalize()[..len].to_vec();
+                assert_eq!(opened, substitute, "a {wrong}-byte message is not a {len}-byte random");
+            }
+        }
+        // A ciphertext that is not below the modulus is refused the same way.
+        let sealed = vec![0xffu8; key.wire.size()];
+        let substitute = Sha256::new().chain_update(key.reject_secret).chain_update(&sealed).finalize()[..32].to_vec();
+        assert_eq!(key.open_client_random(&sealed, Strength::Aes256), substitute);
     }
 
     #[test]

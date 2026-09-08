@@ -23,7 +23,8 @@ tokio = { version = "1", default-features = false, features = ["io-util"] }
 # PKCS#8 PEM the server's key file holds; SHA-1 and SHA-256 for the two types'
 # key derivation and the fingerprint; AES-EAX for every byte after. The
 # release-candidate `rsa` is the line on `rand_core` 0.10 and `digest` 0.11.
-rsa = { version = "0.10.0-rc.18", default-features = false, features = ["std", "encoding"] }
+rsa = { version = "0.10.0-rc.18", default-features = false, features = ["std", "encoding", "hazmat"] }
+subtle = { version = "2.6", default-features = false }
 pkcs8 = { version = "0.11", default-features = false, features = ["pem", "std"] }
 rand = "0.10"
 aes = "0.9"
