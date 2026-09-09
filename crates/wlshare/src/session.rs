@@ -4,6 +4,15 @@
 //! framebuffer, and listens for events, and does one thing at a time so the
 //! bytes it writes are always whole messages in the order they were decided.
 //!
+//! ## One at a time
+//!
+//! The desktop is one client's. Finishing the handshake takes it, and the
+//! session that held it ends as soon as it notices — it watches the compositor's
+//! `active` client rather than an [`Event`](crate::shared::Event), so a session
+//! too far behind to read the broadcast cannot go on holding a desktop it no
+//! longer has. Nothing it sent in the meantime is acted on: the compositor
+//! hears input, resize, density and clipboard from the active client alone.
+//!
 //! ## Sending pixels
 //!
 //! A client gets a FramebufferUpdate when it has asked for one — with a
@@ -142,7 +151,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     socket.set_nodelay(true)?;
     let peer = socket.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
     let (reader, writer) = socket.into_split();
-    let (reader, mut writer, shared_desktop) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(reader, writer, &config, &peer))
+    let (reader, mut writer) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(reader, writer, &config, &peer))
         .await
         .map_err(|_| anyhow::anyhow!("the handshake took over {HANDSHAKE_TIMEOUT:?}"))??;
     let (width, height) = {
@@ -150,11 +159,14 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         (fb.width, fb.height)
     };
     writer.send(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
-    info!("client {}: authenticated; desktop {width}x{height}{}", id.0, if shared_desktop { "" } else { ", to itself" });
-    shared.command(Command::ClientJoined { id, shared: shared_desktop });
+    info!("client {}: authenticated; desktop {width}x{height}", id.0);
+    shared.command(Command::ClientJoined(id));
 
     let events = shared.events.subscribe();
     let frames = shared.frame_tx.subscribe();
+    // Subscribed after the join is sent, so the value this session marks as
+    // seen is either its own id already or the client it is taking over from.
+    let active = shared.active.subscribe();
     let mut session = Session {
         id,
         shared,
@@ -180,6 +192,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         announce_eds: false,
         events,
         frames,
+        active,
         scratch: Vec::new(),
         out: Vec::new(),
     };
@@ -187,8 +200,9 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
 }
 
 /// RFB 3.8 version, security and ClientInit. Returns the transport the rest of
-/// the session runs over and the ClientInit shared flag.
-async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer, bool)> {
+/// the session runs over. The ClientInit shared flag is read and dropped: the
+/// desktop is one client's either way.
+async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer)> {
     writer.write_all(msg::PROTOCOL_VERSION).await?;
     let mut version = [0u8; 12];
     reader.read_exact(&mut version).await.context("reading the client's version")?;
@@ -227,8 +241,8 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
         }
     };
     writer.send(&msg::security_ok()).await?;
-    let shared = reader.read_u8().await.context("reading ClientInit")?;
-    Ok((reader, writer, shared != 0))
+    let _shared = reader.read_u8().await.context("reading ClientInit")?;
+    Ok((reader, writer))
 }
 
 struct Session {
@@ -264,6 +278,8 @@ struct Session {
     announce_eds: bool,
     events: broadcast::Receiver<Event>,
     frames: tokio::sync::watch::Receiver<u64>,
+    /// The client on the desktop: a change that is not this one ends the session.
+    active: tokio::sync::watch::Receiver<u64>,
     /// Pixels copied out of the framebuffer, rect by rect, for encoding.
     scratch: Vec<u8>,
     out: Vec<u8>,
@@ -297,6 +313,15 @@ impl Session {
                 changed = self.frames.changed() => {
                     if changed.is_err() {
                         anyhow::bail!("the framebuffer is gone");
+                    }
+                }
+                changed = self.active.changed() => {
+                    if changed.is_err() {
+                        anyhow::bail!("the compositor thread is gone");
+                    }
+                    let active = *self.active.borrow_and_update();
+                    if active != self.id.0 {
+                        anyhow::bail!("client {active} took the desktop");
                     }
                 }
                 event = self.events.recv() => match event {
@@ -404,7 +429,7 @@ impl Session {
             }
             ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { client: self.id, keysym, down }),
             ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
-            ClientMsg::CutText(bytes) => self.shared.command(Command::SetClipboard(msg::latin1_to_string(&bytes))),
+            ClientMsg::CutText(bytes) => self.shared.command(Command::SetClipboard { client: self.id, text: msg::latin1_to_string(&bytes) }),
             ClientMsg::ExtendedCutText(_) => debug!("client {}: extended clipboard is not spoken here; ignored", self.id.0),
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
                 self.continuous = enable && self.continuous_supported;
@@ -505,11 +530,6 @@ impl Session {
             }
             Event::Clipboard(text) => {
                 writer.send(&msg::server_cut_text(&text)).await?;
-            }
-            Event::Exclusive { keep } => {
-                if keep != self.id {
-                    anyhow::bail!("client {} took the desktop to itself", keep.0);
-                }
             }
         }
         Ok(())

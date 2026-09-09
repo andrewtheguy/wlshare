@@ -22,6 +22,27 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   `session.rs` is one client; `pam.rs` checks an RSA-AES login; `shared.rs` is
   what crosses between them.
 
+## One session at a time
+
+The desktop belongs to one client. A connection that finishes the handshake
+takes it, and the client that held it is disconnected with a message naming the
+one that took over — the same trade Windows Remote Desktop makes, and the reason
+the takeover happens *after* the handshake: an unauthenticated connection, or
+one that fails PAM, never displaces the session in progress. RFB's ClientInit
+shared flag is read and dropped; there is no configuration for it and no way to
+watch alongside somebody else.
+
+The compositor thread holds the single client id, so the rule is one comparison:
+input, resize, density and clipboard from anyone else are dropped, which is what
+a superseded session's last in-flight messages are. Taking over releases the
+keys and buttons the previous client held and its pending resize, and capture
+runs from the first handshake until the client on the desktop leaves.
+
+Who holds it is a `watch` and not one of the broadcast events: a session slow
+enough to lag the broadcast drops events, and dropping this one would leave two
+clients on the desktop. A watch keeps only the latest value, so the superseded
+session ends whenever it next looks — and it is ignored until it does.
+
 ## Capture
 
 wlr-screencopy `copy_with_damage` into a `wl_shm` buffer, one frame in flight,
@@ -110,9 +131,6 @@ cannot be told and is disconnected at its next update rather than sent pixels at
 a size it does not know. The ExtendedDesktopSize announcement that answers the pseudo-encoding is an
 update too, and waits for a request like any other.
 
-The desktop is shared unless a client clears the ClientInit flag, which
-disconnects every other client, as RFB has it.
-
 ## The density extension
 
 Standard RFB has no word for pixel density. The extension is one pseudo-encoding,
@@ -128,8 +146,8 @@ are 16.16 unsigned fixed point.
   the scale the client wants the output drawn at. Honoured only from a client
   that listed the pseudo-encoding and only in the range 0.5–8. The server sets
   the output's scale through wlr-output-management under the same rules as a
-  resize — a headless output, `resize = true`, and this client owns the layout or
-  nobody does — and **answers every declaration** with an OutputScale: after the
+  resize — a headless output and `resize = true` — and **answers every
+  declaration** with an OutputScale: after the
   compositor's head change, or at once with the scale as it is when the
   declaration matches, is refused, or cannot be applied. A configuration the
   compositor accepts without changing the scale is answered too: `succeeded` is
@@ -184,8 +202,7 @@ that lists the pseudo-encoding is then told nothing.
 ## Resize
 
 `SetDesktopSize` sets a custom mode on the shared output, with the same rules.
-The first client to resize or declare owns the layout until it disconnects;
-another client's request is answered *prohibited*, as wayvnc has it. A request
+A request that arrives with `resize = false` is answered *prohibited*. A request
 for the current size is answered OK at once; a size the compositor rejects is
 answered *invalid layout*; a request the compositor accepts is answered when the
 frame at that size arrives, with an ExtendedDesktopSize rectangle naming this
@@ -202,12 +219,11 @@ the client has already cased — remotex never forwards Caps Lock and sends `A` 
 `a` as the browser resolved it — so before each press the server checks what the
 keycode would produce under the current modifiers, and presses Shift or lets a
 held Shift go around the key when the keycode alone would type the other case.
-Keys and buttons are held per client: a client leaving releases its own and
-nothing another client holds, and a connection that never finished the
-handshake releases nothing. Pointer events arrive in framebuffer pixels and are
-injected as absolute positions against the framebuffer's extent, which the
-virtual pointer maps onto the shared output; the compositor sees the union of
-every client's button mask. Wheel "buttons" become discrete axis events.
+Keys and buttons are let go when the client leaves or is superseded, and a
+connection that never finished the handshake releases nothing. Pointer events
+arrive in framebuffer pixels and are injected as absolute positions against the
+framebuffer's extent, which the virtual pointer maps onto the shared output.
+Wheel "buttons" become discrete axis events.
 
 Clipboard text from the compositor is read off the loop into a pipe and sent as
 latin-1 `ServerCutText`; a selection that is cleared or stops being text is sent
