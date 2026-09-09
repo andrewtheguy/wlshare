@@ -8,6 +8,7 @@
 
 use thiserror::Error;
 
+use crate::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY};
 use crate::pixel::PixelFormat;
 
@@ -87,6 +88,12 @@ pub enum ClientMsg {
     /// The density extension's declaration: the scale the client wants, as
     /// 16.16 fixed point ([`crate::density::from_fixed`]).
     ClientDensity { fixed: u32 },
+    /// The QEMU Audio extension: start sending the desktop's sound.
+    AudioEnable,
+    /// The QEMU Audio extension: stop.
+    AudioDisable,
+    /// The QEMU Audio extension: the sample format the client wants.
+    AudioFormat(AudioFormat),
 }
 
 /// Why a client's bytes could not be a message.
@@ -98,6 +105,8 @@ pub enum ParseError {
     CutTextTooLong(usize),
     #[error("a fence payload of {0} bytes is over the {FENCE_MAX_PAYLOAD}-byte ceiling")]
     FencePayloadTooLong(usize),
+    #[error("QEMU message: {0}")]
+    Audio(#[from] AudioParseError),
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -213,6 +222,12 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             need!(CLIENT_DENSITY_LEN);
             (ClientMsg::ClientDensity { fixed: u32_at(buf, 4) }, CLIENT_DENSITY_LEN)
         }
+        MSG_QEMU => match crate::audio::parse_client(buf)? {
+            None => return Ok(None),
+            Some((ClientAudio::Enable, n)) => (ClientMsg::AudioEnable, n),
+            Some((ClientAudio::Disable, n)) => (ClientMsg::AudioDisable, n),
+            Some((ClientAudio::SetFormat(format), n)) => (ClientMsg::AudioFormat(format), n),
+        },
         other => return Err(ParseError::UnknownType(other)),
     };
     Ok(Some(msg))
@@ -373,6 +388,20 @@ mod tests {
         assert_eq!(m, ClientMsg::EnableContinuousUpdates { enable: true, x: 0, y: 0, width: 8, height: 4 });
         let (m, _) = parse(&[0xE0, 0, 0, 0, 0, 2, 0, 0]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::ClientDensity { fixed: 0x0002_0000 });
+    }
+
+    #[test]
+    fn the_audio_submessages_parse_and_a_bad_one_is_fatal() {
+        use crate::audio::SampleFormat;
+        let (m, n) = parse(&[255, 1, 0, 0, 9]).unwrap().unwrap();
+        assert_eq!((m, n), (ClientMsg::AudioEnable, 4));
+        let (m, _) = parse(&[255, 1, 0, 1]).unwrap().unwrap();
+        assert_eq!(m, ClientMsg::AudioDisable);
+        assert_eq!(parse(&[255, 1, 0, 2, 3, 2, 0, 0]), Ok(None));
+        let (m, n) = parse(&[255, 1, 0, 2, 3, 2, 0, 0, 0xBB, 0x80]).unwrap().unwrap();
+        assert_eq!(m, ClientMsg::AudioFormat(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }));
+        assert_eq!(n, 10);
+        assert_eq!(parse(&[255, 7, 0, 0]), Err(ParseError::Audio(AudioParseError::UnknownSubmessage(7))));
     }
 
     #[test]

@@ -7,7 +7,9 @@
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   There is no cross-target check to run: nothing here is architecture-specific,
   and the release builds each architecture in Docker on its own native runner.
-  Linking the daemon's tests needs `libpam0g-dev`.
+  Linking the daemon's tests needs `libpam0g-dev`, and building it needs
+  `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
+  capture — the last for bindgen, which PipeWire's `-sys` crates run.
 - Every protocol byte comes from `wlshare-rfb`; the daemon never writes one itself.
   Every encoder gets an independent decoder in its tests.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland

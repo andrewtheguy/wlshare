@@ -4,9 +4,10 @@ A VNC server for wlroots-based Wayland compositors, built for the
 [remotex](https://github.com/andrewtheguy/remotex) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with ZRLE as its one pixel
 encoding, injects input through the virtual keyboard and pointer protocols,
-shares the clipboard through wlr-data-control — and tells the client what pixel
-density the framebuffer is drawn at, which standard RFB cannot, so a `scale 2`
-output is shown sharp at 2x and a client's own density becomes the output's.
+shares the clipboard through wlr-data-control, carries the desktop's sound from
+PipeWire over the connection itself — and tells the client what pixel density the
+framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
+shown sharp at 2x and a client's own density becomes the output's.
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
@@ -17,7 +18,10 @@ offers them.
 
 Any VNC client that decodes ZRLE can connect. The density extension is asked for
 by the client and stays silent otherwise; remotex asks for it on every plain
-`vnc` target. See [`docs/architecture.md`](docs/architecture.md) for how it
+`vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
+QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
+is offered the default sink's monitor, and one that does not hears nothing.
+`audio = false` turns the offer off. See [`docs/architecture.md`](docs/architecture.md) for how it
 works and what it deliberately leaves out.
 
 ## Running
@@ -63,10 +67,13 @@ the server resolves the client's keysyms through the same keymap it uploads.
 ## Building
 
 The workspace has two crates: `wlshare-rfb`, the protocol, which builds and tests
-anywhere, and `wlshare`, the daemon, which needs libwayland and libxkbcommon and
-only runs under a wlroots-based Wayland compositor. A bare `cargo test` covers
-the protocol crate; build the daemon with `cargo build --release -p wlshare` on a Linux host
-with `libwayland-dev`, `libxkbcommon-dev`, `libpam0g-dev` and `pkg-config`.
+anywhere, and `wlshare`, the daemon, which needs libwayland, libxkbcommon and
+libpipewire and only runs under a wlroots-based Wayland compositor. A bare
+`cargo test` covers the protocol crate; build the daemon with
+`cargo build --release -p wlshare` on a Linux host with `libwayland-dev`,
+`libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
+`libclang-dev` and `pkg-config`. libclang links nothing: PipeWire's `-sys`
+crates generate their bindings with bindgen, which loads it at build time.
 
 Packages for Debian trixie on amd64 and arm64 are built in Docker by
 `scripts/build-debs.sh`, into `dist/<arch>/wlshare-trixie-<arch>.deb`. The

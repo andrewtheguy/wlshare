@@ -31,6 +31,13 @@ resize = true
 # The most frames captured per second.
 max_fps = 60
 
+# Whether a client may hear the desktop. A client that asks for the QEMU Audio
+# extension is sent what the default sink plays, captured from PipeWire in the
+# session, in the sample format the client chose. A headless session needs a
+# sink for applications to play into; PipeWire's own Dummy Output, which
+# WirePlumber provides when no device is present, is enough.
+audio = true
+
 # The desktop name clients see.
 name = "wlshare"
 

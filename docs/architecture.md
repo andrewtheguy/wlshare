@@ -140,6 +140,47 @@ The exact scale comes from the wlr-output-management head, fractional included;
 `wl_output.scale`, which wlroots rounds up, is the fallback when the protocol is
 absent.
 
+## The audio extension
+
+The one audio extension `rfbproto` registers — pseudo-encoding `-259`, message
+type `255` submessage `1` — spoken by QEMU as a server and gtk-vnc as a client.
+Nothing about it is private, which is why it was taken over a second `WLSH`-style
+message: a client that already speaks it hears wlshare with nothing new to learn.
+
+- **The announcement**, server → client: an empty pseudo-rectangle of encoding
+  `-259` in a `FramebufferUpdate` of its own, sent ahead of any pixels to a
+  client whose `SetEncodings` listed it. The only way support is announced.
+- **Set format, enable, disable**, client → server: the sample format, channel
+  count and frequency are the client's to choose, and the server converts what
+  the desktop plays into them. The frequency is bounded at 192 kHz — above every
+  rate real audio uses, and below where a server's own arithmetic on it starts
+  to overflow.
+- **Begin, data, end**, server → client. Samples are interleaved and
+  little-endian — the specification is silent on the byte order, QEMU writes
+  host-native and gtk-vnc reads little-endian.
+
+`audio.rs` starts one PipeWire capture per client that enables audio, on a
+thread of its own. It is a `Stream/Input/Audio` node with
+`stream.capture.sink = "true"`, which connects it to the **default sink's
+monitor** — what the desktop is playing, whatever is playing it — and
+`node.latency` asks for 20 ms buffers. The process callback runs on that
+thread's loop and not on the graph's real-time one — `RT_PROCESS` is
+deliberately not set, because the callback allocates, takes a mutex and wakes a
+task, and doing any of that on the data thread could stall the whole audio graph
+and give every application on the host an xrun. It copies whole frames into a
+sixteen-deep queue, dropping the oldest when a client cannot keep up: a dropped
+buffer is a hole, and a stalled capture callback is worse. A set-format on a running stream
+restarts the capture in the new format, and a disable or a disconnect stops it.
+
+The session drains that queue before every framebuffer update, so sound is never
+held behind a ZRLE frame it was ready before. PipeWire honours its own quantum
+before settling on the requested one, so the first buffers of a session are
+often shorter than 20 ms; every one of them is a whole number of frames. A
+headless session still has a sink to capture — PipeWire's Dummy Output is one.
+
+`audio = false` in the configuration turns the announcement off, and a client
+that lists the pseudo-encoding is then told nothing.
+
 ## Resize
 
 `SetDesktopSize` sets a custom mode on the shared output, with the same rules.
@@ -208,4 +249,5 @@ failed"; the actual reason is logged.
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding: the gateway
 re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
 8- and 16-bit pixel formats and colour maps. Cursor shapes. Multiple outputs in
-one framebuffer. A control socket. Audio.
+one framebuffer. A control socket. A client's microphone: the extension carries
+sound one way only.
