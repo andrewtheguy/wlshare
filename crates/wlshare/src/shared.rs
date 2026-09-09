@@ -68,7 +68,10 @@ pub struct Shared {
     pub frame_tx: watch::Sender<u64>,
     /// The client on the desktop, or 0 for nobody. A `watch` and not an
     /// [`Event`]: a session too far behind to read the broadcast would miss
-    /// being superseded, and this it cannot miss.
+    /// being superseded, and this it cannot miss. Ids come from
+    /// [`Shared::next_client`] and so only go up, which is what lets a session
+    /// read one value and know where it stands: anything above its own id is a
+    /// client that joined after it.
     pub active: watch::Sender<u64>,
     pub geometry: Mutex<Geometry>,
     pub events: broadcast::Sender<Event>,

@@ -41,7 +41,18 @@ runs from the first handshake until the client on the desktop leaves.
 Who holds it is a `watch` and not one of the broadcast events: a session slow
 enough to lag the broadcast drops events, and dropping this one would leave two
 clients on the desktop. A watch keeps only the latest value, so the superseded
-session ends whenever it next looks — and it is ignored until it does.
+session ends on the value it finds there — and is ignored until it does.
+
+The watch races the whole session, not the gaps in it. A session runs its
+message loop against the takeover in one `select!`, so a client that has stopped
+reading its socket is cut off in the middle of the write that is blocking on it,
+rather than holding its capture and its task open for as long as it refuses to
+read. Client ids only ever go up, which is what lets a session decide by
+comparison instead of by acknowledgement: an active id above its own is a
+connection that joined after it, whether or not it ever saw itself there. That
+is the answer to the other end of the race — two connections whose joins are
+queued together, where the second is on the desktop before the first has
+subscribed at all.
 
 ## Capture
 

@@ -7,11 +7,17 @@
 //! ## One at a time
 //!
 //! The desktop is one client's. Finishing the handshake takes it, and the
-//! session that held it ends as soon as it notices — it watches the compositor's
-//! `active` client rather than an [`Event`](crate::shared::Event), so a session
-//! too far behind to read the broadcast cannot go on holding a desktop it no
-//! longer has. Nothing it sent in the meantime is acted on: the compositor
-//! hears input, resize, density and clipboard from the active client alone.
+//! session that held it ends — it watches the compositor's `active` client
+//! rather than an [`Event`](crate::shared::Event), so a session too far behind
+//! to read the broadcast cannot go on holding a desktop it no longer has. The
+//! watch races the message loop as a whole rather than being looked at between
+//! passes of it, so a client that has stopped reading its socket is cut off in
+//! the middle of the write it is blocking on. Client ids only ever go up, and
+//! that is what makes the test a comparison rather than an acknowledgement: an
+//! `active` above this session's own is a connection that joined after it,
+//! whether or not this one ever saw itself there. Nothing a superseded session
+//! sent in the meantime is acted on: the compositor hears input, resize,
+//! density and clipboard from the active client alone.
 //!
 //! ## Sending pixels
 //!
@@ -67,7 +73,7 @@ use wlshare_rfb::{
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::audio::Capture;
 use crate::framebuffer::{Rect, ResizeOrigin};
@@ -160,13 +166,11 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     };
     writer.send(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
     info!("client {}: authenticated; desktop {width}x{height}", id.0);
+    let mut active = shared.active.subscribe();
     shared.command(Command::ClientJoined(id));
 
     let events = shared.events.subscribe();
     let frames = shared.frame_tx.subscribe();
-    // Subscribed after the join is sent, so the value this session marks as
-    // seen is either its own id already or the client it is taking over from.
-    let active = shared.active.subscribe();
     let mut session = Session {
         id,
         shared,
@@ -192,11 +196,27 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         announce_eds: false,
         events,
         frames,
-        active,
         scratch: Vec::new(),
         out: Vec::new(),
     };
-    session.pump(reader, writer).await
+    tokio::select! {
+        result = session.pump(reader, writer) => result,
+        taken = superseded(&mut active, id) => Err(anyhow::anyhow!("client {} took the desktop", taken?)),
+    }
+}
+
+/// Resolves once a later connection has taken the desktop. Ids only go up, so
+/// an `active` above this session's is a client that joined after it; anything
+/// below it — 0 included — is the compositor not having read this session's own
+/// join yet, which is what the wait is for.
+async fn superseded(active: &mut watch::Receiver<u64>, id: ClientId) -> anyhow::Result<u64> {
+    loop {
+        let current = *active.borrow_and_update();
+        if current > id.0 {
+            return Ok(current);
+        }
+        active.changed().await.context("the compositor thread is gone")?;
+    }
 }
 
 /// RFB 3.8 version, security and ClientInit. Returns the transport the rest of
@@ -277,9 +297,7 @@ struct Session {
     fence_seq: u32,
     announce_eds: bool,
     events: broadcast::Receiver<Event>,
-    frames: tokio::sync::watch::Receiver<u64>,
-    /// The client on the desktop: a change that is not this one ends the session.
-    active: tokio::sync::watch::Receiver<u64>,
+    frames: watch::Receiver<u64>,
     /// Pixels copied out of the framebuffer, rect by rect, for encoding.
     scratch: Vec<u8>,
     out: Vec<u8>,
@@ -313,15 +331,6 @@ impl Session {
                 changed = self.frames.changed() => {
                     if changed.is_err() {
                         anyhow::bail!("the framebuffer is gone");
-                    }
-                }
-                changed = self.active.changed() => {
-                    if changed.is_err() {
-                        anyhow::bail!("the compositor thread is gone");
-                    }
-                    let active = *self.active.borrow_and_update();
-                    if active != self.id.0 {
-                        anyhow::bail!("client {active} took the desktop");
                     }
                 }
                 event = self.events.recv() => match event {
