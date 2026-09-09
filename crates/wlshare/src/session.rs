@@ -20,6 +20,17 @@
 //! DesktopSize cannot be told and is disconnected at its next update instead of
 //! being sent pixels at a size it does not know.
 //!
+//! ## Sending sound
+//!
+//! A client that listed the QEMU Audio pseudo-encoding is told so by an empty
+//! rectangle in an update of its own, which waits for a request like any other
+//! announcement. Its enable opens a PipeWire capture in the format it set
+//! ([`crate::audio`]), answered with *begin*; its disable, or its leaving,
+//! closes the capture, answered with *end*. Captured buffers ride the same
+//! connection as the pixels, and go first: every pass of the loop drains what
+//! the capture has queued before it considers a framebuffer update, so sound
+//! waits for at most the update already being written, never for the next one.
+//!
 //! ## The transport
 //!
 //! The handshake decides what the socket carries afterwards: RFB bytes as they
@@ -34,17 +45,22 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
+use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect};
 use wlshare_rfb::density::{from_fixed, output_scale};
 use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
-use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE};
+use wlshare_rfb::{
+    ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_QEMU_AUDIO, ENCODING_RAW,
+    ENCODING_ZRLE,
+};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::broadcast;
 
+use crate::audio::Capture;
 use crate::framebuffer::{Rect, ResizeOrigin};
 use crate::pam;
 use crate::shared::{ClientId, Command, Event, Shared};
@@ -83,6 +99,8 @@ pub struct SessionConfig {
     pub security: Security,
     pub name: String,
     pub resize: bool,
+    /// Whether the QEMU Audio extension is announced and served.
+    pub audio: bool,
 }
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -149,6 +167,10 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         eds_supported: false,
         desktop_size_supported: false,
         density: false,
+        audio_supported: false,
+        announce_audio: false,
+        audio_format: AudioFormat::DEFAULT,
+        audio: None,
         continuous: false,
         pending: None,
         seen: 0,
@@ -221,6 +243,15 @@ struct Session {
     eds_supported: bool,
     desktop_size_supported: bool,
     density: bool,
+    /// The client listed the QEMU Audio pseudo-encoding and the configuration
+    /// allows it.
+    audio_supported: bool,
+    /// The audio announcement is owed: sent as its own update, once.
+    announce_audio: bool,
+    /// The sample format the client set, or the extension's default.
+    audio_format: AudioFormat,
+    /// The capture, while the client has audio enabled.
+    audio: Option<Capture>,
     /// The client enabled continuous updates.
     continuous: bool,
     /// An update request not yet answered: `true` for incremental.
@@ -248,6 +279,7 @@ impl Session {
     async fn pump(&mut self, mut reader: Reader, mut writer: Writer) -> anyhow::Result<()> {
         let mut inbuf: Vec<u8> = Vec::with_capacity(4096);
         loop {
+            self.flush_audio(&mut writer).await?;
             self.maybe_update(&mut writer).await?;
             tokio::select! {
                 read = reader.read_buf(&mut inbuf) => {
@@ -272,8 +304,44 @@ impl Session {
                     Err(broadcast::error::RecvError::Lagged(n)) => warn!("client {}: missed {n} events", self.id.0),
                     Err(broadcast::error::RecvError::Closed) => anyhow::bail!("the compositor thread is gone"),
                 },
+                // Woken to drain the capture at the top of the loop.
+                () = audio_ready(&self.audio) => {}
             }
         }
+    }
+
+    /// Send every buffer the capture has queued.
+    async fn flush_audio(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
+        while let Some(samples) = self.audio.as_ref().and_then(Capture::take) {
+            writer.send(&audio_data(&samples)).await.context("writing audio")?;
+        }
+        Ok(())
+    }
+
+    /// Open the capture in the client's format and say so. A capture that
+    /// cannot be opened is logged and leaves the client without sound, not
+    /// without a desktop.
+    async fn start_audio(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
+        let (id, format) = (self.id, self.audio_format);
+        match tokio::task::spawn_blocking(move || Capture::start(id, format)).await.context("the audio thread did not start")? {
+            Ok(capture) => {
+                self.audio = Some(capture);
+                writer.send(&audio_begin()).await?;
+            }
+            Err(e) => warn!("client {}: audio could not be captured: {e:#}", self.id.0),
+        }
+        Ok(())
+    }
+
+    /// Close the capture, if one is open, and say so.
+    async fn stop_audio(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
+        if let Some(capture) = self.audio.take() {
+            // Closing joins PipeWire's thread, which is a blocking wait.
+            tokio::task::spawn_blocking(move || drop(capture)).await.context("the audio thread did not stop")?;
+            writer.send(&audio_end()).await?;
+            info!("client {}: audio stopped", self.id.0);
+        }
+        Ok(())
     }
 
     async fn handle(&mut self, message: ClientMsg, writer: &mut Writer) -> anyhow::Result<()> {
@@ -305,9 +373,19 @@ impl Session {
                     info!("client {}: asked for density reports", self.id.0);
                 }
                 self.density = density;
+                let audio = has(ENCODING_QEMU_AUDIO);
+                if audio && !self.config.audio && !self.audio_supported {
+                    info!("client {}: asked for audio, which the configuration turns off", self.id.0);
+                }
+                let audio = audio && self.config.audio;
+                if audio && !self.audio_supported {
+                    info!("client {}: asked for audio", self.id.0);
+                    self.announce_audio = true;
+                }
+                self.audio_supported = audio;
                 debug!(
-                    "client {}: encodings {encodings:?}; zrle={} continuous={} fence={} eds={} density={}",
-                    self.id.0, self.use_zrle, self.continuous_supported, self.fence_supported, self.eds_supported, self.density
+                    "client {}: encodings {encodings:?}; zrle={} continuous={} fence={} eds={} density={} audio={}",
+                    self.id.0, self.use_zrle, self.continuous_supported, self.fence_supported, self.eds_supported, self.density, self.audio_supported
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
@@ -378,6 +456,33 @@ impl Session {
                 }
                 self.shared.command(Command::Declare { client: self.id, scale });
             }
+            ClientMsg::AudioEnable => {
+                if !self.audio_supported {
+                    warn!("client {}: enables audio without the extension; ignored", self.id.0);
+                } else if self.audio.is_none() {
+                    self.start_audio(writer).await?;
+                }
+            }
+            ClientMsg::AudioDisable => {
+                if !self.audio_supported {
+                    warn!("client {}: disables audio without the extension; ignored", self.id.0);
+                } else {
+                    self.stop_audio(writer).await?;
+                }
+            }
+            ClientMsg::AudioFormat(format) => {
+                if !self.audio_supported {
+                    warn!("client {}: sets an audio format without the extension; ignored", self.id.0);
+                    return Ok(());
+                }
+                debug!("client {}: wants audio as {:?} x{} at {} Hz", self.id.0, format.sample, format.channels, format.frequency);
+                self.audio_format = format;
+                // A format set while the stream runs restarts it in the new one.
+                if self.audio.is_some() {
+                    self.stop_audio(writer).await?;
+                    self.start_audio(writer).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -431,14 +536,21 @@ impl Session {
         if !wants || self.fence_outstanding {
             return Ok(());
         }
-        // The ExtendedDesktopSize announcement is an update like any other, so
-        // it waits for a request. Sent as its own update ahead of the pixels;
-        // when there are none to send it is the request's whole answer.
-        let announced = self.announce_eds;
-        if announced {
+        // The ExtendedDesktopSize and audio announcements are updates like any
+        // other, so they wait for a request. Each is sent as its own update
+        // ahead of the pixels; when there are none to send they are the
+        // request's whole answer.
+        let announced = self.announce_eds || self.announce_audio;
+        if self.announce_eds {
             self.announce_eds = false;
             let size = self.known_size;
             self.send_eds(writer, msg::EDS_REASON_SERVER, msg::EDS_STATUS_OK, size).await?;
+        }
+        if self.announce_audio {
+            self.announce_audio = false;
+            let mut update = msg::update_header(1).to_vec();
+            update.extend_from_slice(&audio_rect());
+            writer.send(&update).await?;
         }
         let answered = |this: &mut Self| {
             if announced {
@@ -537,6 +649,14 @@ impl Session {
         self.seen = generation;
         self.pending = None;
         Ok(())
+    }
+}
+
+/// Resolves when the capture has queued a buffer; never, while there is none.
+async fn audio_ready(audio: &Option<Capture>) {
+    match audio {
+        Some(capture) => capture.ready().await,
+        None => std::future::pending().await,
     }
 }
 

@@ -35,6 +35,7 @@ rustix = { version = "1", features = ["fs", "mm", "pipe"] }
 memmap2 = "0.9"
 # The PAM conversation's allocations and the process's passwd entry (pam.rs).
 libc = "0.2"
+pipewire = { version = "0.10", features = ["v0_3_33"] }
 
 # `cargo deb -p wlshare` (scripts/build-debs.sh runs it in Docker per architecture;
 # the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).

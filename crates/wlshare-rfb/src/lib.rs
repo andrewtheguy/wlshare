@@ -31,12 +31,16 @@
 //! - **The density extension**, one pseudo-encoding and one message type, which
 //!   is how a client learns the scale the framebuffer is drawn at and asks for
 //!   the one it wants ([`density`]).
+//! - **The QEMU Audio extension**, the registered one, which carries the
+//!   desktop's sound over the same connection as raw samples in the format the
+//!   client chose ([`audio`]).
 //! - **None and RSA-AES** for security. The first is RFC 6143's; the second is
 //!   RealVNC's, and the one way a client can name an account and have the
 //!   session encrypted ([`rsa_aes`]). Classic VncAuth is deliberately absent: it
 //!   names nobody and encrypts nothing after the login. Which is offered is the
 //!   daemon's configuration; the crate speaks both.
 
+pub mod audio;
 pub mod density;
 pub mod msg;
 pub mod pixel;
@@ -67,3 +71,7 @@ pub const ENCODING_CONTINUOUS_UPDATES: i32 = -313;
 pub const ENCODING_EXTENDED_CLIPBOARD: i32 = 0xc0a1_e5ce_u32 as i32;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;
+/// The QEMU Audio extension's pseudo-encoding: a client that lists it can
+/// take the desktop's sound, and is told so by an empty rectangle of this
+/// encoding ([`audio`]).
+pub const ENCODING_QEMU_AUDIO: i32 = -259;

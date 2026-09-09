@@ -6,8 +6,10 @@
 //! command channel ([`compositor`]). The tokio runtime accepts clients and runs
 //! one task per connection ([`session`]). They share the framebuffer and a few
 //! channels ([`shared`]), and every protocol byte comes from the `wlshare-rfb`
-//! crate.
+//! crate. A client that enables audio gets a PipeWire capture thread of its
+//! own for as long as it listens ([`audio`]).
 
+mod audio;
 mod capture;
 mod clipboard;
 mod compositor;
@@ -128,7 +130,7 @@ async fn serve(
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen).await.with_context(|| format!("listening on {}", config.listen))?;
     info!("listening on {}", config.listen);
-    let session_config = Arc::new(session::SessionConfig { security, name: config.name.clone(), resize: config.resize });
+    let session_config = Arc::new(session::SessionConfig { security, name: config.name.clone(), resize: config.resize, audio: config.audio });
     loop {
         tokio::select! {
             accepted = listener.accept() => {

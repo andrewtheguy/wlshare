@@ -1,5 +1,6 @@
 //! The configuration file: what the server listens on, who may connect, which
-//! output it shares and how the virtual keyboard is laid out.
+//! output it shares, whether its sound goes with it, and how the virtual
+//! keyboard is laid out.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,11 @@ pub struct Config {
     /// The most frames captured per second.
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
+    /// Whether a client may hear the desktop: the QEMU Audio extension is
+    /// announced to a client that asks, and what the default sink plays is
+    /// captured from PipeWire while the client has it enabled.
+    #[serde(default = "default_true")]
+    pub audio: bool,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
     pub name: String,
@@ -123,6 +129,7 @@ mod tests {
         assert_eq!(c.listen, default_listen());
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
+        assert!(c.audio);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
     }
