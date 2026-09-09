@@ -20,9 +20,9 @@
 //!   stops.
 //!
 //! `rfbproto` says nothing about the byte order of a sample wider than eight
-//! bits. QEMU writes host-native samples and gtk-vnc reads little-endian ones,
-//! which on every host either runs on are the same bytes, so **samples are
-//! little-endian** here. The sample format, channel count and frequency are
+//! bits. QEMU writes host-native samples and gtk-vnc reads little-endian ones;
+//! host-native is safe because every host this runs on is little-endian, so
+//! **samples are little-endian** here. The sample format, channel count and frequency are
 //! the client's to choose; the server converts whatever the desktop plays into
 //! them.
 
@@ -52,6 +52,16 @@ pub const SERVER_AUDIO_DATA: u16 = 2;
 pub const CLIENT_AUDIO_SWITCH_LEN: usize = 4;
 /// The bytes of a set-format, type and submessage included.
 pub const CLIENT_AUDIO_FORMAT_LEN: usize = 10;
+
+/// The highest sampling frequency a client may ask for.
+///
+/// The field is a `u32` and the extension names no bound, but a server that
+/// takes it at its word does arithmetic on it — the buffer size in frames, the
+/// bytes a second — and `u32::MAX` overflows the first of those before anything
+/// else notices. 192 kHz is above every rate real audio hardware or file format
+/// uses, so nothing a client could legitimately want is refused here, and a
+/// number outside it is a client that means something else by the field.
+pub const MAX_FREQUENCY: u32 = 192_000;
 
 /// A sample's encoding, as the extension numbers them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +140,8 @@ pub enum AudioParseError {
     BadChannels(u8),
     #[error("a frequency of 0")]
     ZeroFrequency,
+    #[error("a frequency of {0} Hz, over the {MAX_FREQUENCY} Hz this server accepts")]
+    FrequencyTooHigh(u32),
 }
 
 /// Parse the audio submessage at the front of `buf`, whose first byte is
@@ -158,6 +170,9 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioPar
             let frequency = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]);
             if frequency == 0 {
                 return Err(AudioParseError::ZeroFrequency);
+            }
+            if frequency > MAX_FREQUENCY {
+                return Err(AudioParseError::FrequencyTooHigh(frequency));
             }
             Ok(Some((ClientAudio::SetFormat(AudioFormat { sample, channels, frequency }), CLIENT_AUDIO_FORMAT_LEN)))
         }
@@ -228,6 +243,27 @@ mod tests {
         assert_eq!(parse_client(&[255, 1, 0, 2, 6, 2, 0, 0, 0xBB, 0x80]), Err(AudioParseError::UnknownSampleFormat(6)));
         assert_eq!(parse_client(&[255, 1, 0, 2, 3, 3, 0, 0, 0xBB, 0x80]), Err(AudioParseError::BadChannels(3)));
         assert_eq!(parse_client(&[255, 1, 0, 2, 3, 1, 0, 0, 0, 0]), Err(AudioParseError::ZeroFrequency));
+    }
+
+    /// The frequency is bounded at both ends. A `u32::MAX` accepted here would
+    /// overflow the frame count the capture is asked for, so the ceiling is a
+    /// parse rule rather than a check at the point of use.
+    #[test]
+    fn a_frequency_past_the_ceiling_is_fatal() {
+        let set_at = |frequency: u32| {
+            let f = frequency.to_be_bytes();
+            parse_client(&[255, 1, 0, 2, 3, 2, f[0], f[1], f[2], f[3]])
+        };
+        assert!(matches!(set_at(MAX_FREQUENCY), Ok(Some((ClientAudio::SetFormat(_), _)))));
+        assert_eq!(set_at(MAX_FREQUENCY + 1), Err(AudioParseError::FrequencyTooHigh(MAX_FREQUENCY + 1)));
+        assert_eq!(set_at(u32::MAX), Err(AudioParseError::FrequencyTooHigh(u32::MAX)));
+        // Every rate that survives leaves the daemon's frame count well inside
+        // a u32 (`frequency * 20 / 1000` in `wlshare::audio`).
+        assert!(MAX_FREQUENCY.checked_mul(20).is_some());
+        // And the rates real clients ask for are all far below it.
+        for rate in [8_000, 44_100, 48_000, 96_000] {
+            assert!(matches!(set_at(rate), Ok(Some((ClientAudio::SetFormat(_), _)))));
+        }
     }
 
     #[test]

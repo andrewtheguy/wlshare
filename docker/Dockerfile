@@ -5,13 +5,16 @@ FROM ${BASE_IMAGE} AS build
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# The daemon links libwayland-client, libxkbcommon and libpam; cargo-deb reads
-# the resulting .so dependencies into the package's Depends.
+# The daemon links libwayland-client, libxkbcommon, libpam and libpipewire;
+# cargo-deb reads the resulting .so dependencies into the package's Depends.
+# libclang-dev is a build-time need with nothing to link: pipewire-sys and
+# libspa-sys generate their bindings with bindgen, which loads libclang, and
+# without it a clean build fails with "Unable to find libclang".
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config \
         libwayland-dev libxkbcommon-dev libpam0g-dev \
-        libpipewire-0.3-dev libspa-0.2-dev dpkg-dev && \
+        libpipewire-0.3-dev libspa-0.2-dev libclang-dev dpkg-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \

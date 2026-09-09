@@ -152,7 +152,9 @@ message: a client that already speaks it hears wlshare with nothing new to learn
   client whose `SetEncodings` listed it. The only way support is announced.
 - **Set format, enable, disable**, client → server: the sample format, channel
   count and frequency are the client's to choose, and the server converts what
-  the desktop plays into them.
+  the desktop plays into them. The frequency is bounded at 192 kHz — above every
+  rate real audio uses, and below where a server's own arithmetic on it starts
+  to overflow.
 - **Begin, data, end**, server → client. Samples are interleaved and
   little-endian — the specification is silent on the byte order, QEMU writes
   host-native and gtk-vnc reads little-endian.
@@ -161,10 +163,13 @@ message: a client that already speaks it hears wlshare with nothing new to learn
 thread of its own. It is a `Stream/Input/Audio` node with
 `stream.capture.sink = "true"`, which connects it to the **default sink's
 monitor** — what the desktop is playing, whatever is playing it — and
-`node.latency` asks for 20 ms buffers. The process callback runs on PipeWire's
-real-time thread and only copies whole frames into a sixteen-deep queue,
-dropping the oldest when a client cannot keep up: a dropped buffer is a hole,
-and a stalled capture callback is worse. A set-format on a running stream
+`node.latency` asks for 20 ms buffers. The process callback runs on that
+thread's loop and not on the graph's real-time one — `RT_PROCESS` is
+deliberately not set, because the callback allocates, takes a mutex and wakes a
+task, and doing any of that on the data thread could stall the whole audio graph
+and give every application on the host an xrun. It copies whole frames into a
+sixteen-deep queue, dropping the oldest when a client cannot keep up: a dropped
+buffer is a hole, and a stalled capture callback is worse. A set-format on a running stream
 restarts the capture in the new format, and a disable or a disconnect stops it.
 
 The session drains that queue before every framebuffer update, so sound is never

@@ -16,11 +16,15 @@
 //! enabled audio: the stream, its thread and its PipeWire connection exist
 //! between an enable and the disable or disconnect that ends it.
 //!
-//! PipeWire's loop wants a thread of its own, so each capture is one. Its
-//! process callback runs on PipeWire's real-time thread and does one thing:
-//! copy the buffer into a queue the session drains between the RFB messages
-//! it writes. A session that falls behind loses the oldest buffers, never the
-//! newest, so what it does send is live.
+//! PipeWire's loop wants a thread of its own, so each capture is one, and the
+//! process callback runs on that loop rather than on the graph's real-time
+//! thread — `RT_PROCESS` is deliberately not set. The callback copies the
+//! buffer into a queue, which allocates, takes a mutex and wakes a task, and
+//! none of that is real-time safe: run on the data thread it could stall the
+//! whole audio graph and give every application on the host an xrun. The
+//! thread this capture already owns is the right place for it, and a
+//! twenty-millisecond buffer has time to spare. A session that falls behind
+//! loses the oldest buffers, never the newest, so what it does send is live.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -175,6 +179,7 @@ fn run(
                 pw::stream::StreamState::Error(e) => warn!("client {}: audio capture: {e}", client.0),
                 _ => debug!("client {}: audio capture {old:?} -> {new:?}", client.0),
             })
+            // On this capture's own loop thread, not the graph's real-time one.
             .process(move |stream, _| {
                 let Some(mut buffer) = stream.dequeue_buffer() else { return };
                 let datas = buffer.datas_mut();
@@ -224,7 +229,9 @@ fn run(
         stream.connect(
             spa::utils::Direction::Input,
             None,
-            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
+            // No RT_PROCESS: the process callback allocates and locks, which
+            // the graph's real-time thread must not do — see the module doc.
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         ),
         "connecting the capture stream"

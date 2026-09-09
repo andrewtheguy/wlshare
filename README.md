@@ -71,8 +71,9 @@ anywhere, and `wlshare`, the daemon, which needs libwayland, libxkbcommon and
 libpipewire and only runs under a wlroots-based Wayland compositor. A bare
 `cargo test` covers the protocol crate; build the daemon with
 `cargo build --release -p wlshare` on a Linux host with `libwayland-dev`,
-`libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev` and
-`pkg-config`.
+`libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
+`libclang-dev` and `pkg-config`. libclang links nothing: PipeWire's `-sys`
+crates generate their bindings with bindgen, which loads it at build time.
 
 Packages for Debian trixie on amd64 and arm64 are built in Docker by
 `scripts/build-debs.sh`, into `dist/<arch>/wlshare-trixie-<arch>.deb`. The
