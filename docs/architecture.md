@@ -213,6 +213,20 @@ different size reaches it as an ExtendedDesktopSize rectangle with the server as
 the reason, and a same-sized output as a full repaint. Which output is shared to
 begin with is `output` in the configuration, or the first one.
 
+An id is selectable exactly when it is listable: the output's properties have
+arrived, it has a name, and a capture of it would produce pixels. One rule serves
+both, so a client can never name something the list would not have shown it, and
+an output still arriving cannot become a desktop of no size.
+
+An output the compositor takes away while it is the shared one is not left as a
+name standing for nothing — that would stop the capture with nothing left to
+start it again, and a client would sit watching a picture that had quietly
+stopped changing. The desktop moves to whatever the list shows first, through the
+same sequence a client's own switch runs, so the client is told the new geometry
+and sent the new output's pixels. With no output left the capture stops and the
+list goes out empty, the last geometry and the last picture standing until an
+output appears; the first one to arrive is adopted the same way.
+
 Only a headless output is ever resized or rescaled, so switching to a real
 monitor leaves a client's resize and density requests answered *prohibited* —
 that monitor's mode belongs to the person sitting at it.

@@ -171,27 +171,39 @@ impl Outputs {
         let mut entries: Vec<OutputEntry> = self
             .outputs
             .iter()
-            .filter(|o| o.done)
-            .filter_map(|o| {
-                let name = o.name.clone()?;
+            .filter(|o| self.listable(o))
+            .map(|o| {
                 let (width, height) = self.size_of(o);
-                (width > 0 && height > 0).then(|| OutputEntry {
+                OutputEntry {
                     id: o.global,
-                    name,
+                    name: o.name.clone().expect("listable"),
                     width,
                     height,
                     scale: self.scale_of(o),
                     headless: o.is_headless(),
-                })
+                }
             })
             .collect();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         entries
     }
 
-    /// The output with this id, while the compositor has one.
-    pub fn by_id(&self, id: u32) -> Option<&OutputInfo> {
-        self.outputs.iter().find(|o| o.global == id)
+    /// Whether an output can be shared at all: its properties have arrived, it
+    /// has a name to be labelled by, and a capture of it would produce pixels.
+    /// The one rule behind both [`Outputs::entries`] and [`Outputs::selectable`],
+    /// so what a client is offered and what it may ask for cannot drift apart.
+    fn listable(&self, output: &OutputInfo) -> bool {
+        let (width, height) = self.size_of(output);
+        output.done && output.name.is_some() && width > 0 && height > 0
+    }
+
+    /// The output with this id, while the compositor has one a client may share.
+    /// An id that names an output still arriving, or one left without a mode, is
+    /// no more selectable than an id the compositor never had: sharing it would
+    /// put a desktop of no size in front of the client and give the capture
+    /// nothing to read.
+    pub fn selectable(&self, id: u32) -> Option<&OutputInfo> {
+        self.outputs.iter().find(|o| o.global == id).filter(|o| self.listable(o))
     }
 
     /// Pick the shared output: the configured name, or the first one.
@@ -293,6 +305,11 @@ impl Dispatch<WlOutput, ()> for Compositor {
                     state.geometry_changed();
                 }
                 state.outputs_changed();
+                if state.outputs.selected.is_none() {
+                    // Nothing is shared, and this output has just become
+                    // something that can be: the desktop starts again on it.
+                    state.adopt_output();
+                }
             }
             _ => {}
         }

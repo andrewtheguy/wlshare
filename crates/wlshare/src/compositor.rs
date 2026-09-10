@@ -411,11 +411,11 @@ impl Compositor {
     /// the list as it is and nothing else: the client's menu then agrees with
     /// what is on the canvas rather than with what was clicked.
     fn select_output(&mut self, client: ClientId, id: u32) {
-        let Some(output) = self.outputs.by_id(id).filter(|o| o.name.is_some()) else {
-            warn!("client {}: no output with id {id}; the list stands", client.0);
+        let Some(output) = self.outputs.selectable(id) else {
+            warn!("client {}: no output with id {id} to share; the list stands", client.0);
             return self.answer_outputs();
         };
-        let name = output.name.clone().expect("filtered");
+        let name = output.name.clone().expect("selectable");
         if self.outputs.selected.as_deref() == Some(name.as_str()) {
             debug!("client {}: output {name} is already the shared one", client.0);
             return self.answer_outputs();
@@ -423,7 +423,13 @@ impl Compositor {
         let (width, height) = self.outputs.size_of(output);
         let wl_output = output.output.clone();
         info!("client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}", client.0, self.outputs.scale_of(output));
+        self.share_output(name, width, height, &wl_output);
+    }
 
+    /// Take an output as the shared one and start the desktop again on it. The
+    /// whole sequence, whoever asked for it: a client naming one from its list,
+    /// or the compositor taking the one being shared away.
+    fn share_output(&mut self, name: String, width: u16, height: u16, output: &WlOutput) {
         self.stop_capture();
         // A resize accepted for the output being left is not this one's.
         self.pending_resize = None;
@@ -432,10 +438,35 @@ impl Compositor {
             let mut fb = self.shared().framebuffer.lock().unwrap();
             fb.resize(width, height, ResizeOrigin::Server);
         }
-        self.retarget_input(&wl_output);
+        self.retarget_input(output);
         self.geometry_changed();
         self.answer_outputs();
         self.start_capture();
+    }
+
+    /// Share whatever output is left, there being none shared: the one that was
+    /// went away, or the desktop has not had one yet. The list's own order
+    /// decides, so a client lands on the output its menu shows first rather than
+    /// on whichever the compositor happened to announce first.
+    ///
+    /// With nothing left to share the capture stops and the list goes out empty.
+    /// The geometry and the framebuffer stand as they were: a desktop of no size
+    /// is not an answer any client can use, and the last picture is at least the
+    /// one the person was looking at. An output appearing later is adopted here.
+    pub fn adopt_output(&mut self) {
+        // Nothing to tell and nothing to capture until discovery is done.
+        if self.shared.is_none() {
+            return;
+        }
+        let Some(entry) = self.outputs.entries().into_iter().next() else {
+            warn!("no output is left to share; the capture stops until one appears");
+            self.stop_capture();
+            return self.answer_outputs();
+        };
+        let Some(output) = self.outputs.selectable(entry.id) else { return };
+        let wl_output = output.output.clone();
+        info!("sharing output {}: {}x{} pixels at scale {:.2}", entry.name, entry.width, entry.height, entry.scale);
+        self.share_output(entry.name, entry.width, entry.height, &wl_output);
     }
 
     /// Point the virtual pointer at another output. What the client holds is let
@@ -473,10 +504,20 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
             wl_registry::Event::GlobalRemove { name } => {
                 if let Some(i) = state.outputs.outputs.iter().position(|o| o.global == name) {
                     let removed = state.outputs.outputs.remove(i);
-                    let was_selected = removed.name.as_deref() == state.outputs.selected.as_deref();
+                    // An output with no name yet is nobody's selection, not even
+                    // when nothing is selected.
+                    let was_selected = removed.name.as_deref().is_some_and(|n| state.outputs.selected.as_deref() == Some(n));
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if was_selected { "; it is the shared one" } else { "" });
                     removed.output.release();
-                    state.outputs_changed();
+                    if !was_selected {
+                        return state.outputs_changed();
+                    }
+                    // The name would otherwise stand for an output the compositor
+                    // no longer has, which leaves nothing selected, the capture
+                    // stopped and nothing left to start it again -- a client on a
+                    // picture that has quietly stopped changing.
+                    state.outputs.selected = None;
+                    state.adopt_output();
                 }
             }
             _ => {}
