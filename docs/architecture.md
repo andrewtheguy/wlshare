@@ -85,7 +85,9 @@ output this needs wlroots 0.19 or newer, whose headless backend keeps cursors on
 a distinct plane instead of painting them permanently into the output. Every
 client must advertise the standard Cursor pseudo-encoding (`-239`) before it
 asks for framebuffer pixels. wlshare answers with a neutral arrow in the
-client's pixel format, and the client positions that shape at the coordinates
+client's pixel format. RFB cursor dimensions are framebuffer pixels, so wlshare
+rasterizes the point-sized arrow at the output's reported density and sends a
+new shape when that density changes. The client positions it at the coordinates
 it already sends in pointer events. Cursor motion therefore never waits for a
 captured frame. wlr-screencopy exposes no application-selected Wayland cursor
 surface, so the arrow is deliberately stable rather than a guessed shape.

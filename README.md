@@ -11,7 +11,8 @@ shown sharp at 2x and a client's own density becomes the output's. A desktop wit
 more than one monitor sends the client the list, so the one being shared is the
 client's to choose. The compositor pointer is excluded from captured frames, so
 wlshare sends a neutral arrow through the standard RFB Cursor pseudo-encoding
-and the client moves it without waiting for a framebuffer update.
+at the output's pixel density, and the client moves it without waiting for a
+framebuffer update.
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.

@@ -584,8 +584,15 @@ impl Session {
     async fn handle_event(&mut self, event: Event, writer: &mut Writer) -> anyhow::Result<()> {
         match event {
             Event::Geometry { to } => {
-                if self.density && to.is_none_or(|c| c == self.id) {
-                    self.send_geometry(writer).await?;
+                if to.is_none_or(|c| c == self.id) {
+                    if self.cursor_supported {
+                        // RFB cursor dimensions are framebuffer pixels, so a
+                        // new output density needs a newly rasterized arrow.
+                        self.announce_cursor = true;
+                    }
+                    if self.density {
+                        self.send_geometry(writer).await?;
+                    }
                 }
             }
             Event::ResizeRefused { client, status } => {
@@ -645,7 +652,7 @@ impl Session {
         if self.announce_cursor {
             self.announce_cursor = false;
             let mut update = msg::update_header(1).to_vec();
-            update.extend_from_slice(&cursor_rect(&self.format));
+            update.extend_from_slice(&cursor_rect(&self.format, self.shared.geometry().scale));
             writer.send(&update).await?;
         }
         if self.announce_eds {
