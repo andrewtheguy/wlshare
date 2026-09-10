@@ -10,6 +10,7 @@
 //! own for as long as it listens ([`audio`]).
 
 mod audio;
+mod auth;
 mod capture;
 mod clipboard;
 mod compositor;
@@ -29,11 +30,14 @@ use clap::Parser;
 use log::{error, info};
 use wlshare_rfb::rsa_aes::ServerKey;
 
+use crate::auth::Login;
 use crate::session::{RsaAes, Security};
 
 #[derive(Parser, Debug)]
 #[command(name = "wlshare", version, about = "A VNC server for wlroots-based Wayland compositors, with pixel density on the wire")]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// The configuration file (default: $XDG_CONFIG_HOME/wlshare/config.toml).
     #[arg(short, long)]
     config: Option<PathBuf>,
@@ -42,9 +46,20 @@ struct Args {
     listen: Option<std::net::SocketAddr>,
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Hash a password for the `hash` field of the `[password]` table, and
+    /// print it. The password is read from the terminal without echo, or from
+    /// standard input when that is not a terminal.
+    HashPassword,
+}
+
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args = Args::parse();
+    if let Some(Command::HashPassword) = args.command {
+        return hash_password();
+    }
     let path = args.config.unwrap_or_else(config::default_path);
     let mut config = if path.exists() {
         config::Config::load(&path)?
@@ -69,23 +84,34 @@ fn main() -> anyhow::Result<()> {
     result
 }
 
-/// What the configuration says about who may connect, with the RSA-AES key
-/// loaded — or generated and written, on a first start — when PAM is on.
+/// What the configuration says about who may connect: the login one of the two
+/// tables asks for, with the RSA-AES key that carries it loaded — or generated
+/// and written, on a first start. Neither table means no authentication at all,
+/// and the offer says so.
 fn security(config: &config::Config, config_path: &std::path::Path) -> anyhow::Result<Security> {
-    let rsa_aes = match &config.pam {
-        Some(pam) => Some(rsa_aes(pam, config.rsa_key_file(config_path).expect("[pam] is set"))?),
-        None => None,
+    let login = match (&config.pam, &config.password) {
+        (Some(pam), _) => Some(Login::Pam { service: pam.service.clone(), account: pam::process_user()? }),
+        (None, Some(password)) => {
+            auth::check_hash(&password.hash).context("the [password] table's hash")?;
+            Some(Login::Password { hash: password.hash.clone() })
+        }
+        (None, None) => None,
     };
-    match &rsa_aes {
-        None => info!("no [pam] table: accepting clients without authentication, in the clear"),
-        Some(_) => info!("RSA-AES: a client needs the account's login"),
+    let Some(login) = login else {
+        info!("no [pam] or [password] table: accepting clients without authentication, in the clear");
+        return Ok(Security::default());
+    };
+    let key = server_key(config.rsa_key_file(config_path).expect("a login is configured"))?;
+    let (bits, fingerprint) = (key.bits(), key.fingerprint());
+    match &login {
+        Login::Pam { service, account } => info!("RSA-AES with PAM service {service:?}: the login is {account:?}'s; server key {bits} bits, fingerprint {fingerprint}"),
+        Login::Password { .. } => info!("RSA-AES with the configured password, which names no account; server key {bits} bits, fingerprint {fingerprint}"),
     }
-    Ok(Security { rsa_aes })
+    Ok(Security { rsa_aes: Some(RsaAes { key: Arc::new(key), login }) })
 }
 
-/// The RSA-AES half of the security: the key from `key_path`, generated there
-/// on first start, and the account whose login PAM will be asked about.
-fn rsa_aes(pam: &config::Pam, key_path: std::path::PathBuf) -> anyhow::Result<RsaAes> {
+/// The server's RSA key from `key_path`, generated there on a first start.
+fn server_key(key_path: std::path::PathBuf) -> anyhow::Result<ServerKey> {
     let key = match std::fs::read_to_string(&key_path) {
         Ok(pem) => ServerKey::from_pem(&pem).with_context(|| format!("{} is not a PKCS#8 PEM RSA key", key_path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -99,14 +125,73 @@ fn rsa_aes(pam: &config::Pam, key_path: std::path::PathBuf) -> anyhow::Result<Rs
         }
         Err(e) => return Err(e).with_context(|| format!("reading {}", key_path.display())),
     };
-    let account = pam::process_user()?;
-    info!(
-        "RSA-AES with PAM service {:?}: the login is {account:?}'s; server key {} bits, fingerprint {}",
-        pam.service,
-        key.bits(),
-        key.fingerprint()
-    );
-    Ok(RsaAes { key: Arc::new(key), service: pam.service.clone(), account })
+    Ok(key)
+}
+
+/// `wlshare hash-password`: read a password and print the PHC string the
+/// `[password]` table wants. Asked twice at a terminal, where a typo would
+/// otherwise become a password nobody knows; once from a pipe, which has no one
+/// to ask.
+fn hash_password() -> anyhow::Result<()> {
+    let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
+    let password = read_password("Password: ", interactive)?;
+    if interactive {
+        anyhow::ensure!(password == read_password("Again: ", interactive)?, "the two passwords differ");
+    }
+    println!("{}", auth::hash_password(&password)?);
+    Ok(())
+}
+
+/// One line of standard input, without echoing it when that is a terminal. The
+/// prompt goes to standard error, so the hash alone is what a pipe collects.
+fn read_password(prompt: &str, interactive: bool) -> anyhow::Result<String> {
+    use std::io::{BufRead as _, Write as _};
+    let mut line = String::new();
+    let read = if interactive {
+        eprint!("{prompt}");
+        std::io::stderr().flush()?;
+        let _echo_off = EchoOff::new()?;
+        let read = std::io::stdin().lock().read_line(&mut line);
+        eprintln!();
+        read
+    } else {
+        std::io::stdin().lock().read_line(&mut line)
+    };
+    read.context("reading the password")?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_owned())
+}
+
+/// Echo off on the terminal for as long as this lives, and the settings back as
+/// they were when it does not — an error on the way included.
+struct EchoOff(libc::termios);
+
+impl EchoOff {
+    fn new() -> anyhow::Result<Self> {
+        // SAFETY: both calls take a termios this function owns, and the file
+        // descriptor is the process's own standard input.
+        unsafe {
+            let mut term: libc::termios = std::mem::zeroed();
+            anyhow::ensure!(libc::tcgetattr(libc::STDIN_FILENO, &mut term) == 0, "tcgetattr: {}", std::io::Error::last_os_error());
+            let saved = term;
+            term.c_lflag &= !libc::ECHO;
+            anyhow::ensure!(
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &term) == 0,
+                "tcsetattr: {}",
+                std::io::Error::last_os_error()
+            );
+            Ok(Self(saved))
+        }
+    }
+}
+
+impl Drop for EchoOff {
+    fn drop(&mut self) {
+        // SAFETY: the termios is the one tcgetattr filled, and restoring it
+        // cannot fail in a way this can answer.
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &self.0);
+        }
+    }
 }
 
 /// Write a file only its owner can read, created fresh.

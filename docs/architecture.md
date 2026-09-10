@@ -19,8 +19,8 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `outputs.rs`, `input.rs` and `clipboard.rs` are
   the protocols it speaks; `framebuffer.rs` is the shared pixels and damage;
-  `session.rs` is one client; `pam.rs` checks an RSA-AES login; `shared.rs` is
-  what crosses between them.
+  `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
+  the system half of that check; `shared.rs` is what crosses between them.
 
 ## One session at a time
 
@@ -28,7 +28,7 @@ The desktop belongs to one client. A connection that finishes the handshake
 takes it, and the client that held it is disconnected with a message naming the
 one that took over — the same trade Windows Remote Desktop makes, and the reason
 the takeover happens *after* the handshake: an unauthenticated connection, or
-one that fails PAM, never displaces the session in progress. RFB's ClientInit
+one whose login is refused, never displaces the session in progress. RFB's ClientInit
 shared flag is read and dropped; there is no configuration for it and no way to
 watch alongside somebody else.
 
@@ -244,10 +244,11 @@ source is ours. Extended Clipboard is recognised and not yet spoken.
 
 ## Security
 
-RFB 3.8 with the configuration's types on offer: RSA-AES from `[pam]` at both
-widths, `RA2_256` first, or None alone when it is not set. Classic VncAuth is
-deliberately absent: it proves knowledge of a machine's secret, names nobody,
-and protects the login and nothing after it. Without `[pam]` the session is
+RFB 3.8 with the configuration's types on offer: RSA-AES at both widths,
+`RA2_256` first, when either `[pam]` or `[password]` is set, or None alone when
+neither is. Classic VncAuth is deliberately absent: it proves knowledge of a
+machine's secret, names nobody, truncates the password to eight characters, and
+protects the login and nothing after it. With no login configured the session is
 open and in the clear, so the listen address is a loopback or VPN address by
 design.
 
@@ -257,19 +258,32 @@ exchanged in the clear, each side seals a random to the other's key, the two
 randoms derive one AES-EAX key per direction, and from there every byte in both
 directions travels in frames of `u16 len || ciphertext || tag` under a counter
 nonce. Inside the frames each side proves the keys it saw with a hash, the
-server asks for a username and a password (subtype 1; a password alone would
-name nobody), and RFB's SecurityResult, ClientInit and everything after
-follow. `crates/wlshare-rfb/src/rsa_aes.rs` has the exchange byte by byte.
+server asks for the credentials the configured login wants — subtype 1, a
+username and a password, for `[pam]`; subtype 2, a password alone, for
+`[password]` — and RFB's SecurityResult, ClientInit and everything after
+follow. The credentials have one shape on the wire either way, a length-prefixed
+username then a length-prefixed password, and a client answering subtype 2 sends
+the username empty. `crates/wlshare-rfb/src/rsa_aes.rs` has the exchange byte by
+byte.
 
 The server's key is long-lived — generated once into `rsa_key_file`, logged as
 RealVNC's eight-byte fingerprint at startup — because it is the one thing a
-client can pin; remotex logs the fingerprint it saw on every connection. The
-credentials go to PAM (`pam.rs`): `pam_authenticate` and `pam_acct_mgmt` under
-the configured service, nothing else. Before PAM is asked, the username must be
-the account the process runs as: wlshare injects input into one user's desktop,
-and another account's password must not open it. A refusal is answered after a
-one-second delay with SecurityResult failed and the bare reason "authentication
-failed"; the actual reason is logged.
+client can pin; remotex logs the fingerprint it saw on every connection.
+
+What checks the credentials is `auth.rs`, one of two things. `[pam]` sends them
+to PAM (`pam.rs`): `pam_authenticate` and `pam_acct_mgmt` under the configured
+service, nothing else. Before PAM is asked, the username must be the account the
+process runs as: wlshare injects input into one user's desktop, and another
+account's password must not open it. `[password]` verifies the password against
+an Argon2 PHC string from the configuration, in the parameters that string
+carries, and names no account at all — for a host whose desktop user has no
+system password to spend on a VNC client, or no PAM stack to spend it on. The
+hash is parsed at startup, so an unusable one is a startup error and not a
+surprise at the first client; `wlshare hash-password` prints one. An empty
+password is refused before the hash is consulted. Either check blocks — a PAM
+stack may sleep, Argon2 is slow on purpose — so both run on a blocking thread. A
+refusal is answered after a one-second delay with SecurityResult failed and the
+bare reason "authentication failed"; the actual reason is logged.
 
 ## Deliberately absent
 

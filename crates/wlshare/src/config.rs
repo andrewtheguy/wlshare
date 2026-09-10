@@ -11,15 +11,20 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Where to accept clients. Without `[pam]` the session is unauthenticated
-    /// and not encrypted, so this is a loopback or a VPN address unless
-    /// something in front of it encrypts.
+    /// Where to accept clients. With neither `[pam]` nor `[password]` the
+    /// session is unauthenticated and not encrypted, so this is a loopback or a
+    /// VPN address unless something in front of it encrypts.
     #[serde(default = "default_listen")]
     pub listen: SocketAddr,
     /// RSA-AES with the system login: the client names the account wlshare
     /// runs as and gives its password, PAM checks the two, and the session is
-    /// encrypted. Without it, anyone who reaches the port is in.
+    /// encrypted.
     pub pam: Option<Pam>,
+    /// RSA-AES with one configured password and no account at all, for a host
+    /// with no system password to spend on a client. Not with `[pam]`: the
+    /// server asks for one credential or the other, not both. With neither,
+    /// anyone who reaches the port is in.
+    pub password: Option<Password>,
     /// The output to capture, by its `wl_output` name; absent means the first
     /// one the compositor lists.
     pub output: Option<String>,
@@ -74,6 +79,18 @@ pub struct Pam {
     pub rsa_key_file: Option<PathBuf>,
 }
 
+/// The `[password]` table: RSA-AES security with one password of the
+/// operator's, which no system account has to know about.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Password {
+    /// The password's Argon2 hash as the PHC string `wlshare hash-password`
+    /// prints. The password itself is never in this file.
+    pub hash: String,
+    /// The server's RSA key, as under `[pam]`.
+    pub rsa_key_file: Option<PathBuf>,
+}
+
 fn default_pam_service() -> String {
     "wlshare".to_owned()
 }
@@ -98,15 +115,31 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        anyhow::ensure!(config.max_fps > 0, "max_fps must be at least 1");
+        config.validate().with_context(|| format!("in {}", path.display()))?;
         Ok(config)
     }
 
-    /// Where the RSA-AES key lives when `[pam]` is set: the configured path, or
-    /// `rsa_key.pem` beside the configuration file at `config_path`.
+    /// What the types cannot say: a rate that is a rate, and one answer to the
+    /// question of who may connect.
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.max_fps > 0, "max_fps must be at least 1");
+        anyhow::ensure!(
+            !(self.pam.is_some() && self.password.is_some()),
+            "[pam] and [password] are two answers to the same question; keep one"
+        );
+        Ok(())
+    }
+
+    /// Where the RSA-AES key lives when either table is set: that table's path,
+    /// or `rsa_key.pem` beside the configuration file at `config_path`. `None`
+    /// when neither is, which is the unauthenticated server.
     pub fn rsa_key_file(&self, config_path: &Path) -> Option<PathBuf> {
-        let pam = self.pam.as_ref()?;
-        Some(pam.rsa_key_file.clone().unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")))
+        let configured = match (&self.pam, &self.password) {
+            (Some(pam), _) => &pam.rsa_key_file,
+            (None, Some(password)) => &password.rsa_key_file,
+            (None, None) => return None,
+        };
+        Some(configured.clone().unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")))
     }
 }
 
@@ -132,6 +165,21 @@ mod tests {
         assert!(c.audio);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
+    }
+
+    #[test]
+    fn a_password_table_takes_the_key_and_rules_out_pam() {
+        let c: Config = toml::from_str("[password]\nhash = \"$argon2id$v=19$x\"").unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.password.as_ref().unwrap().hash, "$argon2id$v=19$x");
+        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/etc/x/rsa_key.pem")));
+        let c: Config = toml::from_str("[password]\nhash = \"h\"\nrsa_key_file = \"/k.pem\"").unwrap();
+        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/k.pem")));
+        // A hash is the whole point of the table, and both tables at once is a
+        // question with two answers.
+        assert!(toml::from_str::<Config>("[password]\n").is_err());
+        let both: Config = toml::from_str("[pam]\n[password]\nhash = \"h\"").unwrap();
+        assert!(both.validate().is_err());
     }
 
     #[test]

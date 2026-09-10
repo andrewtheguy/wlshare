@@ -4,11 +4,11 @@
 //!
 //! The types are RealVNC's, documented in the community `rfbproto` and spoken
 //! on the open side by TigerVNC, neatvnc and the remotex gateway, whose client
-//! this server was written against. RSA-AES carries a username and a password,
-//! so they can be checked against the system's accounts, and every byte after
-//! the key exchange is inside AES-EAX — which classic VncAuth, deliberately not
-//! spoken here, never did: it proves knowledge of a machine's secret and
-//! encrypts nothing.
+//! this server was written against. RSA-AES carries either a username and a
+//! password, so they can be checked against the system's accounts, or a
+//! password alone ([`Subtype`]), and every byte after the key exchange is
+//! inside AES-EAX — which classic VncAuth, deliberately not spoken here, never
+//! did: it proves knowledge of a machine's secret and encrypts nothing.
 //!
 //! ## The exchange
 //!
@@ -34,8 +34,8 @@
 //! [frame](Sealer::frame). Inside the frames: the server's hash of the two public
 //! keys, the client's hash of them the other way round (which binds the session
 //! to the keys that were actually sent — a middle-man's substitution shows up
-//! here), a one-byte subtype saying the server wants a username and a password,
-//! the credentials, then RFB's own SecurityResult and everything after it.
+//! here), a one-byte subtype saying which credentials the server wants, the
+//! credentials, then RFB's own SecurityResult and everything after it.
 //!
 //! ## The client random as an oracle
 //!
@@ -114,10 +114,27 @@ const MAX_FRAME_BODY: usize = 8192;
 const HEADER: usize = 2;
 const TAG: usize = 16;
 
-/// RSA-AES subtype 1: the server wants a username and a password. The only
-/// subtype this server sends; subtype 2, a password alone, would name nobody,
-/// and the desktop behind the port is one account's.
-const SUBTYPE_USER_PASS: u8 = 1;
+/// Which credentials the server asks for once the channel is up, sent as the
+/// one subtype byte. What comes back has the same shape either way — a
+/// length-prefixed username then a length-prefixed password, TigerVNC's client
+/// sending an empty username for [`Subtype::Password`] — so only the byte the
+/// server writes differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subtype {
+    /// Subtype 1: a username and a password, for a login that names an account.
+    UserPass,
+    /// Subtype 2: a password alone, for a server whose secret names nobody.
+    Password,
+}
+
+impl Subtype {
+    fn byte(self) -> u8 {
+        match self {
+            Self::UserPass => 1,
+            Self::Password => 2,
+        }
+    }
+}
 
 /// Which of the two types was chosen, deciding the hash, the key length and
 /// the random's size together.
@@ -326,8 +343,15 @@ impl ServerKey {
     }
 }
 
+/// The most bytes either credential field can carry: its length is one byte on
+/// the wire, so a password longer than this is one no client can send, whatever
+/// the server would have made of it.
+pub const MAX_CREDENTIAL_LEN: usize = u8::MAX as usize;
+
 /// What the client sent as its account: `u8 len || username || u8 len ||
-/// password`, each UTF-8 as far as it goes.
+/// password`, each UTF-8 as far as it goes and at most [`MAX_CREDENTIAL_LEN`]
+/// bytes. The username is what a client answering [`Subtype::Password`] leaves
+/// empty, and means nothing there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub username: String,
@@ -343,7 +367,7 @@ pub struct Session {
 }
 
 /// Run the exchange on a freshly chosen RSA-AES type: key exchange in the
-/// clear, then the key hashes, the subtype and the credentials inside frames.
+/// clear, then the key hashes, `subtype` and the credentials inside frames.
 ///
 /// Returns once the credentials are in hand; checking them and answering with
 /// SecurityResult is the caller's, through [`Session::sealer`] like everything
@@ -353,6 +377,7 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     writer: &mut W,
     strength: Strength,
     key: &ServerKey,
+    subtype: Subtype,
 ) -> Result<(Credentials, Session), Error> {
     writer.write_all(&key.wire.0).await?;
 
@@ -390,7 +415,7 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     if client_hash != strength.hash(&[&client_wire.0, &key.wire.0]) {
         return Err(Error::Tampered);
     }
-    writer.write_all(&sealer.frame(&[SUBTYPE_USER_PASS])).await?;
+    writer.write_all(&sealer.frame(&[subtype.byte()])).await?;
 
     let username = read_field(&mut frames).await?;
     let password = read_field(&mut frames).await?;
@@ -756,6 +781,7 @@ mod tests {
     async fn scripted_client<S: AsyncRead + AsyncWrite + Unpin>(
         mut sock: S,
         strength: Strength,
+        subtype: Subtype,
         username: &str,
         password: &str,
         misbehave: Misbehave,
@@ -815,7 +841,13 @@ mod tests {
         sock.write_all(&sealer.frame(&client_hash)).await?;
 
         let mut frames = FrameReader::new(sock, opener);
-        assert_eq!(frames.read_u8().await?, SUBTYPE_USER_PASS);
+        // The number written out again rather than asked of Subtype::byte, so
+        // the two tables cannot agree on a wrong one.
+        let expected = match subtype {
+            Subtype::UserPass => 1u8,
+            Subtype::Password => 2u8,
+        };
+        assert_eq!(frames.read_u8().await?, expected);
         let (sock, opener) = frames.into_parts();
         let mut credentials = vec![username.len() as u8];
         credentials.extend(username.as_bytes());
@@ -841,18 +873,24 @@ mod tests {
         LieInHash,
     }
 
-    async fn exchange(strength: Strength, username: &str, password: &str, misbehave: Misbehave) -> (Result<Credentials, Error>, Result<(u32, Vec<u8>), io::Error>) {
+    async fn exchange(
+        strength: Strength,
+        subtype: Subtype,
+        username: &str,
+        password: &str,
+        misbehave: Misbehave,
+    ) -> (Result<Credentials, Error>, Result<(u32, Vec<u8>), io::Error>) {
         let key = test_key();
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let username = username.to_owned();
         let password = password.to_owned();
-        let client = tokio::spawn(async move { scripted_client(client_sock, strength, &username, &password, misbehave).await });
+        let client = tokio::spawn(async move { scripted_client(client_sock, strength, subtype, &username, &password, misbehave).await });
 
         // The halves live inside the block, so a server that gives up drops them
         // and the client reads a hang-up instead of waiting for a hash forever.
         let server = async {
             let (mut reader, mut writer) = tokio::io::split(server_sock);
-            let (credentials, Session { mut sealer, opener }) = authenticate(&mut reader, &mut writer, strength, &key).await?;
+            let (credentials, Session { mut sealer, opener }) = authenticate(&mut reader, &mut writer, strength, &key, subtype).await?;
             // SecurityResult and a message, both inside one frame, then an echo back.
             let mut after = 0u32.to_be_bytes().to_vec();
             after.extend_from_slice(b"after");
@@ -870,7 +908,7 @@ mod tests {
     #[tokio::test]
     async fn the_exchange_authenticates_against_a_client_written_from_the_specification() {
         for strength in [Strength::Aes128, Strength::Aes256] {
-            let (server, client) = exchange(strength, "andrew", "hunter2", Misbehave::No).await;
+            let (server, client) = exchange(strength, Subtype::UserPass, "andrew", "hunter2", Misbehave::No).await;
             let credentials = server.unwrap();
             assert_eq!(credentials.username, "andrew");
             assert_eq!(credentials.password, "hunter2");
@@ -880,9 +918,21 @@ mod tests {
         }
     }
 
+    /// Subtype 2: the byte on the wire is 2, and the client answers with an
+    /// empty username — which is what TigerVNC's viewer sends — so the password
+    /// arrives and names nobody.
+    #[tokio::test]
+    async fn a_password_only_exchange_asks_for_subtype_2_and_carries_no_username() {
+        let (server, client) = exchange(Strength::Aes256, Subtype::Password, "", "hunter2", Misbehave::No).await;
+        let credentials = server.unwrap();
+        assert_eq!(credentials.username, "");
+        assert_eq!(credentials.password, "hunter2");
+        assert_eq!(client.unwrap().0, 0);
+    }
+
     #[tokio::test]
     async fn a_client_hash_over_other_keys_ends_the_exchange() {
-        let (server, client) = exchange(Strength::Aes256, "andrew", "hunter2", Misbehave::LieInHash).await;
+        let (server, client) = exchange(Strength::Aes256, Subtype::UserPass, "andrew", "hunter2", Misbehave::LieInHash).await;
         assert!(matches!(server, Err(Error::Tampered)), "{server:?}");
         assert!(client.is_err());
     }
@@ -892,7 +942,7 @@ mod tests {
     /// wrong key would — at the client's hash frame, whose tag cannot check.
     #[tokio::test]
     async fn a_ciphertext_that_does_not_decrypt_fails_at_the_hash_like_any_wrong_key() {
-        let (server, client) = exchange(Strength::Aes128, "andrew", "hunter2", Misbehave::GarbageRandom).await;
+        let (server, client) = exchange(Strength::Aes128, Subtype::UserPass, "andrew", "hunter2", Misbehave::GarbageRandom).await;
         // The client's hash frame does not open under the substitute keys — or,
         // this lockstep client having failed on the server's hash first and hung
         // up, never arrives. Either is the hash step; neither names the random.
@@ -951,7 +1001,7 @@ mod tests {
         let mut offer = 512u32.to_be_bytes().to_vec();
         offer.resize(4 + 128, 1);
         let mut sent = Vec::new();
-        let err = authenticate(&mut offer.as_slice(), &mut sent, Strength::Aes128, &key).await.err().expect("a 512-bit key is refused");
+        let err = authenticate(&mut offer.as_slice(), &mut sent, Strength::Aes128, &key, Subtype::UserPass).await.err().expect("a 512-bit key is refused");
         assert!(err.to_string().contains("512 bits"), "{err}");
         // The server's key went out first, as the exchange has it, and nothing else.
         assert_eq!(sent.len(), 4 + 2 * 128);

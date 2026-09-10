@@ -22,6 +22,8 @@ use std::ptr;
 use anyhow::Context as _;
 use log::{debug, warn};
 
+use crate::auth::Refused;
+
 #[repr(C)]
 struct PamMessage {
     msg_style: c_int,
@@ -74,13 +76,6 @@ struct Answers {
     password: CString,
 }
 
-/// Why a login was refused. The text is PAM's own, or this module's for the
-/// account check, and is for the log — the client is told only that the login
-/// failed.
-#[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Refused(String);
-
 /// The account the process runs as, which is the one account a login may name.
 pub fn process_user() -> anyhow::Result<String> {
     // SAFETY: getpwuid_r writes the passwd record into `pwd` and its strings
@@ -114,14 +109,14 @@ pub fn process_user() -> anyhow::Result<String> {
 /// call it off the runtime.
 pub fn check(service: &str, account: &str, username: &str, password: &str, remote: &str) -> Result<(), Refused> {
     if username != account {
-        return Err(Refused(format!("the login names {username:?}, and this desktop belongs to {account:?}")));
+        return Err(Refused::new(format!("the login names {username:?}, and this desktop belongs to {account:?}")));
     }
     let answers = Answers {
-        username: CString::new(username).map_err(|_| Refused("the username contains a NUL".to_owned()))?,
-        password: CString::new(password).map_err(|_| Refused("the password contains a NUL".to_owned()))?,
+        username: CString::new(username).map_err(|_| Refused::new("the username contains a NUL"))?,
+        password: CString::new(password).map_err(|_| Refused::new("the password contains a NUL"))?,
     };
-    let service = CString::new(service).map_err(|_| Refused("the PAM service name contains a NUL".to_owned()))?;
-    let remote = CString::new(remote).map_err(|_| Refused("the remote address contains a NUL".to_owned()))?;
+    let service = CString::new(service).map_err(|_| Refused::new("the PAM service name contains a NUL"))?;
+    let remote = CString::new(remote).map_err(|_| Refused::new("the remote address contains a NUL"))?;
     let conv = PamConv {
         conv: Some(converse),
         appdata_ptr: (&answers as *const Answers).cast_mut().cast(),
@@ -133,7 +128,7 @@ pub fn check(service: &str, account: &str, username: &str, password: &str, remot
         let mut handle: *mut PamHandle = ptr::null_mut();
         let rc = pam_start(service.as_ptr(), answers.username.as_ptr(), &conv, &mut handle);
         if rc != PAM_SUCCESS {
-            return Err(Refused(format!("pam_start failed: {}", strerror(ptr::null_mut(), rc))));
+            return Err(Refused::new(format!("pam_start failed: {}", strerror(ptr::null_mut(), rc))));
         }
         let rc = pam_set_item(handle, PAM_RHOST, remote.as_ptr().cast());
         if rc != PAM_SUCCESS {
@@ -146,7 +141,7 @@ pub fn check(service: &str, account: &str, username: &str, password: &str, remot
         } else {
             "pam_authenticate"
         };
-        let outcome = if rc == PAM_SUCCESS { Ok(()) } else { Err(Refused(format!("{step}: {}", strerror(handle, rc)))) };
+        let outcome = if rc == PAM_SUCCESS { Ok(()) } else { Err(Refused::new(format!("{step}: {}", strerror(handle, rc)))) };
         pam_end(handle, rc);
         outcome
     }
