@@ -343,9 +343,15 @@ impl ServerKey {
     }
 }
 
+/// The most bytes either credential field can carry: its length is one byte on
+/// the wire, so a password longer than this is one no client can send, whatever
+/// the server would have made of it.
+pub const MAX_CREDENTIAL_LEN: usize = u8::MAX as usize;
+
 /// What the client sent as its account: `u8 len || username || u8 len ||
-/// password`, each UTF-8 as far as it goes. The username is what a client
-/// answering [`Subtype::Password`] leaves empty, and means nothing there.
+/// password`, each UTF-8 as far as it goes and at most [`MAX_CREDENTIAL_LEN`]
+/// bytes. The username is what a client answering [`Subtype::Password`] leaves
+/// empty, and means nothing there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub username: String,
@@ -835,7 +841,13 @@ mod tests {
         sock.write_all(&sealer.frame(&client_hash)).await?;
 
         let mut frames = FrameReader::new(sock, opener);
-        assert_eq!(frames.read_u8().await?, subtype.byte());
+        // The number written out again rather than asked of Subtype::byte, so
+        // the two tables cannot agree on a wrong one.
+        let expected = match subtype {
+            Subtype::UserPass => 1u8,
+            Subtype::Password => 2u8,
+        };
+        assert_eq!(frames.read_u8().await?, expected);
         let (sock, opener) = frames.into_parts();
         let mut credentials = vec![username.len() as u8];
         credentials.extend(username.as_bytes());

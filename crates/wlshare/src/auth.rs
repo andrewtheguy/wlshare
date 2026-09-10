@@ -17,8 +17,8 @@
 //! Both checks block — a PAM stack may sleep or run programs, and Argon2 is
 //! slow on purpose — so both run off the runtime.
 
-use argon2::{Argon2, PasswordHash, PasswordHasher as _, PasswordVerifier as _};
-use wlshare_rfb::rsa_aes::{Credentials, Subtype};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher as _, PasswordVerifier as _, Version};
+use wlshare_rfb::rsa_aes::{Credentials, MAX_CREDENTIAL_LEN, Subtype};
 
 use crate::pam;
 
@@ -79,21 +79,36 @@ fn verify(hash: &str, password: &str) -> Result<(), Refused> {
 
 /// Hash a password as `[password]` wants it: Argon2id in the crate's default
 /// parameters, a fresh random salt, and the PHC string that carries both.
+///
+/// A password RSA-AES cannot carry is refused here rather than hashed into a
+/// configuration no client could ever satisfy.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     anyhow::ensure!(!password.is_empty(), "the password is empty");
+    anyhow::ensure!(
+        password.len() <= MAX_CREDENTIAL_LEN,
+        "the password is {} bytes, and RSA-AES carries at most {MAX_CREDENTIAL_LEN}: no client could send it",
+        password.len()
+    );
     let hash = Argon2::default().hash_password(password.as_bytes()).map_err(|e| anyhow::anyhow!("hashing the password: {e}"))?;
     Ok(hash.to_string())
 }
 
 /// Read a configured hash, so one wlshare cannot use is an error at startup and
-/// not at the first client to try it.
+/// not at the first client to try it. A PHC string parses with most of itself
+/// missing — `$argon2id` alone is a well-formed one — and a verification against
+/// a header with no salt or no digest is indistinguishable from a wrong
+/// password, so every piece [`verify`] will reach for is taken out here, in the
+/// order it reaches for them.
 pub fn check_hash(hash: &str) -> anyhow::Result<()> {
     let parsed = PasswordHash::new(hash).map_err(|e| anyhow::anyhow!("the hash is not a PHC string: {e}"))?;
-    anyhow::ensure!(
-        parsed.algorithm.as_str().starts_with("argon2"),
-        "the hash is {}, and wlshare verifies Argon2 only",
-        parsed.algorithm
-    );
+    Algorithm::new(parsed.algorithm.as_str())
+        .map_err(|e| anyhow::anyhow!("the hash names {}, and wlshare verifies Argon2 only: {e}", parsed.algorithm))?;
+    if let Some(version) = parsed.version {
+        Version::try_from(version).map_err(|e| anyhow::anyhow!("the hash's version {version} is not one Argon2 has: {e}"))?;
+    }
+    anyhow::ensure!(parsed.salt.is_some(), "the hash carries no salt");
+    anyhow::ensure!(parsed.hash.is_some(), "the hash carries no digest: there would be nothing to compare a password against");
+    Params::try_from(&parsed).map_err(|e| anyhow::anyhow!("the hash's parameters are not ones Argon2 takes: {e}"))?;
     Ok(())
 }
 
@@ -116,8 +131,30 @@ mod tests {
     #[test]
     fn a_hash_that_is_not_argon2_is_refused_at_startup() {
         assert!(hash_password("").is_err());
+        assert!(hash_password(&"a".repeat(MAX_CREDENTIAL_LEN + 1)).is_err());
+        assert!(hash_password(&"a".repeat(MAX_CREDENTIAL_LEN)).is_ok());
         assert!(check_hash("hunter2").is_err());
         assert!(check_hash("$2b$12$K3JNi5xUNaXNaXNaXNaXNuJ3nQ2mDe2hAaXQ1oX8fJz4T6bA0aXNa").is_err());
+    }
+
+    /// A PHC string is happy with far less than a verification needs, and each
+    /// of these would otherwise start a wlshare that refuses every client.
+    #[test]
+    fn a_hash_missing_what_a_login_needs_is_refused_at_startup() {
+        let hash = hash_password("hunter2").unwrap();
+        let (head, _) = hash.rsplit_once('$').expect("a digest to cut off");
+        check_hash(&hash).unwrap();
+
+        // A header and nothing else, then one with a salt but no digest.
+        assert!(check_hash("$argon2id").is_err());
+        assert!(check_hash(head).is_err());
+        // A name that only begins like Argon2's.
+        assert!(check_hash(&hash.replacen("$argon2id$", "$argon2idfoo$", 1)).is_err());
+        // Parameters Argon2 will not build from: t=0, and a name it has no use for.
+        assert!(check_hash(&hash.replacen("t=2", "t=0", 1)).is_err());
+        assert!(check_hash(&hash.replacen("t=2", "z=2", 1)).is_err());
+        // A version Argon2 never had.
+        assert!(check_hash(&hash.replacen("v=19", "v=7", 1)).is_err());
     }
 
     #[test]
