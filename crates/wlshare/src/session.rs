@@ -4,6 +4,21 @@
 //! framebuffer, and listens for events, and does one thing at a time so the
 //! bytes it writes are always whole messages in the order they were decided.
 //!
+//! ## One at a time
+//!
+//! The desktop is one client's. Finishing the handshake takes it, and the
+//! session that held it ends — it watches the compositor's `active` client
+//! rather than an [`Event`](crate::shared::Event), so a session too far behind
+//! to read the broadcast cannot go on holding a desktop it no longer has. The
+//! watch races the message loop as a whole rather than being looked at between
+//! passes of it, so a client that has stopped reading its socket is cut off in
+//! the middle of the write it is blocking on. Client ids only ever go up, and
+//! that is what makes the test a comparison rather than an acknowledgement: an
+//! `active` above this session's own is a connection that joined after it,
+//! whether or not this one ever saw itself there. Nothing a superseded session
+//! sent in the meantime is acted on: the compositor hears input, resize,
+//! density and clipboard from the active client alone.
+//!
 //! ## Sending pixels
 //!
 //! A client gets a FramebufferUpdate when it has asked for one — with a
@@ -58,7 +73,7 @@ use wlshare_rfb::{
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::audio::Capture;
 use crate::framebuffer::{Rect, ResizeOrigin};
@@ -142,7 +157,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     socket.set_nodelay(true)?;
     let peer = socket.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
     let (reader, writer) = socket.into_split();
-    let (reader, mut writer, shared_desktop) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(reader, writer, &config, &peer))
+    let (reader, mut writer) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(reader, writer, &config, &peer))
         .await
         .map_err(|_| anyhow::anyhow!("the handshake took over {HANDSHAKE_TIMEOUT:?}"))??;
     let (width, height) = {
@@ -150,8 +165,9 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         (fb.width, fb.height)
     };
     writer.send(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
-    info!("client {}: authenticated; desktop {width}x{height}{}", id.0, if shared_desktop { "" } else { ", to itself" });
-    shared.command(Command::ClientJoined { id, shared: shared_desktop });
+    info!("client {}: authenticated; desktop {width}x{height}", id.0);
+    let mut active = shared.active.subscribe();
+    shared.command(Command::ClientJoined(id));
 
     let events = shared.events.subscribe();
     let frames = shared.frame_tx.subscribe();
@@ -183,12 +199,41 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         scratch: Vec::new(),
         out: Vec::new(),
     };
-    session.pump(reader, writer).await
+    let result = tokio::select! {
+        result = session.pump(reader, writer) => result,
+        taken = superseded(&mut active, id) => Err(anyhow::anyhow!("client {} took the desktop", taken?)),
+    };
+    // However the session ended — the client left, an error, or a takeover
+    // cancelling the loop mid-write — the capture it may still hold is closed
+    // here rather than by dropping `session`: closing joins PipeWire's thread,
+    // and that blocking wait does not belong on a runtime worker. The session
+    // is over either way, so the result stands whatever the join does.
+    if let Some(capture) = session.audio.take()
+        && let Err(e) = tokio::task::spawn_blocking(move || drop(capture)).await
+    {
+        warn!("client {}: the audio thread did not stop: {e}", id.0);
+    }
+    result
+}
+
+/// Resolves once a later connection has taken the desktop. Ids only go up, so
+/// an `active` above this session's is a client that joined after it; anything
+/// below it — 0 included — is the compositor not having read this session's own
+/// join yet, which is what the wait is for.
+async fn superseded(active: &mut watch::Receiver<u64>, id: ClientId) -> anyhow::Result<u64> {
+    loop {
+        let current = *active.borrow_and_update();
+        if current > id.0 {
+            return Ok(current);
+        }
+        active.changed().await.context("the compositor thread is gone")?;
+    }
 }
 
 /// RFB 3.8 version, security and ClientInit. Returns the transport the rest of
-/// the session runs over and the ClientInit shared flag.
-async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer, bool)> {
+/// the session runs over. The ClientInit shared flag is read and dropped: the
+/// desktop is one client's either way.
+async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer)> {
     writer.write_all(msg::PROTOCOL_VERSION).await?;
     let mut version = [0u8; 12];
     reader.read_exact(&mut version).await.context("reading the client's version")?;
@@ -227,8 +272,8 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
         }
     };
     writer.send(&msg::security_ok()).await?;
-    let shared = reader.read_u8().await.context("reading ClientInit")?;
-    Ok((reader, writer, shared != 0))
+    let _shared = reader.read_u8().await.context("reading ClientInit")?;
+    Ok((reader, writer))
 }
 
 struct Session {
@@ -263,7 +308,7 @@ struct Session {
     fence_seq: u32,
     announce_eds: bool,
     events: broadcast::Receiver<Event>,
-    frames: tokio::sync::watch::Receiver<u64>,
+    frames: watch::Receiver<u64>,
     /// Pixels copied out of the framebuffer, rect by rect, for encoding.
     scratch: Vec<u8>,
     out: Vec<u8>,
@@ -404,7 +449,7 @@ impl Session {
             }
             ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { client: self.id, keysym, down }),
             ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
-            ClientMsg::CutText(bytes) => self.shared.command(Command::SetClipboard(msg::latin1_to_string(&bytes))),
+            ClientMsg::CutText(bytes) => self.shared.command(Command::SetClipboard { client: self.id, text: msg::latin1_to_string(&bytes) }),
             ClientMsg::ExtendedCutText(_) => debug!("client {}: extended clipboard is not spoken here; ignored", self.id.0),
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
                 self.continuous = enable && self.continuous_supported;
@@ -505,11 +550,6 @@ impl Session {
             }
             Event::Clipboard(text) => {
                 writer.send(&msg::server_cut_text(&text)).await?;
-            }
-            Event::Exclusive { keep } => {
-                if keep != self.id {
-                    anyhow::bail!("client {} took the desktop to itself", keep.0);
-                }
             }
         }
         Ok(())

@@ -22,12 +22,12 @@ pub struct ClientId(pub u64);
 /// What the compositor thread is asked to do.
 #[derive(Debug)]
 pub enum Command {
-    /// A client connected; capture runs while there is at least one. `shared`
-    /// is the ClientInit flag: a client that clears it asks for the desktop to
-    /// itself, and the others are disconnected.
-    ClientJoined { id: ClientId, shared: bool },
-    /// A client left: its input is let go, capture may stop, and the layout is
-    /// released if it held it. Sent for every connection, joined or not.
+    /// A client finished the handshake and takes the desktop: capture runs
+    /// while it is on it, and a client already there is superseded, RFB's
+    /// ClientInit shared flag notwithstanding.
+    ClientJoined(ClientId),
+    /// A client left: its input is let go and capture stops. Sent for every
+    /// connection, joined or not, and ignored for one already superseded.
     ClientLeft(ClientId),
     Key { client: ClientId, keysym: u32, down: bool },
     Pointer { client: ClientId, buttons: u8, x: u16, y: u16 },
@@ -36,7 +36,7 @@ pub enum Command {
     /// ClientDensity: the client wants the output drawn at `scale`.
     Declare { client: ClientId, scale: f64 },
     /// Text for the compositor's clipboard.
-    SetClipboard(String),
+    SetClipboard { client: ClientId, text: String },
 }
 
 /// What the compositor thread tells the sessions, beyond the framebuffer.
@@ -50,9 +50,6 @@ pub enum Event {
     /// Text arrived on the compositor's clipboard — or left it: empty when the
     /// selection was cleared or is no longer text.
     Clipboard(String),
-    /// A client took the desktop to itself with ClientInit; every other client
-    /// is disconnected.
-    Exclusive { keep: ClientId },
 }
 
 /// The captured output as the sessions describe it to clients: the framebuffer's
@@ -69,6 +66,13 @@ pub struct Shared {
     pub framebuffer: Mutex<Framebuffer>,
     /// Ticks with [`Framebuffer::generation`] on every change.
     pub frame_tx: watch::Sender<u64>,
+    /// The client on the desktop, or 0 for nobody. A `watch` and not an
+    /// [`Event`]: a session too far behind to read the broadcast would miss
+    /// being superseded, and this it cannot miss. Ids come from
+    /// [`Shared::next_client`] and so only go up, which is what lets a session
+    /// read one value and know where it stands: anything above its own id is a
+    /// client that joined after it.
+    pub active: watch::Sender<u64>,
     pub geometry: Mutex<Geometry>,
     pub events: broadcast::Sender<Event>,
     pub commands: calloop::channel::Sender<Command>,
@@ -78,10 +82,12 @@ pub struct Shared {
 impl Shared {
     pub fn new(framebuffer: Framebuffer, geometry: Geometry, commands: calloop::channel::Sender<Command>) -> Self {
         let (frame_tx, _) = watch::channel(framebuffer.generation);
+        let (active, _) = watch::channel(0);
         let (events, _) = broadcast::channel(64);
         Self {
             framebuffer: Mutex::new(framebuffer),
             frame_tx,
+            active,
             geometry: Mutex::new(geometry),
             events,
             commands,
@@ -95,6 +101,11 @@ impl Shared {
 
     pub fn geometry(&self) -> Geometry {
         *self.geometry.lock().unwrap()
+    }
+
+    /// Say who is on the desktop; every other session ends.
+    pub fn set_active(&self, client: Option<ClientId>) {
+        self.active.send_replace(client.map_or(0, |c| c.0));
     }
 
     /// Tell the sessions the framebuffer changed.

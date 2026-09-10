@@ -5,7 +5,6 @@
 //! timer. Sessions never touch a Wayland object; they send [`Command`]s and read
 //! the [`Shared`] state and [`Event`]s this thread produces.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -46,10 +45,9 @@ pub struct Compositor {
     pub capture: Capture,
     input: Option<Input>,
     pub clipboard: Clipboard,
-    pub clients: HashSet<ClientId>,
-    /// The client whose resize or declaration the output last followed; the
-    /// layout is theirs until they leave, as wayvnc has it.
-    layout_owner: Option<ClientId>,
+    /// The one client on the desktop. A connection that finishes the handshake
+    /// takes it from whoever holds it.
+    pub client: Option<ClientId>,
     /// A client's SetDesktopSize the compositor accepted, until the frame at that
     /// size arrives.
     pub pending_resize: Option<(ClientId, u16, u16)>,
@@ -181,8 +179,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
         capture: Capture::default(),
         input: None,
         clipboard: Clipboard::default(),
-        clients: HashSet::new(),
-        layout_owner: None,
+        client: None,
         pending_resize: None,
         max_fps,
         resize_allowed: resize,
@@ -277,61 +274,73 @@ impl Compositor {
 
     fn handle_command(&mut self, command: Command) {
         match command {
-            Command::ClientJoined { id, shared } => {
-                if !shared && !self.clients.is_empty() {
-                    info!("client {} asked for the desktop to itself; disconnecting {} other client(s)", id.0, self.clients.len());
-                    self.shared().emit(Event::Exclusive { keep: id });
+            Command::ClientJoined(id) => {
+                if let Some(previous) = self.client.replace(id) {
+                    info!("client {} takes the desktop from client {}", id.0, previous.0);
+                    self.let_go(previous);
                 }
-                self.clients.insert(id);
+                self.shared().set_active(Some(id));
                 self.start_capture();
             }
             Command::ClientLeft(id) => {
-                if !self.clients.remove(&id) {
-                    // A connection that never got past the handshake held nothing.
+                // A connection that never joined, or one already superseded,
+                // holds nothing.
+                if self.client != Some(id) {
                     return;
                 }
-                if self.layout_owner == Some(id) {
-                    debug!("client {} released the layout", id.0);
-                    self.layout_owner = None;
-                }
-                if self.pending_resize.is_some_and(|(c, _, _)| c == id) {
-                    self.pending_resize = None;
-                }
-                if let Some(input) = &mut self.input {
-                    input.release_client(id);
-                }
-                if self.clients.is_empty() {
-                    self.stop_capture();
-                }
+                self.client = None;
+                self.shared().set_active(None);
+                self.let_go(id);
+                self.stop_capture();
             }
+            // Everything below is the desktop's, so only the client holding it
+            // is heard: a superseded session's last messages arrive after the
+            // new client has taken over.
             Command::Key { client, keysym, down } => {
+                if self.client != Some(client) {
+                    return;
+                }
                 if let Some(input) = &mut self.input {
-                    input.key(client, keysym, down);
+                    input.key(keysym, down);
                 }
             }
             Command::Pointer { client, buttons, x, y } => {
+                if self.client != Some(client) {
+                    return;
+                }
                 let extent = {
                     let fb = self.shared().framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
                 if let Some(input) = &mut self.input {
-                    input.pointer(client, buttons, x, y, extent);
+                    input.pointer(buttons, x, y, extent);
                 }
             }
-            Command::Resize { client, width, height } => self.resize(client, width, height),
-            Command::Declare { client, scale } => self.declare(client, scale),
-            Command::SetClipboard(text) => self.clipboard.set(&self.qh.clone(), text),
+            Command::Resize { client, width, height } => {
+                if self.client == Some(client) {
+                    self.resize(client, width, height);
+                }
+            }
+            Command::Declare { client, scale } => {
+                if self.client == Some(client) {
+                    self.declare(client, scale);
+                }
+            }
+            Command::SetClipboard { client, text } => {
+                if self.client == Some(client) {
+                    self.clipboard.set(&self.qh.clone(), text);
+                }
+            }
         }
     }
 
-    /// Own the layout for `client`, or say who does.
-    fn claim_layout(&mut self, client: ClientId) -> bool {
-        match self.layout_owner {
-            Some(owner) if owner != client => false,
-            _ => {
-                self.layout_owner = Some(client);
-                true
-            }
+    /// Let go of everything a client held, whether it left or was superseded.
+    fn let_go(&mut self, id: ClientId) {
+        if self.pending_resize.is_some_and(|(c, _, _)| c == id) {
+            self.pending_resize = None;
+        }
+        if let Some(input) = &mut self.input {
+            input.release_all();
         }
     }
 
@@ -339,10 +348,6 @@ impl Compositor {
         let refuse = |this: &Self, status: u16| this.shared().emit(Event::ResizeRefused { client, status });
         if !self.resize_allowed {
             info!("client {} asked for {width}x{height}: resizing is disabled", client.0);
-            return refuse(self, wlshare_rfb::msg::EDS_STATUS_PROHIBITED);
-        }
-        if !self.claim_layout(client) {
-            info!("client {} asked for {width}x{height}: another client owns the layout", client.0);
             return refuse(self, wlshare_rfb::msg::EDS_STATUS_PROHIBITED);
         }
         if width == 0 || height == 0 {
@@ -364,10 +369,6 @@ impl Compositor {
         }
         if !self.resize_allowed {
             info!("not following client {}'s density {scale:.2}: resizing is disabled", client.0);
-            return self.answer_geometry(Some(client));
-        }
-        if !self.claim_layout(client) {
-            info!("not following client {}'s density {scale:.2}: another client owns the layout", client.0);
             return self.answer_geometry(Some(client));
         }
         info!("following client {}'s density: output scale {current:.2} -> {scale:.2}", client.0);

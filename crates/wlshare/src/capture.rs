@@ -81,7 +81,7 @@ pub struct Capture {
 impl Compositor {
     /// Begin capturing if a client wants frames and nothing is in flight.
     pub fn start_capture(&mut self) {
-        if self.clients.is_empty() || self.capture.frame.is_some() {
+        if self.client.is_none() || self.capture.frame.is_some() {
             return;
         }
         let Some(manager) = &self.capture.manager else { return };

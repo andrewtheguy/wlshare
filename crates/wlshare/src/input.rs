@@ -14,8 +14,8 @@
 //! before every press, and Shift is pressed or let go around the key when the
 //! keycode alone would type the other case.
 //!
-//! What each client holds is kept apart, so a client leaving lets go of its own
-//! keys and buttons and nobody else's.
+//! One client is on the desktop at a time, so what is held is simply what it
+//! holds: a client leaving or being superseded lets go of all of it.
 //!
 //! Pointer positions arrive in framebuffer pixels and go to the compositor as
 //! absolute positions against the framebuffer's extent, which the virtual
@@ -41,7 +41,6 @@ use xkbcommon::xkb;
 
 use crate::compositor::Compositor;
 use crate::config::Xkb;
-use crate::shared::ClientId;
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -69,12 +68,12 @@ pub struct Input {
     keycodes: HashMap<u32, (u32, u32)>,
     /// The keycodes of the Shift keys, for pressing one and recognising any.
     shift_codes: Vec<u32>,
-    /// Keys held, by the client holding them.
-    held: HashMap<ClientId, HashSet<u32>>,
+    /// The keycodes the client holds.
+    held: HashSet<u32>,
     /// Keys pressed with Shift corrected around them.
     fixes: HashMap<u32, ShiftFix>,
-    /// Each client's RFB button mask; the compositor sees their union.
-    buttons: HashMap<ClientId, u8>,
+    /// The client's RFB button mask.
+    buttons: u8,
     started: Instant,
 }
 
@@ -137,9 +136,9 @@ impl Input {
             state: xkb::State::new(&keymap),
             keycodes,
             shift_codes,
-            held: HashMap::new(),
+            held: HashSet::new(),
             fixes: HashMap::new(),
-            buttons: HashMap::new(),
+            buttons: 0,
             started: Instant::now(),
         })
     }
@@ -148,13 +147,13 @@ impl Input {
         self.started.elapsed().as_millis() as u32
     }
 
-    pub fn key(&mut self, client: ClientId, keysym: u32, down: bool) {
+    pub fn key(&mut self, keysym: u32, down: bool) {
         let Some(&(code, level)) = self.keycodes.get(&keysym) else {
             warn!("no key produces keysym {keysym:#x}; dropped");
             return;
         };
         if down {
-            if !self.held.entry(client).or_default().insert(code) {
+            if !self.held.insert(code) {
                 // A repeat: the state is as the first press left it.
                 self.send_key(code, true);
                 return;
@@ -162,8 +161,7 @@ impl Input {
             self.fix_shift(code, level, keysym);
             self.send_key(code, true);
         } else {
-            let was_held = self.held.get_mut(&client).is_some_and(|held| held.remove(&code));
-            if !was_held {
+            if !self.held.remove(&code) {
                 // A release of something not held: the compositor counts the
                 // state anyway, so send it as it is.
                 self.send_key(code, false);
@@ -189,7 +187,7 @@ impl Input {
                 self.fixes.insert(code, ShiftFix::Pressed(shift));
             }
         } else if level == 0 && shift_down {
-            let shifts: Vec<u32> = self.shift_codes.iter().copied().filter(|s| self.held_by_anyone(*s)).collect();
+            let shifts: Vec<u32> = self.shift_codes.iter().copied().filter(|s| self.held.contains(s)).collect();
             if !shifts.is_empty() {
                 debug!("keysym {keysym:#x} needs keycode {code} without Shift; letting go of it");
                 for &shift in &shifts {
@@ -202,22 +200,14 @@ impl Input {
         }
     }
 
-    fn held_by_anyone(&self, code: u32) -> bool {
-        self.held.values().any(|held| held.contains(&code))
-    }
-
-    /// A key one client let go of, or lost by leaving.
+    /// A key the client let go of, or lost by leaving.
     fn release(&mut self, code: u32) {
-        if self.held_by_anyone(code) {
-            // Another client still holds it.
-            return;
-        }
         self.send_key(code, false);
         match self.fixes.remove(&code) {
             Some(ShiftFix::Pressed(shift)) => self.send_key(shift, false),
             Some(ShiftFix::Released(shifts)) => {
                 for shift in shifts {
-                    if self.held_by_anyone(shift) {
+                    if self.held.contains(&shift) {
                         self.send_key(shift, true);
                     }
                 }
@@ -238,12 +228,12 @@ impl Input {
         );
     }
 
-    /// The button mask the compositor sees: every client's, together.
+    /// The button mask the compositor sees.
     fn buttons_down(&self) -> u8 {
-        self.buttons.values().fold(0, |all, mask| all | mask) & 7
+        self.buttons & 7
     }
 
-    /// Press and release the buttons whose union changed, without a frame.
+    /// Press and release the buttons that changed, without a frame.
     fn set_buttons(&mut self, before: u8, after: u8) {
         let time = self.time();
         for (bit, code) in [(1u8, BTN_LEFT), (2, BTN_MIDDLE), (4, BTN_RIGHT)] {
@@ -255,11 +245,11 @@ impl Input {
     }
 
     /// A PointerEvent: position in framebuffer pixels and the RFB button mask.
-    pub fn pointer(&mut self, client: ClientId, buttons: u8, x: u16, y: u16, extent: (u16, u16)) {
+    pub fn pointer(&mut self, buttons: u8, x: u16, y: u16, extent: (u16, u16)) {
         let time = self.time();
         self.pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
         let before = self.buttons_down();
-        let previous = self.buttons.insert(client, buttons).unwrap_or(0);
+        let previous = std::mem::replace(&mut self.buttons, buttons);
         let after = self.buttons_down();
         self.set_buttons(before, after);
         // Wheel "buttons" scroll on the press; the release carries nothing.
@@ -277,15 +267,13 @@ impl Input {
         self.pointer.frame();
     }
 
-    /// Let go of everything a departed client left held — and nothing another
-    /// client holds.
-    pub fn release_client(&mut self, client: ClientId) {
-        let held = self.held.remove(&client).unwrap_or_default();
-        for code in held {
+    /// Let go of everything the client left held.
+    pub fn release_all(&mut self) {
+        for code in std::mem::take(&mut self.held) {
             self.release(code);
         }
         let before = self.buttons_down();
-        self.buttons.remove(&client);
+        self.buttons = 0;
         let after = self.buttons_down();
         if after != before {
             self.set_buttons(before, after);

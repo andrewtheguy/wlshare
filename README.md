@@ -21,8 +21,11 @@ by the client and stays silent otherwise; remotex asks for it on every plain
 `vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
 QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
 is offered the default sink's monitor, and one that does not hears nothing.
-`audio = false` turns the offer off. See [`docs/architecture.md`](docs/architecture.md) for how it
-works and what it deliberately leaves out.
+`audio = false` turns the offer off. One client is on the desktop at a time: a
+connection that finishes the handshake takes it from whoever holds it, the way
+Windows Remote Desktop does, and the RFB shared flag changes nothing. See
+[`docs/architecture.md`](docs/architecture.md) for how it works and what it
+deliberately leaves out.
 
 ## Running
 
