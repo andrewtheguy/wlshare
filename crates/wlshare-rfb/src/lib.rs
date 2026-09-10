@@ -27,6 +27,8 @@
 //!   swizzle; 8- and 16-bit formats and colour maps are refused.
 //! - **ContinuousUpdates and Fence**, so a client that supports them gets frames
 //!   as the screen changes with one update in flight, instead of polling.
+//! - **Cursor**, required of every client, so the compositor pointer stays out
+//!   of captured pixels and a neutral arrow moves immediately at the client.
 //! - **DesktopSize and ExtendedDesktopSize**, so a client may resize the desktop.
 //! - **The density extension**, one pseudo-encoding and one message type, which
 //!   is how a client learns the scale the framebuffer is drawn at and asks for
@@ -44,6 +46,7 @@
 //!   daemon's configuration; the crate speaks both.
 
 pub mod audio;
+pub mod cursor;
 pub mod density;
 pub mod msg;
 pub mod outputs;
@@ -61,8 +64,8 @@ pub const ENCODING_DESKTOP_SIZE: i32 = -223;
 /// LastRect pseudo-encoding: a client that lists it accepts an update whose
 /// rectangle count is a ceiling rather than a promise.
 pub const ENCODING_LAST_RECT: i32 = -224;
-/// Cursor pseudo-encoding. Not produced: the pointer is composited into the
-/// framebuffer instead, so this is recognised only to be ignored.
+/// Cursor pseudo-encoding. Every client must list it; wlshare answers with the
+/// neutral arrow from [`cursor`] because captured frames contain no pointer.
 pub const ENCODING_CURSOR: i32 = -239;
 /// ExtendedDesktopSize pseudo-encoding, and with it the client's SetDesktopSize.
 pub const ENCODING_EXTENDED_DESKTOP_SIZE: i32 = -308;

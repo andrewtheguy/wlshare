@@ -97,8 +97,8 @@ impl Compositor {
         self.capture.announced = None;
         // Keep the compositor's pointer out of the framebuffer. wlroots 0.19
         // gives the headless backend a cursor plane, so a screencopy without
-        // overlay_cursor can finally leave it behind. This server deliberately
-        // sends no cursor shape of its own; the VNC client draws its local
+        // overlay_cursor can finally leave it behind. The RFB session sends a
+        // separate standard Cursor pseudo-rectangle, so the client moves the
         // pointer without waiting for a captured frame.
         let frame = manager.capture_output(0, &output.output, &self.qh, ());
         self.capture.frame = Some(frame);

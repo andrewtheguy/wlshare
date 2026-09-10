@@ -82,9 +82,13 @@ it, so encoding a slow client's update never holds up a capture.
 
 The pointer is excluded from the frame (`overlay_cursor = 0`). On a headless
 output this needs wlroots 0.19 or newer, whose headless backend keeps cursors on
-a distinct plane instead of painting them permanently into the output. No
-cursor shape is sent; a client that lists the Cursor pseudo-encoding simply
-never receives one, so a latency-sensitive client draws its local pointer.
+a distinct plane instead of painting them permanently into the output. Every
+client must advertise the standard Cursor pseudo-encoding (`-239`) before it
+asks for framebuffer pixels. wlshare answers with a neutral arrow in the
+client's pixel format, and the client positions that shape at the coordinates
+it already sends in pointer events. Cursor motion therefore never waits for a
+captured frame. wlr-screencopy exposes no application-selected Wayland cursor
+surface, so the arrow is deliberately stable rather than a guessed shape.
 
 ### Frame layout
 
@@ -360,6 +364,6 @@ bare reason "authentication failed"; the actual reason is logged.
 
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding: the gateway
 re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
-8- and 16-bit pixel formats and colour maps. Cursor shapes. Multiple outputs in
-one framebuffer — a client picks one of them instead. A control socket. A client's microphone: the extension carries
+8- and 16-bit pixel formats and colour maps. Application-selected cursor shapes.
+Multiple outputs in one framebuffer — a client picks one of them instead. A control socket. A client's microphone: the extension carries
 sound one way only.

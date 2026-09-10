@@ -35,6 +35,10 @@
 //! DesktopSize cannot be told and is disconnected at its next update instead of
 //! being sent pixels at a size it does not know.
 //!
+//! The compositor pointer is never in those pixels. Every client must list the
+//! standard Cursor pseudo-encoding before asking for an update; wlshare answers
+//! with a neutral arrow and the client positions it without framebuffer latency.
+//!
 //! ## Sending sound
 //!
 //! A client that listed the QEMU Audio pseudo-encoding is told so by an empty
@@ -61,6 +65,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use log::{debug, info, warn};
 use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect};
+use wlshare_rfb::cursor::cursor_rect;
 use wlshare_rfb::density::{from_fixed, output_scale};
 use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
@@ -69,7 +74,7 @@ use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
     ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_OUTPUTS, ENCODING_QEMU_AUDIO,
-    ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_CURSOR, ENCODING_RAW, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -181,6 +186,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         fence_supported: false,
         eds_supported: false,
         desktop_size_supported: false,
+        cursor_supported: false,
+        announce_cursor: false,
         density: false,
         outputs: false,
         audio_supported: false,
@@ -285,6 +292,10 @@ struct Session {
     fence_supported: bool,
     eds_supported: bool,
     desktop_size_supported: bool,
+    /// The client listed the required standard Cursor pseudo-encoding.
+    cursor_supported: bool,
+    /// The neutral cursor shape is owed after an accepted SetEncodings.
+    announce_cursor: bool,
     density: bool,
     /// The client listed the outputs pseudo-encoding: it is sent the list of
     /// outputs and may ask for another one.
@@ -399,6 +410,13 @@ impl Session {
             }
             ClientMsg::SetEncodings(encodings) => {
                 let has = |e: i32| encodings.contains(&e);
+                anyhow::ensure!(
+                    has(ENCODING_CURSOR),
+                    "client {} did not advertise the required RFB Cursor pseudo-encoding",
+                    self.id.0
+                );
+                self.cursor_supported = true;
+                self.announce_cursor = true;
                 self.use_zrle = has(ENCODING_ZRLE);
                 if self.use_zrle && self.zrle.is_none() {
                     self.zrle = Some(ZrleEncoder::default());
@@ -435,8 +453,16 @@ impl Session {
                 }
                 self.audio_supported = audio;
                 debug!(
-                    "client {}: encodings {encodings:?}; zrle={} continuous={} fence={} eds={} density={} outputs={} audio={}",
-                    self.id.0, self.use_zrle, self.continuous_supported, self.fence_supported, self.eds_supported, self.density, self.outputs, self.audio_supported
+                    "client {}: encodings {encodings:?}; cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={}",
+                    self.id.0,
+                    self.cursor_supported,
+                    self.use_zrle,
+                    self.continuous_supported,
+                    self.fence_supported,
+                    self.eds_supported,
+                    self.density,
+                    self.outputs,
+                    self.audio_supported
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
@@ -452,6 +478,11 @@ impl Session {
                 }
             }
             ClientMsg::FramebufferUpdateRequest { incremental, .. } => {
+                anyhow::ensure!(
+                    self.cursor_supported,
+                    "client {} requested a framebuffer before advertising the required RFB Cursor pseudo-encoding",
+                    self.id.0
+                );
                 self.pending = Some(match self.pending {
                     Some(false) => false,
                     _ => incremental,
@@ -606,11 +637,17 @@ impl Session {
         if !wants || self.fence_outstanding {
             return Ok(());
         }
-        // The ExtendedDesktopSize and audio announcements are updates like any
+        // The cursor, ExtendedDesktopSize and audio announcements are updates like any
         // other, so they wait for a request. Each is sent as its own update
         // ahead of the pixels; when there are none to send they are the
         // request's whole answer.
-        let announced = self.announce_eds || self.announce_audio;
+        let announced = self.announce_cursor || self.announce_eds || self.announce_audio;
+        if self.announce_cursor {
+            self.announce_cursor = false;
+            let mut update = msg::update_header(1).to_vec();
+            update.extend_from_slice(&cursor_rect(&self.format));
+            writer.send(&update).await?;
+        }
         if self.announce_eds {
             self.announce_eds = false;
             let size = self.known_size;
