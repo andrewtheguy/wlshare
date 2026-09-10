@@ -199,10 +199,21 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         scratch: Vec::new(),
         out: Vec::new(),
     };
-    tokio::select! {
+    let result = tokio::select! {
         result = session.pump(reader, writer) => result,
         taken = superseded(&mut active, id) => Err(anyhow::anyhow!("client {} took the desktop", taken?)),
+    };
+    // However the session ended — the client left, an error, or a takeover
+    // cancelling the loop mid-write — the capture it may still hold is closed
+    // here rather than by dropping `session`: closing joins PipeWire's thread,
+    // and that blocking wait does not belong on a runtime worker. The session
+    // is over either way, so the result stands whatever the join does.
+    if let Some(capture) = session.audio.take()
+        && let Err(e) = tokio::task::spawn_blocking(move || drop(capture)).await
+    {
+        warn!("client {}: the audio thread did not stop: {e}", id.0);
     }
+    result
 }
 
 /// Resolves once a later connection has taken the desktop. Ids only go up, so
