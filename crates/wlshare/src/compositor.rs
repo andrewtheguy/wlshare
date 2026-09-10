@@ -29,8 +29,9 @@ use crate::clipboard::Clipboard;
 use crate::config::{Config, Xkb};
 use crate::framebuffer::Framebuffer;
 use crate::input::Input;
+use crate::framebuffer::ResizeOrigin;
 use crate::outputs::{ConfigKind, OutputInfo, Outputs};
-use crate::shared::{ClientId, Command, Event, Geometry, Shared};
+use crate::shared::{ClientId, Command, Displays, Event, Geometry, Shared};
 
 pub struct Compositor {
     shared: Option<Arc<Shared>>,
@@ -231,7 +232,8 @@ impl Compositor {
         let (width, height) = self.outputs.size();
         anyhow::ensure!(width > 0 && height > 0, "the shared output has no mode");
         let geometry = Geometry { width, height, scale: self.outputs.scale() };
-        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, commands));
+        let displays = Displays { active: self.outputs.active_id(), entries: self.outputs.entries() };
+        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, displays, commands));
         self.shared = Some(shared);
 
         if let (Some(seat), Some(keyboards), Some(pointers)) = (&self.seat, &self.keyboards, &self.pointers) {
@@ -257,6 +259,35 @@ impl Compositor {
     pub fn answer_geometry(&mut self, to: Option<ClientId>) {
         self.refresh_geometry();
         self.shared().emit(Event::Geometry { to });
+    }
+
+    /// Refresh the list of outputs; tell the sessions if it changed. A no-op
+    /// during discovery, when there is nobody to tell yet.
+    pub fn outputs_changed(&mut self) {
+        if self.shared.is_none() {
+            return;
+        }
+        if self.refresh_displays() {
+            self.shared().emit(Event::Outputs);
+        }
+    }
+
+    /// Refresh the list and report it whether or not it changed: a SelectOutput
+    /// is owed an answer, and one that changes nothing is answered with the list
+    /// as it is.
+    fn answer_outputs(&mut self) {
+        self.refresh_displays();
+        self.shared().emit(Event::Outputs);
+    }
+
+    fn refresh_displays(&mut self) -> bool {
+        let now = Displays { active: self.outputs.active_id(), entries: self.outputs.entries() };
+        let mut displays = self.shared().displays.lock().unwrap();
+        if *displays == now {
+            return false;
+        }
+        *displays = now;
+        true
     }
 
     fn refresh_geometry(&mut self) -> bool {
@@ -326,6 +357,11 @@ impl Compositor {
                     self.declare(client, scale);
                 }
             }
+            Command::SelectOutput { client, id } => {
+                if self.client == Some(client) {
+                    self.select_output(client, id);
+                }
+            }
             Command::SetClipboard { client, text } => {
                 if self.client == Some(client) {
                     self.clipboard.set(&self.qh.clone(), text);
@@ -362,6 +398,54 @@ impl Compositor {
         }
     }
 
+    /// Share another output: the client named one from the list it was sent.
+    ///
+    /// The capture stops, the virtual pointer moves with it — absolute positions
+    /// are against the new output's extent — and the framebuffer takes the new
+    /// size blank, so the client is sent nothing until a frame of the output it
+    /// asked for has arrived. A same-sized output is a repaint rather than a
+    /// resize, and the client is told the new geometry either way, before the
+    /// frame, as a scale change is.
+    ///
+    /// A request naming an output the compositor no longer has is answered with
+    /// the list as it is and nothing else: the client's menu then agrees with
+    /// what is on the canvas rather than with what was clicked.
+    fn select_output(&mut self, client: ClientId, id: u32) {
+        let Some(output) = self.outputs.by_id(id).filter(|o| o.name.is_some()) else {
+            warn!("client {}: no output with id {id}; the list stands", client.0);
+            return self.answer_outputs();
+        };
+        let name = output.name.clone().expect("filtered");
+        if self.outputs.selected.as_deref() == Some(name.as_str()) {
+            debug!("client {}: output {name} is already the shared one", client.0);
+            return self.answer_outputs();
+        }
+        let (width, height) = self.outputs.size_of(output);
+        let wl_output = output.output.clone();
+        info!("client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}", client.0, self.outputs.scale_of(output));
+
+        self.stop_capture();
+        // A resize accepted for the output being left is not this one's.
+        self.pending_resize = None;
+        self.outputs.selected = Some(name);
+        {
+            let mut fb = self.shared().framebuffer.lock().unwrap();
+            fb.resize(width, height, ResizeOrigin::Server);
+        }
+        self.retarget_input(&wl_output);
+        self.geometry_changed();
+        self.answer_outputs();
+        self.start_capture();
+    }
+
+    /// Point the virtual pointer at another output. What the client holds is let
+    /// go first: a press cannot outlive the pointer that made it.
+    fn retarget_input(&mut self, output: &WlOutput) {
+        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
+        input.release_all();
+        input.retarget(&self.qh, pointers, seat, output);
+    }
+
     fn declare(&mut self, client: ClientId, scale: f64) {
         let current = self.outputs.scale();
         if (current - scale).abs() < 0.005 {
@@ -392,6 +476,7 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
                     let was_selected = removed.name.as_deref() == state.outputs.selected.as_deref();
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if was_selected { "; it is the shared one" } else { "" });
                     removed.output.release();
+                    state.outputs_changed();
                 }
             }
             _ => {}

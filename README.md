@@ -7,7 +7,9 @@ encoding, injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
-shown sharp at 2x and a client's own density becomes the output's.
+shown sharp at 2x and a client's own density becomes the output's. A desktop with
+more than one monitor sends the client the list, so the one being shared is the
+client's to choose.
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
@@ -16,9 +18,9 @@ additionally need `wlr-output-management`; input and clipboard use the virtual
 keyboard, virtual pointer, and `wlr-data-control` protocols when the compositor
 offers them.
 
-Any VNC client that decodes ZRLE can connect. The density extension is asked for
-by the client and stays silent otherwise; remotex asks for it on every plain
-`vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
+Any VNC client that decodes ZRLE can connect. The density and outputs extensions
+are asked for by the client and stay silent otherwise; remotex asks for both on
+every plain `vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
 QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
 is offered the default sink's monitor, and one that does not hears nothing.
 `audio = false` turns the offer off. One client is on the desktop at a time: a

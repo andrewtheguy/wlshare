@@ -268,6 +268,16 @@ impl Input {
     }
 
     /// Let go of everything the client left held.
+    /// Point the pointer at another output, for a client that asked for another
+    /// screen: `zwlr_virtual_pointer` takes an output when it is made and never
+    /// again, so the one bound to the old output is destroyed and a new one made
+    /// against the new one. Whatever the client holds is let go by the caller
+    /// first — a press cannot outlive the pointer that made it.
+    pub fn retarget(&mut self, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
+        self.pointer.destroy();
+        self.pointer = pointers.create_virtual_pointer_with_output(Some(seat), Some(output), qh, ());
+    }
+
     pub fn release_all(&mut self) {
         for code in std::mem::take(&mut self.held) {
             self.release(code);

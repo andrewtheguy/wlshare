@@ -13,6 +13,8 @@ use std::sync::Mutex;
 
 use tokio::sync::{broadcast, watch};
 
+use wlshare_rfb::outputs::OutputEntry;
+
 use crate::framebuffer::Framebuffer;
 
 /// One connection, numbered from 1 for the life of the process.
@@ -35,6 +37,8 @@ pub enum Command {
     Resize { client: ClientId, width: u16, height: u16 },
     /// ClientDensity: the client wants the output drawn at `scale`.
     Declare { client: ClientId, scale: f64 },
+    /// SelectOutput: the client wants the output with this id shared.
+    SelectOutput { client: ClientId, id: u32 },
     /// Text for the compositor's clipboard.
     SetClipboard { client: ClientId, text: String },
 }
@@ -47,6 +51,11 @@ pub enum Event {
     Geometry { to: Option<ClientId> },
     /// A client's SetDesktopSize was refused with an ExtendedDesktopSize status.
     ResizeRefused { client: ClientId, status: u16 },
+    /// The outputs, or which of them is shared, changed — or a client's
+    /// SelectOutput was answered: send the list to every client that asked for
+    /// it. Not addressed to one client the way a geometry answer is, because a
+    /// switch is the whole desktop's news and there is one client on it.
+    Outputs,
     /// Text arrived on the compositor's clipboard — or left it: empty when the
     /// selection was cleared or is no longer text.
     Clipboard(String),
@@ -62,6 +71,16 @@ pub struct Geometry {
     pub scale: f64,
 }
 
+/// The compositor's outputs as the sessions list them, and which one is shared.
+/// Beside [`Geometry`] and for the same reason: a session sends it from its own
+/// task, and the compositor thread keeps it current.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Displays {
+    /// The shared output's id, or 0 while there is none.
+    pub active: u32,
+    pub entries: Vec<OutputEntry>,
+}
+
 pub struct Shared {
     pub framebuffer: Mutex<Framebuffer>,
     /// Ticks with [`Framebuffer::generation`] on every change.
@@ -74,13 +93,14 @@ pub struct Shared {
     /// client that joined after it.
     pub active: watch::Sender<u64>,
     pub geometry: Mutex<Geometry>,
+    pub displays: Mutex<Displays>,
     pub events: broadcast::Sender<Event>,
     pub commands: calloop::channel::Sender<Command>,
     next_client: AtomicU64,
 }
 
 impl Shared {
-    pub fn new(framebuffer: Framebuffer, geometry: Geometry, commands: calloop::channel::Sender<Command>) -> Self {
+    pub fn new(framebuffer: Framebuffer, geometry: Geometry, displays: Displays, commands: calloop::channel::Sender<Command>) -> Self {
         let (frame_tx, _) = watch::channel(framebuffer.generation);
         let (active, _) = watch::channel(0);
         let (events, _) = broadcast::channel(64);
@@ -89,6 +109,7 @@ impl Shared {
             frame_tx,
             active,
             geometry: Mutex::new(geometry),
+            displays: Mutex::new(displays),
             events,
             commands,
             next_client: AtomicU64::new(1),
@@ -101,6 +122,10 @@ impl Shared {
 
     pub fn geometry(&self) -> Geometry {
         *self.geometry.lock().unwrap()
+    }
+
+    pub fn displays(&self) -> Displays {
+        self.displays.lock().unwrap().clone()
     }
 
     /// Say who is on the desktop; every other session ends.
