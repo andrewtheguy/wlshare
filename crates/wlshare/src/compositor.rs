@@ -29,8 +29,9 @@ use crate::clipboard::Clipboard;
 use crate::config::{Config, Xkb};
 use crate::framebuffer::Framebuffer;
 use crate::input::Input;
+use crate::framebuffer::ResizeOrigin;
 use crate::outputs::{ConfigKind, OutputInfo, Outputs};
-use crate::shared::{ClientId, Command, Event, Geometry, Shared};
+use crate::shared::{ClientId, Command, Displays, Event, Geometry, Shared};
 
 pub struct Compositor {
     shared: Option<Arc<Shared>>,
@@ -231,7 +232,8 @@ impl Compositor {
         let (width, height) = self.outputs.size();
         anyhow::ensure!(width > 0 && height > 0, "the shared output has no mode");
         let geometry = Geometry { width, height, scale: self.outputs.scale() };
-        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, commands));
+        let displays = Displays { active: self.outputs.active_id(), entries: self.outputs.entries() };
+        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, displays, commands));
         self.shared = Some(shared);
 
         if let (Some(seat), Some(keyboards), Some(pointers)) = (&self.seat, &self.keyboards, &self.pointers) {
@@ -257,6 +259,35 @@ impl Compositor {
     pub fn answer_geometry(&mut self, to: Option<ClientId>) {
         self.refresh_geometry();
         self.shared().emit(Event::Geometry { to });
+    }
+
+    /// Refresh the list of outputs; tell the sessions if it changed. A no-op
+    /// during discovery, when there is nobody to tell yet.
+    pub fn outputs_changed(&mut self) {
+        if self.shared.is_none() {
+            return;
+        }
+        if self.refresh_displays() {
+            self.shared().emit(Event::Outputs);
+        }
+    }
+
+    /// Refresh the list and report it whether or not it changed: a SelectOutput
+    /// is owed an answer, and one that changes nothing is answered with the list
+    /// as it is.
+    fn answer_outputs(&mut self) {
+        self.refresh_displays();
+        self.shared().emit(Event::Outputs);
+    }
+
+    fn refresh_displays(&mut self) -> bool {
+        let now = Displays { active: self.outputs.active_id(), entries: self.outputs.entries() };
+        let mut displays = self.shared().displays.lock().unwrap();
+        if *displays == now {
+            return false;
+        }
+        *displays = now;
+        true
     }
 
     fn refresh_geometry(&mut self) -> bool {
@@ -326,6 +357,11 @@ impl Compositor {
                     self.declare(client, scale);
                 }
             }
+            Command::SelectOutput { client, id } => {
+                if self.client == Some(client) {
+                    self.select_output(client, id);
+                }
+            }
             Command::SetClipboard { client, text } => {
                 if self.client == Some(client) {
                     self.clipboard.set(&self.qh.clone(), text);
@@ -362,6 +398,85 @@ impl Compositor {
         }
     }
 
+    /// Share another output: the client named one from the list it was sent.
+    ///
+    /// The capture stops, the virtual pointer moves with it — absolute positions
+    /// are against the new output's extent — and the framebuffer takes the new
+    /// size blank, so the client is sent nothing until a frame of the output it
+    /// asked for has arrived. A same-sized output is a repaint rather than a
+    /// resize, and the client is told the new geometry either way, before the
+    /// frame, as a scale change is.
+    ///
+    /// A request naming an output the compositor no longer has is answered with
+    /// the list as it is and nothing else: the client's menu then agrees with
+    /// what is on the canvas rather than with what was clicked.
+    fn select_output(&mut self, client: ClientId, id: u32) {
+        let Some(output) = self.outputs.selectable(id) else {
+            warn!("client {}: no output with id {id} to share; the list stands", client.0);
+            return self.answer_outputs();
+        };
+        let name = output.name.clone().expect("selectable");
+        if self.outputs.selected.as_deref() == Some(name.as_str()) {
+            debug!("client {}: output {name} is already the shared one", client.0);
+            return self.answer_outputs();
+        }
+        let (width, height) = self.outputs.size_of(output);
+        let wl_output = output.output.clone();
+        info!("client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}", client.0, self.outputs.scale_of(output));
+        self.share_output(name, width, height, &wl_output);
+    }
+
+    /// Take an output as the shared one and start the desktop again on it. The
+    /// whole sequence, whoever asked for it: a client naming one from its list,
+    /// or the compositor taking the one being shared away.
+    fn share_output(&mut self, name: String, width: u16, height: u16, output: &WlOutput) {
+        self.stop_capture();
+        // A resize accepted for the output being left is not this one's.
+        self.pending_resize = None;
+        self.outputs.selected = Some(name);
+        {
+            let mut fb = self.shared().framebuffer.lock().unwrap();
+            fb.resize(width, height, ResizeOrigin::Server);
+        }
+        self.retarget_input(output);
+        self.geometry_changed();
+        self.answer_outputs();
+        self.start_capture();
+    }
+
+    /// Share whatever output is left, there being none shared: the one that was
+    /// went away, or the desktop has not had one yet. The list's own order
+    /// decides, so a client lands on the output its menu shows first rather than
+    /// on whichever the compositor happened to announce first.
+    ///
+    /// With nothing left to share the capture stops and the list goes out empty.
+    /// The geometry and the framebuffer stand as they were: a desktop of no size
+    /// is not an answer any client can use, and the last picture is at least the
+    /// one the person was looking at. An output appearing later is adopted here.
+    pub fn adopt_output(&mut self) {
+        // Nothing to tell and nothing to capture until discovery is done.
+        if self.shared.is_none() {
+            return;
+        }
+        let Some(entry) = self.outputs.entries().into_iter().next() else {
+            warn!("no output is left to share; the capture stops until one appears");
+            self.stop_capture();
+            return self.answer_outputs();
+        };
+        let Some(output) = self.outputs.selectable(entry.id) else { return };
+        let wl_output = output.output.clone();
+        info!("sharing output {}: {}x{} pixels at scale {:.2}", entry.name, entry.width, entry.height, entry.scale);
+        self.share_output(entry.name, entry.width, entry.height, &wl_output);
+    }
+
+    /// Point the virtual pointer at another output. What the client holds is let
+    /// go first: a press cannot outlive the pointer that made it.
+    fn retarget_input(&mut self, output: &WlOutput) {
+        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
+        input.release_all();
+        input.retarget(&self.qh, pointers, seat, output);
+    }
+
     fn declare(&mut self, client: ClientId, scale: f64) {
         let current = self.outputs.scale();
         if (current - scale).abs() < 0.005 {
@@ -389,9 +504,20 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
             wl_registry::Event::GlobalRemove { name } => {
                 if let Some(i) = state.outputs.outputs.iter().position(|o| o.global == name) {
                     let removed = state.outputs.outputs.remove(i);
-                    let was_selected = removed.name.as_deref() == state.outputs.selected.as_deref();
+                    // An output with no name yet is nobody's selection, not even
+                    // when nothing is selected.
+                    let was_selected = removed.name.as_deref().is_some_and(|n| state.outputs.selected.as_deref() == Some(n));
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if was_selected { "; it is the shared one" } else { "" });
                     removed.output.release();
+                    if !was_selected {
+                        return state.outputs_changed();
+                    }
+                    // The name would otherwise stand for an output the compositor
+                    // no longer has, which leaves nothing selected, the capture
+                    // stopped and nothing left to start it again -- a client on a
+                    // picture that has quietly stopped changing.
+                    state.outputs.selected = None;
+                    state.adopt_output();
                 }
             }
             _ => {}

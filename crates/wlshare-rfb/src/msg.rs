@@ -10,6 +10,7 @@ use thiserror::Error;
 
 use crate::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY};
+use crate::outputs::{MSG_OUTPUTS, SELECT_OUTPUT_LEN};
 use crate::pixel::PixelFormat;
 
 // ── Client message types ─────────────────────────────────────────────────────
@@ -88,6 +89,9 @@ pub enum ClientMsg {
     /// The density extension's declaration: the scale the client wants, as
     /// 16.16 fixed point ([`crate::density::from_fixed`]).
     ClientDensity { fixed: u32 },
+    /// The outputs extension's request: share the output with this id, as the
+    /// last list named it ([`crate::outputs`]).
+    SelectOutput { id: u32 },
     /// The QEMU Audio extension: start sending the desktop's sound.
     AudioEnable,
     /// The QEMU Audio extension: stop.
@@ -221,6 +225,10 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
         MSG_DENSITY => {
             need!(CLIENT_DENSITY_LEN);
             (ClientMsg::ClientDensity { fixed: u32_at(buf, 4) }, CLIENT_DENSITY_LEN)
+        }
+        MSG_OUTPUTS => {
+            need!(SELECT_OUTPUT_LEN);
+            (ClientMsg::SelectOutput { id: u32_at(buf, 4) }, SELECT_OUTPUT_LEN)
         }
         MSG_QEMU => match crate::audio::parse_client(buf)? {
             None => return Ok(None),
@@ -388,6 +396,10 @@ mod tests {
         assert_eq!(m, ClientMsg::EnableContinuousUpdates { enable: true, x: 0, y: 0, width: 8, height: 4 });
         let (m, _) = parse(&[0xE0, 0, 0, 0, 0, 2, 0, 0]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::ClientDensity { fixed: 0x0002_0000 });
+        let (m, n) = parse(&[0xE1, 0, 0, 0, 0, 0, 0, 7]).unwrap().unwrap();
+        assert_eq!(m, ClientMsg::SelectOutput { id: 7 });
+        assert_eq!(n, 8);
+        assert_eq!(parse(&[0xE1, 0, 0, 0, 0, 0, 0]).unwrap(), None, "a short SelectOutput asks for more");
     }
 
     #[test]

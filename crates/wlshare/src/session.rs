@@ -17,7 +17,7 @@
 //! `active` above this session's own is a connection that joined after it,
 //! whether or not this one ever saw itself there. Nothing a superseded session
 //! sent in the meantime is acted on: the compositor hears input, resize,
-//! density and clipboard from the active client alone.
+//! density, output selection and clipboard from the active client alone.
 //!
 //! ## Sending pixels
 //!
@@ -63,12 +63,13 @@ use log::{debug, info, warn};
 use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect};
 use wlshare_rfb::density::{from_fixed, output_scale};
 use wlshare_rfb::msg::{self, ClientMsg, Screen};
+use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
-    ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_QEMU_AUDIO, ENCODING_RAW,
-    ENCODING_ZRLE,
+    ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_OUTPUTS, ENCODING_QEMU_AUDIO,
+    ENCODING_RAW, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -181,6 +182,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         eds_supported: false,
         desktop_size_supported: false,
         density: false,
+        outputs: false,
         audio_supported: false,
         announce_audio: false,
         audio_format: AudioFormat::DEFAULT,
@@ -284,6 +286,9 @@ struct Session {
     eds_supported: bool,
     desktop_size_supported: bool,
     density: bool,
+    /// The client listed the outputs pseudo-encoding: it is sent the list of
+    /// outputs and may ask for another one.
+    outputs: bool,
     /// The client listed the QEMU Audio pseudo-encoding and the configuration
     /// allows it.
     audio_supported: bool,
@@ -414,6 +419,11 @@ impl Session {
                     info!("client {}: asked for density reports", self.id.0);
                 }
                 self.density = density;
+                let outputs = has(ENCODING_OUTPUTS);
+                if outputs && !self.outputs {
+                    info!("client {}: asked for the output list", self.id.0);
+                }
+                self.outputs = outputs;
                 let audio = has(ENCODING_QEMU_AUDIO);
                 if audio && !self.config.audio && !self.audio_supported {
                     info!("client {}: asked for audio, which the configuration turns off", self.id.0);
@@ -425,8 +435,8 @@ impl Session {
                 }
                 self.audio_supported = audio;
                 debug!(
-                    "client {}: encodings {encodings:?}; zrle={} continuous={} fence={} eds={} density={} audio={}",
-                    self.id.0, self.use_zrle, self.continuous_supported, self.fence_supported, self.eds_supported, self.density, self.audio_supported
+                    "client {}: encodings {encodings:?}; zrle={} continuous={} fence={} eds={} density={} outputs={} audio={}",
+                    self.id.0, self.use_zrle, self.continuous_supported, self.fence_supported, self.eds_supported, self.density, self.outputs, self.audio_supported
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
@@ -435,6 +445,10 @@ impl Session {
                 if self.density {
                     // Every SetEncodings that lists the extension is answered.
                     self.send_geometry(writer).await?;
+                }
+                if self.outputs {
+                    // Likewise: the answer is how support is announced.
+                    self.send_outputs(writer).await?;
                 }
             }
             ClientMsg::FramebufferUpdateRequest { incremental, .. } => {
@@ -497,6 +511,14 @@ impl Session {
                 }
                 self.shared.command(Command::Declare { client: self.id, scale });
             }
+            ClientMsg::SelectOutput { id } => {
+                if !self.outputs {
+                    debug!("client {}: an output selection without the extension; ignored", self.id.0);
+                    return Ok(());
+                }
+                info!("client {}: asks for output {id}", self.id.0);
+                self.shared.command(Command::SelectOutput { client: self.id, id });
+            }
             ClientMsg::AudioEnable => {
                 if !self.audio_supported {
                     warn!("client {}: enables audio without the extension; ignored", self.id.0);
@@ -544,6 +566,11 @@ impl Session {
                     self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, status, current).await?;
                 }
             }
+            Event::Outputs => {
+                if self.outputs {
+                    self.send_outputs(writer).await?;
+                }
+            }
             Event::Clipboard(text) => {
                 writer.send(&msg::server_cut_text(&text)).await?;
             }
@@ -555,6 +582,13 @@ impl Session {
         let g = self.shared.geometry();
         debug!("client {}: reporting {}x{} at scale {:.2}", self.id.0, g.width, g.height, g.scale);
         writer.send(&output_scale(g.width, g.height, g.scale)).await?;
+        Ok(())
+    }
+
+    async fn send_outputs(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
+        let displays = self.shared.displays();
+        debug!("client {}: listing {} outputs, sharing id {}", self.id.0, displays.entries.len(), displays.active);
+        writer.send(&output_list(displays.active, &displays.entries)).await?;
         Ok(())
     }
 

@@ -9,6 +9,10 @@
 //!
 //! Only a headless output is ever reconfigured, the way wayvnc has it: a real
 //! monitor's mode belongs to the person sitting at it.
+//!
+//! Which output is shared is the configuration's to begin with and the client's
+//! from there: a client that speaks the outputs extension is sent the list and
+//! may name another one ([`wlshare_rfb::outputs`], [`Outputs::entries`]).
 
 use std::collections::HashMap;
 
@@ -24,6 +28,8 @@ use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_manager_v1::{self, ZwlrOutputManagerV1},
     zwlr_output_mode_v1::{self, ZwlrOutputModeV1},
 };
+
+use wlshare_rfb::outputs::OutputEntry;
 
 use crate::compositor::Compositor;
 use crate::shared::{ClientId, Event};
@@ -104,30 +110,100 @@ impl Outputs {
 
     pub fn selected_head(&self) -> Option<&Head> {
         let name = self.selected.as_deref()?;
+        self.head(name)
+    }
+
+    fn head(&self, name: &str) -> Option<&Head> {
         self.heads.iter().find(|h| h.name.as_deref() == Some(name))
     }
 
     /// The exact scale of the shared output: the head's, or `wl_output`'s.
     pub fn scale(&self) -> f64 {
-        if let Some(s) = self.selected_head().and_then(|h| h.scale) {
-            return s;
+        self.selected().map_or(1.0, |o| self.scale_of(o))
+    }
+
+    /// The exact scale `output` is drawn at: its head's, or `wl_output`'s.
+    pub fn scale_of(&self, output: &OutputInfo) -> f64 {
+        if let Some(name) = output.name.as_deref()
+            && let Some(scale) = self.head(name).and_then(|h| h.scale)
+        {
+            return scale;
         }
-        self.selected().map_or(1.0, |o| f64::from(o.wl_scale.max(1)))
+        f64::from(output.wl_scale.max(1))
     }
 
     /// The shared output's size in pixels as the head reports it, falling back
     /// to `wl_output`'s mode.
     pub fn size(&self) -> (u16, u16) {
-        if let Some(mode) = self.selected_head().and_then(|h| h.current_mode.as_ref()).and_then(|m| self.modes.get(m)) {
-            let (w, h) = mode.size;
-            let transform = self.selected().map_or(wl_output::Transform::Normal, |o| o.transform);
-            let (w, h) = match transform {
-                wl_output::Transform::_90 | wl_output::Transform::_270 | wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270 => (h, w),
-                _ => (w, h),
-            };
-            return (w.clamp(0, i32::from(u16::MAX)) as u16, h.clamp(0, i32::from(u16::MAX)) as u16);
-        }
-        self.selected().map_or((0, 0), |o| o.size())
+        self.selected().map_or((0, 0), |o| self.size_of(o))
+    }
+
+    /// The framebuffer size a capture of `output` has, as its head reports the
+    /// mode, falling back to `wl_output`'s.
+    pub fn size_of(&self, output: &OutputInfo) -> (u16, u16) {
+        let mode = output
+            .name
+            .as_deref()
+            .and_then(|name| self.head(name))
+            .and_then(|h| h.current_mode.as_ref())
+            .and_then(|m| self.modes.get(m));
+        let Some(mode) = mode else { return output.size() };
+        let (w, h) = mode.size;
+        let (w, h) = match output.transform {
+            wl_output::Transform::_90 | wl_output::Transform::_270 | wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270 => (h, w),
+            _ => (w, h),
+        };
+        (w.clamp(0, i32::from(u16::MAX)) as u16, h.clamp(0, i32::from(u16::MAX)) as u16)
+    }
+
+    /// The shared output's id, or 0 while there is none: the `wl_output` global,
+    /// which is unique for as long as the output exists and is what a client
+    /// names in a `SelectOutput`.
+    pub fn active_id(&self) -> u32 {
+        self.selected().map_or(0, |o| o.global)
+    }
+
+    /// The outputs a client may choose between, by name so the order a menu
+    /// shows them in does not depend on the order the compositor announced
+    /// them. An output whose name or mode has not arrived yet is not in the
+    /// list: it cannot be labelled, and capturing it would produce nothing.
+    pub fn entries(&self) -> Vec<OutputEntry> {
+        let mut entries: Vec<OutputEntry> = self
+            .outputs
+            .iter()
+            .filter(|o| self.listable(o))
+            .map(|o| {
+                let (width, height) = self.size_of(o);
+                OutputEntry {
+                    id: o.global,
+                    name: o.name.clone().expect("listable"),
+                    width,
+                    height,
+                    scale: self.scale_of(o),
+                    headless: o.is_headless(),
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        entries
+    }
+
+    /// Whether an output can be shared at all: its properties have arrived, it
+    /// has a name to be labelled by, and a capture of it would produce pixels.
+    /// The one rule behind both [`Outputs::entries`] and [`Outputs::selectable`],
+    /// so what a client is offered and what it may ask for cannot drift apart.
+    fn listable(&self, output: &OutputInfo) -> bool {
+        let (width, height) = self.size_of(output);
+        output.done && output.name.is_some() && width > 0 && height > 0
+    }
+
+    /// The output with this id, while the compositor has one a client may share.
+    /// An id that names an output still arriving, or one left without a mode, is
+    /// no more selectable than an id the compositor never had: sharing it would
+    /// put a desktop of no size in front of the client and give the capture
+    /// nothing to read.
+    pub fn selectable(&self, id: u32) -> Option<&OutputInfo> {
+        self.outputs.iter().find(|o| o.global == id).filter(|o| self.listable(o))
     }
 
     /// Pick the shared output: the configured name, or the first one.
@@ -228,6 +304,12 @@ impl Dispatch<WlOutput, ()> for Compositor {
                 if selected {
                     state.geometry_changed();
                 }
+                state.outputs_changed();
+                if state.outputs.selected.is_none() {
+                    // Nothing is shared, and this output has just become
+                    // something that can be: the desktop starts again on it.
+                    state.adopt_output();
+                }
             }
             _ => {}
         }
@@ -259,6 +341,9 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
                     }
                     state.geometry_changed();
                 }
+                // A head's scale or mode is in every entry's label, not only the
+                // shared one's.
+                state.outputs_changed();
             }
             zwlr_output_manager_v1::Event::Finished => warn!("the compositor withdrew wlr-output-management"),
             _ => {}

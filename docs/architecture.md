@@ -12,8 +12,8 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 ```
 
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
-  and building, RSA-AES and its frames, the ZRLE encoder, the density
-  extension. It has no platform dependency and its tests decode every encoder's
+  and building, RSA-AES and its frames, the ZRLE encoder, the density and outputs
+  extensions. It has no platform dependency and its tests decode every encoder's
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
@@ -33,7 +33,8 @@ shared flag is read and dropped; there is no configuration for it and no way to
 watch alongside somebody else.
 
 The compositor thread holds the single client id, so the rule is one comparison:
-input, resize, density and clipboard from anyone else are dropped, which is what
+input, resize, density, output selection and clipboard from anyone else are
+dropped, which is what
 a superseded session's last in-flight messages are. Taking over releases the
 keys and buttons the previous client held and its pending resize, and capture
 runs from the first handshake until the client on the desktop leaves.
@@ -61,6 +62,17 @@ paced by `max_fps`. The compositor answers a damage-only copy only when
 something changed, so an idle desktop costs nothing. Damaged rectangles are
 copied into the framebuffer under its lock, the generation counter advances,
 and every session is woken through a `watch`.
+
+A framebuffer holding no pixels yet is the exception, both ways round. It is
+asked for a plain `copy` rather than a damage-only one, because a damage-only
+copy is answered only when the output changes and an output nobody is touching
+may not change for minutes -- which would leave a client on a blank screen, or
+on the last picture of the output it just left, until somebody moved the mouse.
+And the frame that comes back is taken whole, whatever the compositor reported
+changed: damage is measured against the frame before, and a framebuffer just
+made, just resized, or just pointed at another output has no frame before, so
+copying only the reported rectangles would leave the rest of it blank. Both
+follow from `painted`, which the framebuffer clears on every resize.
 
 The framebuffer keeps a log of `(generation, rect)`. A session asks for the
 damage after the generation it last sent and gets the merged union; a session
@@ -168,6 +180,62 @@ are 16.16 unsigned fixed point.
 The exact scale comes from the wlr-output-management head, fractional included;
 `wl_output.scale`, which wlroots rounds up, is the fallback when the protocol is
 absent.
+
+## The outputs extension
+
+One framebuffer is one output, so a desktop with two monitors has to be asked
+which one to send. Standard RFB has no word for that either — `ExtendedDesktopSize`
+describes screens *inside* one framebuffer — so this is a second private
+extension in the shape of the first: one pseudo-encoding, `0x574c534f` (`WLSO`),
+and one message type, `0xE1`, in both directions.
+
+- **OutputList**, server → client: type, padding, a count, the shared output's
+  id, then an entry per output — id, width and height in pixels, scale as 16.16
+  fixed point, a flags byte whose bit 0 says the output is headless, and a
+  length-prefixed UTF-8 name. Sent as the answer to *every* `SetEncodings` that
+  lists the pseudo-encoding — the only way support is announced — and again
+  whenever the list, an entry, or the shared output changes. Entries are ordered
+  by name, and an output whose name or mode has not arrived yet is not in them.
+  The id is the `wl_output` global, unique for as long as the output exists.
+- **SelectOutput**, client → server, eight bytes: type, three bytes of padding,
+  the id of the output to share. Honoured only from a client that listed the
+  pseudo-encoding and holds the desktop, and **answered with an OutputList**
+  either way: a request naming an output the compositor no longer has, or the one
+  already shared, is answered with the list as it is. So a client's menu follows
+  what is on the canvas rather than what was clicked.
+
+A switch stops the capture, points the virtual pointer at the new output —
+`zwlr_virtual_pointer` takes its output when it is made and never again, so what
+the client holds is let go and the pointer is remade — takes the new size into
+the framebuffer blank, reports the geometry, and starts capturing again. The
+client is sent nothing until a frame of the output it asked for has arrived: a
+different size reaches it as an ExtendedDesktopSize rectangle with the server as
+the reason, and a same-sized output as a full repaint. Which output is shared to
+begin with is `output` in the configuration, or the first one.
+
+An id is selectable exactly when it is listable: the output's properties have
+arrived, it has a name, and a capture of it would produce pixels. One rule serves
+both, so a client can never name something the list would not have shown it, and
+an output still arriving cannot become a desktop of no size.
+
+An output the compositor takes away while it is the shared one is not left as a
+name standing for nothing — that would stop the capture with nothing left to
+start it again, and a client would sit watching a picture that had quietly
+stopped changing. The desktop moves to whatever the list shows first, through the
+same sequence a client's own switch runs, so the client is told the new geometry
+and sent the new output's pixels. With no output left the capture stops and the
+list goes out empty, the last geometry and the last picture standing until an
+output appears; the first one to arrive is adopted the same way.
+
+Only a headless output is ever resized or rescaled, so switching to a real
+monitor leaves a client's resize and density requests answered *prohibited* —
+that monitor's mode belongs to the person sitting at it.
+
+The choice outlives the client that made it: the next connection opens on the
+output the last one asked for, not on the configured default, until the daemon
+restarts. Measured on a two-monitor sway session in
+[remotex's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/remotex/blob/main/docs/wlshare-outputs.md),
+which is where the gateway's half of this lives.
 
 ## The audio extension
 
@@ -290,5 +358,5 @@ bare reason "authentication failed"; the actual reason is logged.
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding: the gateway
 re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
 8- and 16-bit pixel formats and colour maps. Cursor shapes. Multiple outputs in
-one framebuffer. A control socket. A client's microphone: the extension carries
+one framebuffer — a client picks one of them instead. A control socket. A client's microphone: the extension carries
 sound one way only.

@@ -3,7 +3,7 @@
 //! Everything that decides bytes on the socket lives here and nowhere else: the
 //! handshake pieces, the client messages and how they parse, the server messages
 //! and how they are built, classic VNC authentication, the ZRLE encoder and the
-//! density extension. The daemon crate turns compositor events into calls on this
+//! private extensions. The daemon crate turns compositor events into calls on this
 //! crate and copies the results to sockets; it never writes a protocol byte of
 //! its own.
 //!
@@ -31,6 +31,9 @@
 //! - **The density extension**, one pseudo-encoding and one message type, which
 //!   is how a client learns the scale the framebuffer is drawn at and asks for
 //!   the one it wants ([`density`]).
+//! - **The outputs extension**, another pair of the same shape, which is how a
+//!   client learns which outputs the compositor has and asks for the one it
+//!   wants shared ([`outputs`]).
 //! - **The QEMU Audio extension**, the registered one, which carries the
 //!   desktop's sound over the same connection as raw samples in the format the
 //!   client chose ([`audio`]).
@@ -43,6 +46,7 @@
 pub mod audio;
 pub mod density;
 pub mod msg;
+pub mod outputs;
 pub mod pixel;
 pub mod rsa_aes;
 pub mod zrle;
@@ -71,6 +75,8 @@ pub const ENCODING_CONTINUOUS_UPDATES: i32 = -313;
 pub const ENCODING_EXTENDED_CLIPBOARD: i32 = 0xc0a1_e5ce_u32 as i32;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;
+/// The outputs extension's pseudo-encoding, the ASCII bytes `WLSO`.
+pub const ENCODING_OUTPUTS: i32 = 0x574c_534f;
 /// The QEMU Audio extension's pseudo-encoding: a client that lists it can
 /// take the desktop's sound, and is told so by an empty rectangle of this
 /// encoding ([`audio`]).
