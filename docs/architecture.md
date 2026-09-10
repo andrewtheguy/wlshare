@@ -80,8 +80,11 @@ behind the log, or one that has seen nothing yet, gets the whole framebuffer.
 Sessions copy the pixels they need out under the lock and encode after releasing
 it, so encoding a slow client's update never holds up a capture.
 
-The pointer is composited into the frame (`overlay_cursor`). No cursor shape is
-sent; a client that lists the Cursor pseudo-encoding simply never receives one.
+The pointer is excluded from the frame (`overlay_cursor = 0`). On a headless
+output this needs wlroots 0.19 or newer, whose headless backend keeps cursors on
+a distinct plane instead of painting them permanently into the output. No
+cursor shape is sent; a client that lists the Cursor pseudo-encoding simply
+never receives one, so a latency-sensitive client draws its local pointer.
 
 ### Frame layout
 

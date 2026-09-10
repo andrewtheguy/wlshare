@@ -9,14 +9,16 @@ PipeWire over the connection itself — and tells the client what pixel density 
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
 shown sharp at 2x and a client's own density becomes the output's. A desktop with
 more than one monitor sends the client the list, so the one being shared is the
-client's to choose.
+client's to choose. The compositor pointer is excluded from captured frames, so
+a client can draw its local pointer without waiting for a framebuffer update.
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
 `wlr-screencopy` version 2 or later is required. Output resizing and rescaling
 additionally need `wlr-output-management`; input and clipboard use the virtual
 keyboard, virtual pointer, and `wlr-data-control` protocols when the compositor
-offers them.
+offers them. Keeping the cursor separate on a headless output requires wlroots
+0.19 or newer.
 
 Any VNC client that decodes ZRLE can connect. The density and outputs extensions
 are asked for by the client and stay silent otherwise; remotex asks for both on
@@ -96,4 +98,10 @@ Packages for Debian trixie on amd64 and arm64 are built in Docker by
 **Release wlshare** workflow builds the same and publishes them as the GitHub
 release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
 before running the workflow. The package version is the crate's, and the
-distribution is in the file name only.
+distribution is in the file name only. The package depends on
+`libwlroots-0.19 (>= 0.19.0)`, the first wlroots that keeps the cursor out of a
+headless capture.
+
+Pinned Sway 1.11 and wlroots 0.19 packages for Debian trixie are published from
+[`docs/packages/debian-trixie`](docs/packages/debian-trixie). GitHub Pages serves
+that directory at `https://andrewtheguy.github.io/wlshare/packages/debian-trixie/`.
