@@ -10,7 +10,8 @@ framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
 shown sharp at 2x and a client's own density becomes the output's. A desktop with
 more than one monitor sends the client the list, so the one being shared is the
 client's to choose. The compositor pointer is excluded from captured frames, so
-a client can draw its local pointer without waiting for a framebuffer update.
+wlshare sends a neutral arrow through the standard RFB Cursor pseudo-encoding
+and the client moves it without waiting for a framebuffer update.
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
@@ -20,7 +21,9 @@ keyboard, virtual pointer, and `wlr-data-control` protocols when the compositor
 offers them. Keeping the cursor separate on a headless output requires wlroots
 0.19 or newer.
 
-Any VNC client that decodes ZRLE can connect. The density and outputs extensions
+Any VNC client that decodes ZRLE and advertises the standard Cursor
+pseudo-encoding can connect. Cursor support is required because wlshare never
+puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; remotex asks for both on
 every plain `vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
 QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
