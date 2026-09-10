@@ -50,7 +50,9 @@ pixel density to the remotex gateway over a private extension."""
 section = "net"
 priority = "optional"
 # wayland-client loads libwayland-client at runtime, so dpkg-shlibdeps cannot see it.
-depends = "$auto, libwayland-client0 (>= 1.20)"
+# wlroots is the compositor's, not linked here: 0.19 is the first whose headless
+# backend keeps the cursor out of a screencopy without overlay_cursor.
+depends = "$auto, libwayland-client0 (>= 1.20), libwlroots-0.19 (>= 0.19.0)"
 # The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
 # edits survive an upgrade.
 conf-files = ["/etc/pam.d/wlshare"]

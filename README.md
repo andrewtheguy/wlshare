@@ -98,7 +98,9 @@ Packages for Debian trixie on amd64 and arm64 are built in Docker by
 **Release wlshare** workflow builds the same and publishes them as the GitHub
 release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
 before running the workflow. The package version is the crate's, and the
-distribution is in the file name only.
+distribution is in the file name only. The package depends on
+`libwlroots-0.19 (>= 0.19.0)`, the first wlroots that keeps the cursor out of a
+headless capture.
 
 Pinned Sway 1.11 and wlroots 0.19 packages for Debian trixie are published from
 [`docs/packages/debian-trixie`](docs/packages/debian-trixie). GitHub Pages serves
