@@ -5,6 +5,12 @@
 //! answer only when something changed since the frame before, so an idle desktop
 //! costs nothing and a busy one is paced by [`crate::config::Config::max_fps`].
 //! Capture runs only while a client is connected.
+//!
+//! The exception is a framebuffer holding no pixels yet -- freshly made, resized,
+//! or switched to another output. There is no frame before for damage to be
+//! measured against, so the frame that fills it is asked for outright and taken
+//! whole; waiting for damage there would hold a blank screen for as long as the
+//! output happened to be still.
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::{Duration, Instant};
@@ -142,17 +148,14 @@ impl Compositor {
             }
             _ => ResizeOrigin::Server,
         };
-        let mut damage = std::mem::take(&mut self.capture.damage);
+        let damage = std::mem::take(&mut self.capture.damage);
         let generation = {
             let mut fb = self.shared().framebuffer.lock().unwrap();
             if (fb.width, fb.height) != (width, height) {
                 info!("the framebuffer is now {width}x{height} ({origin:?})");
                 fb.resize(width, height, origin);
-                damage = vec![Rect::whole(width, height)];
-            } else if damage.is_empty() {
-                // A frame without a damage report: everything may have changed.
-                damage.push(Rect::whole(width, height));
             }
+            let damage = damage_for(damage, fb.painted, width, height);
             fb.apply(&buffer.map, buffer.stride as usize, &damage, self.capture.layout);
             fb.generation
         };
@@ -160,6 +163,21 @@ impl Compositor {
         self.capture.last_ready = Some(Instant::now());
         self.capture.failures = 0;
     }
+}
+
+/// What of a captured frame to copy in: the rectangles the compositor reported,
+/// or the whole frame.
+///
+/// Damage is measured against the frame before, so it means nothing until there
+/// has been one. A framebuffer that holds no pixels at its current size --
+/// `painted` false, which is every framebuffer just made, just resized, or just
+/// pointed at another output -- takes the frame whole; so does one whose frame
+/// reported no damage at all, where everything may have changed.
+fn damage_for(reported: Vec<Rect>, painted: bool, width: u16, height: u16) -> Vec<Rect> {
+    if painted && !reported.is_empty() {
+        return reported;
+    }
+    vec![Rect::whole(width, height)]
 }
 
 /// Where the framebuffer's `B, G, R, X` bytes sit in a pixel of `format`, or
@@ -243,8 +261,19 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                         }
                     }
                 }
+                // `copy_with_damage` waits for the output to change, which is
+                // what keeps an idle desktop free -- but a blank framebuffer has
+                // nothing to show in the meantime, and an output nobody is
+                // touching can stay unchanged for minutes. So the frame that
+                // fills a blank one is asked for outright.
+                let painted = state.shared().framebuffer.lock().unwrap().painted;
                 let buffer = state.capture.buffer.as_ref().unwrap();
-                frame.copy_with_damage(&buffer.buffer);
+                if painted {
+                    frame.copy_with_damage(&buffer.buffer);
+                } else {
+                    debug!("asking for a whole frame: the framebuffer holds no pixels yet");
+                    frame.copy(&buffer.buffer);
+                }
             }
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {
                 state.capture.layout.flipped = flags.into_result().is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
@@ -293,3 +322,22 @@ wayland_client::delegate_noop!(Compositor: ignore ZwlrScreencopyManagerV1);
 wayland_client::delegate_noop!(Compositor: ignore WlShm);
 wayland_client::delegate_noop!(Compositor: ignore WlShmPool);
 wayland_client::delegate_noop!(Compositor: ignore WlBuffer);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_framebuffer_with_no_pixels_yet_takes_the_whole_frame() {
+        let spot = vec![Rect { x: 4, y: 4, width: 8, height: 8 }];
+        let whole = vec![Rect::whole(1280, 800)];
+        // The frame that fills a blank framebuffer -- after a resize, or after a
+        // switch to another output, where the size may not have changed at all.
+        assert_eq!(damage_for(spot.clone(), false, 1280, 800), whole);
+        // Once there are pixels to keep, only what the compositor reported is
+        // copied over them.
+        assert_eq!(damage_for(spot.clone(), true, 1280, 800), spot);
+        // A frame that reported nothing says nothing about what is still good.
+        assert_eq!(damage_for(Vec::new(), true, 1280, 800), whole);
+    }
+}

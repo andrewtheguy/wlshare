@@ -63,6 +63,17 @@ something changed, so an idle desktop costs nothing. Damaged rectangles are
 copied into the framebuffer under its lock, the generation counter advances,
 and every session is woken through a `watch`.
 
+A framebuffer holding no pixels yet is the exception, both ways round. It is
+asked for a plain `copy` rather than a damage-only one, because a damage-only
+copy is answered only when the output changes and an output nobody is touching
+may not change for minutes -- which would leave a client on a blank screen, or
+on the last picture of the output it just left, until somebody moved the mouse.
+And the frame that comes back is taken whole, whatever the compositor reported
+changed: damage is measured against the frame before, and a framebuffer just
+made, just resized, or just pointed at another output has no frame before, so
+copying only the reported rectangles would leave the rest of it blank. Both
+follow from `painted`, which the framebuffer clears on every resize.
+
 The framebuffer keeps a log of `(generation, rect)`. A session asks for the
 damage after the generation it last sent and gets the merged union; a session
 behind the log, or one that has seen nothing yet, gets the whole framebuffer.
