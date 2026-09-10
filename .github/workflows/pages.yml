@@ -1,0 +1,85 @@
+name: Publish APT repository
+
+# Assembles the signed APT repository from the .debs of the keep_releases most
+# recent sway-* releases (so a client with a slightly stale index still finds its
+# .debs, and older builds stay installable), installs Sway from it in a trixie
+# container, and deploys it as the whole GitHub Pages site. Runs after every
+# successful Release Sway packages run, or by hand.
+#
+# Needs the GPG_PRIVATE_KEY secret (the private half of packaging/apt/pubkey.asc)
+# and GitHub Pages set to deploy from GitHub Actions.
+on:
+  workflow_dispatch:
+    inputs:
+      keep_releases:
+        description: How many of the most recent sway-* releases to serve
+        type: number
+        default: 3
+  workflow_run:
+    workflows: [Release Sway packages]
+    types: [completed]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the most recent releases
+        env:
+          KEEP: ${{ inputs.keep_releases || 3 }}
+        run: |
+          set -euo pipefail
+          [[ ${KEEP} =~ ^[1-9][0-9]*$ ]] || { echo "::error::keep_releases must be a positive integer"; exit 1; }
+          tags="$(gh release list --exclude-drafts --limit 1000 --json tagName,publishedAt \
+            --jq "map(select(.tagName | test(\"^sway-[0-9]\"))) | sort_by(.publishedAt) | reverse | .[:${KEEP}] | .[].tagName")"
+          [[ -n ${tags} ]] || { echo "::error::no sway-* release; run Release Sway packages first"; exit 1; }
+          for tag in ${tags}; do
+            gh release download "${tag}" --pattern '*.deb' --dir "debs/${tag}"
+          done
+          find debs -name '*.deb' | sort
+
+      - name: Install repository tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev apt-utils gnupg gpgv
+
+      - name: Import the signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n ${GPG_PRIVATE_KEY} ]] || { echo "::error::the GPG_PRIVATE_KEY secret is not set"; exit 1; }
+          GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -m 700 "${GNUPGHOME}"
+          echo "GNUPGHOME=${GNUPGHOME}" >> "$GITHUB_ENV"
+          printf '%s\n' "${GPG_PRIVATE_KEY}" | GNUPGHOME="${GNUPGHOME}" gpg --batch --quiet --import
+
+      - name: Assemble and sign the repository
+        run: ./scripts/apt-repo-build.sh debs site "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+
+      - name: Install Sway from the repository
+        run: ./scripts/apt-repo-smoke.sh site
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -13,8 +13,9 @@
 - Every protocol byte comes from `wlshare-rfb`; the daemon never writes one itself.
   Every encoder gets an independent decoder in its tests.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland
-  session it shares; packages are built only in Docker by
-  `scripts/build-debs.sh`, never on the host.
+  session it shares; packages are built only in Docker, by
+  `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the
+  wlroots and Sway the APT repository serves, never on the host.
 - Do not run `cargo fmt`. Use `anyhow` for application errors and `thiserror` for
   typed protocol errors.
 - Design and wire details live in `docs/architecture.md`, not here.
