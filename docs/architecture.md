@@ -206,6 +206,12 @@ Only a headless output is ever resized or rescaled, so switching to a real
 monitor leaves a client's resize and density requests answered *prohibited* —
 that monitor's mode belongs to the person sitting at it.
 
+The choice outlives the client that made it: the next connection opens on the
+output the last one asked for, not on the configured default, until the daemon
+restarts. Measured on a two-monitor sway session in
+[remotex's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/remotex/blob/main/docs/wlshare-outputs.md),
+which is where the gateway's half of this lives.
+
 ## The audio extension
 
 The one audio extension `rfbproto` registers — pseudo-encoding `-259`, message
