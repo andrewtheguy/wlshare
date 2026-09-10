@@ -76,27 +76,25 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, watch};
 
 use crate::audio::Capture;
+use crate::auth::Login;
 use crate::framebuffer::{Rect, ResizeOrigin};
-use crate::pam;
 use crate::shared::{ClientId, Command, Event, Shared};
 
 /// What the server offers at the security step, and what it checks the client
-/// against: RSA-AES with the account's login, or nothing at all, in which case
-/// anyone who reaches the port is in. Classic VncAuth is deliberately not
-/// offered — it names nobody and leaves the session in the clear.
+/// against: RSA-AES with a login, or nothing at all, in which case anyone who
+/// reaches the port is in. Classic VncAuth is deliberately not offered — it
+/// names nobody and leaves the session in the clear.
 #[derive(Default)]
 pub struct Security {
-    /// RSA-AES at both widths, the login checked by PAM.
+    /// RSA-AES at both widths, the credentials checked by [`Login`].
     pub rsa_aes: Option<RsaAes>,
 }
 
-/// RSA-AES's half of [`Security`]: the server key, the PAM service the
-/// credentials go to, and the one username accepted — `account`, the process's
-/// own.
+/// RSA-AES's half of [`Security`]: the server key, and what the credentials it
+/// carries are checked against.
 pub struct RsaAes {
     pub key: Arc<ServerKey>,
-    pub service: String,
-    pub account: String,
+    pub login: Login,
 }
 
 impl Security {
@@ -253,16 +251,14 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
     let (mut reader, mut writer) = match chosen {
         msg::SECURITY_NONE => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
         _ => {
-            let RsaAes { key, service, account } = config.security.rsa_aes.as_ref().expect("RSA-AES was offered");
+            let RsaAes { key, login } = config.security.rsa_aes.as_ref().expect("RSA-AES was offered");
             let strength = rsa_aes::Strength::of(chosen).expect("one of the two offered");
-            let (credentials, session) = rsa_aes::authenticate(&mut reader, &mut writer, strength, key).await.context("RSA-AES key exchange")?;
+            let (credentials, session) = rsa_aes::authenticate(&mut reader, &mut writer, strength, key, login.subtype()).await.context("RSA-AES key exchange")?;
             // Everything from here on is inside the frames, the refusal included.
             let mut writer = Writer { inner: writer, sealer: Some(session.sealer) };
             let reader = Reader::Sealed(FrameReader::new(reader, session.opener));
-            let (service, account, peer) = (service.clone(), account.clone(), peer.to_owned());
-            let checked = tokio::task::spawn_blocking(move || pam::check(&service, &account, &credentials.username, &credentials.password, &peer))
-                .await
-                .context("the PAM check did not finish")?;
+            let (login, peer) = (login.clone(), peer.to_owned());
+            let checked = tokio::task::spawn_blocking(move || login.check(&credentials, &peer)).await.context("the login check did not finish")?;
             if let Err(refused) = checked {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 writer.send(&msg::security_failed("authentication failed")).await?;
@@ -704,15 +700,22 @@ async fn audio_ready(audio: &Option<Capture>) {
 mod security_tests {
     use super::*;
 
-    /// A `[pam]` table lists RSA-AES at both widths, the wider first, and
-    /// nothing else; an unauthenticated server lists None alone.
+    /// Either login lists RSA-AES at both widths, the wider first, and nothing
+    /// else — the offer says how the credentials travel, not what checks them.
+    /// A server with neither table lists None alone, and still does.
     #[test]
     fn the_offer_is_rsa_aes_or_none() {
-        let pam = RsaAes { key: Arc::new(ServerKey::generate().unwrap()), service: "wlshare".into(), account: "me".into() };
         assert_eq!(Security::default().offered(), vec![msg::SECURITY_NONE]);
-        assert_eq!(
-            Security { rsa_aes: Some(pam) }.offered(),
-            vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]
-        );
+        let logins = [
+            Login::Pam { service: "wlshare".into(), account: "me".into() },
+            Login::Password { hash: "$argon2id$v=19$x".into() },
+        ];
+        for login in logins {
+            let rsa_aes = RsaAes { key: Arc::new(ServerKey::generate().unwrap()), login };
+            assert_eq!(
+                Security { rsa_aes: Some(rsa_aes) }.offered(),
+                vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]
+            );
+        }
     }
 }

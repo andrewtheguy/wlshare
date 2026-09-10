@@ -46,21 +46,32 @@ Configuration is one TOML file, `$XDG_CONFIG_HOME/wlshare/config.toml` by
 default; every key has a default and [`packaging/config.example.toml`](packaging/config.example.toml)
 lists them.
 
-Who may connect is one setting. Nothing set: anyone who reaches the port is in,
-and the session is in the clear, so `listen` stays on loopback or behind a VPN
-or an SSH tunnel. `[pam]`: RSA-AES, RealVNC's security type that TigerVNC and
-remotex speak — the client sends the username and password of the account
-wlshare runs as, PAM checks them under the service `wlshare` (the package
-installs `/etc/pam.d/wlshare`), and everything after the key exchange is
-encrypted. No other account is accepted, since the desktop behind the port is
-that one user's. Classic VncAuth is deliberately not offered: it names nobody,
-proves only knowledge of a machine's secret, and leaves the session in the
-clear.
+Who may connect is one setting, and there are three answers. Nothing set: anyone
+who reaches the port is in, and the session is in the clear, so `listen` stays on
+loopback or behind a VPN or an SSH tunnel. `[pam]`: RSA-AES, RealVNC's security
+type that TigerVNC and remotex speak — the client sends the username and
+password of the account wlshare runs as, PAM checks them under the service
+`wlshare` (the package installs `/etc/pam.d/wlshare`), and everything after the
+key exchange is encrypted. No other account is accepted, since the desktop
+behind the port is that one user's. `[password]`: the same RSA-AES, asking for a
+password alone, checked against an Argon2 hash in the configuration file —
+for a host where no system account's password should be the way in. Print the
+hash with
+
+```sh
+wlshare hash-password
+```
+
+and paste it into the table; the password itself is never written down.
+
+Classic VncAuth is deliberately not offered in any of the three: it names
+nobody, truncates the password to eight characters, proves only knowledge of a
+machine's secret, and leaves the session in the clear.
 The server's RSA key is generated on first start into `rsa_key_file` and its
 fingerprint logged, so it can be compared with the one the client shows.
-Because the password PAM verifies is the account's, the stack can pass it on —
-a `pam_exec ... expose_authtok` line there is how a headless session gets its
-keyring unlocked at VNC login.
+Under `[pam]`, because the password PAM verifies is the account's, the stack can
+pass it on — a `pam_exec ... expose_authtok` line there is how a headless
+session gets its keyring unlocked at VNC login.
 
 A custom keyboard layout — for a modifier remap the session's only keyboard has
 to carry — goes under `[xkb]`, with `XKB_CONFIG_EXTRA_PATH` in the unit's
