@@ -1,0 +1,114 @@
+name: Release Sway packages
+
+# Rebuilds the wlroots and Sway source packages pinned in packaging/apt/sources.env
+# for Debian trixie on amd64 and arm64, with the same Docker build
+# scripts/build-sway-debs.sh runs locally, and publishes them as the prerelease
+# sway-<YYYYMMDD>-<N>. The release only stores the .debs: Publish APT repository
+# runs after it and serves them from GitHub Pages. Run it by hand.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # Two runs must not reserve the same tag.
+    concurrency:
+      group: sway-release-tag
+      cancel-in-progress: false
+    outputs:
+      build_version: ${{ steps.tag.outputs.build_version }}
+      build_revision: ${{ steps.tag.outputs.build_revision }}
+      tag: ${{ steps.tag.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Reserve the release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          BUILD_VERSION="$(date -u +%Y%m%d)"
+          REVISION=1
+          while gh release view "sway-${BUILD_VERSION}-${REVISION}" >/dev/null 2>&1; do
+            REVISION=$((REVISION + 1))
+          done
+          TAG="sway-${BUILD_VERSION}-${REVISION}"
+          gh release create "${TAG}" --draft --prerelease --target "${{ github.sha }}" \
+            --title "${TAG}" --notes "Build in progress."
+          echo "build_version=${BUILD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_revision=${REVISION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the packages (${{ matrix.arch }})
+        env:
+          BUILD_VERSION: ${{ needs.prepare.outputs.build_version }}
+          BUILD_REVISION: ${{ needs.prepare.outputs.build_revision }}
+        run: ./scripts/build-sway-debs.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sway-${{ matrix.arch }}
+          path: dist/sway/${{ matrix.arch }}/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Upload the packages to the draft release
+        run: |
+          set -euo pipefail
+          mkdir release
+          for arch in amd64 arm64; do
+            for deb in artifacts/sway-${arch}/*.deb; do
+              # GitHub turns a '~' in an asset name into '.'; do it first so
+              # SHA256SUMS names the files as they are served.
+              name="$(basename "${deb}")"
+              cp "${deb}" "release/${name//\~/.}"
+            done
+          done
+          (cd release && sha256sum ./*.deb | sed 's#  \./#  #' > SHA256SUMS)
+          cat release/SHA256SUMS
+          gh release upload "${TAG}" release/*
+      - name: Publish the release (removes the draft, creates the tag)
+        run: |
+          set -euo pipefail
+          source packaging/apt/sources.env
+          gh release edit "${TAG}" --draft=false --prerelease \
+            --notes "$(cat <<EOF
+          wlroots and Sway rebuilt for Debian trixie (amd64 and arm64) from the Debian source packages
+          - ${WLROOTS_DSC_URL##*/}
+          - ${SWAY_DSC_URL##*/}
+
+          with the patch series in \`packaging/apt/patches\` on top. Install them from the APT repository
+          at https://andrewtheguy.github.io/wlshare/; this release is its storage.
+
+          \`\`\`
+          $(cat release/SHA256SUMS)
+          \`\`\`
+          EOF
+          )"

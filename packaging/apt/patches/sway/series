@@ -1,0 +1,3 @@
+# Patches applied on top of Debian's own series, one file name per line, each
+# file beside this one. They are copied into debian/patches/wlshare/ and
+# appended to debian/patches/series, so they apply last.

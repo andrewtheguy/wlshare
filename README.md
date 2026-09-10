@@ -102,6 +102,45 @@ distribution is in the file name only. The package depends on
 `libwlroots-0.19 (>= 0.19.0)`, the first wlroots that keeps the cursor out of a
 headless capture.
 
-Pinned Sway 1.11 and wlroots 0.19 packages for Debian trixie are published from
-[`docs/packages/debian-trixie`](docs/packages/debian-trixie). GitHub Pages serves
-that directory at `https://andrewtheguy.github.io/wlshare/packages/debian-trixie/`.
+## Sway and wlroots for Debian trixie
+
+Trixie ships Sway 1.10 on wlroots 0.18, whose headless backend paints the cursor
+into captures. GitHub Pages serves a signed APT repository with Sway 1.11 and
+wlroots 0.19 rebuilt for trixie against its own libraries. wlshare itself is not
+in it.
+
+```sh
+sudo mkdir -p /etc/apt/keyrings
+sudo curl -fsSL -o /etc/apt/keyrings/wlshare.gpg https://andrewtheguy.github.io/wlshare/wlshare.gpg
+sudo tee /etc/apt/sources.list.d/wlshare.sources <<'EOF'
+Types: deb
+URIs: https://andrewtheguy.github.io/wlshare
+Suites: trixie
+Components: main
+Signed-By: /etc/apt/keyrings/wlshare.gpg
+EOF
+sudo apt update && sudo apt install sway
+```
+
+The packages are Debian's own source packages, pinned by their `.dsc` on
+snapshot.debian.org in `packaging/apt/sources.env`, with the series in
+`packaging/apt/patches/<source>/` applied after Debian's patches. wlroots stays
+on 0.19, the newest series trixie's libdrm and wayland-protocols can build. They
+are versioned `<upstream>+<YYYYMMDD>-<N>~trixie`, above both trixie's packages
+and Debian's builds of the same release. `scripts/build-sway-debs.sh` builds them
+in Docker into `dist/sway/<arch>/`.
+
+The **Release Sway packages** workflow builds both architectures and publishes
+them as the prerelease `sway-<YYYYMMDD>-<N>`, which only stores them. **Publish
+APT repository** runs after it: it indexes the three most recent `sway-*`
+releases, signs the index with the key in `packaging/apt/pubkey.asc`, installs
+Sway from the result in a trixie container, and deploys it as the whole Pages
+site. It needs the private key as the `GPG_PRIVATE_KEY` secret. That key is the
+one podman-package's repository uses; its private half stays in the gitignored
+`keys/`. To run the assembly locally, import that key first:
+
+```sh
+gpg --import keys/apt-signing-key.private.asc
+./scripts/apt-repo-build.sh dist/sway site https://andrewtheguy.github.io/wlshare
+./scripts/apt-repo-smoke.sh site
+```
