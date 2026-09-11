@@ -5,9 +5,11 @@
 //! its shape, not whether it is there at all. wlroots 0.19 keeps the cursor of
 //! every output, the headless ones included, on a plane of its own, and exports
 //! that plane as the pointer cursor of the output's image capture source. A
-//! session on it produces frames of the cursor image, in the output's pixels and
-//! orientation as screencopy's frames are, so what arrives is exactly the shape
-//! the application under the pointer chose, at the size a client should draw it.
+//! session on it produces frames of the cursor image in the output's pixels, so
+//! what arrives is exactly the shape the application under the pointer chose, at
+//! the size a client should draw it. A frame of a rotated or flipped output's
+//! cursor comes turned the way the output's buffer is, and says so; it is turned
+//! back upright, the way the pointer coordinates a client sends are.
 //!
 //! One frame is always in flight. wlroots answers it only when the cursor buffer
 //! changes — a new shape, a new scale — so a pointer that just moves costs
@@ -32,6 +34,7 @@ use std::time::Duration;
 use calloop::RegistrationToken;
 use calloop::timer::{TimeoutAction, Timer};
 use log::{debug, error};
+use wayland_client::protocol::wl_output::Transform;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_shm;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
@@ -87,6 +90,8 @@ struct Session {
     entered: bool,
     /// The hotspot the next frame takes effect with.
     hotspot: (i32, i32),
+    /// The transform the compositor applied to the frame in flight.
+    transform: Transform,
     /// The last image captured, or `None` for one that painted nothing.
     image: Option<Arc<CursorImage>>,
 }
@@ -139,6 +144,34 @@ fn to_rgba(map: &[u8], width: u32, height: u32, stride: u32, order: [usize; 4]) 
     rgba
 }
 
+/// Undo `transform`, the one the compositor applied to a `width`×`height` image,
+/// giving the image as the output shows it and its size, which a quarter turn
+/// swaps.
+fn upright(rgba: Vec<u8>, width: u32, height: u32, transform: Transform) -> (Vec<u8>, u32, u32) {
+    let (w, h) = (width as usize, height as usize);
+    let (uw, uh) = match transform {
+        Transform::Normal => return (rgba, width, height),
+        Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270 => (h, w),
+        _ => (w, h),
+    };
+    let mut out = vec![0u8; rgba.len()];
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
+        let (x, y) = (i % w, i / w);
+        let (ux, uy) = match transform {
+            Transform::_90 => (h - 1 - y, x),
+            Transform::_180 => (w - 1 - x, h - 1 - y),
+            Transform::_270 => (y, w - 1 - x),
+            Transform::Flipped => (w - 1 - x, y),
+            Transform::Flipped90 => (y, x),
+            Transform::Flipped180 => (x, h - 1 - y),
+            Transform::Flipped270 => (h - 1 - y, w - 1 - x),
+            _ => (x, y),
+        };
+        out[(uy * uw + ux) * 4..][..4].copy_from_slice(px);
+    }
+    (out, uw as u32, uh as u32)
+}
+
 impl Compositor {
     /// Open a cursor session on the shared output, if a client is on the desktop,
     /// none is open, and the seat can hand over a pointer to open it with.
@@ -165,6 +198,7 @@ impl Compositor {
             constraints: None,
             entered: false,
             hotspot: (0, 0),
+            transform: Transform::Normal,
             image: None,
         });
     }
@@ -215,6 +249,7 @@ impl Compositor {
         frame.damage_buffer(0, 0, width as i32, height as i32);
         frame.capture();
         session.frame = Some(frame);
+        session.transform = Transform::Normal;
     }
 
     /// Ask for the next cursor frame after [`RETRY`].
@@ -274,13 +309,18 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Compositor {
     fn event(state: &mut Self, frame: &ExtImageCopyCaptureFrameV1, event: ext_image_copy_capture_frame_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         let Some(session) = state.cursor.session.as_mut().filter(|s| s.frame.as_ref() == Some(frame)) else { return };
         match event {
+            ext_image_copy_capture_frame_v1::Event::Transform { transform: WEnum::Value(t) } => session.transform = t,
             ext_image_copy_capture_frame_v1::Event::Ready => {
                 frame.destroy();
                 session.frame = None;
                 let (Some(buffer), Some((.., format))) = (&session.buffer, session.constraints) else { return };
                 let order = rgba_bytes(format).expect("only formats with alpha are chosen");
                 let rgba = to_rgba(&buffer.map, buffer.width, buffer.height, buffer.stride, order);
-                let image = CursorImage::cropped(buffer.width as u16, buffer.height as u16, session.hotspot, &rgba);
+                let (rgba, width, height) = upright(rgba, buffer.width, buffer.height, session.transform);
+                // The hotspot is not turned with the pixels. The protocol puts
+                // it in buffer coordinates, but wlroots reports the one its
+                // output cursor was given, which is upright already.
+                let image = CursorImage::cropped(width as u16, height as u16, session.hotspot, &rgba);
                 match &image {
                     Some(i) => debug!("cursor {}x{}, hotspot {:?}", i.width(), i.height(), i.hotspot()),
                     None => debug!("the cursor paints nothing"),
@@ -355,5 +395,31 @@ mod tests {
         }
         // A cursor without alpha is no cursor.
         assert_eq!(rgba_bytes(wl_shm::Format::Xrgb8888), None);
+    }
+
+    #[test]
+    fn every_transform_is_undone() {
+        // The upright image is
+        //
+        //     a b c
+        //     d e f
+        //
+        // and each buffer below is it drawn by hand as wl_output.transform
+        // describes: turned counter-clockwise, flipped about the vertical axis
+        // first for the flipped ones.
+        let px = |s: &str| s.split_whitespace().flat_map(|c| [c.as_bytes()[0]; 4]).collect::<Vec<u8>>();
+        let cases = [
+            (Transform::Normal, (3, 2), "a b c d e f"),
+            (Transform::_90, (2, 3), "c f b e a d"),
+            (Transform::_180, (3, 2), "f e d c b a"),
+            (Transform::_270, (2, 3), "d a e b f c"),
+            (Transform::Flipped, (3, 2), "c b a f e d"),
+            (Transform::Flipped90, (2, 3), "a d b e c f"),
+            (Transform::Flipped180, (3, 2), "d e f a b c"),
+            (Transform::Flipped270, (2, 3), "f c e b d a"),
+        ];
+        for (transform, (w, h), buffer) in cases {
+            assert_eq!(upright(px(buffer), w, h, transform), (px("a b c d e f"), 3, 2), "{transform:?}");
+        }
     }
 }
