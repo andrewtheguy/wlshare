@@ -15,6 +15,7 @@ mod capture;
 mod clipboard;
 mod compositor;
 mod config;
+mod cursor;
 mod framebuffer;
 mod input;
 mod outputs;

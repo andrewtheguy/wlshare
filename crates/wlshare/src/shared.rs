@@ -9,10 +9,11 @@
 //! channel the compositor thread polls beside the Wayland socket.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, watch};
 
+use wlshare_rfb::cursor::CursorImage;
 use wlshare_rfb::outputs::OutputEntry;
 
 use crate::framebuffer::Framebuffer;
@@ -59,6 +60,10 @@ pub enum Event {
     /// Text arrived on the compositor's clipboard — or left it: empty when the
     /// selection was cleared or is no longer text.
     Clipboard(String),
+    /// The cursor image changed: send [`Shared::cursor`] to every client. The
+    /// image is read when it is sent rather than carried here, so a client
+    /// behind on a cursor that changes quickly is sent the latest shape once.
+    Cursor,
 }
 
 /// The captured output as the sessions describe it to clients: the framebuffer's
@@ -94,6 +99,9 @@ pub struct Shared {
     pub active: watch::Sender<u64>,
     pub geometry: Mutex<Geometry>,
     pub displays: Mutex<Displays>,
+    /// The compositor's cursor image on the shared output, or `None` while there
+    /// is no pointer to draw there.
+    cursor: Mutex<Option<Arc<CursorImage>>>,
     pub events: broadcast::Sender<Event>,
     pub commands: calloop::channel::Sender<Command>,
     next_client: AtomicU64,
@@ -110,6 +118,7 @@ impl Shared {
             active,
             geometry: Mutex::new(geometry),
             displays: Mutex::new(displays),
+            cursor: Mutex::new(None),
             events,
             commands,
             next_client: AtomicU64::new(1),
@@ -126,6 +135,22 @@ impl Shared {
 
     pub fn displays(&self) -> Displays {
         self.displays.lock().unwrap().clone()
+    }
+
+    pub fn cursor(&self) -> Option<Arc<CursorImage>> {
+        self.cursor.lock().unwrap().clone()
+    }
+
+    /// Replace the cursor image; tell the sessions if it changed.
+    pub fn set_cursor(&self, image: Option<Arc<CursorImage>>) {
+        {
+            let mut cursor = self.cursor.lock().unwrap();
+            if *cursor == image {
+                return;
+            }
+            *cursor = image;
+        }
+        self.emit(Event::Cursor);
     }
 
     /// Say who is on the desktop; every other session ends.

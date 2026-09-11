@@ -6,6 +6,7 @@ protocols. It is one process with two halves and one shared framebuffer between 
 ```text
 wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ Framebuffer ──▶ session tasks ──▶ TCP
                      screencopy           (calloop)            + damage log     (tokio)          RFB clients
+                     image-copy-capture                       + cursor image
                      output-management                        ◀── Commands ◀──
                      virtual keyboard/pointer
                      data-control
@@ -17,8 +18,8 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
-  command handler; `capture.rs`, `outputs.rs`, `input.rs` and `clipboard.rs` are
-  the protocols it speaks; `framebuffer.rs` is the shared pixels and damage;
+  command handler; `capture.rs`, `cursor.rs`, `outputs.rs`, `input.rs` and
+  `clipboard.rs` are the protocols it speaks; `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `shared.rs` is what crosses between them.
 
@@ -80,17 +81,40 @@ behind the log, or one that has seen nothing yet, gets the whole framebuffer.
 Sessions copy the pixels they need out under the lock and encode after releasing
 it, so encoding a slow client's update never holds up a capture.
 
+### The cursor
+
 The pointer is excluded from the frame (`overlay_cursor = 0`). On a headless
 output this needs wlroots 0.19 or newer, whose headless backend keeps cursors on
-a distinct plane instead of painting them permanently into the output. Every
-client must advertise the standard Cursor pseudo-encoding (`-239`) before it
-asks for framebuffer pixels. wlshare answers with a neutral arrow in the
-client's pixel format. RFB cursor dimensions are framebuffer pixels, so wlshare
-rasterizes the point-sized arrow at the output's reported density and sends a
-new shape when that density changes. The client positions it at the coordinates
-it already sends in pointer events. Cursor motion therefore never waits for a
-captured frame. wlr-screencopy exposes no application-selected Wayland cursor
-surface, so the arrow is deliberately stable rather than a guessed shape.
+a distinct plane instead of painting them permanently into the output. The same
+wlroots exports that plane as the pointer cursor of the output's
+ext-image-capture-source, and `cursor.rs` holds an ext-image-copy-capture cursor
+session on it while a client is on the desktop: its frames are the cursor image
+the application under the pointer chose, in the output's pixels, which are the
+framebuffer's. One frame is always in flight, and wlroots answers it only when
+the cursor buffer changes — a new shape, a new scale — so a pointer that only
+moves costs nothing. The session's `enter` and `leave` say whether the cursor is
+on the shared output and showing; outside them there is no image. A session
+needs a `wl_pointer`, which the seat refuses before it has ever had one and
+turns inert when it loses one, so the session waits for the seat to name a
+pointer (wlshare's own virtual pointer is one) and takes a fresh `wl_pointer`
+each time it opens: on every output switch, where retargeting the virtual
+pointer briefly takes the seat's pointer away.
+
+The image is cropped to the pixels it paints and its hotspot, and goes to every
+client in an update of its own whenever it changes. Every client must advertise
+the standard Cursor pseudo-encoding (`-239`) before it asks for framebuffer
+pixels; one that also lists Cursor With Alpha (`-314`) is sent the premultiplied
+RGBA as it is, Raw-encoded, and the rest get pixels in their own format beside a
+mask cut at half alpha, which loses a shadow and antialiased edges. No image — a
+hidden pointer, or one on another output — is an empty rectangle. RFB cursor
+dimensions are framebuffer pixels, as the captured image is, so it is sent at its
+own size. The client positions it at the coordinates it already sends in pointer
+events. Cursor motion therefore never waits for a captured frame.
+
+Anything that locks the output to software cursors — another client
+screencopying with the cursor painted in, such as `grim -c` — takes the cursor
+off its plane. wlroots then paints it into every capture of that output, this
+one's included, and the cursor session reports it gone.
 
 ### Frame layout
 
@@ -366,6 +390,8 @@ bare reason "authentication failed"; the actual reason is logged.
 
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding: the gateway
 re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
-8- and 16-bit pixel formats and colour maps. Application-selected cursor shapes.
+8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
+PointerPos pseudo-encoding would carry a warp the compositor made, and the
+cursor session does report positions, but only when the output repaints.
 Multiple outputs in one framebuffer — a client picks one of them instead. A control socket. A client's microphone: the extension carries
 sound one way only.
