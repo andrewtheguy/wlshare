@@ -30,20 +30,21 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 use crate::compositor::Compositor;
 use crate::framebuffer::{BGRX, FrameLayout, Rect, ResizeOrigin};
 
-/// A `wl_shm` buffer the compositor copies a frame into.
-struct ShmBuffer {
+/// A `wl_shm` buffer the compositor copies a frame into: a screen frame here, a
+/// cursor frame in [`crate::cursor`].
+pub(crate) struct ShmBuffer {
     _fd: OwnedFd,
     pool: WlShmPool,
-    buffer: WlBuffer,
-    map: memmap2::MmapMut,
-    width: u32,
-    height: u32,
-    stride: u32,
+    pub buffer: WlBuffer,
+    pub map: memmap2::MmapMut,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
     format: wl_shm::Format,
 }
 
 impl ShmBuffer {
-    fn new(shm: &WlShm, qh: &QueueHandle<Compositor>, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> anyhow::Result<Self> {
+    pub fn new(shm: &WlShm, qh: &QueueHandle<Compositor>, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> anyhow::Result<Self> {
         let size = stride as usize * height as usize;
         let fd = rustix::fs::memfd_create("wlshare-frame", rustix::fs::MemfdFlags::CLOEXEC)?;
         rustix::fs::ftruncate(&fd, size as u64)?;
@@ -56,7 +57,7 @@ impl ShmBuffer {
         Ok(Self { _fd: fd, pool, buffer, map, width, height, stride, format })
     }
 
-    fn matches(&self, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> bool {
+    pub fn matches(&self, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> bool {
         (self.width, self.height, self.stride, self.format) == (width, height, stride, format)
     }
 }
@@ -85,8 +86,10 @@ pub struct Capture {
 }
 
 impl Compositor {
-    /// Begin capturing if a client wants frames and nothing is in flight.
+    /// Begin capturing if a client wants frames and nothing is in flight — the
+    /// cursor image beside the frames, on its own session.
     pub fn start_capture(&mut self) {
+        self.start_cursor();
         if self.client.is_none() || self.capture.frame.is_some() {
             return;
         }
@@ -97,15 +100,18 @@ impl Compositor {
         self.capture.announced = None;
         // Keep the compositor's pointer out of the framebuffer. wlroots 0.19
         // gives the headless backend a cursor plane, so a screencopy without
-        // overlay_cursor can finally leave it behind. The RFB session sends a
-        // separate standard Cursor pseudo-rectangle, so the client moves the
-        // pointer without waiting for a captured frame.
+        // overlay_cursor can finally leave it behind; the plane's image is
+        // captured on its own ([`crate::cursor`]) and sent as a Cursor
+        // pseudo-rectangle, so the client moves the pointer without waiting for
+        // a captured frame.
         let frame = manager.capture_output(0, &output.output, &self.qh, ());
         self.capture.frame = Some(frame);
     }
 
-    /// Stop after the frame in flight, if any: nobody is watching.
+    /// Stop after the frame in flight, if any: nobody is watching. The cursor
+    /// session closes with it.
     pub fn stop_capture(&mut self) {
+        self.stop_cursor();
         if let Some(token) = self.capture.timer.take() {
             self.handle.remove(token);
         }

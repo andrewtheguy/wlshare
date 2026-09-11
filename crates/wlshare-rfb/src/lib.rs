@@ -28,7 +28,9 @@
 //! - **ContinuousUpdates and Fence**, so a client that supports them gets frames
 //!   as the screen changes with one update in flight, instead of polling.
 //! - **Cursor**, required of every client, so the compositor pointer stays out
-//!   of captured pixels and a neutral arrow moves immediately at the client.
+//!   of captured pixels and its shape moves immediately at the client; and
+//!   **Cursor With Alpha**, for a client that lists it, so the shape keeps its
+//!   shadow and edges ([`cursor`]).
 //! - **DesktopSize and ExtendedDesktopSize**, so a client may resize the desktop.
 //! - **The density extension**, one pseudo-encoding and one message type, which
 //!   is how a client learns the scale the framebuffer is drawn at and asks for
@@ -64,9 +66,13 @@ pub const ENCODING_DESKTOP_SIZE: i32 = -223;
 /// LastRect pseudo-encoding: a client that lists it accepts an update whose
 /// rectangle count is a ceiling rather than a promise.
 pub const ENCODING_LAST_RECT: i32 = -224;
-/// Cursor pseudo-encoding. Every client must list it; wlshare answers with the
-/// neutral arrow from [`cursor`] because captured frames contain no pointer.
+/// Cursor pseudo-encoding. Every client must list it, because captured frames
+/// contain no pointer: the compositor's cursor image goes out as [`cursor`]
+/// has it.
 pub const ENCODING_CURSOR: i32 = -239;
+/// Cursor With Alpha pseudo-encoding: a client that lists it is sent the cursor
+/// image with its alpha, instead of cut to a mask.
+pub const ENCODING_CURSOR_WITH_ALPHA: i32 = -314;
 /// ExtendedDesktopSize pseudo-encoding, and with it the client's SetDesktopSize.
 pub const ENCODING_EXTENDED_DESKTOP_SIZE: i32 = -308;
 /// Fence pseudo-encoding: the client will echo markers the server sends.

@@ -36,8 +36,11 @@
 //! being sent pixels at a size it does not know.
 //!
 //! The compositor pointer is never in those pixels. Every client must list the
-//! standard Cursor pseudo-encoding before asking for an update; wlshare answers
-//! with a neutral arrow and the client positions it without framebuffer latency.
+//! standard Cursor pseudo-encoding before asking for an update, and is sent the
+//! compositor's cursor image in its own update whenever it changes — with its
+//! alpha when the client also listed Cursor With Alpha, cut to a mask otherwise,
+//! and as an empty rectangle while there is no pointer on the shared output. The
+//! client positions it without framebuffer latency.
 //!
 //! ## Sending sound
 //!
@@ -65,7 +68,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use log::{debug, info, warn};
 use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect};
-use wlshare_rfb::cursor::cursor_rect;
+use wlshare_rfb::cursor::{alpha_cursor_rect, cursor_rect};
 use wlshare_rfb::density::{from_fixed, output_scale};
 use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
@@ -74,7 +77,7 @@ use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
     ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_OUTPUTS, ENCODING_QEMU_AUDIO,
-    ENCODING_CURSOR, ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -187,6 +190,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         eds_supported: false,
         desktop_size_supported: false,
         cursor_supported: false,
+        alpha_cursor: false,
         announce_cursor: false,
         density: false,
         outputs: false,
@@ -294,7 +298,10 @@ struct Session {
     desktop_size_supported: bool,
     /// The client listed the required standard Cursor pseudo-encoding.
     cursor_supported: bool,
-    /// The neutral cursor shape is owed after an accepted SetEncodings.
+    /// The client listed Cursor With Alpha, which the cursor goes out as instead.
+    alpha_cursor: bool,
+    /// The cursor image is owed: after an accepted SetEncodings, and whenever it
+    /// changes.
     announce_cursor: bool,
     density: bool,
     /// The client listed the outputs pseudo-encoding: it is sent the list of
@@ -358,7 +365,15 @@ impl Session {
                 }
                 event = self.events.recv() => match event {
                     Ok(event) => self.handle_event(event, &mut writer).await?,
-                    Err(broadcast::error::RecvError::Lagged(n)) => warn!("client {}: missed {n} events", self.id.0),
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("client {}: missed {n} events", self.id.0);
+                        // A cursor change may have been among them, and the
+                        // image is read when it is sent, so sending it again is
+                        // never wrong.
+                        if self.cursor_supported {
+                            self.announce_cursor = true;
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => anyhow::bail!("the compositor thread is gone"),
                 },
                 // Woken to drain the capture at the top of the loop.
@@ -416,6 +431,7 @@ impl Session {
                     self.id.0
                 );
                 self.cursor_supported = true;
+                self.alpha_cursor = has(ENCODING_CURSOR_WITH_ALPHA);
                 self.announce_cursor = true;
                 self.use_zrle = has(ENCODING_ZRLE);
                 if self.use_zrle && self.zrle.is_none() {
@@ -453,9 +469,10 @@ impl Session {
                 }
                 self.audio_supported = audio;
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={}",
                     self.id.0,
                     self.cursor_supported,
+                    self.alpha_cursor,
                     self.use_zrle,
                     self.continuous_supported,
                     self.fence_supported,
@@ -584,15 +601,8 @@ impl Session {
     async fn handle_event(&mut self, event: Event, writer: &mut Writer) -> anyhow::Result<()> {
         match event {
             Event::Geometry { to } => {
-                if to.is_none_or(|c| c == self.id) {
-                    if self.cursor_supported {
-                        // RFB cursor dimensions are framebuffer pixels, so a
-                        // new output density needs a newly rasterized arrow.
-                        self.announce_cursor = true;
-                    }
-                    if self.density {
-                        self.send_geometry(writer).await?;
-                    }
+                if to.is_none_or(|c| c == self.id) && self.density {
+                    self.send_geometry(writer).await?;
                 }
             }
             Event::ResizeRefused { client, status } => {
@@ -611,6 +621,12 @@ impl Session {
             }
             Event::Clipboard(text) => {
                 writer.send(&msg::server_cut_text(&text)).await?;
+            }
+            Event::Cursor => {
+                // Not before SetEncodings: that is when it is owed anyway.
+                if self.cursor_supported {
+                    self.announce_cursor = true;
+                }
             }
         }
         Ok(())
@@ -651,8 +667,13 @@ impl Session {
         let announced = self.announce_cursor || self.announce_eds || self.announce_audio;
         if self.announce_cursor {
             self.announce_cursor = false;
+            let image = self.shared.cursor();
             let mut update = msg::update_header(1).to_vec();
-            update.extend_from_slice(&cursor_rect(&self.format, self.shared.geometry().scale));
+            if self.alpha_cursor {
+                update.extend_from_slice(&alpha_cursor_rect(image.as_deref()));
+            } else {
+                update.extend_from_slice(&cursor_rect(&self.format, image.as_deref()));
+            }
             writer.send(&update).await?;
         }
         if self.announce_eds {

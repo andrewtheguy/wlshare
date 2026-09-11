@@ -10,17 +10,19 @@ framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
 shown sharp at 2x and a client's own density becomes the output's. A desktop with
 more than one monitor sends the client the list, so the one being shared is the
 client's to choose. The compositor pointer is excluded from captured frames, so
-wlshare sends a neutral arrow through the standard RFB Cursor pseudo-encoding
-at the output's pixel density, and the client moves it without waiting for a
-framebuffer update.
+wlshare captures the cursor image on its own — whatever shape the application
+under it chose, at the output's pixel density — and sends it through the RFB
+Cursor pseudo-encodings, with its alpha to a client that lists Cursor With
+Alpha. The client moves it without waiting for a framebuffer update.
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
-`wlr-screencopy` version 2 or later is required. Output resizing and rescaling
-additionally need `wlr-output-management`; input and clipboard use the virtual
-keyboard, virtual pointer, and `wlr-data-control` protocols when the compositor
-offers them. Keeping the cursor separate on a headless output requires wlroots
-0.19 or newer.
+`wlr-screencopy` version 2 or later is required, and so is `ext-image-copy-capture`
+with output capture sources, which the cursor image comes from. Output resizing
+and rescaling additionally need `wlr-output-management`; input and clipboard use
+the virtual keyboard, virtual pointer, and `wlr-data-control` protocols when the
+compositor offers them. Keeping the cursor separate on a headless output, and
+capturing it, requires wlroots 0.19 or newer.
 
 Any VNC client that decodes ZRLE and advertises the standard Cursor
 pseudo-encoding can connect. Cursor support is required because wlshare never

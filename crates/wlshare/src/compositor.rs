@@ -15,9 +15,11 @@ use log::{debug, info, warn};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
-use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::protocol::wl_shm::WlShm;
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+use wayland_protocols::ext::image_capture_source::v1::client::ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1;
+use wayland_protocols::ext::image_copy_capture::v1::client::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::ZwlrOutputManagerV1;
@@ -27,6 +29,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_man
 use crate::capture::Capture;
 use crate::clipboard::Clipboard;
 use crate::config::{Config, Xkb};
+use crate::cursor::CursorCapture;
 use crate::framebuffer::Framebuffer;
 use crate::input::Input;
 use crate::framebuffer::ResizeOrigin;
@@ -39,11 +42,12 @@ pub struct Compositor {
     pub handle: LoopHandle<'static, Compositor>,
     registry: WlRegistry,
     pub shm: WlShm,
-    seat: Option<WlSeat>,
+    pub seat: Option<WlSeat>,
     keyboards: Option<ZwpVirtualKeyboardManagerV1>,
     pointers: Option<ZwlrVirtualPointerManagerV1>,
     pub outputs: Outputs,
     pub capture: Capture,
+    pub cursor: CursorCapture,
     input: Option<Input>,
     pub clipboard: Clipboard,
     /// The one client on the desktop. A connection that finishes the handshake
@@ -156,7 +160,16 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
     let keyboards: Option<ZwpVirtualKeyboardManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let pointers: Option<ZwlrVirtualPointerManagerV1> = globals.bind(&qh, 2..=2, ()).ok();
     let data_control: Option<ZwlrDataControlManagerV1> = globals.bind(&qh, 1..=2, ()).ok();
+    let capture_sources: Option<ExtOutputImageCaptureSourceManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+    let image_copy: Option<ExtImageCopyCaptureManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     anyhow::ensure!(screencopy.is_some(), "the compositor does not offer wlr-screencopy version 2 or later");
+    anyhow::ensure!(
+        capture_sources.is_some() && image_copy.is_some(),
+        "the compositor does not offer ext-image-copy-capture with output capture sources, which the cursor image is taken from (wlroots 0.19 or later)"
+    );
+    if seat.is_none() {
+        warn!("no seat: the cursor image cannot be captured, and clients draw their own");
+    }
     if output_manager.is_none() {
         warn!("no wlr-output-management: the output cannot be resized or rescaled, and its scale is read from wl_output only");
     }
@@ -178,6 +191,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
         pointers,
         outputs: Outputs::default(),
         capture: Capture::default(),
+        cursor: CursorCapture::default(),
         input: None,
         clipboard: Clipboard::default(),
         client: None,
@@ -190,6 +204,8 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
     };
     compositor.outputs.manager = output_manager;
     compositor.capture.manager = screencopy;
+    compositor.cursor.sources = capture_sources;
+    compositor.cursor.manager = image_copy;
     compositor.clipboard.manager = data_control;
     for global in globals.contents().clone_list() {
         if global.interface == "wl_output" {
@@ -431,8 +447,10 @@ impl Compositor {
     /// or the compositor taking the one being shared away.
     fn share_output(&mut self, name: String, width: u16, height: u16, output: &WlOutput) {
         self.stop_capture();
-        // A resize accepted for the output being left is not this one's.
+        // A resize accepted for the output being left is not this one's, nor is
+        // a cursor session the compositor stopped there.
         self.pending_resize = None;
+        self.cursor.stopped = false;
         self.outputs.selected = Some(name);
         {
             let mut fb = self.shared().framebuffer.lock().unwrap();
@@ -525,4 +543,17 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
     }
 }
 
-wayland_client::delegate_noop!(Compositor: ignore WlSeat);
+impl Dispatch<WlSeat, ()> for Compositor {
+    fn event(state: &mut Self, _: &WlSeat, event: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+        // Only the first pointer matters: from then on `get_pointer` is legal,
+        // whatever the seat has at the moment.
+        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+            && capabilities.contains(wl_seat::Capability::Pointer)
+            && !state.cursor.seat_had_pointer
+        {
+            debug!("the seat has a pointer: the cursor image can be captured");
+            state.cursor.seat_had_pointer = true;
+            state.start_cursor();
+        }
+    }
+}
