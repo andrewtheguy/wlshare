@@ -61,6 +61,10 @@ pub struct CursorCapture {
     /// The seat has named a pointer among its capabilities at least once, which
     /// is what makes `wl_seat.get_pointer` legal.
     pub seat_had_pointer: bool,
+    /// The compositor stopped the session on the shared output: none is opened
+    /// on it again, or every capture would reopen one only to see it stop.
+    /// Sharing another output clears it.
+    pub stopped: bool,
     session: Option<Session>,
     retry: Option<RegistrationToken>,
 }
@@ -139,7 +143,7 @@ impl Compositor {
     /// Open a cursor session on the shared output, if a client is on the desktop,
     /// none is open, and the seat can hand over a pointer to open it with.
     pub fn start_cursor(&mut self) {
-        if self.client.is_none() || self.cursor.session.is_some() || !self.cursor.seat_had_pointer {
+        if self.client.is_none() || self.cursor.session.is_some() || !self.cursor.seat_had_pointer || self.cursor.stopped {
             return;
         }
         let (Some(sources), Some(manager), Some(seat)) = (&self.cursor.sources, &self.cursor.manager, &self.seat) else { return };
@@ -259,6 +263,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Compositor {
                 // next one opens a session on that.
                 debug!("the cursor session stopped");
                 state.stop_cursor();
+                state.cursor.stopped = true;
             }
             _ => {}
         }

@@ -365,7 +365,15 @@ impl Session {
                 }
                 event = self.events.recv() => match event {
                     Ok(event) => self.handle_event(event, &mut writer).await?,
-                    Err(broadcast::error::RecvError::Lagged(n)) => warn!("client {}: missed {n} events", self.id.0),
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("client {}: missed {n} events", self.id.0);
+                        // A cursor change may have been among them, and the
+                        // image is read when it is sent, so sending it again is
+                        // never wrong.
+                        if self.cursor_supported {
+                            self.announce_cursor = true;
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => anyhow::bail!("the compositor thread is gone"),
                 },
                 // Woken to drain the capture at the top of the loop.

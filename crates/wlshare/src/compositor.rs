@@ -447,8 +447,10 @@ impl Compositor {
     /// or the compositor taking the one being shared away.
     fn share_output(&mut self, name: String, width: u16, height: u16, output: &WlOutput) {
         self.stop_capture();
-        // A resize accepted for the output being left is not this one's.
+        // A resize accepted for the output being left is not this one's, nor is
+        // a cursor session the compositor stopped there.
         self.pending_resize = None;
+        self.cursor.stopped = false;
         self.outputs.selected = Some(name);
         {
             let mut fb = self.shared().framebuffer.lock().unwrap();
