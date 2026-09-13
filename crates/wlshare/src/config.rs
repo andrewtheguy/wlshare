@@ -35,6 +35,12 @@ pub struct Config {
     /// The most frames captured per second.
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
+    /// How many seconds a connection has to finish the handshake — the
+    /// security exchange and the login — before it is dropped. A client that
+    /// asks its user to confirm the server key and then type a password spends
+    /// most of this waiting on the person.
+    #[serde(default = "default_handshake_timeout_secs")]
+    pub handshake_timeout_secs: u64,
     /// Whether a client may hear the desktop: the QEMU Audio extension is
     /// announced to a client that asks, and what the default sink plays is
     /// captured from PipeWire while the client has it enabled.
@@ -107,6 +113,10 @@ fn default_max_fps() -> u32 {
     60
 }
 
+fn default_handshake_timeout_secs() -> u64 {
+    20
+}
+
 fn default_name() -> String {
     "wlshare".to_owned()
 }
@@ -119,10 +129,11 @@ impl Config {
         Ok(config)
     }
 
-    /// What the types cannot say: a rate that is a rate, and one answer to the
-    /// question of who may connect.
+    /// What the types cannot say: a rate that is a rate, a timeout a handshake
+    /// can finish inside, and one answer to the question of who may connect.
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.max_fps > 0, "max_fps must be at least 1");
+        anyhow::ensure!(self.handshake_timeout_secs > 0, "handshake_timeout_secs must be at least 1");
         anyhow::ensure!(
             !(self.pam.is_some() && self.password.is_some()),
             "[pam] and [password] are two answers to the same question; keep one"
@@ -162,6 +173,7 @@ mod tests {
         assert_eq!(c.listen, default_listen());
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
+        assert_eq!(c.handshake_timeout_secs, 20);
         assert!(c.audio);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
@@ -193,6 +205,15 @@ mod tests {
         assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/k.pem")));
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), None);
+    }
+
+    #[test]
+    fn the_handshake_timeout_is_configurable_but_never_zero() {
+        let c: Config = toml::from_str("handshake_timeout_secs = 120").unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.handshake_timeout_secs, 120);
+        let zero: Config = toml::from_str("handshake_timeout_secs = 0").unwrap();
+        assert!(zero.validate().is_err());
     }
 
     #[test]

@@ -123,9 +123,10 @@ pub struct SessionConfig {
     pub resize: bool,
     /// Whether the QEMU Audio extension is announced and served.
     pub audio: bool,
+    /// How long a connection has to finish the handshake before it is dropped.
+    pub handshake_timeout: Duration,
 }
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The most rectangles one update carries before they collapse into one.
 const MAX_RECTS: usize = 32;
 
@@ -164,9 +165,9 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     socket.set_nodelay(true)?;
     let peer = socket.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
     let (reader, writer) = socket.into_split();
-    let (reader, mut writer) = tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake(reader, writer, &config, &peer))
+    let (reader, mut writer) = tokio::time::timeout(config.handshake_timeout, handshake(reader, writer, &config, &peer))
         .await
-        .map_err(|_| anyhow::anyhow!("the handshake took over {HANDSHAKE_TIMEOUT:?}"))??;
+        .map_err(|_| anyhow::anyhow!("the handshake took over {:?}", config.handshake_timeout))??;
     let (width, height) = {
         let fb = shared.framebuffer.lock().unwrap();
         (fb.width, fb.height)

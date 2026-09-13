@@ -41,6 +41,12 @@ resize = true
 # The most frames captured per second.
 max_fps = 60
 
+# Seconds a connection has to finish the handshake — the security exchange and
+# the login — before it is dropped. A client that shows its user the server key
+# to confirm and then asks for a password (TigerVNC does both on every
+# connection) spends this waiting on the person, so raise it for such clients.
+handshake_timeout_secs = 20
+
 # Whether a client may hear the desktop. A client that asks for the QEMU Audio
 # extension is sent what the default sink plays, captured from PipeWire in the
 # session, in the sample format the client chose. A headless session needs a
