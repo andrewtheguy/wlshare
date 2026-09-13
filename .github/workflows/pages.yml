@@ -2,7 +2,7 @@ name: Publish APT repository
 
 # Assembles the signed APT repository from the .debs of the keep_releases most
 # recent sway-* releases (so a client with a slightly stale index still finds its
-# .debs, and older builds stay installable), installs Sway from it in a trixie
+# .debs, and older builds stay installable), installs Sway and labwc from it in a trixie
 # container, and deploys it as the whole GitHub Pages site. Runs after every
 # successful Release Sway packages run, or by hand.
 #

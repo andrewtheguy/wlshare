@@ -1,6 +1,6 @@
 name: Release Sway packages
 
-# Rebuilds the wlroots and Sway source packages pinned in packaging/apt/sources.env
+# Rebuilds the wlroots, Sway and labwc source packages pinned in packaging/apt/sources.env
 # for Debian trixie on amd64 and arm64, with the same Docker build
 # scripts/build-sway-debs.sh runs locally, and publishes them as the prerelease
 # sway-<YYYYMMDD>-<N>. The release only stores the .debs: Publish APT repository
@@ -100,9 +100,10 @@ jobs:
           source packaging/apt/sources.env
           gh release edit "${TAG}" --draft=false --prerelease \
             --notes "$(cat <<EOF
-          wlroots and Sway rebuilt for Debian trixie (amd64 and arm64) from the Debian source packages
+          wlroots, Sway and labwc rebuilt for Debian trixie (amd64 and arm64) from the Debian source packages
           - ${WLROOTS_DSC_URL##*/}
           - ${SWAY_DSC_URL##*/}
+          - ${LABWC_DSC_URL##*/}
 
           with the patch series in \`packaging/apt/patches\` on top. Install them from the APT repository
           at https://andrewtheguy.github.io/wlshare/; this release is its storage.

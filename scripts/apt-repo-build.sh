@@ -91,7 +91,7 @@ APT::FTPArchive::Release {
   Codename "${suite}";
   Architectures "${arches[*]}";
   Components "${component}";
-  Description "Sway and wlroots rebuilt for Debian ${suite} - ${repo_url}";
+  Description "Sway, labwc and wlroots rebuilt for Debian ${suite} - ${repo_url}";
   Acquire-By-Hash "yes";
 };
 CONF
@@ -137,7 +137,7 @@ cat > index.html <<HTML
 </head>
 <body>
 <h1>wlshare APT repository</h1>
-<p>Sway and wlroots rebuilt for Debian ${suite} from Debian's own packaging, with
+<p>Sway, labwc and wlroots rebuilt for Debian ${suite} from Debian's own packaging, with
 <a href="https://github.com/andrewtheguy/wlshare/tree/main/packaging/apt/patches">wlshare's patch series</a>
 on top. It exists for its maintainer's machines: packages may change or disappear
 without notice.</p>
@@ -151,7 +151,7 @@ Components: ${component}
 Signed-By: /etc/apt/keyrings/${name}.gpg
 EOF
 sudo apt update
-sudo apt install sway</pre>
+sudo apt install sway  # or labwc</pre>
 <p>Signing key <a href="${name}.gpg">${name}.gpg</a> (<a href="${name}.asc">armored</a>),
 fingerprint <code>${fpr}</code>.</p>
 <table>

@@ -108,12 +108,12 @@ distribution is in the file name only. The package depends on
 `libwlroots-0.19 (>= 0.19.0)`, the first wlroots that keeps the cursor out of a
 headless capture.
 
-## Sway and wlroots for Debian trixie
+## Sway, labwc and wlroots for Debian trixie
 
-Trixie ships Sway 1.10 on wlroots 0.18, whose headless backend paints the cursor
-into captures. GitHub Pages serves a signed APT repository with Sway 1.11 and
-wlroots 0.19 rebuilt for trixie against its own libraries. wlshare itself is not
-in it.
+Trixie ships Sway 1.10 and labwc 0.8.3 on wlroots 0.18, whose headless backend
+paints the cursor into captures. GitHub Pages serves a signed APT repository with
+Sway 1.11, labwc 0.9.7 and wlroots 0.19 rebuilt for trixie against its own
+libraries. wlshare itself is not in it.
 
 ```sh
 sudo mkdir -p /etc/apt/keyrings
@@ -125,13 +125,14 @@ Suites: trixie
 Components: main
 Signed-By: /etc/apt/keyrings/wlshare.gpg
 EOF
-sudo apt update && sudo apt install sway
+sudo apt update && sudo apt install sway  # or labwc
 ```
 
 The packages are Debian's own source packages, pinned by their `.dsc` on
 snapshot.debian.org in `packaging/apt/sources.env`, with the series in
 `packaging/apt/patches/<source>/` applied after Debian's patches. wlroots stays
-on 0.19, the newest series trixie's libdrm and wayland-protocols can build. They
+on 0.19, the newest series trixie's libdrm and wayland-protocols can build, and
+labwc on 0.9, its last series built against wlroots 0.19. They
 are versioned `<upstream>+<YYYYMMDD>-<N>~trixie`, above both trixie's packages
 and Debian's builds of the same release. `scripts/build-sway-debs.sh` builds them
 in Docker into `dist/sway/<arch>/`.
@@ -140,7 +141,7 @@ The **Release Sway packages** workflow builds both architectures and publishes
 them as the prerelease `sway-<YYYYMMDD>-<N>`, which only stores them. **Publish
 APT repository** runs after it: it indexes the three most recent `sway-*`
 releases, signs the index with the key in `packaging/apt/pubkey.asc`, installs
-Sway from the result in a trixie container, and deploys it as the whole Pages
+Sway and labwc from the result in a trixie container, and deploys it as the whole Pages
 site. It needs the private key as the `GPG_PRIVATE_KEY` secret. That key is the
 one podman-package's repository uses; its private half stays in the gitignored
 `keys/`. To run the assembly locally, import that key first:

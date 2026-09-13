@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the wlroots and Sway packages for Debian trixie that the APT repository
+# Build the wlroots, Sway and labwc packages for Debian trixie that the APT repository
 # publishes, with Docker buildx, one architecture per call or arm64 and amd64 by
 # default, into dist/sway/<arch>/ beside their SHA256SUMS.
 #
