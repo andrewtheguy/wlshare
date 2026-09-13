@@ -114,7 +114,7 @@ fn default_max_fps() -> u32 {
 }
 
 fn default_handshake_timeout_secs() -> u64 {
-    20
+    120
 }
 
 fn default_name() -> String {
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(c.listen, default_listen());
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
-        assert_eq!(c.handshake_timeout_secs, 20);
+        assert_eq!(c.handshake_timeout_secs, 120);
         assert!(c.audio);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
@@ -209,9 +209,9 @@ mod tests {
 
     #[test]
     fn the_handshake_timeout_is_configurable_but_never_zero() {
-        let c: Config = toml::from_str("handshake_timeout_secs = 120").unwrap();
+        let c: Config = toml::from_str("handshake_timeout_secs = 30").unwrap();
         c.validate().unwrap();
-        assert_eq!(c.handshake_timeout_secs, 120);
+        assert_eq!(c.handshake_timeout_secs, 30);
         let zero: Config = toml::from_str("handshake_timeout_secs = 0").unwrap();
         assert!(zero.validate().is_err());
     }
