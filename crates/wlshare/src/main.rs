@@ -216,7 +216,13 @@ async fn serve(
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen).await.with_context(|| format!("listening on {}", config.listen))?;
     info!("listening on {}", config.listen);
-    let session_config = Arc::new(session::SessionConfig { security, name: config.name.clone(), resize: config.resize, audio: config.audio });
+    let session_config = Arc::new(session::SessionConfig {
+        security,
+        name: config.name.clone(),
+        resize: config.resize,
+        audio: config.audio,
+        handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
+    });
     loop {
         tokio::select! {
             accepted = listener.accept() => {
