@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside docker/sway.Dockerfile: rebuilds the Debian wlroots and Sway source
+# Runs inside docker/sway.Dockerfile: rebuilds the Debian wlroots, Sway and labwc source
 # packages pinned in packaging/apt/sources.env for this container's Debian
 # release, each with its repository patch series applied after Debian's, and
 # leaves the architecture-dependent .debs in /out beside their SHA256SUMS.
@@ -62,11 +62,14 @@ cd /src
 
 fetch "${WLROOTS_DSC_URL}" "${WLROOTS_DSC_SHA256}" wlroots
 build wlroots "${here}/packaging/apt/patches/wlroots"
-# Sway builds against the wlroots just built, not the suite's.
+# Sway and labwc build against the wlroots just built, not the suite's.
 apt-get install -y --no-install-recommends ./libwlroots-0.19_*.deb ./libwlroots-0.19-dev_*.deb
 
 fetch "${SWAY_DSC_URL}" "${SWAY_DSC_SHA256}" sway
 build sway "${here}/packaging/apt/patches/sway"
+
+fetch "${LABWC_DSC_URL}" "${LABWC_DSC_SHA256}" labwc
+build labwc "${here}/packaging/apt/patches/labwc"
 
 cp ./*.deb /out/
 cd /out
