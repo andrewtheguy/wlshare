@@ -361,7 +361,9 @@ avcodec alone and linked dynamically, so the package depends on Debian's
 `libavcodec` rather than carrying a codec. The decoder runs on one thread with
 `LOW_DELAY`, so a unit is a picture the moment it is decoded rather than a frame
 later. It takes 4:2:0 at eight bits, which is everything Constrained Baseline
-makes; a picture at another size than the plug named is dropped, and said once.
+makes. A picture at another size than the plug named is one the node cannot
+offer, and ends the camera: it is said once, nothing more is decoded, the client
+is sent stop, and the camera is unplugged.
 
 Samples reach the camera thread through a queue eight deep. One that finds it full
 is dropped, and so is every sample after it until a keyframe, which is asked of the

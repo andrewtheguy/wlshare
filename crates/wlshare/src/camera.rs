@@ -59,6 +59,9 @@ pub enum Signal {
     Stop,
     /// Samples were lost or refused: the next one must be a keyframe.
     Keyframe,
+    /// The camera sends pictures of another size than it plugged, which the node
+    /// cannot offer: it decodes nothing more, and the session unplugs it.
+    Failed,
 }
 
 /// One plugged camera: the thread running its node, and the session's end of
@@ -167,7 +170,8 @@ struct Feed {
     streaming: bool,
     /// Units are skipped until a keyframe decodes.
     keyframe_owed: bool,
-    /// A picture of the wrong size was reported already.
+    /// A picture of the wrong size arrived and was reported: the camera is
+    /// unusable, and nothing more is decoded.
     size_reported: bool,
     signals: mpsc::UnboundedSender<Signal>,
 }
@@ -175,19 +179,19 @@ struct Feed {
 impl Feed {
     /// Decode one unit. Returns whether a picture is ready for the graph.
     fn take(&mut self, unit: &[u8], keyframe: bool) -> bool {
-        if self.keyframe_owed && !keyframe {
+        // Checked first, so no keyframe can reopen a camera that failed.
+        if self.size_reported || (self.keyframe_owed && !keyframe) {
             return false;
         }
         match self.decoder.decode(unit, &mut self.scratch) {
             Ok(None) => false,
             Ok(Some(picture)) if picture != self.expected => {
-                if !self.size_reported {
-                    warn!(
-                        "client {}: the camera sent {}x{} pictures after plugging {}x{}; dropping them",
-                        self.client.0, picture.width, picture.height, self.expected.width, self.expected.height
-                    );
-                    self.size_reported = true;
-                }
+                warn!(
+                    "client {}: the camera sent {}x{} pictures after plugging {}x{}; unplugging it",
+                    self.client.0, picture.width, picture.height, self.expected.width, self.expected.height
+                );
+                self.size_reported = true;
+                let _ = self.signals.send(Signal::Failed);
                 false
             }
             Ok(Some(_)) => {

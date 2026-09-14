@@ -412,13 +412,19 @@ impl Session {
         }
     }
 
-    /// Tell the client what the desktop decided about its camera.
+    /// Tell the client what the desktop decided about its camera. A camera that
+    /// failed is told to stop, so the client encodes nothing more for it, and
+    /// unplugged.
     async fn send_camera_signal(&mut self, signal: CameraSignal, writer: &mut Writer) -> anyhow::Result<()> {
         let Some(camera) = &self.camera else { return Ok(()) };
         match signal {
             CameraSignal::Start => writer.send(&camera_start(camera.format)).await?,
             CameraSignal::Stop => writer.send(&camera_stop()).await?,
             CameraSignal::Keyframe => writer.send(&camera_keyframe()).await?,
+            CameraSignal::Failed => {
+                writer.send(&camera_stop()).await?;
+                self.unplug_camera().await?;
+            }
         }
         Ok(())
     }
