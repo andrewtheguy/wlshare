@@ -337,7 +337,9 @@ the operation carries; integers are big-endian.
 - **Plug** makes a camera of the H.264 the client will send; another plug
   replaces it, and an unplug or the client leaving removes it. A plug with no
   pixels or no rate, and a sample over 4 MiB, are fatal: they are a client that
-  means something else by the fields.
+  means something else by the fields. A plug past 4096x2304 pixels — H.264 level
+  5.2's largest frame — is refused, logged, and leaves the client without a
+  camera: the fields reach 65535x65535, whose pictures no buffer should hold.
 - **Start** and **stop** are the desktop's decisions, not the client's: an
   application opened the camera, or the last one closed it. The client sends
   samples between the two and nothing outside them, and a stream opens on a

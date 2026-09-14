@@ -49,6 +49,11 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// Samples waiting for the camera thread. Half a second at the rates a client
 /// sends; a thread further behind than that is showing a picture already late.
 const QUEUE_DEPTH: usize = 8;
+/// The most pixels a plugged camera may have: H.264 level 5.2's largest frame,
+/// 36 864 macroblocks (4096x2304), the highest level the remotex gateway's
+/// browser encoder names. The extension's `u16` fields reach 65535x65535, whose
+/// I420 pictures are gigabytes each and do not fit a PipeWire buffer size at all.
+const MAX_PIXELS: usize = 36_864 * 16 * 16;
 
 /// A decision of the desktop's, for the session to send the client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +95,7 @@ impl Camera {
     /// Make the node for `client`'s camera in `format`. Blocks until PipeWire
     /// has taken it or refused it, so it belongs on a blocking thread.
     pub fn plug(client: ClientId, format: CameraFormat) -> anyhow::Result<Self> {
+        fits(format)?;
         let (commands, commands_rx) = pw::channel::channel();
         let (signal_tx, signals) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
@@ -146,6 +152,19 @@ impl Camera {
             None => std::future::pending().await,
         }
     }
+}
+
+/// Whether a camera of `format` can be offered: refused before any thread or
+/// buffer exists when its pictures are past [`MAX_PIXELS`].
+fn fits(format: CameraFormat) -> anyhow::Result<()> {
+    let pixels = usize::from(format.width) * usize::from(format.height);
+    anyhow::ensure!(
+        pixels <= MAX_PIXELS,
+        "a {}x{} camera is over the {MAX_PIXELS}-pixel ceiling",
+        format.width,
+        format.height
+    );
+    Ok(())
 }
 
 impl Drop for Camera {
@@ -263,7 +282,9 @@ fn run(
 
     let state_feed = feed.clone();
     let process_feed = feed.clone();
-    let picture_bytes = expected.bytes();
+    // Within `i32` for any camera `fits` let through, and checked all the same.
+    let buffer_bytes = up!(i32::try_from(expected.bytes()), "sizing the camera's buffers");
+    let stride = i32::from(format.width);
     let _listener = up!(
         stream
             .add_local_listener::<()>()
@@ -294,7 +315,7 @@ fn run(
                     return;
                 }
                 // The format is the one offered, so the buffers are always this size.
-                let pod = match serialize(buffers_param(picture_bytes, usize::from(format.width))) {
+                let pod = match serialize(buffers_param(buffer_bytes, stride)) {
                     Ok(pod) => pod,
                     Err(e) => return warn!("client {}: serializing the camera's buffers: {e:?}", client.0),
                 };
@@ -317,8 +338,8 @@ fn run(
                 };
                 let chunk = data.chunk_mut();
                 *chunk.offset_mut() = 0;
-                *chunk.size_mut() = written as u32;
-                *chunk.stride_mut() = i32::from(format.width);
+                *chunk.size_mut() = u32::try_from(written).unwrap_or(u32::MAX);
+                *chunk.stride_mut() = stride;
             })
             .register(),
         "listening to the camera stream"
@@ -389,7 +410,7 @@ fn format_param(format: CameraFormat) -> spa::pod::Value {
 
 /// The buffers the node fills: one block holding a whole picture, in memory
 /// PipeWire allocates and this thread maps.
-fn buffers_param(bytes: usize, stride: usize) -> spa::pod::Value {
+fn buffers_param(bytes: i32, stride: i32) -> spa::pod::Value {
     use spa::pod::{ChoiceValue, Property, PropertyFlags, Value};
     use spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
     let property = |key, value| Property { key, flags: PropertyFlags::empty(), value };
@@ -403,12 +424,35 @@ fn buffers_param(bytes: usize, stride: usize) -> spa::pod::Value {
                 Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(), ChoiceEnum::Range { default: 4, min: 1, max: 8 }))),
             ),
             property(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
-            property(spa::sys::SPA_PARAM_BUFFERS_size, Value::Int(bytes as i32)),
-            property(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride as i32)),
+            property(spa::sys::SPA_PARAM_BUFFERS_size, Value::Int(bytes)),
+            property(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
             property(
                 spa::sys::SPA_PARAM_BUFFERS_dataType,
                 Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(), ChoiceEnum::Flags { default: memory, flags: Vec::new() }))),
             ),
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn format(width: u16, height: u16) -> CameraFormat {
+        CameraFormat { width, height, fps_numerator: 15, fps_denominator: 1 }
+    }
+
+    /// The ceiling admits the largest picture the gateway's encoder names and
+    /// refuses the rest before anything is made, so every buffer size it lets
+    /// through fits the `i32` PipeWire's parameters carry.
+    #[test]
+    fn a_camera_past_the_pixel_ceiling_is_refused() {
+        assert!(fits(format(640, 480)).is_ok());
+        assert!(fits(format(4096, 2304)).is_ok());
+        assert!(fits(format(3840, 2160)).is_ok());
+        assert!(fits(format(4096, 2305)).is_err());
+        assert!(fits(format(u16::MAX, u16::MAX)).is_err());
+        let largest = Picture { width: 4096, height: 2304 };
+        assert!(i32::try_from(largest.bytes()).is_ok());
+    }
 }
