@@ -11,6 +11,7 @@ use thiserror::Error;
 use crate::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
 use crate::camera::{CameraFormat, CameraParseError, ClientCamera, MSG_CAMERA};
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY};
+use crate::microphone::{ClientMicrophone, MSG_MICROPHONE, MicrophoneParseError};
 use crate::outputs::{MSG_OUTPUTS, SELECT_OUTPUT_LEN};
 use crate::pixel::PixelFormat;
 
@@ -106,6 +107,13 @@ pub enum ClientMsg {
     CameraUnplug,
     /// The camera extension: one Annex B access unit.
     CameraSample { keyframe: bool, data: Vec<u8> },
+    /// The microphone extension: a microphone is lent ([`crate::microphone`]).
+    MicrophonePlug,
+    /// The microphone extension: the microphone is gone.
+    MicrophoneUnplug,
+    /// The microphone extension: interleaved signed 16-bit little-endian PCM,
+    /// in the format the last start named.
+    MicrophoneSample(Vec<u8>),
 }
 
 /// Why a client's bytes could not be a message.
@@ -121,6 +129,8 @@ pub enum ParseError {
     Audio(#[from] AudioParseError),
     #[error("camera message: {0}")]
     Camera(#[from] CameraParseError),
+    #[error("microphone message: {0}")]
+    Microphone(#[from] MicrophoneParseError),
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -251,6 +261,12 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             Some((ClientCamera::Plug(format), n)) => (ClientMsg::CameraPlug(format), n),
             Some((ClientCamera::Unplug, n)) => (ClientMsg::CameraUnplug, n),
             Some((ClientCamera::Sample { keyframe, data }, n)) => (ClientMsg::CameraSample { keyframe, data }, n),
+        },
+        MSG_MICROPHONE => match crate::microphone::parse_client(buf)? {
+            None => return Ok(None),
+            Some((ClientMicrophone::Plug, n)) => (ClientMsg::MicrophonePlug, n),
+            Some((ClientMicrophone::Unplug, n)) => (ClientMsg::MicrophoneUnplug, n),
+            Some((ClientMicrophone::Sample(pcm), n)) => (ClientMsg::MicrophoneSample(pcm), n),
         },
         other => return Err(ParseError::UnknownType(other)),
     };
@@ -442,6 +458,16 @@ mod tests {
         assert_eq!((m, n), (ClientMsg::CameraSample { keyframe: true, data: vec![0xAB, 0xCD] }, 10));
         assert_eq!(parse(&[0xE2, 2, 1, 0, 0, 0, 0, 2, 0xAB]), Ok(None));
         assert_eq!(parse(&[0xE2, 9, 0, 0]), Err(ParseError::Camera(CameraParseError::UnknownOperation(9))));
+    }
+
+    #[test]
+    fn the_microphone_submessages_parse_and_a_bad_one_is_fatal() {
+        assert_eq!(parse(&[0xE3, 0, 0, 0, 0xFF]).unwrap().unwrap(), (ClientMsg::MicrophonePlug, 4));
+        assert_eq!(parse(&[0xE3, 1, 0, 0]).unwrap().unwrap(), (ClientMsg::MicrophoneUnplug, 4));
+        let (m, n) = parse(&[0xE3, 2, 0, 0, 0, 0, 0, 2, 0x34, 0x12, 0xE3]).unwrap().unwrap();
+        assert_eq!((m, n), (ClientMsg::MicrophoneSample(vec![0x34, 0x12]), 10));
+        assert_eq!(parse(&[0xE3, 2, 0, 0, 0, 0, 0, 2, 0x34]), Ok(None));
+        assert_eq!(parse(&[0xE3, 9, 0, 0]), Err(ParseError::Microphone(MicrophoneParseError::UnknownOperation(9))));
     }
 
     #[test]

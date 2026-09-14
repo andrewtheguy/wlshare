@@ -13,14 +13,14 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 ```
 
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
-  and building, RSA-AES and its frames, the ZRLE encoder, the density, outputs
-  and camera extensions. It has no platform dependency and its tests decode every encoder's
+  and building, RSA-AES and its frames, the ZRLE encoder, the density, outputs,
+  camera and microphone extensions. It has no platform dependency and its tests decode every encoder's
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `cursor.rs`, `outputs.rs`, `input.rs` and
-  `clipboard.rs` are the protocols it speaks; `audio.rs` and `camera.rs` are
-  PipeWire's side, and `decode.rs` is the camera's libavcodec decoder;
+  `clipboard.rs` are the protocols it speaks; `audio.rs`, `camera.rs` and
+  `microphone.rs` are PipeWire's side, and `decode.rs` is the camera's libavcodec decoder;
   `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `shared.rs` is what crosses between them.
@@ -397,6 +397,65 @@ portal exported no `org.freedesktop.portal.Camera`, and with
 `camera = false` in the configuration turns the announcement off, and a client
 that lists the pseudo-encoding is then told nothing.
 
+## The microphone extension
+
+A client's microphone, lent to the desktop — the camera's twin, and what an RDP
+host gets from MS-RDPEAI. The QEMU Audio extension carries sound one way only, so
+this is a fourth private pair: pseudo-encoding `0x574c534d` (`WLSM`) and message
+type `0xE3`, in both directions, every message the type, an operation, two more
+bytes, and what the operation carries; integers are big-endian.
+
+| Direction | Operation | Bytes 2–3 | Then |
+| --------- | --------- | --------- | ---- |
+| client → server | 0, plug | padding | nothing |
+| client → server | 1, unplug | padding | nothing |
+| client → server | 2, sample | padding | `u32` length, interleaved PCM |
+| server → client | 0, available | padding | nothing |
+| server → client | 1, start | padding | `u16` channels, `u16` padding, `u32` frequency |
+| server → client | 2, stop | padding | nothing |
+
+- **Available** answers *every* `SetEncodings` that lists the pseudo-encoding —
+  the only way support is announced.
+- **Plug** makes a microphone; another plug replaces it, and an unplug or the
+  client leaving removes it. A sample over 256 KiB is fatal, and so is one that
+  is not whole frames of the format the start named.
+- **Start** and **stop** are the desktop's decisions: an application started
+  recording, or the last one stopped. The client sends samples between the two
+  and nothing outside them. The format is the server's, as a host's is over RDP:
+  samples are always signed 16-bit little-endian, and the start names the channel
+  count and rate. wlshare names mono at 48 kHz, which is what the remotex
+  gateway's Opus decodes to, so nothing between the browser and the node
+  resamples. There is no keyframe: a lost sample is a moment of silence.
+
+`microphone.rs` makes each plugged microphone a PipeWire node,
+`wlshare-microphone-<client>`, of class `Audio/Source` and role `Communication`,
+described as "wlshare remote microphone". Like the camera it is a thread of its
+own running PipeWire's loop, its callbacks on that loop and not on the graph's
+real-time thread, and the stream going to *streaming* and back is what the
+session sends as start and stop. It is not connected with `AUTOCONNECT`: a
+source is linked to by what records from it, and linked on its own it would play
+the client's voice into the default sink.
+
+Unlike the camera it is not its own driver. Audio already has a clock, the
+graph's, and a source keeping its own would drift against the sinks the
+recording application also plays into; so the graph asks for a quantum when it
+wants one and the node answers from a jitter buffer between the client's pace
+and the graph's. The buffer holds back 60 ms before it plays — after a start, and
+again after it runs dry — so a late sample is a gap in the stream rather than a
+click in every quantum, answers silence while it has nothing, and keeps at most
+200 ms, dropping the oldest, so a client that bursts after a stall is heard live
+rather than late. A stop empties it.
+
+Measured 2026-09-14 on a labwc session with PipeWire 1.4.2: a client plugging a
+microphone and, on start, sending a 440 Hz tone 20 ms at a time, and `pw-record
+--target wlshare-microphone-1` recording mono 48 kHz for three seconds and then
+two. Each recording sent start as it linked and stop as it left; past the first
+half second both held the tone at 440 Hz with no silent 10 ms block, and the node
+was gone from the graph after the unplug.
+
+`microphone = false` in the configuration turns the announcement off, and a
+client that lists the pseudo-encoding is then told nothing.
+
 ## Resize
 
 `SetDesktopSize` sets a custom mode on the shared output, with the same rules.
@@ -483,8 +542,8 @@ re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the
 cursor session does report positions, but only when the output repaints.
-Multiple outputs in one framebuffer — a client picks one of them instead. A control socket. A client's microphone: the extension carries
-sound one way only. A V4L2 camera device for the client's camera: a PipeWire node
+Multiple outputs in one framebuffer — a client picks one of them instead. A
+control socket. A microphone format beside the one the server names. A V4L2 camera device for the client's camera: a PipeWire node
 needs no kernel module and no privilege, at the cost of applications that open
 `/dev/video*` alone not seeing it. Camera formats beside I420, and scaling a
 camera picture to a size an application asks for.

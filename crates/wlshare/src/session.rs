@@ -64,6 +64,15 @@
 //! samples go to the camera's thread without waiting on anything the session
 //! writes.
 //!
+//! ## Lending a microphone
+//!
+//! The camera's twin. A client that listed the microphone pseudo-encoding is
+//! answered with the extension's announcement at once; its plug makes a PipeWire
+//! audio source ([`crate::microphone`]), its unplug or its leaving removes it. An
+//! application starting to record is written to the client as a start naming the
+//! format the source takes, the last one stopping as a stop, and the client's
+//! samples go to the source's buffer without waiting on anything.
+//!
 //! ## The transport
 //!
 //! The handshake decides what the socket carries afterwards: RFB bytes as they
@@ -82,14 +91,15 @@ use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_
 use wlshare_rfb::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
 use wlshare_rfb::cursor::{alpha_cursor_rect, cursor_rect};
 use wlshare_rfb::density::{from_fixed, output_scale};
+use wlshare_rfb::microphone::{microphone_available, microphone_start, microphone_stop};
 use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
-    ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_OUTPUTS,
-    ENCODING_QEMU_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
+    ENCODING_OUTPUTS, ENCODING_QEMU_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -100,6 +110,7 @@ use crate::audio::Capture;
 use crate::auth::Login;
 use crate::camera::{Camera, Signal as CameraSignal};
 use crate::framebuffer::{Rect, ResizeOrigin};
+use crate::microphone::{Microphone, Signal as MicrophoneSignal};
 use crate::shared::{ClientId, Command, Event, Shared};
 
 /// What the server offers at the security step, and what it checks the client
@@ -138,6 +149,8 @@ pub struct SessionConfig {
     pub audio: bool,
     /// Whether the camera extension is announced and served.
     pub camera: bool,
+    /// Whether the microphone extension is announced and served.
+    pub microphone: bool,
     /// How long a connection has to finish the handshake before it is dropped.
     pub handshake_timeout: Duration,
 }
@@ -216,6 +229,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         audio: None,
         camera_supported: false,
         camera: None,
+        microphone_supported: false,
+        microphone: None,
         continuous: false,
         pending: None,
         seen: 0,
@@ -247,6 +262,12 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         && let Err(e) = tokio::task::spawn_blocking(move || drop(camera)).await
     {
         warn!("client {}: the camera thread did not stop: {e}", id.0);
+    }
+    // And the microphone.
+    if let Some(microphone) = session.microphone.take()
+        && let Err(e) = tokio::task::spawn_blocking(move || drop(microphone)).await
+    {
+        warn!("client {}: the microphone thread did not stop: {e}", id.0);
     }
     result
 }
@@ -345,6 +366,11 @@ struct Session {
     camera_supported: bool,
     /// The camera, while the client has one plugged.
     camera: Option<Camera>,
+    /// The client listed the microphone pseudo-encoding and the configuration
+    /// allows it.
+    microphone_supported: bool,
+    /// The microphone, while the client has one plugged.
+    microphone: Option<Microphone>,
     /// The client enabled continuous updates.
     continuous: bool,
     /// An update request not yet answered: `true` for incremental.
@@ -408,8 +434,34 @@ impl Session {
                 // Woken to drain the capture at the top of the loop.
                 () = audio_ready(&self.audio) => {}
                 signal = camera_signal(&mut self.camera) => self.send_camera_signal(signal, &mut writer).await?,
+                signal = microphone_signal(&mut self.microphone) => match signal {
+                    MicrophoneSignal::Start => writer.send(&microphone_start(crate::microphone::FORMAT)).await?,
+                    MicrophoneSignal::Stop => writer.send(&microphone_stop()).await?,
+                },
             }
         }
+    }
+
+    /// Plug the client's microphone, replacing one already plugged. A microphone
+    /// that cannot be made is logged and leaves the client without one, not
+    /// without a desktop; the client is then never asked to start it.
+    async fn plug_microphone(&mut self) -> anyhow::Result<()> {
+        self.unplug_microphone().await?;
+        let id = self.id;
+        match tokio::task::spawn_blocking(move || Microphone::plug(id)).await.context("the microphone thread did not start")? {
+            Ok(microphone) => self.microphone = Some(microphone),
+            Err(e) => warn!("client {}: the microphone could not be plugged: {e:#}", self.id.0),
+        }
+        Ok(())
+    }
+
+    /// Unplug the client's microphone, if one is plugged.
+    async fn unplug_microphone(&mut self) -> anyhow::Result<()> {
+        if let Some(microphone) = self.microphone.take() {
+            // Unplugging joins PipeWire's thread, which is a blocking wait.
+            tokio::task::spawn_blocking(move || drop(microphone)).await.context("the microphone thread did not stop")?;
+        }
+        Ok(())
     }
 
     /// Tell the client what the desktop decided about its camera. A camera that
@@ -546,8 +598,17 @@ impl Session {
                     info!("client {}: offers a camera", self.id.0);
                 }
                 self.camera_supported = camera;
+                let microphone = has(ENCODING_MICROPHONE);
+                if microphone && !self.config.microphone && !self.microphone_supported {
+                    info!("client {}: offers a microphone, which the configuration turns off", self.id.0);
+                }
+                let microphone = microphone && self.config.microphone;
+                if microphone && !self.microphone_supported {
+                    info!("client {}: offers a microphone", self.id.0);
+                }
+                self.microphone_supported = microphone;
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
@@ -558,7 +619,8 @@ impl Session {
                     self.density,
                     self.outputs,
                     self.audio_supported,
-                    self.camera_supported
+                    self.camera_supported,
+                    self.microphone_supported
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
@@ -575,6 +637,10 @@ impl Session {
                 if self.camera_supported {
                     // And for the camera.
                     writer.send(&camera_available()).await?;
+                }
+                if self.microphone_supported {
+                    // And for the microphone.
+                    writer.send(&microphone_available()).await?;
                 }
             }
             ClientMsg::FramebufferUpdateRequest { incremental, .. } => {
@@ -690,6 +756,30 @@ impl Session {
                 // Samples already on the wire when the camera went.
                 None => debug!("client {}: a camera sample with no camera plugged; dropped", self.id.0),
             },
+            ClientMsg::MicrophonePlug => {
+                if !self.microphone_supported {
+                    warn!("client {}: plugs a microphone without the extension; ignored", self.id.0);
+                    return Ok(());
+                }
+                self.plug_microphone().await?;
+            }
+            ClientMsg::MicrophoneUnplug => self.unplug_microphone().await?,
+            ClientMsg::MicrophoneSample(pcm) => {
+                // The format is the one every start names, so a length that is not
+                // whole frames of it is a client that means something else.
+                let frame = crate::microphone::FORMAT.frame_bytes();
+                anyhow::ensure!(
+                    pcm.len().is_multiple_of(frame),
+                    "client {} sent {} bytes of microphone samples, not whole {frame}-byte frames",
+                    self.id.0,
+                    pcm.len()
+                );
+                match &self.microphone {
+                    Some(microphone) => microphone.sample(&pcm),
+                    // Samples already on the wire when the microphone went.
+                    None => debug!("client {}: microphone samples with no microphone plugged; dropped", self.id.0),
+                }
+            }
         }
         Ok(())
     }
@@ -888,6 +978,15 @@ impl Session {
 async fn camera_signal(camera: &mut Option<Camera>) -> CameraSignal {
     match camera {
         Some(camera) => camera.signal().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Resolves with the desktop's next decision about the microphone; never, while
+/// none is plugged.
+async fn microphone_signal(microphone: &mut Option<Microphone>) -> MicrophoneSignal {
+    match microphone {
+        Some(microphone) => microphone.signal().await,
         None => std::future::pending().await,
     }
 }

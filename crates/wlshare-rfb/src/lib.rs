@@ -44,6 +44,10 @@
 //! - **The camera extension**, a third private pair, which is how a client lends
 //!   the desktop a camera: the client plugs it and sends H.264, and the server
 //!   says when the desktop's applications want frames ([`camera`]).
+//! - **The microphone extension**, the camera's twin and a fourth private pair,
+//!   which is how a client lends the desktop a microphone: the client plugs it,
+//!   and sends 16-bit PCM in the format the server names while the desktop's
+//!   applications record ([`microphone`]).
 //! - **None and RSA-AES** for security. The first is RFC 6143's; the second is
 //!   RealVNC's, and the one way a client can name an account and have the
 //!   session encrypted ([`rsa_aes`]). Classic VncAuth is deliberately absent: it
@@ -54,6 +58,7 @@ pub mod audio;
 pub mod camera;
 pub mod cursor;
 pub mod density;
+pub mod microphone;
 pub mod msg;
 pub mod outputs;
 pub mod pixel;
@@ -92,6 +97,8 @@ pub const ENCODING_DENSITY: i32 = 0x574c_5348;
 pub const ENCODING_OUTPUTS: i32 = 0x574c_534f;
 /// The camera extension's pseudo-encoding, the ASCII bytes `WLSC`.
 pub const ENCODING_CAMERA: i32 = 0x574c_5343;
+/// The microphone extension's pseudo-encoding, the ASCII bytes `WLSM`.
+pub const ENCODING_MICROPHONE: i32 = 0x574c_534d;
 /// The QEMU Audio extension's pseudo-encoding: a client that lists it can
 /// take the desktop's sound, and is told so by an empty rectangle of this
 /// encoding ([`audio`]).

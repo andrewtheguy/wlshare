@@ -62,6 +62,12 @@ audio = true
 # only while one of them has it open.
 camera = true
 
+# Whether a client may lend the desktop its microphone. A client that asks for
+# the microphone extension plugs its microphone, which becomes a PipeWire audio
+# source named "wlshare remote microphone" that applications record from like
+# any other. The client sends 16-bit PCM only while one of them is recording.
+microphone = true
+
 # The desktop name clients see.
 name = "wlshare"
 

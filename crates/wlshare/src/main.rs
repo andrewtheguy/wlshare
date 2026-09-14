@@ -9,7 +9,8 @@
 //! crate. A client that enables audio gets a PipeWire capture thread of its
 //! own for as long as it listens ([`audio`]), and a client that plugs a camera
 //! gets a PipeWire video source, decoded by libavcodec, for as long as it is
-//! plugged ([`camera`], [`decode`]).
+//! plugged ([`camera`], [`decode`]); a client that plugs a microphone gets a
+//! PipeWire audio source the same way ([`microphone`]).
 
 mod audio;
 mod auth;
@@ -22,6 +23,7 @@ mod cursor;
 mod decode;
 mod framebuffer;
 mod input;
+mod microphone;
 mod outputs;
 mod pam;
 mod session;
@@ -226,6 +228,7 @@ async fn serve(
         resize: config.resize,
         audio: config.audio,
         camera: config.camera,
+        microphone: config.microphone,
         handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
     });
     loop {
