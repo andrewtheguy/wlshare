@@ -1,5 +1,6 @@
 //! The configuration file: what the server listens on, who may connect, which
-//! output it shares, whether its sound goes with it, and how the virtual
+//! output it shares, whether its sound goes with it, whether a client may lend it
+//! a camera and a microphone, and how the virtual
 //! keyboard is laid out.
 
 use std::net::SocketAddr;
@@ -51,6 +52,11 @@ pub struct Config {
     /// video source until it unplugs or leaves.
     #[serde(default = "default_true")]
     pub camera: bool,
+    /// Whether a client may lend the desktop its microphone: the microphone
+    /// extension is announced to a client that asks, and a microphone it plugs
+    /// becomes a PipeWire audio source until it unplugs or leaves.
+    #[serde(default = "default_true")]
+    pub microphone: bool,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
     pub name: String,
@@ -181,6 +187,7 @@ mod tests {
         assert_eq!(c.handshake_timeout_secs, 120);
         assert!(c.audio);
         assert!(c.camera);
+        assert!(c.microphone);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
     }
