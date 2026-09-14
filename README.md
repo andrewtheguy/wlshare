@@ -36,7 +36,11 @@ remotex does, for a target with `camera = true` — can lend the desktop its cam
 the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
 source, "wlshare remote camera", which applications reaching cameras through
 PipeWire can open, and the client is asked for frames only while one has it open.
-`camera = false` turns that offer off. One client is on the desktop at a time: a
+Chrome is one only with `chrome://flags/#enable-webrtc-pipewire-camera` enabled
+and an `xdg-desktop-portal` backend that implements Access, such as
+`xdg-desktop-portal-gtk` — `xdg-desktop-portal-wlr` alone does not, and without
+one the portal offers no Camera interface; otherwise Chrome looks only at
+`/dev/video*` and lists no camera. `camera = false` turns that offer off. One client is on the desktop at a time: a
 connection that finishes the handshake takes it from whoever holds it, the way
 Windows Remote Desktop does, and the RFB shared flag changes nothing. See
 [`docs/architecture.md`](docs/architecture.md) for how it works and what it
