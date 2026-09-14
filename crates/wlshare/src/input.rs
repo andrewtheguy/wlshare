@@ -8,11 +8,14 @@
 //! that keeps every key's keysym rather than an option that rewrites it — see
 //! the configuration.
 //!
-//! A keysym names a character, not a key: the client resolved its own Shift and
-//! Caps Lock before sending `A`, and the keycode that produces `A` here is the
-//! same one that produces `a`. So the state the compositor will see is checked
-//! before every press, and Shift is pressed or let go around the key when the
-//! keycode alone would type the other case.
+//! A character keysym names a character, not a key: the client resolved its own
+//! Shift and Caps Lock before sending `A`, and the keycode that produces `A`
+//! here is the same one that produces `a`. So the state the compositor will see
+//! is checked before every press, and Shift is pressed or let go around the key
+//! when the keycode alone would type the other case. A keysym that names a key
+//! rather than a character -- Tab, Return, an arrow -- is left alone: it goes out
+//! on its keycode under whatever the client holds, so Shift+Tab stays Shift+Tab
+//! even though the keycode's shifted level is ISO_Left_Tab, not Tab.
 //!
 //! One client is on the desktop at a time, so what is held is simply what it
 //! holds: a client leaving or being superseded lets go of all of it.
@@ -58,6 +61,13 @@ enum ShiftFix {
     Pressed(u32),
     /// These held Shift keycodes were let go for the key.
     Released(Vec<u32>),
+}
+
+/// Whether `keysym` names a printable character -- one the client has cased --
+/// rather than a key. libxkbcommon gives Tab, Return, BackSpace, Escape and
+/// Delete control codepoints, so those count as keys here too.
+fn is_character(keysym: u32) -> bool {
+    xkb::Keysym::new(keysym).key_char().is_some_and(|c| !c.is_control())
 }
 
 pub struct Input {
@@ -174,7 +184,15 @@ impl Input {
     /// Press or let go of Shift so that `code` types `keysym`: the keycode
     /// that produces `A` at level 1 produces `a` at level 0, and the client has
     /// already decided which one it means.
+    ///
+    /// Only a character has a case to decide. Tab is level 0 of the key whose
+    /// level 1 is ISO_Left_Tab, and a browser reports "Tab" for both, so a
+    /// client sending Tab with Shift held would otherwise have its Shift let go
+    /// and type a plain Tab. Such a keysym is sent on its keycode as it is.
     fn fix_shift(&mut self, code: u32, level: u32, keysym: u32) {
+        if !is_character(keysym) {
+            return;
+        }
         let produced = self.state.key_get_one_sym(xkb::Keycode::new(code)).raw();
         if produced == keysym {
             return;
@@ -296,3 +314,23 @@ wayland_client::delegate_noop!(Compositor: ignore ZwpVirtualKeyboardManagerV1);
 wayland_client::delegate_noop!(Compositor: ignore ZwpVirtualKeyboardV1);
 wayland_client::delegate_noop!(Compositor: ignore ZwlrVirtualPointerManagerV1);
 wayland_client::delegate_noop!(Compositor: ignore ZwlrVirtualPointerV1);
+
+#[cfg(test)]
+mod tests {
+    use super::is_character;
+
+    #[test]
+    fn cased_characters_are_corrected() {
+        for keysym in [0x61, 0x41, 0x31, 0x21, 0x20, 0xe9, 0x0100_20ac] {
+            assert!(is_character(keysym), "{keysym:#x}");
+        }
+    }
+
+    #[test]
+    fn keys_are_sent_as_they_are() {
+        // Tab, ISO_Left_Tab, Return, BackSpace, Escape, Delete, Left, Shift_L, F1
+        for keysym in [0xff09, 0xfe20, 0xff0d, 0xff08, 0xff1b, 0xffff, 0xff51, 0xffe1, 0xffbe] {
+            assert!(!is_character(keysym), "{keysym:#x}");
+        }
+    }
+}
