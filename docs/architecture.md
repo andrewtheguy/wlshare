@@ -326,11 +326,15 @@ reconfigured.
 Key events carry X11 keysyms. The server compiles the configured XKB keymap,
 uploads it to the virtual keyboard, and searches the same keymap for a keycode
 producing each keysym, preferring the lowest shift level. Modifier state is
-tracked with `xkb_state` and sent after every key. A keysym names a character
-the client has already cased — remotex never forwards Caps Lock and sends `A` or
-`a` as the browser resolved it — so before each press the server checks what the
-keycode would produce under the current modifiers, and presses Shift or lets a
-held Shift go around the key when the keycode alone would type the other case.
+tracked with `xkb_state` and sent after every key. A character keysym names a
+character the client has already cased — remotex never forwards Caps Lock and
+sends `A` or `a` as the browser resolved it — so before each press the server
+checks what the keycode would produce under the current modifiers, and presses
+Shift or lets a held Shift go around the key when the keycode alone would type
+the other case. A keysym that names a key rather than a printable character is
+exempt and goes out on its keycode under whatever the client holds: Shift+Tab
+arrives as Shift then `Tab`, the keycode's shifted level is `ISO_Left_Tab`, and
+letting Shift go to make it produce `Tab` would type a plain Tab.
 Keys and buttons are let go when the client leaves or is superseded, and a
 connection that never finished the handshake releases nothing. Pointer events
 arrive in framebuffer pixels and are injected as absolute positions against the
