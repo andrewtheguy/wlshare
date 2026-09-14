@@ -380,6 +380,20 @@ negotiated I420 640x480 at 15/1 and went to *streaming*, wlshare sent start, and
 the consumer took whole pictures — 460800 bytes, stride 640 — until it left and
 wlshare sent stop.
 
+An application finds the node through PipeWire, and a browser through
+xdg-desktop-portal's Camera interface, which hands it a PipeWire remote that
+shows only nodes of role `Camera`. The portal exports that interface only when a
+backend implements Access, to ask the user; `xdg-desktop-portal-wlr` does not,
+and `xdg-desktop-portal-gtk` does. The portal finds its backends when it starts,
+so a running one must be restarted after a backend is installed. Chrome also
+reaches cameras through PipeWire only with
+`chrome://flags/#enable-webrtc-pipewire-camera` enabled; without the flag, or
+without the portal's Camera interface, it looks at `/dev/video*` alone and lists
+no camera. Checked 2026-09-13 with Chrome 153 on a labwc session with
+xdg-desktop-portal 1.20.3: with only `xdg-desktop-portal-wlr` installed, the
+portal exported no `org.freedesktop.portal.Camera`, and with
+`xdg-desktop-portal-gtk` added and the portal restarted, it did.
+
 `camera = false` in the configuration turns the announcement off, and a client
 that lists the pseudo-encoding is then told nothing.
 
