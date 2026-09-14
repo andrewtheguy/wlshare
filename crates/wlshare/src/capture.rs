@@ -274,14 +274,21 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                 // what keeps an idle desktop free -- but a blank framebuffer has
                 // nothing to show in the meantime, and an output nobody is
                 // touching can stay unchanged for minutes. So the frame that
-                // fills a blank one is asked for outright.
-                let painted = state.shared().framebuffer.lock().unwrap().painted;
+                // fills a blank one is asked for outright -- and so is a frame
+                // of a new size, which the framebuffer only takes when that
+                // frame arrives: until then it still holds the old size's
+                // pixels, and an idle output would never send the frame that
+                // resizes it.
+                let whole = {
+                    let fb = state.shared().framebuffer.lock().unwrap();
+                    !fb.painted || (fb.width, fb.height) != (width as u16, height as u16)
+                };
                 let buffer = state.capture.buffer.as_ref().unwrap();
-                if painted {
-                    frame.copy_with_damage(&buffer.buffer);
-                } else {
-                    debug!("asking for a whole frame: the framebuffer holds no pixels yet");
+                if whole {
+                    debug!("asking for a whole {width}x{height} frame: the framebuffer holds no pixels at that size");
                     frame.copy(&buffer.buffer);
+                } else {
+                    frame.copy_with_damage(&buffer.buffer);
                 }
             }
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {
