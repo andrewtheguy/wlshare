@@ -35,7 +35,12 @@ rustix = { version = "1", features = ["fs", "mm", "pipe"] }
 memmap2 = "0.9"
 # The PAM conversation's allocations and the process's passwd entry (pam.rs).
 libc = "0.2"
-pipewire = { version = "0.10", features = ["v0_3_33"] }
+# The desktop's sound, and the client's camera as a Video/Source node; 0.3.34 is
+# where a driving stream can be told a frame is ready (trigger_process).
+pipewire = { version = "0.10", features = ["v0_3_34"] }
+# The client's camera arrives as H.264, decoded by the system's libavcodec,
+# linked dynamically; avcodec alone, since nothing here demuxes or scales.
+ffmpeg-sys-next = { version = "7.1", default-features = false, features = ["avcodec"] }
 # The [password] table's hash: Argon2id and the PHC string it is stored as.
 argon2 = "0.6"
 
@@ -45,10 +50,13 @@ argon2 = "0.6"
 name = "wlshare"
 maintainer = "Andrew Chen <andrew@jaanuu.com>"
 extended-description = """A VNC server for wlroots-based Wayland compositors that captures one output through
-wlr-screencopy, serves it over RFB 3.8 with ZRLE, and reports the output's
-pixel density to the remotex gateway over a private extension."""
+wlr-screencopy, serves it over RFB 3.8 with ZRLE, reports the output's
+pixel density to the remotex gateway over a private extension, and offers the
+desktop's applications a camera fed from the client's."""
 section = "net"
 priority = "optional"
+# libpipewire, libpam and libavcodec/libavutil (the camera's H.264 decoder) are
+# linked, so $auto names them from the binary.
 # wayland-client loads libwayland-client at runtime, so dpkg-shlibdeps cannot see it.
 # wlroots is the compositor's, not linked here: 0.19 is the first whose headless
 # backend keeps the cursor out of a screencopy without overlay_cursor.

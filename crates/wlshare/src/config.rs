@@ -46,6 +46,11 @@ pub struct Config {
     /// captured from PipeWire while the client has it enabled.
     #[serde(default = "default_true")]
     pub audio: bool,
+    /// Whether a client may lend the desktop its camera: the camera extension is
+    /// announced to a client that asks, and a camera it plugs becomes a PipeWire
+    /// video source until it unplugs or leaves.
+    #[serde(default = "default_true")]
+    pub camera: bool,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
     pub name: String,
@@ -175,6 +180,7 @@ mod tests {
         assert_eq!(c.max_fps, 60);
         assert_eq!(c.handshake_timeout_secs, 120);
         assert!(c.audio);
+        assert!(c.camera);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
     }

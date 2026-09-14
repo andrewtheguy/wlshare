@@ -54,6 +54,14 @@ handshake_timeout_secs = 120
 # WirePlumber provides when no device is present, is enough.
 audio = true
 
+# Whether a client may lend the desktop its camera. A client that asks for the
+# camera extension (the remotex gateway, for a target with camera = true) plugs
+# its browser's camera and sends H.264, which becomes a PipeWire video source
+# named "wlshare remote camera" -- one that applications reaching cameras through
+# PipeWire (a browser's camera portal, OBS, GStreamer) can open. It sends frames
+# only while one of them has it open.
+camera = true
+
 # The desktop name clients see.
 name = "wlshare"
 

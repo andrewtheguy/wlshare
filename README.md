@@ -31,7 +31,12 @@ are asked for by the client and stay silent otherwise; remotex asks for both on
 every plain `vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
 QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
 is offered the default sink's monitor, and one that does not hears nothing.
-`audio = false` turns the offer off. One client is on the desktop at a time: a
+`audio = false` turns the offer off. A client that lists the camera extension —
+remotex does, for a target with `camera = true` — can lend the desktop its camera:
+the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
+source, "wlshare remote camera", which applications reaching cameras through
+PipeWire can open, and the client is asked for frames only while one has it open.
+`camera = false` turns that offer off. One client is on the desktop at a time: a
 connection that finishes the handshake takes it from whoever holds it, the way
 Windows Remote Desktop does, and the RFB shared flag changes nothing. See
 [`docs/architecture.md`](docs/architecture.md) for how it works and what it

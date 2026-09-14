@@ -9,7 +9,9 @@
   and the release builds each architecture in Docker on its own native runner.
   Linking the daemon's tests needs `libpam0g-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
-  capture — the last for bindgen, which PipeWire's `-sys` crates run.
+  capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
+  `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder, the
+  system's libavcodec linked dynamically.
 - Every protocol byte comes from `wlshare-rfb`; the daemon never writes one itself.
   Every encoder gets an independent decoder in its tests.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland

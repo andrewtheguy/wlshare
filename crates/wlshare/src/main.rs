@@ -7,15 +7,19 @@
 //! one task per connection ([`session`]). They share the framebuffer and a few
 //! channels ([`shared`]), and every protocol byte comes from the `wlshare-rfb`
 //! crate. A client that enables audio gets a PipeWire capture thread of its
-//! own for as long as it listens ([`audio`]).
+//! own for as long as it listens ([`audio`]), and a client that plugs a camera
+//! gets a PipeWire video source, decoded by libavcodec, for as long as it is
+//! plugged ([`camera`], [`decode`]).
 
 mod audio;
 mod auth;
+mod camera;
 mod capture;
 mod clipboard;
 mod compositor;
 mod config;
 mod cursor;
+mod decode;
 mod framebuffer;
 mod input;
 mod outputs;
@@ -221,6 +225,7 @@ async fn serve(
         name: config.name.clone(),
         resize: config.resize,
         audio: config.audio,
+        camera: config.camera,
         handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
     });
     loop {
