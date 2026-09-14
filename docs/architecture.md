@@ -13,13 +13,15 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 ```
 
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
-  and building, RSA-AES and its frames, the ZRLE encoder, the density and outputs
-  extensions. It has no platform dependency and its tests decode every encoder's
+  and building, RSA-AES and its frames, the ZRLE encoder, the density, outputs
+  and camera extensions. It has no platform dependency and its tests decode every encoder's
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `cursor.rs`, `outputs.rs`, `input.rs` and
-  `clipboard.rs` are the protocols it speaks; `framebuffer.rs` is the shared pixels and damage;
+  `clipboard.rs` are the protocols it speaks; `audio.rs` and `camera.rs` are
+  PipeWire's side, and `decode.rs` is the camera's libavcodec decoder;
+  `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `shared.rs` is what crosses between them.
 
@@ -311,6 +313,76 @@ headless session still has a sink to capture — PipeWire's Dummy Output is one.
 `audio = false` in the configuration turns the announcement off, and a client
 that lists the pseudo-encoding is then told nothing.
 
+## The camera extension
+
+A client's camera, lent to the desktop. RFB carries nothing from a client but
+input and a clipboard, and no registered extension carries video that way, so
+this is a third private pair in the shape of the density and outputs extensions:
+pseudo-encoding `0x574c5343` (`WLSC`) and message type `0xE2`, in both
+directions. Every message is the type, an operation, two more bytes, and what
+the operation carries; integers are big-endian.
+
+| Direction | Operation | Bytes 2–3 | Then |
+| --------- | --------- | --------- | ---- |
+| client → server | 0, plug | padding | `u16` width, `u16` height, `u32` frame-rate numerator, `u32` denominator |
+| client → server | 1, unplug | padding | nothing |
+| client → server | 2, sample | flags (bit 0: keyframe), padding | `u32` length, one Annex B access unit |
+| server → client | 0, available | padding | nothing |
+| server → client | 1, start | padding | the plugged format, as a plug lays it out |
+| server → client | 2, stop | padding | nothing |
+| server → client | 3, keyframe | padding | nothing |
+
+- **Available** answers *every* `SetEncodings` that lists the pseudo-encoding —
+  the only way support is announced.
+- **Plug** makes a camera of the H.264 the client will send; another plug
+  replaces it, and an unplug or the client leaving removes it. A plug with no
+  pixels or no rate, and a sample over 4 MiB, are fatal: they are a client that
+  means something else by the fields. A plug past 4096x2304 pixels — H.264 level
+  5.2's largest frame — is refused, logged, and leaves the client without a
+  camera: the fields reach 65535x65535, whose pictures no buffer should hold.
+- **Start** and **stop** are the desktop's decisions, not the client's: an
+  application opened the camera, or the last one closed it. The client sends
+  samples between the two and nothing outside them, and a stream opens on a
+  keyframe.
+- **Keyframe** is owed after a gap: H.264 cannot be decoded across a lost unit.
+
+`camera.rs` makes each plugged camera a PipeWire node, `wlshare-camera-<client>`,
+of class `Video/Source` and role `Camera`, described as "wlshare remote camera"
+so it is not mistaken for a camera of the host's own. Like an audio capture it is
+a thread of its own running PipeWire's loop, and its callbacks run on that loop,
+not on the graph's real-time thread, because they decode and copy. It offers one
+format — I420 at the plugged geometry and rate, what one decoder behind it makes
+— and an application that wants another converts or does not open it. The node is
+its own driver: nothing else in the graph knows when a camera frame is due, so
+each decoded picture triggers the cycle that delivers it. The stream going to
+*streaming* when an application links to it, and back when the last one leaves,
+is what the session sends as start and stop.
+
+`decode.rs` is the system's libavcodec, reached through `ffmpeg-sys-next` with
+avcodec alone and linked dynamically, so the package depends on Debian's
+`libavcodec` rather than carrying a codec. The decoder runs on one thread with
+`LOW_DELAY`, so a unit is a picture the moment it is decoded rather than a frame
+later. It takes 4:2:0 at eight bits, which is everything Constrained Baseline
+makes. A picture at another size than the plug named is one the node cannot
+offer, and ends the camera: it is said once, nothing more is decoded, the client
+is sent stop, and the camera is unplugged.
+
+Samples reach the camera thread through a queue eight deep. One that finds it full
+is dropped, and so is every sample after it until a keyframe, which is asked of the
+client once per gap — again if the keyframe itself found no room. A unit the
+decoder refuses owes a keyframe the same way. Nothing here waits on the client's
+socket: a desktop that stops watching costs the client nothing but a stop.
+
+Measured 2026-09-14 on a sway session with PipeWire 1.4.2: a client plugging
+640x480 at 15/1 and sending libx264 Constrained Baseline, and a PipeWire consumer
+linking to `wlshare-camera-1` and offering YUY2, I420, NV12 and BGRx. The consumer
+negotiated I420 640x480 at 15/1 and went to *streaming*, wlshare sent start, and
+the consumer took whole pictures — 460800 bytes, stride 640 — until it left and
+wlshare sent stop.
+
+`camera = false` in the configuration turns the announcement off, and a client
+that lists the pseudo-encoding is then told nothing.
+
 ## Resize
 
 `SetDesktopSize` sets a custom mode on the shared output, with the same rules.
@@ -398,4 +470,7 @@ re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
 PointerPos pseudo-encoding would carry a warp the compositor made, and the
 cursor session does report positions, but only when the output repaints.
 Multiple outputs in one framebuffer — a client picks one of them instead. A control socket. A client's microphone: the extension carries
-sound one way only.
+sound one way only. A V4L2 camera device for the client's camera: a PipeWire node
+needs no kernel module and no privilege, at the cost of applications that open
+`/dev/video*` alone not seeing it. Camera formats beside I420, and scaling a
+camera picture to a size an application asks for.

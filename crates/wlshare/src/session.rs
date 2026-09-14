@@ -53,6 +53,17 @@
 //! the capture has queued before it considers a framebuffer update, so sound
 //! waits for at most the update already being written, never for the next one.
 //!
+//! ## Lending a camera
+//!
+//! A client that listed the camera pseudo-encoding is answered with the
+//! extension's announcement at once, as the density and outputs extensions are.
+//! Its plug makes a PipeWire video source ([`crate::camera`]), its unplug or its
+//! leaving removes it, and a second plug replaces the first. The desktop's
+//! decisions about that source — an application opened it, the last one closed
+//! it, a keyframe is needed — are written to the client as they happen, and its
+//! samples go to the camera's thread without waiting on anything the session
+//! writes.
+//!
 //! ## The transport
 //!
 //! The handshake decides what the socket carries afterwards: RFB bytes as they
@@ -68,6 +79,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use log::{debug, info, warn};
 use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect};
+use wlshare_rfb::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
 use wlshare_rfb::cursor::{alpha_cursor_rect, cursor_rect};
 use wlshare_rfb::density::{from_fixed, output_scale};
 use wlshare_rfb::msg::{self, ClientMsg, Screen};
@@ -76,8 +88,8 @@ use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
-    ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_OUTPUTS, ENCODING_QEMU_AUDIO,
-    ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_OUTPUTS,
+    ENCODING_QEMU_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -86,6 +98,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::audio::Capture;
 use crate::auth::Login;
+use crate::camera::{Camera, Signal as CameraSignal};
 use crate::framebuffer::{Rect, ResizeOrigin};
 use crate::shared::{ClientId, Command, Event, Shared};
 
@@ -123,6 +136,8 @@ pub struct SessionConfig {
     pub resize: bool,
     /// Whether the QEMU Audio extension is announced and served.
     pub audio: bool,
+    /// Whether the camera extension is announced and served.
+    pub camera: bool,
     /// How long a connection has to finish the handshake before it is dropped.
     pub handshake_timeout: Duration,
 }
@@ -199,6 +214,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         announce_audio: false,
         audio_format: AudioFormat::DEFAULT,
         audio: None,
+        camera_supported: false,
+        camera: None,
         continuous: false,
         pending: None,
         seen: 0,
@@ -224,6 +241,12 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         && let Err(e) = tokio::task::spawn_blocking(move || drop(capture)).await
     {
         warn!("client {}: the audio thread did not stop: {e}", id.0);
+    }
+    // The camera the same way: unplugging joins its PipeWire thread.
+    if let Some(camera) = session.camera.take()
+        && let Err(e) = tokio::task::spawn_blocking(move || drop(camera)).await
+    {
+        warn!("client {}: the camera thread did not stop: {e}", id.0);
     }
     result
 }
@@ -317,6 +340,11 @@ struct Session {
     audio_format: AudioFormat,
     /// The capture, while the client has audio enabled.
     audio: Option<Capture>,
+    /// The client listed the camera pseudo-encoding and the configuration
+    /// allows it.
+    camera_supported: bool,
+    /// The camera, while the client has one plugged.
+    camera: Option<Camera>,
     /// The client enabled continuous updates.
     continuous: bool,
     /// An update request not yet answered: `true` for incremental.
@@ -379,8 +407,48 @@ impl Session {
                 },
                 // Woken to drain the capture at the top of the loop.
                 () = audio_ready(&self.audio) => {}
+                signal = camera_signal(&mut self.camera) => self.send_camera_signal(signal, &mut writer).await?,
             }
         }
+    }
+
+    /// Tell the client what the desktop decided about its camera. A camera that
+    /// failed is told to stop, so the client encodes nothing more for it, and
+    /// unplugged.
+    async fn send_camera_signal(&mut self, signal: CameraSignal, writer: &mut Writer) -> anyhow::Result<()> {
+        let Some(camera) = &self.camera else { return Ok(()) };
+        match signal {
+            CameraSignal::Start => writer.send(&camera_start(camera.format)).await?,
+            CameraSignal::Stop => writer.send(&camera_stop()).await?,
+            CameraSignal::Keyframe => writer.send(&camera_keyframe()).await?,
+            CameraSignal::Failed => {
+                writer.send(&camera_stop()).await?;
+                self.unplug_camera().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Plug the client's camera, replacing one already plugged. A camera that
+    /// cannot be made is logged and leaves the client without one, not without
+    /// a desktop; the client is then never asked to start it.
+    async fn plug_camera(&mut self, format: CameraFormat) -> anyhow::Result<()> {
+        self.unplug_camera().await?;
+        let id = self.id;
+        match tokio::task::spawn_blocking(move || Camera::plug(id, format)).await.context("the camera thread did not start")? {
+            Ok(camera) => self.camera = Some(camera),
+            Err(e) => warn!("client {}: the camera could not be plugged: {e:#}", self.id.0),
+        }
+        Ok(())
+    }
+
+    /// Unplug the client's camera, if one is plugged.
+    async fn unplug_camera(&mut self) -> anyhow::Result<()> {
+        if let Some(camera) = self.camera.take() {
+            // Unplugging joins PipeWire's thread, which is a blocking wait.
+            tokio::task::spawn_blocking(move || drop(camera)).await.context("the camera thread did not stop")?;
+        }
+        Ok(())
     }
 
     /// Send every buffer the capture has queued.
@@ -469,8 +537,17 @@ impl Session {
                     self.announce_audio = true;
                 }
                 self.audio_supported = audio;
+                let camera = has(ENCODING_CAMERA);
+                if camera && !self.config.camera && !self.camera_supported {
+                    info!("client {}: offers a camera, which the configuration turns off", self.id.0);
+                }
+                let camera = camera && self.config.camera;
+                if camera && !self.camera_supported {
+                    info!("client {}: offers a camera", self.id.0);
+                }
+                self.camera_supported = camera;
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
@@ -480,7 +557,8 @@ impl Session {
                     self.eds_supported,
                     self.density,
                     self.outputs,
-                    self.audio_supported
+                    self.audio_supported,
+                    self.camera_supported
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
@@ -493,6 +571,10 @@ impl Session {
                 if self.outputs {
                     // Likewise: the answer is how support is announced.
                     self.send_outputs(writer).await?;
+                }
+                if self.camera_supported {
+                    // And for the camera.
+                    writer.send(&camera_available()).await?;
                 }
             }
             ClientMsg::FramebufferUpdateRequest { incremental, .. } => {
@@ -595,6 +677,19 @@ impl Session {
                     self.start_audio(writer).await?;
                 }
             }
+            ClientMsg::CameraPlug(format) => {
+                if !self.camera_supported {
+                    warn!("client {}: plugs a camera without the extension; ignored", self.id.0);
+                    return Ok(());
+                }
+                self.plug_camera(format).await?;
+            }
+            ClientMsg::CameraUnplug => self.unplug_camera().await?,
+            ClientMsg::CameraSample { keyframe, data } => match &mut self.camera {
+                Some(camera) => camera.sample(data, keyframe),
+                // Samples already on the wire when the camera went.
+                None => debug!("client {}: a camera sample with no camera plugged; dropped", self.id.0),
+            },
         }
         Ok(())
     }
@@ -785,6 +880,15 @@ impl Session {
         self.seen = generation;
         self.pending = None;
         Ok(())
+    }
+}
+
+/// Resolves with the desktop's next decision about the camera; never, while
+/// none is plugged.
+async fn camera_signal(camera: &mut Option<Camera>) -> CameraSignal {
+    match camera {
+        Some(camera) => camera.signal().await,
+        None => std::future::pending().await,
     }
 }
 

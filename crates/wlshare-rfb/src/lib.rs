@@ -41,6 +41,9 @@
 //! - **The QEMU Audio extension**, the registered one, which carries the
 //!   desktop's sound over the same connection as raw samples in the format the
 //!   client chose ([`audio`]).
+//! - **The camera extension**, a third private pair, which is how a client lends
+//!   the desktop a camera: the client plugs it and sends H.264, and the server
+//!   says when the desktop's applications want frames ([`camera`]).
 //! - **None and RSA-AES** for security. The first is RFC 6143's; the second is
 //!   RealVNC's, and the one way a client can name an account and have the
 //!   session encrypted ([`rsa_aes`]). Classic VncAuth is deliberately absent: it
@@ -48,6 +51,7 @@
 //!   daemon's configuration; the crate speaks both.
 
 pub mod audio;
+pub mod camera;
 pub mod cursor;
 pub mod density;
 pub mod msg;
@@ -86,6 +90,8 @@ pub const ENCODING_EXTENDED_CLIPBOARD: i32 = 0xc0a1_e5ce_u32 as i32;
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;
 /// The outputs extension's pseudo-encoding, the ASCII bytes `WLSO`.
 pub const ENCODING_OUTPUTS: i32 = 0x574c_534f;
+/// The camera extension's pseudo-encoding, the ASCII bytes `WLSC`.
+pub const ENCODING_CAMERA: i32 = 0x574c_5343;
 /// The QEMU Audio extension's pseudo-encoding: a client that lists it can
 /// take the desktop's sound, and is told so by an empty rectangle of this
 /// encoding ([`audio`]).

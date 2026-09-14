@@ -9,6 +9,7 @@
 use thiserror::Error;
 
 use crate::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
+use crate::camera::{CameraFormat, CameraParseError, ClientCamera, MSG_CAMERA};
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY};
 use crate::outputs::{MSG_OUTPUTS, SELECT_OUTPUT_LEN};
 use crate::pixel::PixelFormat;
@@ -98,6 +99,13 @@ pub enum ClientMsg {
     AudioDisable,
     /// The QEMU Audio extension: the sample format the client wants.
     AudioFormat(AudioFormat),
+    /// The camera extension: a camera producing H.264 in this format
+    /// ([`crate::camera`]).
+    CameraPlug(CameraFormat),
+    /// The camera extension: the camera is gone.
+    CameraUnplug,
+    /// The camera extension: one Annex B access unit.
+    CameraSample { keyframe: bool, data: Vec<u8> },
 }
 
 /// Why a client's bytes could not be a message.
@@ -111,6 +119,8 @@ pub enum ParseError {
     FencePayloadTooLong(usize),
     #[error("QEMU message: {0}")]
     Audio(#[from] AudioParseError),
+    #[error("camera message: {0}")]
+    Camera(#[from] CameraParseError),
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -235,6 +245,12 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             Some((ClientAudio::Enable, n)) => (ClientMsg::AudioEnable, n),
             Some((ClientAudio::Disable, n)) => (ClientMsg::AudioDisable, n),
             Some((ClientAudio::SetFormat(format), n)) => (ClientMsg::AudioFormat(format), n),
+        },
+        MSG_CAMERA => match crate::camera::parse_client(buf)? {
+            None => return Ok(None),
+            Some((ClientCamera::Plug(format), n)) => (ClientMsg::CameraPlug(format), n),
+            Some((ClientCamera::Unplug, n)) => (ClientMsg::CameraUnplug, n),
+            Some((ClientCamera::Sample { keyframe, data }, n)) => (ClientMsg::CameraSample { keyframe, data }, n),
         },
         other => return Err(ParseError::UnknownType(other)),
     };
@@ -414,6 +430,18 @@ mod tests {
         assert_eq!(m, ClientMsg::AudioFormat(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }));
         assert_eq!(n, 10);
         assert_eq!(parse(&[255, 7, 0, 0]), Err(ParseError::Audio(AudioParseError::UnknownSubmessage(7))));
+    }
+
+    #[test]
+    fn the_camera_submessages_parse_and_a_bad_one_is_fatal() {
+        let (m, n) = parse(&[0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0, 15, 0, 0, 0, 1]).unwrap().unwrap();
+        assert_eq!(m, ClientMsg::CameraPlug(CameraFormat { width: 640, height: 480, fps_numerator: 15, fps_denominator: 1 }));
+        assert_eq!(n, 16);
+        assert_eq!(parse(&[0xE2, 1, 0, 0]).unwrap().unwrap(), (ClientMsg::CameraUnplug, 4));
+        let (m, n) = parse(&[0xE2, 2, 1, 0, 0, 0, 0, 2, 0xAB, 0xCD, 0xE2]).unwrap().unwrap();
+        assert_eq!((m, n), (ClientMsg::CameraSample { keyframe: true, data: vec![0xAB, 0xCD] }, 10));
+        assert_eq!(parse(&[0xE2, 2, 1, 0, 0, 0, 0, 2, 0xAB]), Ok(None));
+        assert_eq!(parse(&[0xE2, 9, 0, 0]), Err(ParseError::Camera(CameraParseError::UnknownOperation(9))));
     }
 
     #[test]

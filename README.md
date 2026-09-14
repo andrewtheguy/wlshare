@@ -31,7 +31,12 @@ are asked for by the client and stay silent otherwise; remotex asks for both on
 every plain `vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
 QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
 is offered the default sink's monitor, and one that does not hears nothing.
-`audio = false` turns the offer off. One client is on the desktop at a time: a
+`audio = false` turns the offer off. A client that lists the camera extension —
+remotex does, for a target with `camera = true` — can lend the desktop its camera:
+the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
+source, "wlshare remote camera", which applications reaching cameras through
+PipeWire can open, and the client is asked for frames only while one has it open.
+`camera = false` turns that offer off. One client is on the desktop at a time: a
 connection that finishes the handshake takes it from whoever holds it, the way
 Windows Remote Desktop does, and the RFB shared flag changes nothing. See
 [`docs/architecture.md`](docs/architecture.md) for how it works and what it
@@ -91,13 +96,14 @@ the server resolves the client's keysyms through the same keymap it uploads.
 ## Building
 
 The workspace has two crates: `wlshare-rfb`, the protocol, which builds and tests
-anywhere, and `wlshare`, the daemon, which needs libwayland, libxkbcommon and
-libpipewire and only runs under a wlroots-based Wayland compositor. A bare
+anywhere, and `wlshare`, the daemon, which needs libwayland, libxkbcommon,
+libpipewire and libavcodec and only runs under a wlroots-based Wayland compositor. A bare
 `cargo test` covers the protocol crate; build the daemon with
 `cargo build --release -p wlshare` on a Linux host with `libwayland-dev`,
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
-`libclang-dev` and `pkg-config`. libclang links nothing: PipeWire's `-sys`
-crates generate their bindings with bindgen, which loads it at build time.
+`libavcodec-dev`, `libclang-dev` and `pkg-config`. libclang links nothing:
+PipeWire's and FFmpeg's `-sys` crates generate their bindings with bindgen, which
+loads it at build time.
 
 Packages for Debian trixie on amd64 and arm64 are built in Docker by
 `scripts/build-debs.sh`, into `dist/<arch>/wlshare-trixie-<arch>.deb`. The
