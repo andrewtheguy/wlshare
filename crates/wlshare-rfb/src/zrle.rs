@@ -515,7 +515,13 @@ impl ZrleDecoder {
         let mut consumed = 0usize;
         loop {
             if self.plain.len() == self.plain.capacity() {
-                self.plain.reserve((payload.len() * 4).max(64 * 1024));
+                // Never further than `limit` allows, plus the one byte that
+                // makes going over it visible below: the payload's length is
+                // the server's to choose, and four times it is an allocation
+                // the server would be choosing — a rectangle of one pixel can
+                // arrive with the largest payload the parser takes.
+                let room = (limit + 1).saturating_sub(self.plain.len());
+                self.plain.reserve((payload.len() * 4).max(64 * 1024).min(room));
             }
             let (before_in, before_out) = (self.inflate.total_in(), self.plain.len());
             let status =
@@ -973,6 +979,20 @@ mod tests {
             ZrleDecoder::default().decode_rect(&deflated(plain), w, h, &PixelFormat::NATIVE, &mut out, w * 4).unwrap();
             assert_eq!(out, want.concat(), "subencoding {}", plain[0]);
         }
+    }
+
+    #[test]
+    fn a_huge_payload_buys_no_more_buffer_than_its_rectangle_could_hold() {
+        // The payload's length is the server's to choose — the parser takes
+        // one of 512 MiB behind a rectangle of one pixel — so the buffer it is
+        // inflated into is sized by what the rectangle could hold and not by
+        // what arrived.
+        let limit = 1 + MAX_PALETTE * 3 + 4;
+        let mut decoder = ZrleDecoder::default();
+        let mut out = vec![0u8; 4];
+        let err = decoder.decode_rect(&vec![0x5Au8; 1 << 20], 1, 1, &PixelFormat::NATIVE, &mut out, 4);
+        assert_eq!(err, Err(ZrleError::Inflate));
+        assert!(decoder.plain.capacity() <= 2 * (limit + 1), "the buffer grew to {}", decoder.plain.capacity());
     }
 
     #[test]

@@ -467,11 +467,16 @@ pub struct Exchange {
 
 /// Run the client's half of the exchange on a freshly chosen RSA-AES type, up
 /// to the subtype byte.
+///
+/// The key is taken, not borrowed: refusing a server random that does not
+/// decrypt is safe only because the key dies with the connection that refused
+/// it. Answer the same key twice and the refusals become a padding oracle, so
+/// a second exchange has to be a second key.
 pub async fn begin<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
     strength: Strength,
-    key: &ClientKey,
+    key: ClientKey,
 ) -> Result<Exchange, Error> {
     let server_wire = read_peer_key(reader).await?;
     let server_key = server_wire.public_key()?;
@@ -1206,12 +1211,14 @@ mod tests {
 
     #[tokio::test]
     async fn the_client_half_logs_in_to_a_server_written_from_the_specification() {
-        let key = ClientKey::of_bits(1024).unwrap();
         for (strength, subtype, sent_username) in [(Strength::Aes128, 1u8, "andrew"), (Strength::Aes256, 2, "")] {
             let (client_sock, server_sock) = tokio::io::duplex(4096);
             let server = tokio::spawn(scripted_server(server_sock, strength, subtype, false));
             let (mut reader, mut writer) = tokio::io::split(client_sock);
-            let exchange = begin(&mut reader, &mut writer, strength, &key).await.unwrap();
+            // A key apiece, because `begin` takes one: two exchanges are two
+            // connections and a connection's key is its own.
+            let key = ClientKey::of_bits(1024).unwrap();
+            let exchange = begin(&mut reader, &mut writer, strength, key).await.unwrap();
             assert_eq!(exchange.subtype().byte(), subtype);
             assert_eq!(exchange.fingerprint().len(), 8 * 2 + 7);
             let credentials = Credentials { username: "andrew".to_owned(), password: "hunter2".to_owned() };
@@ -1232,7 +1239,7 @@ mod tests {
             authenticate(&mut reader, &mut writer, Strength::Aes256, &server_key, Subtype::UserPass).await.map(|(credentials, _)| credentials)
         });
         let (mut reader, mut writer) = tokio::io::split(client_sock);
-        let exchange = begin(&mut reader, &mut writer, Strength::Aes256, &ClientKey::of_bits(1024).unwrap()).await.unwrap();
+        let exchange = begin(&mut reader, &mut writer, Strength::Aes256, ClientKey::of_bits(1024).unwrap()).await.unwrap();
         assert_eq!(exchange.fingerprint(), fingerprint, "the client shows the fingerprint the server logs");
         let credentials = Credentials { username: "andrew".to_owned(), password: "hunter2".to_owned() };
         exchange.login(&mut writer, &credentials).await.unwrap();
@@ -1244,7 +1251,7 @@ mod tests {
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let server = tokio::spawn(scripted_server(server_sock, Strength::Aes128, 1, true));
         let (mut reader, mut writer) = tokio::io::split(client_sock);
-        let result = begin(&mut reader, &mut writer, Strength::Aes128, &ClientKey::of_bits(1024).unwrap()).await;
+        let result = begin(&mut reader, &mut writer, Strength::Aes128, ClientKey::of_bits(1024).unwrap()).await;
         assert!(matches!(result, Err(Error::Tampered)), "{:?}", result.err());
         drop((reader, writer));
         assert!(server.await.unwrap().is_err(), "the server is hung up on at the hash");
@@ -1255,7 +1262,7 @@ mod tests {
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let _server = tokio::spawn(scripted_server(server_sock, Strength::Aes128, 2, false));
         let (mut reader, mut writer) = tokio::io::split(client_sock);
-        let exchange = begin(&mut reader, &mut writer, Strength::Aes128, &ClientKey::of_bits(1024).unwrap()).await.unwrap();
+        let exchange = begin(&mut reader, &mut writer, Strength::Aes128, ClientKey::of_bits(1024).unwrap()).await.unwrap();
         let credentials = Credentials { username: String::new(), password: "x".repeat(256) };
         let err = exchange.login(&mut writer, &credentials).await.err().expect("256 bytes do not fit");
         assert!(err.to_string().contains("256 bytes"), "{err}");
