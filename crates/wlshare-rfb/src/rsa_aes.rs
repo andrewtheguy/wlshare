@@ -1,6 +1,7 @@
-//! RealVNC's RSA-AES security types (RFB 5 and 129), server side: an
+//! RealVNC's RSA-AES security types (RFB 5 and 129), both ends: an
 //! authenticated, encrypted RFB session over an ordinary 3.8 wire, and the one
 //! standard way a client can tell this server *who* is connecting.
+//! [`authenticate`] is the server's half and [`begin`] the client's.
 //!
 //! The types are RealVNC's, documented in the community `rfbproto` and spoken
 //! on the open side by TigerVNC, neatvnc and the remotex gateway, whose client
@@ -102,11 +103,13 @@ pub const SECURITY_RSA_AES_256: u8 = 129;
 /// Bits in the key generated for a server without one. TigerVNC's and
 /// wayvnc's size; the exchange lets the two ends' sizes differ.
 pub const SERVER_KEY_BITS: usize = 2048;
-/// Bounds on the client's key, TigerVNC's. Below the lower one the random it
+/// Bits in the key a client makes for one session: TigerVNC's size.
+pub const CLIENT_KEY_BITS: usize = 2048;
+/// Bounds on the other end's key, TigerVNC's. Below the lower one the random it
 /// carries is not protected; above the upper one a bogus length turns into a
 /// very large allocation and a very slow exponentiation.
-const MIN_CLIENT_KEY_BITS: u32 = 1024;
-const MAX_CLIENT_KEY_BITS: u32 = 8192;
+const MIN_PEER_KEY_BITS: u32 = 1024;
+const MAX_PEER_KEY_BITS: u32 = 8192;
 /// The most plaintext put in one outgoing frame: TigerVNC's `MaxMessageSize`,
 /// and the receive buffer of every implementation this has been tried against.
 const MAX_FRAME_BODY: usize = 8192;
@@ -132,6 +135,14 @@ impl Subtype {
         match self {
             Self::UserPass => 1,
             Self::Password => 2,
+        }
+    }
+
+    fn of(byte: u8) -> Option<Self> {
+        match byte {
+            1 => Some(Self::UserPass),
+            2 => Some(Self::Password),
+            _ => None,
         }
     }
 }
@@ -234,7 +245,7 @@ impl WireKey {
             BoxedUint::from_be_slice_vartime(self.modulus()),
             BoxedUint::from_be_slice_vartime(self.exponent()),
         )
-        .map_err(|e| Error::Protocol(format!("the client's RSA key is invalid: {e}")))
+        .map_err(|e| Error::Protocol(format!("the other end's RSA key is invalid: {e}")))
     }
 }
 
@@ -252,11 +263,11 @@ fn left_pad(bytes: &[u8], size: usize) -> Vec<u8> {
 pub enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
-    /// The client's bytes do not make an RSA-AES exchange.
+    /// The other end's bytes do not make an RSA-AES exchange.
     #[error("{0}")]
     Protocol(String),
-    /// The client's key hash does not cover the keys that were exchanged.
-    #[error("the client's RSA-AES key hash does not match the keys exchanged — the connection was tampered with")]
+    /// The other end's key hash does not cover the keys that were exchanged.
+    #[error("the other end's RSA-AES key hash does not match the keys exchanged — the connection was tampered with")]
     Tampered,
 }
 
@@ -359,8 +370,8 @@ pub struct Credentials {
 }
 
 /// Both directions' ciphers after the exchange, each already advanced past the
-/// handshake frames it carried. [`Opener`] holds whatever the client sent beyond
-/// the credentials, so wrap it around the same reader.
+/// handshake frames it carried. [`Opener`] holds whatever the other end sent
+/// beyond them, so wrap it around the same reader.
 pub struct Session {
     pub sealer: Sealer,
     pub opener: Opener,
@@ -381,7 +392,7 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 ) -> Result<(Credentials, Session), Error> {
     writer.write_all(&key.wire.0).await?;
 
-    let client_wire = read_client_key(reader).await?;
+    let client_wire = read_peer_key(reader).await?;
     let client_key = client_wire.public_key()?;
 
     let mut server_random = vec![0u8; strength.random_len()];
@@ -423,11 +434,137 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok((Credentials { username, password }, Session { sealer, opener }))
 }
 
-async fn read_client_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<WireKey, Error> {
+/// The key a client makes for one session and forgets with it.
+pub struct ClientKey {
+    private: RsaPrivateKey,
+    wire: WireKey,
+}
+
+impl ClientKey {
+    /// A fresh [`CLIENT_KEY_BITS`]-bit key. Real CPU time, so make it before
+    /// connecting rather than on the server's handshake clock.
+    pub fn generate() -> Result<Self, rsa::Error> {
+        Self::of_bits(CLIENT_KEY_BITS)
+    }
+
+    fn of_bits(bits: usize) -> Result<Self, rsa::Error> {
+        let private = RsaPrivateKey::new(&mut rand::rng(), bits)?;
+        let wire = WireKey::of_public(private.as_public_key());
+        Ok(Self { private, wire })
+    }
+}
+
+/// A client's exchange, run as far as the server's question: the channel is up
+/// and the keys are proven, and what is left is to decide whether
+/// [`Self::fingerprint`] is the server meant and to answer [`Self::subtype`]
+/// with [`Self::login`]. The decision comes first — the credentials go to
+/// whoever holds that key.
+pub struct Exchange {
+    session: Session,
+    fingerprint: String,
+    subtype: Subtype,
+}
+
+/// Run the client's half of the exchange on a freshly chosen RSA-AES type, up
+/// to the subtype byte.
+///
+/// The key is taken, not borrowed: refusing a server random that does not
+/// decrypt is safe only because the key dies with the connection that refused
+/// it. Answer the same key twice and the refusals become a padding oracle, so
+/// a second exchange has to be a second key.
+pub async fn begin<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+    strength: Strength,
+    key: ClientKey,
+) -> Result<Exchange, Error> {
+    let server_wire = read_peer_key(reader).await?;
+    let server_key = server_wire.public_key()?;
+    writer.write_all(&key.wire.0).await?;
+
+    let len = usize::from(reader.read_u16().await?);
+    if len != key.wire.size() {
+        return Err(Error::Protocol(format!("the server random is {len} bytes, not the {} of the client key", key.wire.size())));
+    }
+    let mut sealed = vec![0u8; len];
+    reader.read_exact(&mut sealed).await?;
+    // The key is this session's alone, so a refusal here tells nobody anything
+    // about a key worth having.
+    let server_random = key
+        .private
+        .decrypt(Pkcs1v15Encrypt, &sealed)
+        .map_err(|e| Error::Protocol(format!("the server random does not decrypt under the client's key: {e}")))?;
+    if server_random.len() != strength.random_len() {
+        return Err(Error::Protocol(format!("the server random is {} bytes, not {}", server_random.len(), strength.random_len())));
+    }
+
+    let mut client_random = vec![0u8; strength.random_len()];
+    rand::rng().fill_bytes(&mut client_random);
+    let sealed_random = server_key
+        .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &client_random)
+        .map_err(|e| Error::Protocol(format!("encrypting the client random to the server's key failed: {e}")))?;
+    let mut out = (sealed_random.len() as u16).to_be_bytes().to_vec();
+    out.extend_from_slice(&sealed_random);
+    writer.write_all(&out).await?;
+
+    let send_key = strength.hash(&[&server_random, &client_random]);
+    let recv_key = strength.hash(&[&client_random, &server_random]);
+    let key_len = strength.random_len();
+    let mut sealer = Sealer::new(strength.cipher(&send_key[..key_len]));
+    let mut frames = FrameReader::new(reader, Opener::new(strength.cipher(&recv_key[..key_len])));
+
+    let mut server_hash = strength.hash(&[&server_wire.0, &key.wire.0]);
+    let expected = server_hash.clone();
+    frames.read_exact(&mut server_hash).await?;
+    if server_hash != expected {
+        return Err(Error::Tampered);
+    }
+    writer.write_all(&sealer.frame(&strength.hash(&[&key.wire.0, &server_wire.0]))).await?;
+
+    let subtype = frames.read_u8().await?;
+    let subtype = Subtype::of(subtype).ok_or_else(|| Error::Protocol(format!("the server asks for credentials of subtype {subtype}, which is not one")))?;
+    let (_, opener) = frames.into_parts();
+    Ok(Exchange { session: Session { sealer, opener }, fingerprint: server_wire.fingerprint(), subtype })
+}
+
+impl Exchange {
+    /// RealVNC's display of the server's key, to compare with the one the
+    /// server logged at startup or the one seen last time.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
+    /// Which credentials the server wants.
+    pub fn subtype(&self) -> Subtype {
+        self.subtype
+    }
+
+    /// Answer the server's question. The username goes out empty to a server
+    /// that asked for a password alone. What comes back is the transport
+    /// SecurityResult and everything after it arrive over.
+    pub async fn login<W: AsyncWrite + Unpin>(mut self, writer: &mut W, credentials: &Credentials) -> Result<Session, Error> {
+        let username = match self.subtype {
+            Subtype::UserPass => credentials.username.as_str(),
+            Subtype::Password => "",
+        };
+        let mut fields = Vec::with_capacity(2 + username.len() + credentials.password.len());
+        for (name, field) in [("username", username), ("password", credentials.password.as_str())] {
+            let len = u8::try_from(field.len())
+                .map_err(|_| Error::Protocol(format!("a {name} of {} bytes is over the {MAX_CREDENTIAL_LEN} RSA-AES can carry", field.len())))?;
+            fields.push(len);
+            fields.extend_from_slice(field.as_bytes());
+        }
+        writer.write_all(&self.session.sealer.frame(&fields)).await?;
+        Ok(self.session)
+    }
+}
+
+/// The other end's public key, off the wire.
+async fn read_peer_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<WireKey, Error> {
     let bits = reader.read_u32().await?;
-    if !(MIN_CLIENT_KEY_BITS..=MAX_CLIENT_KEY_BITS).contains(&bits) {
+    if !(MIN_PEER_KEY_BITS..=MAX_PEER_KEY_BITS).contains(&bits) {
         return Err(Error::Protocol(format!(
-            "the client's RSA key is {bits} bits; this server accepts {MIN_CLIENT_KEY_BITS} to {MAX_CLIENT_KEY_BITS}"
+            "the other end's RSA key is {bits} bits; {MIN_PEER_KEY_BITS} to {MAX_PEER_KEY_BITS} are accepted"
         )));
     }
     let size = (bits as usize).div_ceil(8);
@@ -495,8 +632,7 @@ fn bump(counter: &mut [u8; 16]) {
     }
 }
 
-/// The server → client direction: takes a message, returns the frames that
-/// carry it.
+/// The sending direction: takes a message, returns the frames that carry it.
 pub struct Sealer {
     cipher: Cipher,
     counter: [u8; 16],
@@ -530,7 +666,7 @@ enum Phase {
     Sealed { len: usize },
 }
 
-/// The client → server direction: the cipher, the counter, and whatever has
+/// The receiving direction: the cipher, the counter, and whatever has
 /// been read but not yet handed on. Separate from the reader it feeds so the
 /// handshake can run it over a borrowed socket and the session over the owned
 /// one, without a byte falling between — a client sends ClientInit on the heels
@@ -1005,5 +1141,130 @@ mod tests {
         assert!(err.to_string().contains("512 bits"), "{err}");
         // The server's key went out first, as the exchange has it, and nothing else.
         assert_eq!(sent.len(), 4 + 2 * 128);
+    }
+
+    /// The server side of the exchange, written from the specification the way
+    /// [`scripted_client`] is, for the client's half to be run against. Reads
+    /// the credentials, answers SecurityResult OK, and returns what it read.
+    async fn scripted_server<S: AsyncRead + AsyncWrite + Unpin>(mut sock: S, strength: Strength, subtype: u8, lie_in_hash: bool) -> io::Result<(String, String)> {
+        let server_key = RsaPrivateKey::new(&mut rand::rng(), 1024).unwrap();
+        let size = (server_key.n().bits() as usize).div_ceil(8);
+        let mut server_wire = server_key.n().bits().to_be_bytes().to_vec();
+        server_wire.extend(left_pad(&server_key.n_bytes(), size));
+        server_wire.extend(left_pad(&server_key.e_bytes(), size));
+        sock.write_all(&server_wire).await?;
+
+        let client_bits = sock.read_u32().await?;
+        let client_size = (client_bits as usize).div_ceil(8);
+        let mut client_wire = client_bits.to_be_bytes().to_vec();
+        client_wire.resize(4 + 2 * client_size, 0);
+        sock.read_exact(&mut client_wire[4..]).await?;
+        let client_key = RsaPublicKey::new(
+            BoxedUint::from_be_slice_vartime(&client_wire[4..4 + client_size]),
+            BoxedUint::from_be_slice_vartime(&client_wire[4 + client_size..]),
+        )
+        .unwrap();
+
+        let random_len = strength.random_len();
+        let mut server_random = vec![0u8; random_len];
+        rand::rng().fill_bytes(&mut server_random);
+        let sealed = client_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &server_random).unwrap();
+        let mut out = (sealed.len() as u16).to_be_bytes().to_vec();
+        out.extend(&sealed);
+        sock.write_all(&out).await?;
+
+        let len = usize::from(sock.read_u16().await?);
+        assert_eq!(len, size);
+        let mut sealed = vec![0u8; len];
+        sock.read_exact(&mut sealed).await?;
+        let client_random = server_key.decrypt(Pkcs1v15Encrypt, &sealed).unwrap();
+
+        // The server's send key is H(client || server); its receive key the reverse.
+        let send = strength.hash(&[&client_random, &server_random]);
+        let recv = strength.hash(&[&server_random, &client_random]);
+        let mut sealer = Sealer::new(strength.cipher(&send[..random_len]));
+        let mut server_hash = strength.hash(&[&server_wire, &client_wire]);
+        if lie_in_hash {
+            server_hash[0] ^= 1;
+        }
+        sock.write_all(&sealer.frame(&server_hash)).await?;
+
+        let mut frames = FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
+        let mut client_hash = vec![0u8; server_hash.len()];
+        frames.read_exact(&mut client_hash).await?;
+        assert_eq!(client_hash, strength.hash(&[&client_wire, &server_wire]));
+        let (sock, opener) = frames.into_parts();
+        sock.write_all(&sealer.frame(&[subtype])).await?;
+
+        let mut frames = FrameReader::new(sock, opener);
+        let mut fields = Vec::new();
+        for _ in 0..2 {
+            let len = usize::from(frames.read_u8().await?);
+            let mut field = vec![0u8; len];
+            frames.read_exact(&mut field).await?;
+            fields.push(String::from_utf8(field).unwrap());
+        }
+        let (sock, _) = frames.into_parts();
+        sock.write_all(&sealer.frame(&[0, 0, 0, 0])).await?;
+        Ok((fields.remove(0), fields.remove(0)))
+    }
+
+    #[tokio::test]
+    async fn the_client_half_logs_in_to_a_server_written_from_the_specification() {
+        for (strength, subtype, sent_username) in [(Strength::Aes128, 1u8, "andrew"), (Strength::Aes256, 2, "")] {
+            let (client_sock, server_sock) = tokio::io::duplex(4096);
+            let server = tokio::spawn(scripted_server(server_sock, strength, subtype, false));
+            let (mut reader, mut writer) = tokio::io::split(client_sock);
+            // A key apiece, because `begin` takes one: two exchanges are two
+            // connections and a connection's key is its own.
+            let key = ClientKey::of_bits(1024).unwrap();
+            let exchange = begin(&mut reader, &mut writer, strength, key).await.unwrap();
+            assert_eq!(exchange.subtype().byte(), subtype);
+            assert_eq!(exchange.fingerprint().len(), 8 * 2 + 7);
+            let credentials = Credentials { username: "andrew".to_owned(), password: "hunter2".to_owned() };
+            let Session { opener, .. } = exchange.login(&mut writer, &credentials).await.unwrap();
+            let mut frames = FrameReader::new(reader, opener);
+            assert_eq!(frames.read_u32().await.unwrap(), 0, "SecurityResult arrives inside the frames");
+            assert_eq!(server.await.unwrap().unwrap(), (sent_username.to_owned(), "hunter2".to_owned()));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_client_half_meets_the_server_half() {
+        let server_key = test_key();
+        let fingerprint = server_key.fingerprint();
+        let (client_sock, server_sock) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            let (mut reader, mut writer) = tokio::io::split(server_sock);
+            authenticate(&mut reader, &mut writer, Strength::Aes256, &server_key, Subtype::UserPass).await.map(|(credentials, _)| credentials)
+        });
+        let (mut reader, mut writer) = tokio::io::split(client_sock);
+        let exchange = begin(&mut reader, &mut writer, Strength::Aes256, ClientKey::of_bits(1024).unwrap()).await.unwrap();
+        assert_eq!(exchange.fingerprint(), fingerprint, "the client shows the fingerprint the server logs");
+        let credentials = Credentials { username: "andrew".to_owned(), password: "hunter2".to_owned() };
+        exchange.login(&mut writer, &credentials).await.unwrap();
+        assert_eq!(server.await.unwrap().unwrap(), credentials);
+    }
+
+    #[tokio::test]
+    async fn a_server_hash_over_other_keys_ends_the_exchange_before_any_credentials() {
+        let (client_sock, server_sock) = tokio::io::duplex(4096);
+        let server = tokio::spawn(scripted_server(server_sock, Strength::Aes128, 1, true));
+        let (mut reader, mut writer) = tokio::io::split(client_sock);
+        let result = begin(&mut reader, &mut writer, Strength::Aes128, ClientKey::of_bits(1024).unwrap()).await;
+        assert!(matches!(result, Err(Error::Tampered)), "{:?}", result.err());
+        drop((reader, writer));
+        assert!(server.await.unwrap().is_err(), "the server is hung up on at the hash");
+    }
+
+    #[tokio::test]
+    async fn a_credential_too_long_for_its_length_byte_is_refused_unsent() {
+        let (client_sock, server_sock) = tokio::io::duplex(4096);
+        let _server = tokio::spawn(scripted_server(server_sock, Strength::Aes128, 2, false));
+        let (mut reader, mut writer) = tokio::io::split(client_sock);
+        let exchange = begin(&mut reader, &mut writer, Strength::Aes128, ClientKey::of_bits(1024).unwrap()).await.unwrap();
+        let credentials = Credentials { username: String::new(), password: "x".repeat(256) };
+        let err = exchange.login(&mut writer, &credentials).await.err().expect("256 bytes do not fit");
+        assert!(err.to_string().contains("256 bytes"), "{err}");
     }
 }

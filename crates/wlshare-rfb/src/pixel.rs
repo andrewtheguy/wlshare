@@ -128,6 +128,19 @@ impl PixelFormat {
         (u32::from(r) << self.red_shift) | (u32::from(g) << self.green_shift) | (u32::from(b) << self.blue_shift)
     }
 
+    /// The framebuffer pixel a value in this format stands for: [`Self::value`]
+    /// the other way, which is a client's way.
+    #[inline]
+    pub fn bgrx(&self, value: u32) -> [u8; 4] {
+        [(value >> self.blue_shift) as u8, (value >> self.green_shift) as u8, (value >> self.red_shift) as u8, 0]
+    }
+
+    /// The value four PIXEL bytes hold, in this format's byte order.
+    #[inline]
+    pub fn pixel_value(&self, bytes: [u8; 4]) -> u32 {
+        if self.big_endian { u32::from_be_bytes(bytes) } else { u32::from_le_bytes(bytes) }
+    }
+
     /// A PIXEL's four bytes for a value, in this format's byte order.
     #[inline]
     pub fn pixel_bytes(&self, value: u32) -> [u8; 4] {
@@ -179,6 +192,7 @@ mod tests {
         assert!(!f.is_native());
         f.check().unwrap();
         assert_eq!(f.pixel_bytes(f.value([0x11, 0x22, 0x33, 0])), [0x00, 0x33, 0x22, 0x11]);
+        assert_eq!(f.bgrx(f.pixel_value([0x00, 0x33, 0x22, 0x11])), [0x11, 0x22, 0x33, 0]);
         assert_eq!(f.cpixel(), (1, 3));
     }
 

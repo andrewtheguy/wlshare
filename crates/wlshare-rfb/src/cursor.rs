@@ -84,6 +84,42 @@ impl CursorImage {
     pub fn hotspot(&self) -> (u16, u16) {
         self.hotspot
     }
+
+    /// The pixels: premultiplied RGBA, rows top down.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
+    /// The image a Cursor With Alpha rectangle carried, as a client reads it:
+    /// the rectangle's x and y as the hotspot and its body as the pixels. `None`
+    /// is the empty rectangle, which says there is no pointer to draw.
+    pub fn from_alpha_rect(width: u16, height: u16, hotspot: (u16, u16), rgba: Vec<u8>) -> Option<Self> {
+        assert_eq!(rgba.len(), usize::from(width) * usize::from(height) * 4, "a {width}x{height} RGBA image");
+        if rgba.is_empty() {
+            return None;
+        }
+        Some(Self { width, height, hotspot: (hotspot.0.min(width - 1), hotspot.1.min(height - 1)), rgba })
+    }
+
+    /// The image a standard Cursor rectangle carried: `pixels` in `format`, and
+    /// the mask saying which of them are drawn, which become opaque.
+    pub fn from_masked_rect(format: &PixelFormat, width: u16, height: u16, hotspot: (u16, u16), pixels: &[u8], mask: &[u8]) -> Option<Self> {
+        let w = usize::from(width);
+        let mask_stride = w.div_ceil(8);
+        assert_eq!(pixels.len(), w * usize::from(height) * 4, "a {width}x{height} image");
+        assert_eq!(mask.len(), mask_stride * usize::from(height), "a {width}x{height} mask");
+        let mut rgba = Vec::with_capacity(pixels.len());
+        for (i, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
+            let (x, y) = (i % w, i / w);
+            if mask[y * mask_stride + x / 8] & (0x80 >> (x % 8)) != 0 {
+                let [b, g, r, _] = format.bgrx(format.pixel_value(*pixel));
+                rgba.extend_from_slice(&[r, g, b, 255]);
+            } else {
+                rgba.extend_from_slice(&[0; 4]);
+            }
+        }
+        Self::from_alpha_rect(width, height, hotspot, rgba)
+    }
 }
 
 /// A Cursor With Alpha pseudo-rectangle: the image as it is, Raw-encoded, or an
@@ -171,6 +207,24 @@ mod tests {
         // Nothing painted is no image at all.
         assert_eq!(CursorImage::cropped(4, 3, (1, 1), &[0u8; 4 * 3 * 4]), None);
         assert_eq!(CursorImage::cropped(0, 0, (0, 0), &[]), None);
+    }
+
+    #[test]
+    fn a_client_reads_back_the_image_either_rectangle_carried() {
+        let image = CursorImage::cropped(4, 3, (2, 1), &image()).unwrap();
+        let wire = alpha_cursor_rect(Some(&image));
+        assert_eq!(CursorImage::from_alpha_rect(2, 2, (1, 0), wire[16..].to_vec()), Some(image.clone()));
+        assert_eq!(CursorImage::from_alpha_rect(0, 0, (0, 0), Vec::new()), None);
+        // A hotspot outside the image is brought onto it, as the server's own is.
+        assert_eq!(CursorImage::from_alpha_rect(1, 1, (7, 7), vec![1, 2, 3, 255]).unwrap().hotspot(), (0, 0));
+
+        let format = PixelFormat { big_endian: true, red_shift: 24, green_shift: 16, blue_shift: 8, ..PixelFormat::NATIVE };
+        let wire = cursor_rect(&format, Some(&image));
+        let masked = CursorImage::from_masked_rect(&format, 2, 2, (1, 0), &wire[12..28], &wire[28..]).unwrap();
+        // The mask kept red, the grey divided back out to white, and blue; the
+        // shadow under the threshold is gone.
+        assert_eq!(masked.rgba(), [[255, 0, 0, 255], [255, 255, 255, 255], [0, 0, 0, 0], [0, 0, 255, 255]].concat());
+        assert_eq!(masked.hotspot(), (1, 0));
     }
 
     #[test]

@@ -2,10 +2,11 @@
 //!
 //! Everything that decides bytes on the socket lives here and nowhere else: the
 //! handshake pieces, the client messages and how they parse, the server messages
-//! and how they are built, classic VNC authentication, the ZRLE encoder and the
-//! private extensions. The daemon crate turns compositor events into calls on this
-//! crate and copies the results to sockets; it never writes a protocol byte of
-//! its own.
+//! and how they are built, RSA-AES, the ZRLE encoder and the private extensions
+//! — and, in [`client`], [`zrle::ZrleDecoder`] and [`rsa_aes::begin`], the same
+//! wire from a client's end. The daemon crate turns compositor events into calls
+//! on this crate and copies the results to sockets, and the client crate does the
+//! same with a window's; neither writes a protocol byte of its own.
 //!
 //! The crate is platform-independent so that all of it is unit-tested on any
 //! machine, the daemon being buildable only where libwayland and libxkbcommon
@@ -56,6 +57,7 @@
 
 pub mod audio;
 pub mod camera;
+pub mod client;
 pub mod cursor;
 pub mod density;
 pub mod microphone;
