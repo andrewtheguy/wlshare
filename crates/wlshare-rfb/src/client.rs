@@ -211,11 +211,14 @@ pub fn client_extended_cut_text(body: &[u8]) -> Vec<u8> {
 }
 
 /// The density extension's `ClientDensity`: the scale the client's display is
-/// drawn at, which it would like the output to be ([`crate::density`]).
-pub fn client_density(scale: f64) -> [u8; CLIENT_DENSITY_LEN] {
+/// drawn at, which it would like the output to be, and the size in pixels it
+/// wants at that scale ([`crate::density`]). The layout is `OutputScale`'s.
+pub fn client_density(width: u16, height: u16, scale: f64) -> [u8; CLIENT_DENSITY_LEN] {
     let mut msg = [0u8; CLIENT_DENSITY_LEN];
     msg[0] = MSG_DENSITY;
-    msg[4..].copy_from_slice(&to_fixed(scale).to_be_bytes());
+    msg[2..4].copy_from_slice(&width.to_be_bytes());
+    msg[4..6].copy_from_slice(&height.to_be_bytes());
+    msg[6..].copy_from_slice(&to_fixed(scale).to_be_bytes());
     msg
 }
 
@@ -534,7 +537,10 @@ mod tests {
             parsed(&set_desktop_size(3456, 1802)),
             ClientMsg::SetDesktopSize { width: 3456, height: 1802, screens: vec![Screen::whole(3456, 1802)] }
         );
-        assert_eq!(parsed(&client_density(1.5)), ClientMsg::ClientDensity { fixed: 0x0001_8000 });
+        assert_eq!(
+            parsed(&client_density(2592, 1350, 1.5)),
+            ClientMsg::ClientDensity { width: 2592, height: 1350, fixed: 0x0001_8000 }
+        );
         assert_eq!(parsed(&client_extended_cut_text(&[2, 0, 0, 1])), ClientMsg::ExtendedCutText(vec![2, 0, 0, 1]));
         assert_eq!(parsed(&audio_enable()), ClientMsg::AudioEnable);
         assert_eq!(parsed(&audio_disable()), ClientMsg::AudioDisable);

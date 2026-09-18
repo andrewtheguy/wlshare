@@ -5,7 +5,8 @@
 //! an integer scale (wlroots reports the ceiling of a fractional one).
 //! wlr-output-management gives the exact scale as the compositor has it, and is
 //! the only way to *change* anything: a custom mode for a client's resize, a
-//! scale for a client's density. Heads are matched to outputs by name.
+//! mode and a scale together for a client's density. Heads are matched to
+//! outputs by name.
 //!
 //! Only a headless output is ever reconfigured, the way wayvnc has it: a real
 //! monitor's mode belongs to the person sitting at it.
@@ -79,14 +80,20 @@ pub struct ModeInfo {
 /// What a configuration was for, so its outcome can be reported.
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigKind {
+    /// A SetDesktopSize: the mode alone.
     Resize { client: ClientId },
-    Scale,
+    /// A density declaration: the mode and the scale together, whichever differ.
+    /// `id` tells its events from a declaration's before it.
+    Declare { id: u64 },
 }
 
-/// A `wl_display.sync` after a scale configuration succeeded: when it comes back
-/// with no head scale change seen, the compositor accepted the configuration and
-/// left the scale as it was, and the declaration still needs its answer.
-pub struct ScaleSettle;
+/// A `wl_display.sync` after declaration `id`'s configuration succeeded: when it
+/// comes back with that declaration still unsettled, no head scale change
+/// arrived — the compositor changed the mode alone, or nothing — and the
+/// declaration still needs its answer.
+pub struct ScaleSettle {
+    id: u64,
+}
 
 #[derive(Default)]
 pub struct Outputs {
@@ -97,9 +104,11 @@ pub struct Outputs {
     pub serial: u32,
     /// The name of the shared output, once chosen.
     pub selected: Option<String>,
-    /// A scale configuration is out and the compositor has not settled it.
-    pub scale_pending: bool,
-    scale_changed_since_apply: bool,
+    /// The declaration whose configuration is out and not settled yet. One at a
+    /// time: its settling is told apart from nothing else.
+    pub declaring: Option<u64>,
+    /// The id the next declaration takes.
+    pub next_declaration: u64,
 }
 
 impl Outputs {
@@ -258,9 +267,8 @@ impl Outputs {
             .map_or(0, |m| m.refresh);
 
         let config = manager.create_configuration(self.serial, qh, kind);
-        if matches!(kind, ConfigKind::Scale) {
-            self.scale_pending = true;
-            self.scale_changed_since_apply = false;
+        if let ConfigKind::Declare { id } = kind {
+            self.declaring = Some(id);
         }
         for head in &self.heads {
             if !head.enabled {
@@ -335,11 +343,12 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
                     }
                 }
                 if changed {
-                    if state.outputs.scale_pending {
-                        state.outputs.scale_changed_since_apply = true;
-                        state.outputs.scale_pending = false;
-                    }
+                    // The report this sends answers the declaration out, if any.
+                    let settled = state.outputs.declaring.take().is_some();
                     state.geometry_changed();
+                    if settled {
+                        state.declaration_settled();
+                    }
                 }
                 // A head's scale or mode is in every entry's label, not only the
                 // shared one's.
@@ -420,14 +429,14 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
         match event {
             zwlr_output_configuration_v1::Event::Succeeded => {
                 debug!("output configuration succeeded ({kind:?})");
-                if let ConfigKind::Scale = kind {
+                if let ConfigKind::Declare { id } = *kind {
                     // `succeeded` says nothing about whether a head changed: the
                     // changes and their `done` follow when there are any. Sway, the
                     // measured compositor, sends them first when it commits on the
                     // spot. One round trip later, whatever the compositor was going
                     // to send has arrived.
-                    if state.outputs.scale_pending && !state.outputs.scale_changed_since_apply {
-                        conn.display().sync(qh, ScaleSettle);
+                    if state.outputs.declaring == Some(id) {
+                        conn.display().sync(qh, ScaleSettle { id });
                     }
                 }
             }
@@ -438,9 +447,13 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                         state.pending_resize = None;
                         state.shared().emit(Event::ResizeRefused { client: *client, status: wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
                     }
-                    ConfigKind::Scale => {
-                        state.outputs.scale_pending = false;
-                        state.answer_geometry(None);
+                    ConfigKind::Declare { id } => {
+                        if state.outputs.declaring == Some(*id) {
+                            state.outputs.declaring = None;
+                            state.pending_resize = None;
+                            state.answer_geometry(None);
+                            state.declaration_settled();
+                        }
                     }
                 }
             }
@@ -451,15 +464,14 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
 }
 
 impl Dispatch<WlCallback, ScaleSettle> for Compositor {
-    fn event(state: &mut Self, _: &WlCallback, event: wl_callback::Event, _: &ScaleSettle, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(state: &mut Self, _: &WlCallback, event: wl_callback::Event, settle: &ScaleSettle, _: &Connection, _: &QueueHandle<Self>) {
         if let wl_callback::Event::Done { .. } = event
-            && state.outputs.scale_pending
+            && state.outputs.declaring == Some(settle.id)
         {
-            state.outputs.scale_pending = false;
-            if !state.outputs.scale_changed_since_apply {
-                info!("the compositor applied the scale configuration without changing the scale; reporting it as it is");
-                state.answer_geometry(None);
-            }
+            state.outputs.declaring = None;
+            info!("the compositor applied the declaration's configuration without changing the scale; reporting the output as it is");
+            state.answer_geometry(None);
+            state.declaration_settled();
         }
     }
 }

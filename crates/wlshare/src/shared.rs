@@ -36,8 +36,9 @@ pub enum Command {
     Pointer { client: ClientId, buttons: u8, x: u16, y: u16 },
     /// SetDesktopSize: the client wants the desktop `width`×`height` pixels.
     Resize { client: ClientId, width: u16, height: u16 },
-    /// ClientDensity: the client wants the output drawn at `scale`.
-    Declare { client: ClientId, scale: f64 },
+    /// ClientDensity: the client wants the output `width`×`height` pixels drawn
+    /// at `scale`, in one configuration.
+    Declare { client: ClientId, width: u16, height: u16, scale: f64 },
     /// SelectOutput: the client wants the output with this id shared.
     SelectOutput { client: ClientId, id: u32 },
     /// Text for the compositor's clipboard.

@@ -732,18 +732,28 @@ impl Session {
                 }
                 self.shared.command(Command::Resize { client: self.id, width, height });
             }
-            ClientMsg::ClientDensity { fixed } => {
+            ClientMsg::ClientDensity { width, height, fixed } => {
                 if !self.density {
                     debug!("client {}: a density declaration without the extension; ignored", self.id.0);
                     return Ok(());
                 }
                 let scale = from_fixed(fixed);
-                info!("client {}: declares a display density of {scale:.2}", self.id.0);
+                info!("client {}: declares a display density of {scale:.2} for {width}x{height} pixels", self.id.0);
                 if !(0.5..=8.0).contains(&scale) {
-                    warn!("client {}: density {scale:.2} is out of range; reporting the scale as it is", self.id.0);
+                    warn!("client {}: density {scale:.2} is out of range; reporting the output as it is", self.id.0);
                     return self.send_geometry(writer).await;
                 }
-                self.shared.command(Command::Declare { client: self.id, scale });
+                if width == 0 || height == 0 {
+                    warn!("client {}: a declaration of {width}x{height} pixels; reporting the output as it is", self.id.0);
+                    return self.send_geometry(writer).await;
+                }
+                if !self.eds_supported {
+                    // The resize could not be told to it, as a SetDesktopSize's
+                    // could not.
+                    warn!("client {}: a density declaration without ExtendedDesktopSize; reporting the output as it is", self.id.0);
+                    return self.send_geometry(writer).await;
+                }
+                self.shared.command(Command::Declare { client: self.id, width, height, scale });
             }
             ClientMsg::SelectOutput { id } => {
                 if !self.outputs {

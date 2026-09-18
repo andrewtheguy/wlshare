@@ -200,17 +200,28 @@ are 16.16 unsigned fixed point.
   pseudo-encoding — the only way support is announced — and whenever the shared
   output's scale or mode changes, before the frame at the new size is captured,
   so the report precedes the resize rectangle.
-- **ClientDensity**, client → server, eight bytes: type, three bytes of padding,
-  the scale the client wants the output drawn at. Honoured only from a client
-  that listed the pseudo-encoding and only in the range 0.5–8. The server sets
-  the output's scale through wlr-output-management under the same rules as a
-  resize — a headless output and `resize = true` — and **answers every
-  declaration** with an OutputScale: after the
-  compositor's head change, or at once with the scale as it is when the
+- **ClientDensity**, client → server, ten bytes in OutputScale's layout: type,
+  padding, width and height in pixels, scale. The client states the scale it
+  wants the output drawn at *and* the size it wants at that scale, every time,
+  so a change of density is one output configuration: a scale alone would change
+  the logical size until a resize followed, and every application would redraw
+  twice. A resize at an unchanged density is `SetDesktopSize`. Honoured only from
+  a client that listed the pseudo-encoding and ExtendedDesktopSize, only in the
+  range 0.5–8 and at a size that is not empty. The server sets the output's mode
+  and scale through wlr-output-management in one configuration, asking only for
+  what differs, under the same rules as a resize — a headless output and
+  `resize = true` — and **answers every declaration** with an OutputScale: after
+  the compositor's head change, or at once with the output as it is when the
   declaration matches, is refused, or cannot be applied. A configuration the
   compositor accepts without changing the scale is answered too: `succeeded` is
-  followed by one `wl_display.sync` round trip, after which the scale is reported
-  as it is if no head change arrived.
+  followed by one `wl_display.sync` round trip, after which the output is
+  reported as it is if no head change arrived. One declaration's configuration
+  is out at a time, and its events are told from any other's, so each is
+  answered once: one arriving meanwhile waits for it to settle, and a newer one
+  replaces it, the replaced one answered with the output as it is. A new size
+  reaches the client as
+  an ExtendedDesktopSize rectangle whose reason is this client, as a
+  SetDesktopSize's does.
 
 The exact scale comes from the wlr-output-management head, fractional included;
 `wl_output.scale`, which wlroots rounds up, is the fallback when the protocol is

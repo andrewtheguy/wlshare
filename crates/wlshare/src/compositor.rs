@@ -56,6 +56,9 @@ pub struct Compositor {
     /// A client's SetDesktopSize the compositor accepted, until the frame at that
     /// size arrives.
     pub pending_resize: Option<(ClientId, u16, u16)>,
+    /// A declaration that arrived while another's configuration was out, run
+    /// once that one settles: client, width, height, scale.
+    queued_declaration: Option<(ClientId, u16, u16, f64)>,
     pub max_fps: u32,
     resize_allowed: bool,
     xkb: Xkb,
@@ -196,6 +199,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
         clipboard: Clipboard::default(),
         client: None,
         pending_resize: None,
+        queued_declaration: None,
         max_fps,
         resize_allowed: resize,
         xkb,
@@ -368,9 +372,9 @@ impl Compositor {
                     self.resize(client, width, height);
                 }
             }
-            Command::Declare { client, scale } => {
+            Command::Declare { client, width, height, scale } => {
                 if self.client == Some(client) {
-                    self.declare(client, scale);
+                    self.declare(client, width, height, scale);
                 }
             }
             Command::SelectOutput { client, id } => {
@@ -497,19 +501,56 @@ impl Compositor {
         input.retarget(&self.qh, pointers, seat, output);
     }
 
-    fn declare(&mut self, client: ClientId, scale: f64) {
+    /// Follow a client's density: the output's mode and scale in one
+    /// configuration, so every application on it redraws once. Only what differs
+    /// is asked for, and a declaration that changes nothing, or cannot change
+    /// anything, is answered at once with the output as it is.
+    ///
+    /// One declaration's configuration is out at a time, so each settles on its
+    /// own and is answered once. One arriving meanwhile waits for that one to
+    /// settle; a newer one replaces it, and the one replaced is answered with
+    /// the output as it is.
+    fn declare(&mut self, client: ClientId, width: u16, height: u16, scale: f64) {
+        if self.outputs.declaring.is_some() {
+            debug!("client {}: a declaration waits for the one before it to settle", client.0);
+            if let Some((waiting, ..)) = self.queued_declaration.replace((client, width, height, scale)) {
+                self.answer_geometry(Some(waiting));
+            }
+            return;
+        }
         let current = self.outputs.scale();
-        if (current - scale).abs() < 0.005 {
+        let current_size = self.outputs.size();
+        let new_scale = ((current - scale).abs() >= 0.005).then_some(scale);
+        let new_size = ((width, height) != current_size).then_some((width, height));
+        if new_scale.is_none() && new_size.is_none() {
             return self.answer_geometry(Some(client));
         }
         if !self.resize_allowed {
-            info!("not following client {}'s density {scale:.2}: resizing is disabled", client.0);
+            info!("not following client {}'s density {scale:.2} at {width}x{height}: resizing is disabled", client.0);
             return self.answer_geometry(Some(client));
         }
-        info!("following client {}'s density: output scale {current:.2} -> {scale:.2}", client.0);
+        info!(
+            "following client {}'s density: output {}x{} at scale {current:.2} -> {width}x{height} at scale {scale:.2}",
+            client.0, current_size.0, current_size.1
+        );
+        // The frame at the new size is this client's resize, as a SetDesktopSize's is.
+        self.pending_resize = new_size.map(|(w, h)| (client, w, h));
         let qh = self.qh.clone();
-        if !self.outputs.configure(&qh, None, Some(scale), ConfigKind::Scale) {
+        let id = self.outputs.next_declaration;
+        self.outputs.next_declaration += 1;
+        if !self.outputs.configure(&qh, new_size, new_scale, ConfigKind::Declare { id }) {
+            self.pending_resize = None;
             self.answer_geometry(Some(client));
+        }
+    }
+
+    /// The declaration out has been answered: run the one waiting, if its
+    /// client still holds the desktop.
+    pub fn declaration_settled(&mut self) {
+        if let Some((client, width, height, scale)) = self.queued_declaration.take()
+            && self.client == Some(client)
+        {
+            self.declare(client, width, height, scale);
         }
     }
 }
