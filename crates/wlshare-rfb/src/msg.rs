@@ -81,9 +81,11 @@ pub enum ClientMsg {
     FramebufferUpdateRequest { incremental: bool, x: u16, y: u16, width: u16, height: u16 },
     KeyEvent { down: bool, keysym: u32 },
     PointerEvent { buttons: u8, x: u16, y: u16 },
-    /// Latin-1 text for the clipboard.
+    /// Latin-1 cut text, which wlshare does not speak: framed so that it can be
+    /// skipped, and otherwise ignored.
     CutText(Vec<u8>),
-    /// An Extended Clipboard body: a `ClientCutText` with a negative length.
+    /// An Extended Clipboard body ([`crate::clipboard`]): a `ClientCutText`
+    /// with a negative length.
     ExtendedCutText(Vec<u8>),
     EnableContinuousUpdates { enable: bool, x: u16, y: u16, width: u16, height: u16 },
     Fence { flags: u32, payload: Vec<u8> },
@@ -378,18 +380,19 @@ pub fn fence(flags: u32, payload: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// ServerCutText with `text` as latin-1; anything outside it becomes `?`.
-pub fn server_cut_text(text: &str) -> Vec<u8> {
-    let bytes: Vec<u8> = text.chars().map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?')).collect();
-    let mut msg = vec![SERVER_CUT_TEXT, 0, 0, 0];
-    msg.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-    msg.extend_from_slice(&bytes);
-    msg
+/// ServerCutText carrying an Extended Clipboard body ([`crate::clipboard`]):
+/// the length is the body's, negated.
+pub fn server_extended_cut_text(body: &[u8]) -> Vec<u8> {
+    extended_cut_text(SERVER_CUT_TEXT, body)
 }
 
-/// Latin-1 cut text as a `String`: every byte is the codepoint of the same value.
-pub fn latin1_to_string(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| char::from(b)).collect()
+/// Either end's cut text with an extended body, which the two frame alike.
+pub(crate) fn extended_cut_text(kind: u8, body: &[u8]) -> Vec<u8> {
+    debug_assert!(body.len() <= MAX_CUT_TEXT);
+    let mut msg = vec![kind, 0, 0, 0];
+    msg.extend_from_slice(&(-(body.len() as i32)).to_be_bytes());
+    msg.extend_from_slice(body);
+    msg
 }
 
 #[cfg(test)]
@@ -475,7 +478,6 @@ mod tests {
         let (m, n) = parse(&[6, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'a']).unwrap().unwrap();
         assert_eq!(m, ClientMsg::CutText(vec![0xE9, b'a']));
         assert_eq!(n, 10);
-        assert_eq!(latin1_to_string(&[0xE9, b'a']), "éa");
         let mut buf = vec![6, 0, 0, 0];
         buf.extend_from_slice(&(-4i32).to_be_bytes());
         buf.extend_from_slice(&[1, 2, 3, 4]);
@@ -528,7 +530,7 @@ mod tests {
         assert_eq!(&rect[16..20], &[0, 0, 0, 0]);
         assert_eq!(&rect[24..28], &[0, 8, 0, 4]);
         assert_eq!(fence(FENCE_REQUEST, &[1]), vec![248, 0, 0, 0, 0x80, 0, 0, 0, 1, 1]);
-        assert_eq!(server_cut_text("é画"), vec![3, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'?']);
+        assert_eq!(server_extended_cut_text(&[8, 0, 0, 1]), vec![3, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFC, 8, 0, 0, 1]);
         let init = server_init(8, 4, &PixelFormat::NATIVE, "desktop");
         assert_eq!(init.len(), 31);
         assert_eq!(&init[..4], &[0, 8, 0, 4]);

@@ -51,6 +51,9 @@
 //!   which is how a client lends the desktop a microphone: the client plugs it,
 //!   and sends 16-bit PCM in the format the server names while the desktop's
 //!   applications record ([`microphone`]).
+//! - **Extended Clipboard**, the registered one and the only clipboard spoken:
+//!   text as UTF-8, notified and then asked for ([`clipboard`]). Latin-1 cut
+//!   text is framed so that it can be skipped, and otherwise ignored.
 //! - **None and RSA-AES** for security. The first is RFC 6143's; the second is
 //!   RealVNC's, and the one way a client can name an account and have the
 //!   session encrypted ([`rsa_aes`]). Classic VncAuth is deliberately absent: it
@@ -60,6 +63,7 @@
 pub mod audio;
 pub mod camera;
 pub mod client;
+pub mod clipboard;
 pub mod cursor;
 pub mod density;
 pub mod microphone;
@@ -93,7 +97,7 @@ pub const ENCODING_FENCE: i32 = -312;
 /// ContinuousUpdates pseudo-encoding: the client understands
 /// EndOfContinuousUpdates and may enable continuous updates.
 pub const ENCODING_CONTINUOUS_UPDATES: i32 = -313;
-/// Extended Clipboard pseudo-encoding. Recognised, not yet spoken.
+/// Extended Clipboard pseudo-encoding: the clipboard as UTF-8 ([`clipboard`]).
 pub const ENCODING_EXTENDED_CLIPBOARD: i32 = 0xc0a1_e5ce_u32 as i32;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;

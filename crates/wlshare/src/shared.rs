@@ -57,9 +57,10 @@ pub enum Event {
     /// it. Not addressed to one client the way a geometry answer is, because a
     /// switch is the whole desktop's news and there is one client on it.
     Outputs,
-    /// Text arrived on the compositor's clipboard — or left it: empty when the
-    /// selection was cleared or is no longer text.
-    Clipboard(String),
+    /// The compositor's clipboard changed: notify every client of
+    /// [`Shared::clipboard`]. The text is read when a client asks for it rather
+    /// than carried here, so it is the latest when it goes.
+    Clipboard,
     /// The cursor image changed: send [`Shared::cursor`] to every client. The
     /// image is read when it is sent rather than carried here, so a client
     /// behind on a cursor that changes quickly is sent the latest shape once.
@@ -102,6 +103,9 @@ pub struct Shared {
     /// The compositor's cursor image on the shared output, or `None` while there
     /// is no pointer to draw there.
     cursor: Mutex<Option<Arc<CursorImage>>>,
+    /// The compositor's clipboard as text, empty while it holds none — from the
+    /// desktop's selection, or from the client that set it last.
+    clipboard: Mutex<Arc<str>>,
     pub events: broadcast::Sender<Event>,
     pub commands: calloop::channel::Sender<Command>,
     next_client: AtomicU64,
@@ -119,6 +123,7 @@ impl Shared {
             geometry: Mutex::new(geometry),
             displays: Mutex::new(displays),
             cursor: Mutex::new(None),
+            clipboard: Mutex::new(Arc::from("")),
             events,
             commands,
             next_client: AtomicU64::new(1),
@@ -151,6 +156,20 @@ impl Shared {
             *cursor = image;
         }
         self.emit(Event::Cursor);
+    }
+
+    pub fn clipboard(&self) -> Arc<str> {
+        self.clipboard.lock().unwrap().clone()
+    }
+
+    /// Replace the clipboard's text. `announce` tells the sessions, which a
+    /// selection the desktop made does and one a client made does not: that
+    /// client has it already, and no other client is on the desktop.
+    pub fn set_clipboard(&self, text: Arc<str>, announce: bool) {
+        *self.clipboard.lock().unwrap() = text;
+        if announce {
+            self.emit(Event::Clipboard);
+        }
     }
 
     /// Say who is on the desktop; every other session ends.

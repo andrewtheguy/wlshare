@@ -196,6 +196,12 @@ pub fn set_desktop_size(width: u16, height: u16) -> Vec<u8> {
     msg
 }
 
+/// ClientCutText carrying an Extended Clipboard body ([`crate::clipboard`]):
+/// the length is the body's, negated.
+pub fn client_extended_cut_text(body: &[u8]) -> Vec<u8> {
+    crate::msg::extended_cut_text(crate::msg::CLIENT_CUT_TEXT, body)
+}
+
 /// The density extension's `ClientDensity`: the scale the client's display is
 /// drawn at, which it would like the output to be ([`crate::density`]).
 pub fn client_density(scale: f64) -> [u8; CLIENT_DENSITY_LEN] {
@@ -244,8 +250,12 @@ pub struct Rect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerMsg {
     Update(Vec<Rect>),
-    /// Latin-1 text from the desktop's clipboard.
+    /// Latin-1 cut text, which wlshare never sends: framed so that it can be
+    /// skipped, and otherwise ignored.
     CutText(Vec<u8>),
+    /// An Extended Clipboard body ([`crate::clipboard`]): a `ServerCutText`
+    /// with a negative length.
+    ExtendedCutText(Vec<u8>),
     EndOfContinuousUpdates,
     Fence { flags: u32, payload: Vec<u8> },
     /// The density extension's `OutputScale`: the framebuffer's size and the
@@ -305,12 +315,15 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
         }
         SERVER_CUT_TEXT => {
             need!(8);
-            let len = u32_at(buf, 4) as usize;
+            let len = u32_at(buf, 4) as i32;
+            let extended = len < 0;
+            let len = len.unsigned_abs() as usize;
             if len > MAX_CUT_TEXT {
                 return Err(ParseError::CutTextTooLong(len));
             }
             need!(8 + len);
-            (ServerMsg::CutText(buf[8..8 + len].to_vec()), 8 + len)
+            let body = buf[8..8 + len].to_vec();
+            (if extended { ServerMsg::ExtendedCutText(body) } else { ServerMsg::CutText(body) }, 8 + len)
         }
         SERVER_END_OF_CONTINUOUS_UPDATES => (ServerMsg::EndOfContinuousUpdates, 1),
         SERVER_FENCE => {
@@ -445,6 +458,7 @@ mod tests {
             ClientMsg::SetDesktopSize { width: 3456, height: 1802, screens: vec![Screen::whole(3456, 1802)] }
         );
         assert_eq!(parsed(&client_density(1.5)), ClientMsg::ClientDensity { fixed: 0x0001_8000 });
+        assert_eq!(parsed(&client_extended_cut_text(&[2, 0, 0, 1])), ClientMsg::ExtendedCutText(vec![2, 0, 0, 1]));
     }
 
     #[test]
@@ -453,8 +467,10 @@ mod tests {
         assert_eq!((m, n), (ServerMsg::EndOfContinuousUpdates, 1));
         let wire = msg::fence(msg::FENCE_REQUEST, &[0, 0, 0, 7]);
         assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::Fence { flags: msg::FENCE_REQUEST, payload: vec![0, 0, 0, 7] }, wire.len()));
-        let wire = msg::server_cut_text("éa");
-        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::CutText(vec![0xE9, b'a']), wire.len()));
+        let wire = msg::server_extended_cut_text(&[8, 0, 0, 1]);
+        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::ExtendedCutText(vec![8, 0, 0, 1]), wire.len()));
+        let latin1 = [3, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'a'];
+        assert_eq!(parse(&latin1).unwrap().unwrap(), (ServerMsg::CutText(vec![0xE9, b'a']), latin1.len()));
         let wire = crate::density::output_scale(3456, 1802, 2.0);
         assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::OutputScale { width: 3456, height: 1802, fixed: 0x0002_0000 }, 10));
         assert_eq!(parse(&[7]), Err(ParseError::UnknownType(7)));
