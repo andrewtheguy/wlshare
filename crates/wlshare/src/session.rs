@@ -30,6 +30,16 @@
 //! flooded and the compositor's frames coalesce in the framebuffer meanwhile.
 //! Without Fence, TCP's own backpressure paces it.
 //!
+//! A client that lists the VP9 encoding gets every update as one rectangle
+//! over the whole framebuffer, the next frame of one VP9 stream
+//! ([`wlshare_rfb::vp9`]), at the quality the configuration fixes. The encoder
+//! is made again at every new size, whose first frame is a keyframe, and a
+//! non-incremental request or the encoding's being listed anew asks for one.
+//! The encode runs on this task's worker, told it is blocking, and the fence
+//! keeps it to one frame in flight like any other update. A list that drops
+//! VP9 is answered with the whole framebuffer in ZRLE, since the picture the
+//! client has is a lossy one.
+//!
 //! A size change goes out first, as its own update, and the whole framebuffer
 //! follows in the next. A client that negotiated neither ExtendedDesktopSize nor
 //! DesktopSize cannot be told and is disconnected at its next update instead of
@@ -110,10 +120,11 @@ use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
+use wlshare_rfb::vp9::Vp9Encoder;
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
     ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
-    ENCODING_OUTPUTS, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_OUTPUTS, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_VP9, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -159,6 +170,8 @@ pub struct SessionConfig {
     pub security: Security,
     pub name: String,
     pub resize: bool,
+    /// The VP9 encoding's quality, 1–100.
+    pub vp9_quality: u8,
     /// Whether the audio extension is announced and served.
     pub audio: bool,
     /// Whether the camera extension is announced and served.
@@ -228,6 +241,9 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         format: PixelFormat::NATIVE,
         zrle: None,
         use_zrle: false,
+        vp9: None,
+        use_vp9: false,
+        keyframe_owed: false,
         continuous_supported: false,
         fence_supported: false,
         eds_supported: false,
@@ -352,6 +368,13 @@ struct Session {
     format: PixelFormat,
     zrle: Option<ZrleEncoder>,
     use_zrle: bool,
+    /// The VP9 stream's encoder, at the framebuffer's size once a frame has
+    /// been sent.
+    vp9: Option<Vp9Encoder>,
+    /// The client listed the VP9 encoding, which it then gets instead of ZRLE.
+    use_vp9: bool,
+    /// The next VP9 frame must be a keyframe.
+    keyframe_owed: bool,
     continuous_supported: bool,
     fence_supported: bool,
     eds_supported: bool,
@@ -576,8 +599,20 @@ impl Session {
                 if self.use_zrle && self.zrle.is_none() {
                     self.zrle = Some(ZrleEncoder::default());
                 }
-                if !self.use_zrle && !has(ENCODING_RAW) {
-                    warn!("client {}: lists neither ZRLE nor Raw; sending Raw", self.id.0);
+                let vp9 = has(ENCODING_VP9);
+                if vp9 && !self.use_vp9 {
+                    info!("client {}: asked for VP9 at quality {}", self.id.0, self.config.vp9_quality);
+                    // A decoder that has seen nothing of this stream starts at a keyframe.
+                    self.keyframe_owed = true;
+                } else if !vp9 && self.use_vp9 {
+                    // What the client holds is VP9's lossy picture, and damage
+                    // alone would leave most of it on the screen.
+                    self.vp9 = None;
+                    self.seen = 0;
+                }
+                self.use_vp9 = vp9;
+                if !self.use_vp9 && !self.use_zrle && !has(ENCODING_RAW) {
+                    warn!("client {}: lists neither VP9, ZRLE nor Raw; sending Raw", self.id.0);
                 }
                 let announced_continuous = !self.continuous_supported && has(ENCODING_CONTINUOUS_UPDATES);
                 self.continuous_supported |= has(ENCODING_CONTINUOUS_UPDATES);
@@ -640,10 +675,11 @@ impl Session {
                     false => None,
                 };
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} vp9={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
+                    self.use_vp9,
                     self.use_zrle,
                     self.continuous_supported,
                     self.fence_supported,
@@ -1007,6 +1043,7 @@ impl Session {
         let mut resized = None;
         let generation;
         let size;
+        let full;
         {
             let fb = self.shared.framebuffer.lock().unwrap();
             if !fb.painted {
@@ -1019,7 +1056,7 @@ impl Session {
             if size != self.known_size {
                 resized = Some(fb.resize_origin);
             }
-            let full = resized.is_some() || self.pending == Some(false) || self.seen == 0;
+            full = resized.is_some() || self.pending == Some(false) || self.seen == 0;
             let rects = if full {
                 vec![Rect::whole(fb.width, fb.height)]
             } else {
@@ -1033,7 +1070,14 @@ impl Session {
                     None => vec![Rect::whole(fb.width, fb.height)],
                 }
             };
-            let rects = if rects.len() > MAX_RECTS { crate::framebuffer::merge(rects, 1) } else { rects };
+            let rects = if self.use_vp9 {
+                // Something changed, and a VP9 frame is the whole picture.
+                vec![Rect::whole(fb.width, fb.height)]
+            } else if rects.len() > MAX_RECTS {
+                crate::framebuffer::merge(rects, 1)
+            } else {
+                rects
+            };
             self.scratch.clear();
             let stride = fb.stride();
             for rect in rects {
@@ -1071,8 +1115,47 @@ impl Session {
 
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(pieces.len() as u16));
+        if self.use_vp9 {
+            self.encode_vp9(full)?;
+        } else {
+            self.encode_pieces(&pieces);
+        }
+        if self.fence_supported {
+            self.fence_seq = self.fence_seq.wrapping_add(1);
+            self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
+            self.fence_outstanding = true;
+        }
+        writer.send(&self.out).await.context("writing an update")?;
+        self.seen = generation;
+        self.pending = None;
+        Ok(())
+    }
+
+    /// The whole framebuffer, copied into `scratch`, as the next frame of the
+    /// VP9 stream: a keyframe when the update is a full one or one is owed.
+    fn encode_vp9(&mut self, full: bool) -> anyhow::Result<()> {
+        let (width, height) = self.known_size;
+        if self.vp9.as_ref().is_none_or(|encoder| encoder.size() != (width, height)) {
+            let encoder = Vp9Encoder::new(width, height, self.config.vp9_quality)
+                .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
+            self.vp9 = Some(encoder);
+        }
+        self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VP9));
+        let (encoder, pixels, out) = (self.vp9.as_mut().expect("made above"), &self.scratch, &mut self.out);
+        let keyframe = full || self.keyframe_owed;
+        // Tens of milliseconds for a large desktop, which is the worker's to
+        // spend and not the runtime's to wait on.
+        tokio::task::block_in_place(|| encoder.encode_rect(pixels, usize::from(width) * 4, keyframe, out))
+            .with_context(|| format!("encoding a {width}x{height} VP9 frame"))?;
+        self.keyframe_owed = false;
+        Ok(())
+    }
+
+    /// The damaged rectangles, each as ZRLE or — for a client that never listed
+    /// it — Raw.
+    fn encode_pieces(&mut self, pieces: &[Piece]) {
         let encoding = if self.use_zrle { ENCODING_ZRLE } else { ENCODING_RAW };
-        for piece in &pieces {
+        for piece in pieces {
             let r = piece.rect;
             self.out.extend_from_slice(&msg::rect_header(r.x, r.y, r.width, r.height, encoding));
             let stride = usize::from(r.width) * 4;
@@ -1084,15 +1167,6 @@ impl Session {
                 _ => encode_raw_rect(pixels, stride, usize::from(r.width), usize::from(r.height), &self.format, &mut self.out),
             }
         }
-        if self.fence_supported {
-            self.fence_seq = self.fence_seq.wrapping_add(1);
-            self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
-            self.fence_outstanding = true;
-        }
-        writer.send(&self.out).await.context("writing an update")?;
-        self.seen = generation;
-        self.pending = None;
-        Ok(())
     }
 }
 

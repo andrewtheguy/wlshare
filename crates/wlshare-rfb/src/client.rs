@@ -12,7 +12,8 @@
 //! or fails — after which the connection is over, RFB having no framing to skip
 //! an unknown message by. A rectangle's pixels are framed here and decoded
 //! elsewhere: Raw bytes are the pixels, a ZRLE payload goes to
-//! [`crate::zrle::ZrleDecoder`], a cursor to [`crate::cursor::CursorImage`],
+//! [`crate::zrle::ZrleDecoder`], a VP9 frame to `vp9::Vp9Decoder`, behind the
+//! `decode` feature, a cursor to [`crate::cursor::CursorImage`],
 //! and a FLAC frame to `audio::FlacDecoder`, behind the `decode` feature.
 
 use thiserror::Error;
@@ -31,7 +32,7 @@ use crate::msg::{
 use crate::pixel::PixelFormat;
 use crate::{
     ENCODING_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW,
-    ENCODING_ZRLE,
+    ENCODING_VP9, ENCODING_ZRLE,
 };
 
 // ── Handshake ────────────────────────────────────────────────────────────────
@@ -265,6 +266,9 @@ pub enum RectBody {
     /// A ZRLE payload without its length word, for the connection's
     /// [`crate::zrle::ZrleDecoder`].
     Zrle(Vec<u8>),
+    /// One VP9 frame without its length word, for the connection's
+    /// `vp9::Vp9Decoder`; the rectangle is the whole framebuffer.
+    Vp9(Vec<u8>),
     /// The framebuffer is now the rectangle's width and height.
     DesktopSize,
     /// The same, with the rectangle's x as the reason and its y as the status;
@@ -451,6 +455,14 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             let Some(payload) = take(16, len)? else { return Ok(None) };
             (RectBody::Zrle(payload), 16 + len)
         }
+        ENCODING_VP9 => {
+            if buf.len() < 16 {
+                return Ok(None);
+            }
+            let len = u32_at(buf, 12) as usize;
+            let Some(frame) = take(16, len)? else { return Ok(None) };
+            (RectBody::Vp9(frame), 16 + len)
+        }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
         ENCODING_EXTENDED_DESKTOP_SIZE => {
             if buf.len() < 16 {
@@ -610,7 +622,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(6).to_vec();
+        let mut wire = msg::update_header(7).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -619,6 +631,8 @@ mod tests {
         wire.extend_from_slice(&msg::extended_desktop_size_rect(msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_PROHIBITED, 800, 600, &[Screen::whole(800, 600)]));
         wire.extend_from_slice(&alpha_cursor_rect(Some(&image)));
         wire.extend_from_slice(&cursor_rect(&PixelFormat::NATIVE, Some(&image)));
+        wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VP9));
+        wire.extend_from_slice(&[0, 0, 0, 2, 0x82, 0x49]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -637,6 +651,7 @@ mod tests {
         assert_eq!(rects[4].body, RectBody::AlphaCursor(vec![255, 0, 0, 255, 0, 0, 128, 128]));
         // Opaque red, and half-transparent blue divided back out; both in the mask.
         assert_eq!(rects[5].body, RectBody::Cursor { pixels: vec![0, 0, 255, 0, 255, 0, 0, 0], mask: vec![0b1100_0000] });
+        assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Vp9(vec![0x82, 0x49]) });
     }
 
     #[test]

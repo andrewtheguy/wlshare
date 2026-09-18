@@ -13,8 +13,8 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 ```
 
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
-  and building, RSA-AES and its frames, the ZRLE encoder, the density, outputs,
-  camera and microphone extensions. It has no platform dependency and its tests decode every encoder's
+  and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding, the
+  density, outputs, camera and microphone extensions. It has no platform dependency and its tests decode every encoder's
   output with an independent decoder written from the RFC, and run the RSA-AES
   exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
@@ -174,7 +174,8 @@ A client gets an update when it has asked (`FramebufferUpdateRequest`, or once
 for all with continuous updates) and there is damage. Each update is one
 `FramebufferUpdate` of merged rectangles, at most 32, ZRLE-encoded on the
 client's own deflate stream, or Raw before the client's first `SetEncodings` and
-for a client that never lists ZRLE.
+for a client that never lists ZRLE — or, for a client that lists the VP9
+encoding, one rectangle of the whole framebuffer ([below](#the-vp9-encoding)).
 
 With Fence negotiated, every update ends with a fence the client echoes, and the
 next update waits for the echo. One update is in flight at a time, so a slow
@@ -188,6 +189,53 @@ whole framebuffer follows in the next update. A client that negotiated neither
 cannot be told and is disconnected at its next update rather than sent pixels at
 a size it does not know. The ExtendedDesktopSize announcement that answers the pseudo-encoding is an
 update too, and waits for a request like any other.
+
+## The VP9 encoding
+
+A private encoding, `WLSV` (`0x574c5356`), for wlshare's own desktop clients:
+the whole desktop as one VP9 stream, for a client that would rather have a
+picture that moves than one that is exact. remotex never lists it — it re-encodes
+every tile itself and wants ZRLE's exact pixels to do it from — and nor does any
+other VNC client, so nothing changes for them.
+
+A client that lists it gets it instead of ZRLE, wherever in the list it is. Each
+update is then one rectangle covering the whole framebuffer, whose body is a
+length word and one VP9 frame:
+
+```text
+u32 length   the frame's bytes
+u8[length]   one VP9 frame
+```
+
+Successive rectangles are one stream, each frame coded against the ones before
+it, so a client decodes them all with one decoder, in order. What it holds is
+fixed:
+
+- **8-bit 4:4:4, VP9 profile 1.** A colour sample per pixel: the loss 4:2:0
+  costs a desktop is its text's colour — a one-pixel coloured stem shares its
+  sample with three pixels of background — and no quantizer puts it back.
+- **BT.601 at studio swing**, converted from the framebuffer's `B, G, R, X` and
+  declared in the keyframe header, so a decoder converts back with the same
+  matrix. The client's pixel format does not apply.
+- **A fixed quantizer.** `vp9_quality` (1–100, 60 by default) maps onto VP9's
+  8–63, finest last, as remotex's dial does; rate control is pinned to it, with
+  no bitrate, no adaptive quantization and no dropped frames, so a picture that
+  settles is sent at exactly that quality. Screen-content tuning, libvpx's
+  realtime speed 7, no lag, and threads with row and tile parallelism.
+- **Keyframes only when a decoder needs one**: the first frame after the
+  encoding is listed, the first at a new size (the encoder is made again for
+  it), and the frame that answers a non-incremental request. There is no
+  periodic keyframe; nothing is lost on TCP.
+
+An update is sent when anything is damaged, and the frame is the whole picture:
+the encoder's inter-frame coding is what makes an unchanged region cost nothing.
+The encode runs on the session's worker, which is told it is blocking, and the
+fence keeps one frame in flight as it does any update. A `SetEncodings` that
+drops the encoding is answered with the whole framebuffer in ZRLE, since the
+client is holding a lossy picture.
+
+libvpx comes from `libvpx-prebuilt`'s static archive, behind the crate's
+`encode` and `decode` features.
 
 ## The density extension
 
@@ -610,8 +658,10 @@ bare reason "authentication failed"; the actual reason is logged.
 
 ## Deliberately absent
 
-Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding: the gateway
-re-encodes every tile anyway, and ZRLE is the standard's best lossless choice.
+Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the VP9
+one: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
+lossless choice. VP9 at 4:2:0, a VP9 quality that follows the link, and the VP9
+encoding for anything but a desktop client that lists it.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the
 cursor session does report positions, but only when the output repaints.

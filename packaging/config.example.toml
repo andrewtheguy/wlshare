@@ -41,6 +41,13 @@ resize = true
 # The most frames captured per second.
 max_fps = 60
 
+# The quality, 1-100, of the VP9 encoding: the whole desktop as one VP9 4:4:4
+# stream, sent to a client that asks for it instead of ZRLE — wlshare's own
+# desktop clients do; remotex and other VNC clients never ask, and get ZRLE. A
+# fixed quantizer: nothing lowers it on a slow link or raises it on a fast one,
+# so higher is sharper and larger. 60 is what remotex's own VP9 streams suggest.
+vp9_quality = 60
+
 # Seconds a connection has to finish the handshake — the security exchange and
 # the login — before it is dropped. A client that shows its user the server key
 # to confirm and then asks for a password (TigerVNC does both on every

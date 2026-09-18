@@ -877,6 +877,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "libvpx-prebuilt-sys"
+version = "0.1.0"
+source = "git+https://github.com/andrewtheguy/libvpx-prebuilt?tag=v1.16.0-20260906161241-e55a2da#e55a2da7624cc9c493165375c88079d85e49af5c"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1741,7 +1746,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wlshare"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1769,12 +1774,13 @@ dependencies = [
 
 [[package]]
 name = "wlshare-rfb"
-version = "0.0.29"
+version = "0.0.30"
 dependencies = [
  "aes",
  "eax",
  "flacenc",
  "flate2",
+ "libvpx-prebuilt-sys",
  "pkcs8",
  "rand",
  "rsa",

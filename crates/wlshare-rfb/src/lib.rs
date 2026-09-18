@@ -17,11 +17,14 @@
 //!
 //! RFB 3.8 as RFC 6143 has it, with these choices:
 //!
-//! - **One pixel encoding, ZRLE.** It is the standard's best lossless encoding,
-//!   every client worth naming decodes it, and the remotex gateway asks for it
-//!   first. Raw is produced only before the client's first `SetEncodings`, where
-//!   the RFC requires it, and for a client whose list never names ZRLE. Tight,
-//!   Hextile, RRE, CopyRect and every lossy encoding are absent.
+//! - **ZRLE, and VP9 for a client that lists it.** ZRLE is the standard's best
+//!   lossless encoding, every client worth naming decodes it, and the remotex
+//!   gateway asks for it first. **The VP9 encoding** is a private one for
+//!   wlshare's own desktop clients: the whole framebuffer as one 4:4:4 VP9
+//!   stream at a fixed quality ([`vp9`]), for a desktop that moves. Raw is
+//!   produced only before the client's first `SetEncodings`, where the RFC
+//!   requires it, and for a client whose list names neither. Tight, Hextile,
+//!   RRE, CopyRect and every other lossy encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
 //!   XRGB8888, which is the `B, G, R, X` byte order the gateway forces. A client may
 //!   ask for any 32-bit true-colour format with 8-bit channels and gets it by a
@@ -70,13 +73,19 @@ pub mod msg;
 pub mod outputs;
 pub mod pixel;
 pub mod rsa_aes;
+pub mod vp9;
 pub mod zrle;
 
 /// Raw: pixels as they are, in the client's format. RFC 6143 §7.7.1 requires
 /// every server to produce it until asked for something else.
 pub const ENCODING_RAW: i32 = 0;
-/// ZRLE, the one encoding this server chooses when the client lists it.
+/// ZRLE, the encoding this server chooses when the client lists it and not
+/// [`ENCODING_VP9`].
 pub const ENCODING_ZRLE: i32 = 16;
+/// The VP9 encoding, the ASCII bytes `WLSV`: a client that lists it is sent
+/// every picture as one rectangle over the whole framebuffer, a frame of one
+/// 4:4:4 VP9 stream ([`vp9`]). It wins over ZRLE wherever it is listed.
+pub const ENCODING_VP9: i32 = 0x574c_5356;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.
 pub const ENCODING_DESKTOP_SIZE: i32 = -223;
 /// LastRect pseudo-encoding: a client that lists it accepts an update whose
