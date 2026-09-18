@@ -511,11 +511,20 @@ arrive in framebuffer pixels and are injected as absolute positions against the
 framebuffer's extent, which the virtual pointer maps onto the shared output.
 Wheel "buttons" become discrete axis events.
 
-Clipboard text from the compositor is read off the loop into a pipe and sent as
-latin-1 `ServerCutText`; a selection that is cleared or stops being text is sent
-as empty text. A client's `ClientCutText` becomes a data source that takes the
+The clipboard is shared as UTF-8 text through Extended Clipboard, and only
+that way: latin-1 cut text is dropped in both directions, and a client that
+does not list the extension has no clipboard. Every `SetEncodings` listing it is
+answered with the server's caps — text, every action, and no unsolicited text,
+as the extension recommends, so a client notifies a change and the server asks
+for it. A selection the compositor announces is read off the loop into a pipe
+and kept as the shared clipboard, and the client is sent a notify; the text
+goes when the client requests it, as the shared clipboard is then. A selection
+that is cleared or stops being text is kept as empty text, and notified as
+holding nothing. A client's notify is answered with a request, and the text it
+provides becomes the shared clipboard and a data source that takes the
 selection; the compositor announcing that selection back is ignored while the
-source is ours. Extended Clipboard is recognised and not yet spoken.
+source is ours. A clipboard message that cannot be read is dropped, not the
+connection.
 
 ## Security
 

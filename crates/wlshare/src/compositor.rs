@@ -380,6 +380,8 @@ impl Compositor {
             }
             Command::SetClipboard { client, text } => {
                 if self.client == Some(client) {
+                    let text: Arc<str> = Arc::from(text);
+                    self.shared().set_clipboard(text.clone(), false);
                     self.clipboard.set(&self.qh.clone(), text);
                 }
             }

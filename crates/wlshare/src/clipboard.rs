@@ -1,11 +1,12 @@
 //! The compositor's clipboard through wlr-data-control, both ways, text only.
 //!
 //! A selection the compositor announces is read into a pipe on its own thread
-//! and forwarded to clients as latin-1 cut text; a selection that is cleared or
-//! stops being text is forwarded as empty text, so a client never keeps what the
-//! compositor no longer has. Text from a client is offered as a data source and
-//! becomes the selection; the compositor then announces that selection back,
-//! which is ignored while the source is ours, so a paste never echoes.
+//! and kept in [`Shared::clipboard`], and the sessions are told; a selection
+//! that is cleared or stops being text is kept as empty text, so a client is
+//! never handed what the compositor no longer has. Text from a client is kept
+//! there too, and offered as a data source that becomes the selection; the
+//! compositor then announces that selection back, which is ignored while the
+//! source is ours, so a paste never echoes.
 
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -24,7 +25,7 @@ use wayland_protocols_wlr::data_control::v1::client::{
 };
 
 use crate::compositor::Compositor;
-use crate::shared::{Event, Shared};
+use crate::shared::Shared;
 
 /// Text MIME types, most specific first.
 const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"];
@@ -47,7 +48,7 @@ impl Clipboard {
     }
 
     /// Put `text` on the compositor's clipboard.
-    pub fn set(&mut self, qh: &QueueHandle<Compositor>, text: String) {
+    pub fn set(&mut self, qh: &QueueHandle<Compositor>, text: Arc<str>) {
         let (Some(manager), Some(device)) = (&self.manager, &self.device) else { return };
         if let Some(old) = self.source.take() {
             old.destroy();
@@ -57,7 +58,7 @@ impl Clipboard {
             source.offer(mime.to_owned());
         }
         device.set_selection(Some(&source));
-        self.text = text.into();
+        self.text = text;
         self.source = Some(source);
     }
 }
@@ -79,13 +80,13 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Compositor {
                 }
                 let Some(offer) = id else {
                     debug!("the selection was cleared");
-                    state.shared().emit(Event::Clipboard(String::new()));
+                    state.shared().set_clipboard(Arc::from(""), true);
                     return;
                 };
                 let mimes = state.clipboard.offers.remove(&offer.id()).unwrap_or_default();
                 let Some(mime) = TEXT_MIMES.iter().find(|m| mimes.iter().any(|have| have == *m)) else {
                     debug!("a selection with no text: {mimes:?}");
-                    state.shared().emit(Event::Clipboard(String::new()));
+                    state.shared().set_clipboard(Arc::from(""), true);
                     offer.destroy();
                     return;
                 };
@@ -125,9 +126,8 @@ fn read_selection(read: OwnedFd, shared: Arc<Shared>) {
             let mut bytes = Vec::new();
             match file.read_to_end(&mut bytes) {
                 Ok(_) => {
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
                     debug!("clipboard: {} bytes from the compositor", bytes.len());
-                    shared.emit(Event::Clipboard(text));
+                    shared.set_clipboard(Arc::from(String::from_utf8_lossy(&bytes)), true);
                 }
                 Err(e) => warn!("reading the selection: {e}"),
             }

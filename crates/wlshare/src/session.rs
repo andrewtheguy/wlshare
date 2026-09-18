@@ -76,6 +76,18 @@
 //! format the source takes, the last one stopping as a stop, and the client's
 //! samples go to the source's buffer without waiting on anything.
 //!
+//! ## Sharing the clipboard
+//!
+//! Extended Clipboard is the only clipboard spoken ([`wlshare_rfb::clipboard`]);
+//! a latin-1 cut text is dropped, and a client that did not list the extension
+//! has no clipboard. Every SetEncodings that lists it is answered with this
+//! server's caps, which take text, every action, and no unsolicited text. A
+//! change on the desktop is notified to the client and provided when the client
+//! asks — or provided at once, to a client whose caps take no notify but take
+//! the text unasked. A client's notify is answered with a request, and what it
+//! provides becomes the desktop's clipboard. The text a request is answered
+//! with is [`Shared::clipboard`] as it is then, whoever put it there.
+//!
 //! ## The transport
 //!
 //! The handshake decides what the socket carries afterwards: RFB bytes as they
@@ -92,6 +104,7 @@ use anyhow::Context as _;
 use log::{debug, info, warn};
 use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect, audio_silence};
 use wlshare_rfb::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
+use wlshare_rfb::clipboard::{self, Caps, Message as ClipboardMessage};
 use wlshare_rfb::cursor::{alpha_cursor_rect, cursor_rect};
 use wlshare_rfb::density::{from_fixed, output_scale};
 use wlshare_rfb::microphone::{microphone_available, microphone_start, microphone_stop};
@@ -235,6 +248,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         camera: None,
         microphone_supported: false,
         microphone: None,
+        clipboard: None,
         continuous: false,
         pending: None,
         seen: 0,
@@ -378,6 +392,9 @@ struct Session {
     microphone_supported: bool,
     /// The microphone, while the client has one plugged.
     microphone: Option<Microphone>,
+    /// What the client takes of the clipboard, once it listed Extended
+    /// Clipboard: its caps, or the extension's default until it sends them.
+    clipboard: Option<Caps>,
     /// The client enabled continuous updates.
     continuous: bool,
     /// An update request not yet answered: `true` for incremental.
@@ -637,8 +654,16 @@ impl Session {
                     info!("client {}: offers a microphone", self.id.0);
                 }
                 self.microphone_supported = microphone;
+                let listed_clipboard = has(clipboard::ENCODING);
+                if listed_clipboard && self.clipboard.is_none() {
+                    info!("client {}: shares the clipboard", self.id.0);
+                }
+                self.clipboard = match listed_clipboard {
+                    true => Some(self.clipboard.unwrap_or(Caps::CLIENT_DEFAULT)),
+                    false => None,
+                };
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} audio_silence={} camera={} microphone={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} audio_silence={} camera={} microphone={} clipboard={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
@@ -651,7 +676,8 @@ impl Session {
                     self.audio_supported,
                     self.audio_silence,
                     self.camera_supported,
-                    self.microphone_supported
+                    self.microphone_supported,
+                    self.clipboard.is_some()
                 );
                 if announced_continuous {
                     // The only way support is ever announced.
@@ -673,6 +699,10 @@ impl Session {
                     // And for the microphone.
                     writer.send(&microphone_available()).await?;
                 }
+                if self.clipboard.is_some() {
+                    // The extension requires it of every SetEncodings listing it.
+                    writer.send(&msg::server_extended_cut_text(&clipboard::caps(&Caps::WLSHARE))).await?;
+                }
             }
             ClientMsg::FramebufferUpdateRequest { incremental, .. } => {
                 anyhow::ensure!(
@@ -687,8 +717,8 @@ impl Session {
             }
             ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { client: self.id, keysym, down }),
             ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
-            ClientMsg::CutText(bytes) => self.shared.command(Command::SetClipboard { client: self.id, text: msg::latin1_to_string(&bytes) }),
-            ClientMsg::ExtendedCutText(_) => debug!("client {}: extended clipboard is not spoken here; ignored", self.id.0),
+            ClientMsg::CutText(_) => debug!("client {}: latin-1 cut text, which is not spoken here; ignored", self.id.0),
+            ClientMsg::ExtendedCutText(body) => self.handle_clipboard(&body, writer).await?,
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
                 self.continuous = enable && self.continuous_supported;
                 if !enable {
@@ -836,15 +866,81 @@ impl Session {
                     self.send_outputs(writer).await?;
                 }
             }
-            Event::Clipboard(text) => {
-                writer.send(&msg::server_cut_text(&text)).await?;
-            }
+            Event::Clipboard => self.announce_clipboard(writer).await?,
             Event::Cursor => {
                 // Not before SetEncodings: that is when it is owed anyway.
                 if self.cursor_supported {
                     self.announce_cursor = true;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// One of the client's Extended Clipboard messages. One that cannot be read
+    /// is dropped rather than the connection: it was framed, and is consumed.
+    async fn handle_clipboard(&mut self, body: &[u8], writer: &mut Writer) -> anyhow::Result<()> {
+        let Some(caps) = self.clipboard else {
+            debug!("client {}: an extended cut text without listing the extension; ignored", self.id.0);
+            return Ok(());
+        };
+        let message = match clipboard::parse(body) {
+            Ok(message) => message,
+            Err(e) => {
+                warn!("client {}: {e}; ignored", self.id.0);
+                return Ok(());
+            }
+        };
+        match message {
+            ClipboardMessage::Caps(theirs) => {
+                debug!("client {}: clipboard caps {theirs:?}", self.id.0);
+                self.clipboard = Some(theirs);
+            }
+            // A notify of nothing is the client's clipboard emptied or holding
+            // what is not text; the desktop's is left as it is.
+            ClipboardMessage::Notify { formats } => {
+                if formats & clipboard::FORMAT_TEXT != 0 && caps.takes(clipboard::ACTION_REQUEST) {
+                    writer.send(&msg::server_extended_cut_text(&clipboard::request())).await?;
+                }
+            }
+            ClipboardMessage::Provide { text: Some(text) } => {
+                debug!("client {}: {} bytes for the clipboard", self.id.0, text.len());
+                self.shared.command(Command::SetClipboard { client: self.id, text });
+            }
+            ClipboardMessage::Provide { text: None } => debug!("client {}: a clipboard with no text; ignored", self.id.0),
+            ClipboardMessage::Request { formats } => {
+                if formats & clipboard::FORMAT_TEXT != 0 && caps.takes(clipboard::ACTION_PROVIDE) {
+                    let text = self.shared.clipboard();
+                    match clipboard::provide(&text) {
+                        Ok(body) => writer.send(&msg::server_extended_cut_text(&body)).await?,
+                        Err(e) => warn!("client {}: the clipboard is not sent: {e}", self.id.0),
+                    }
+                }
+            }
+            ClipboardMessage::Peek => {
+                if caps.takes(clipboard::ACTION_NOTIFY) {
+                    let has_text = !self.shared.clipboard().is_empty();
+                    writer.send(&msg::server_extended_cut_text(&clipboard::notify(has_text))).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Tell the client the desktop's clipboard changed: a notify, or — to a
+    /// client that takes no notify — the text itself, if it takes that unasked.
+    async fn announce_clipboard(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
+        let Some(caps) = self.clipboard else { return Ok(()) };
+        let text = self.shared.clipboard();
+        if caps.takes(clipboard::ACTION_NOTIFY) {
+            writer.send(&msg::server_extended_cut_text(&clipboard::notify(!text.is_empty()))).await?;
+        } else if caps.takes(clipboard::ACTION_PROVIDE)
+            && caps.takes_text()
+            && !text.is_empty()
+            && caps.text_size.is_some_and(|size| text.len() <= size as usize)
+            && let Ok(body) = clipboard::provide(&text)
+        {
+            writer.send(&msg::server_extended_cut_text(&body)).await?;
         }
         Ok(())
     }
