@@ -42,22 +42,23 @@ pub struct Config {
     /// most of this waiting on the person.
     #[serde(default = "default_handshake_timeout_secs")]
     pub handshake_timeout_secs: u64,
-    /// Whether a client may hear the desktop: the audio extension is
-    /// announced to a client that asks, and while the client has it enabled a
-    /// sink of wlshare's own is the default, captured from PipeWire: streams
-    /// that follow the default play there and are silent on the host, and one
-    /// pinned to a sink of the host's is still heard on it.
-    #[serde(default = "default_true")]
+    /// Whether a client may hear the desktop, off unless set: the audio
+    /// extension is announced to a client that asks, and while the client has
+    /// it enabled a sink of wlshare's own is the default, captured from
+    /// PipeWire: streams that follow the default play there and are silent on
+    /// the host, and one pinned to a sink of the host's is still heard on it.
+    #[serde(default)]
     pub audio: bool,
-    /// Whether a client may lend the desktop its camera: the camera extension is
-    /// announced to a client that asks, and a camera it plugs becomes a PipeWire
-    /// video source until it unplugs or leaves.
-    #[serde(default = "default_true")]
+    /// Whether a client may lend the desktop its camera, off unless set: the
+    /// camera extension is announced to a client that asks, and a camera it
+    /// plugs becomes a PipeWire video source until it unplugs or leaves.
+    #[serde(default)]
     pub camera: bool,
-    /// Whether a client may lend the desktop its microphone: the microphone
-    /// extension is announced to a client that asks, and a microphone it plugs
-    /// becomes a PipeWire audio source until it unplugs or leaves.
-    #[serde(default = "default_true")]
+    /// Whether a client may lend the desktop its microphone, off unless set:
+    /// the microphone extension is announced to a client that asks, and a
+    /// microphone it plugs becomes a PipeWire audio source until it unplugs or
+    /// leaves.
+    #[serde(default)]
     pub microphone: bool,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
@@ -187,9 +188,9 @@ mod tests {
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
         assert_eq!(c.handshake_timeout_secs, 120);
-        assert!(c.audio);
-        assert!(c.camera);
-        assert!(c.microphone);
+        assert!(!c.audio);
+        assert!(!c.camera);
+        assert!(!c.microphone);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
     }

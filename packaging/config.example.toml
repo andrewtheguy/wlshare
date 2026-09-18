@@ -47,7 +47,7 @@ max_fps = 60
 # connection) spends most of this waiting on the person.
 handshake_timeout_secs = 120
 
-# Whether a client may hear the desktop. While a client that asks for wlshare's
+# Whether a client may hear the desktop; off by default. While a client that asks for wlshare's
 # audio extension (the remotex gateway, for a target with audio = true) has it
 # enabled, wlshare adds a PipeWire sink of its own, "wlshare remote audio", and
 # makes it the default: every stream that follows the default plays there and is
@@ -56,21 +56,21 @@ handshake_timeout_secs = 120
 # chose, encoded as FLAC. When the last client stops listening the sink goes and
 # the host's own is the default again. A headless session needs no sink of its
 # own: wlshare's is one.
-audio = true
+audio = false
 
-# Whether a client may lend the desktop its camera. A client that asks for the
+# Whether a client may lend the desktop its camera; off by default. A client that asks for the
 # camera extension (the remotex gateway, for a target with camera = true) plugs
 # its browser's camera and sends H.264, which becomes a PipeWire video source
 # named "wlshare remote camera" -- one that applications reaching cameras through
 # PipeWire (a browser's camera portal, OBS, GStreamer) can open. It sends frames
 # only while one of them has it open.
-camera = true
+camera = false
 
-# Whether a client may lend the desktop its microphone. A client that asks for
+# Whether a client may lend the desktop its microphone; off by default. A client that asks for
 # the microphone extension plugs its microphone, which becomes a PipeWire audio
 # source named "wlshare remote microphone" that applications record from like
 # any other. The client sends 16-bit PCM only while one of them is recording.
-microphone = true
+microphone = false
 
 # The desktop name clients see.
 name = "wlshare"
