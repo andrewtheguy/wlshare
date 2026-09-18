@@ -1,7 +1,8 @@
 //! wlshare's audio extension: how the desktop's sound reaches a client over the
 //! RFB connection it already has, as FLAC.
 //!
-//! The extension is private, and the remotex gateway is the client it is for:
+//! The extension is private, and its clients are the remotex gateway and the
+//! macOS viewer:
 //!
 //! - The client lists the pseudo-encoding [`crate::ENCODING_AUDIO`] (`WLSF`) in
 //!   `SetEncodings`. The server announces support with an empty
@@ -28,6 +29,11 @@
 //! Each frame decodes on its own, so one a session dropped costs nothing but
 //! its own samples.
 //!
+//! The client's half is here too: [`streaminfo`] is the header it builds, and
+//! `FlacDecoder`, behind the `decode` feature, turns each frame back into
+//! samples in the format it set.
+//! The messages themselves are framed and built in [`crate::client`].
+//!
 //! FLAC stores only signed samples, of at most 24 bits, so the formats are the
 //! four of 8 and 16 bits. An unsigned sample has its top bit flipped before it
 //! is encoded, which maps its range exactly onto the signed one of the same
@@ -53,6 +59,11 @@ pub const SUBMESSAGE_AUDIO: u8 = 1;
 pub const MSG_AUDIO_FRAME: u8 = 0xE4;
 /// The bytes of a FLAC frame message before the frame, type included.
 pub const AUDIO_FRAME_HEADER_LEN: usize = 8;
+/// The most bytes one FLAC frame may be. The largest block there is — twenty
+/// milliseconds of 16-bit stereo at [`MAX_FREQUENCY`] — is 7680 bytes of
+/// samples, and FLAC adds a few header bytes at worst, so a length past this
+/// is a server that has lost its framing rather than a frame to buffer.
+pub const MAX_AUDIO_FRAME: usize = 64 * 1024;
 
 /// Client operation: start sending audio.
 pub const CLIENT_AUDIO_ENABLE: u16 = 0;
@@ -149,6 +160,23 @@ impl AudioFormat {
     pub fn block_frames(&self) -> usize {
         (self.frequency / 50) as usize
     }
+
+    /// Whether this is a format the extension carries: 1 or 2 channels, at
+    /// [`MIN_FREQUENCY`] to [`MAX_FREQUENCY`]. A set-format is parsed only
+    /// into one that is, and nothing is encoded, decoded or sent in one that
+    /// is not.
+    pub fn check(&self) -> Result<(), AudioParseError> {
+        if !(1..=2).contains(&self.channels) {
+            return Err(AudioParseError::BadChannels(self.channels));
+        }
+        if self.frequency < MIN_FREQUENCY {
+            return Err(AudioParseError::FrequencyTooLow(self.frequency));
+        }
+        if self.frequency > MAX_FREQUENCY {
+            return Err(AudioParseError::FrequencyTooHigh(self.frequency));
+        }
+        Ok(())
+    }
 }
 
 /// An audio submessage from the client.
@@ -160,7 +188,7 @@ pub enum ClientAudio {
 }
 
 /// Why a client's audio submessage could not be one.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AudioParseError {
     #[error("QEMU submessage {0} is not audio, the one QEMU extension spoken here")]
     UnknownSubmessage(u8),
@@ -195,18 +223,9 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioPar
                 return Ok(None);
             }
             let sample = SampleFormat::from_wire(buf[4]).ok_or(AudioParseError::UnknownSampleFormat(buf[4]))?;
-            let channels = buf[5];
-            if !(1..=2).contains(&channels) {
-                return Err(AudioParseError::BadChannels(channels));
-            }
-            let frequency = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]);
-            if frequency < MIN_FREQUENCY {
-                return Err(AudioParseError::FrequencyTooLow(frequency));
-            }
-            if frequency > MAX_FREQUENCY {
-                return Err(AudioParseError::FrequencyTooHigh(frequency));
-            }
-            Ok(Some((ClientAudio::SetFormat(AudioFormat { sample, channels, frequency }), CLIENT_AUDIO_FORMAT_LEN)))
+            let format = AudioFormat { sample, channels: buf[5], frequency: u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) };
+            format.check()?;
+            Ok(Some((ClientAudio::SetFormat(format), CLIENT_AUDIO_FORMAT_LEN)))
         }
         other => Err(AudioParseError::UnknownOperation(other)),
     }
@@ -278,6 +297,7 @@ pub struct FlacEncoder {
 
 impl FlacEncoder {
     pub fn new(format: AudioFormat) -> Result<Self, AudioEncodeError> {
+        format.check().map_err(|e| AudioEncodeError::Format(e.to_string()))?;
         let block = format.block_frames();
         let bad = |e: flacenc::error::VerifyError| AudioEncodeError::Format(e.to_string());
         let mut info = StreamInfo::new(format.frequency as usize, usize::from(format.channels), 8 * format.sample.bytes()).map_err(bad)?;
@@ -331,6 +351,101 @@ impl FlacEncoder {
         msg.extend_from_slice(&(frame.len() as u32).to_be_bytes());
         msg.extend_from_slice(frame);
         Ok(msg)
+    }
+}
+
+/// The FLAC stream header a client builds from the format it set, as the FLAC
+/// specification lays out `STREAMINFO`'s 34 bytes: nothing in it comes from the
+/// server. The block size is [`AudioFormat::block_frames`] at both ends, and
+/// the frame sizes, the total and the MD5 are unknown. A format
+/// [`AudioFormat::check`] refuses has no header.
+pub fn streaminfo(format: AudioFormat) -> Result<[u8; 34], AudioParseError> {
+    format.check()?;
+    let block = (format.block_frames() as u16).to_be_bytes();
+    let mut info = [0u8; 34];
+    info[0..2].copy_from_slice(&block);
+    info[2..4].copy_from_slice(&block);
+    // Rate (20 bits), channels - 1 (3), bits per sample - 1 (5), total samples
+    // (36, unknown).
+    let bits = 8 * format.sample.bytes() as u64;
+    let packed = (u64::from(format.frequency) << 44) | (u64::from(format.channels - 1) << 41) | ((bits - 1) << 36);
+    info[10..18].copy_from_slice(&packed.to_be_bytes());
+    Ok(info)
+}
+
+/// Why a FLAC frame could not be read back.
+#[cfg(feature = "decode")]
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AudioDecodeError {
+    /// symphonia's own error is carried as its message, as flacenc's is.
+    #[error("FLAC cannot carry this format: {0}")]
+    Format(String),
+    #[error("decoding a FLAC frame: {0}")]
+    Decode(String),
+    #[error("a FLAC frame of {got} frames of {channels} channels, where {want} of {expected} were agreed")]
+    Shape { got: usize, channels: usize, want: usize, expected: usize },
+}
+
+/// One stream's decoder, the client's end of [`FlacEncoder`]: the frame a
+/// [`MSG_AUDIO_FRAME`] message carries in, interleaved little-endian samples in
+/// the client's format out. Made at a begin, from the format that was set.
+///
+/// Every frame decodes on its own, so a frame that fails costs its own twenty
+/// milliseconds and the decoder goes on with the next.
+#[cfg(feature = "decode")]
+pub struct FlacDecoder {
+    format: AudioFormat,
+    decoder: symphonia_bundle_flac::FlacDecoder,
+    samples: Vec<i32>,
+}
+
+#[cfg(feature = "decode")]
+impl FlacDecoder {
+    pub fn new(format: AudioFormat) -> Result<Self, AudioDecodeError> {
+        use symphonia_core::codecs::audio::well_known::CODEC_ID_FLAC;
+        use symphonia_core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
+
+        let info = streaminfo(format).map_err(|e| AudioDecodeError::Format(e.to_string()))?;
+        let mut params = AudioCodecParameters::new();
+        params.for_codec(CODEC_ID_FLAC).with_extra_data(Box::new(info));
+        let decoder = symphonia_bundle_flac::FlacDecoder::try_new(&params, &AudioDecoderOptions::default())
+            .map_err(|e| AudioDecodeError::Format(e.to_string()))?;
+        Ok(Self { format, decoder, samples: Vec::new() })
+    }
+
+    pub fn format(&self) -> AudioFormat {
+        self.format
+    }
+
+    /// One frame — the bytes after a message's header — as
+    /// [`AudioFormat::block_frames`] frames of interleaved little-endian
+    /// samples in the format the stream was set to, bit for bit what the
+    /// server captured.
+    pub fn decode(&mut self, frame: &[u8]) -> Result<Vec<u8>, AudioDecodeError> {
+        use symphonia_core::codecs::audio::AudioDecoder as _;
+        use symphonia_core::packet::Packet;
+        use symphonia_core::units::{Duration, Timestamp};
+
+        let (block, channels) = (self.format.block_frames(), usize::from(self.format.channels));
+        let packet = Packet::new(0, Timestamp::new(0), Duration::new(block as u64), frame.to_vec());
+        let decoded = self.decoder.decode(&packet).map_err(|e| AudioDecodeError::Decode(e.to_string()))?;
+        let got = (decoded.frames(), decoded.spec().channels().count());
+        if got != (block, channels) {
+            return Err(AudioDecodeError::Shape { got: got.0, channels: got.1, want: block, expected: channels });
+        }
+        self.samples.clear();
+        decoded.copy_to_vec_interleaved(&mut self.samples);
+        let width = self.format.sample.bytes();
+        let mut out = Vec::with_capacity(self.samples.len() * width);
+        for &sample in &self.samples {
+            // The decoder scales to 32 bits; back down to the format's width.
+            let mut bytes = (sample >> (32 - 8 * width)).to_le_bytes();
+            if self.format.sample.unsigned() {
+                bytes[width - 1] ^= 0x80;
+            }
+            out.extend_from_slice(&bytes[..width]);
+        }
+        Ok(out)
     }
 }
 
@@ -407,59 +522,72 @@ mod tests {
         assert_eq!(audio_end(), [255, 1, 0, 0]);
     }
 
-    /// The `STREAMINFO` a client builds from the format it set, as the FLAC
-    /// specification lays it out: nothing in it comes from the server.
-    fn streaminfo(format: AudioFormat) -> Vec<u8> {
-        let block = format.block_frames() as u16;
-        let mut info = Vec::with_capacity(34);
-        info.extend_from_slice(&block.to_be_bytes());
-        info.extend_from_slice(&block.to_be_bytes());
-        // Minimum and maximum frame sizes, unknown.
-        info.extend_from_slice(&[0; 6]);
-        // Rate (20 bits), channels - 1 (3), bits per sample - 1 (5), total
-        // samples (36, unknown).
-        let bits = 8 * format.sample.bytes() as u64;
-        let packed = (u64::from(format.frequency) << 44) | (u64::from(format.channels - 1) << 41) | ((bits - 1) << 36);
-        info.extend_from_slice(&packed.to_be_bytes());
-        // No MD5.
-        info.extend_from_slice(&[0; 16]);
-        info
-    }
-
-    /// Decode a run of frame messages with symphonia's FLAC decoder, which
-    /// shares nothing with flacenc, back into the client's format.
+    /// Decode a run of frame messages with [`FlacDecoder`] — symphonia's
+    /// decoder, which shares nothing with flacenc — checking each message's
+    /// framing on the way.
     fn decode(format: AudioFormat, messages: &[Vec<u8>]) -> Vec<u8> {
-        use symphonia_core::codecs::audio::well_known::CODEC_ID_FLAC;
-        use symphonia_core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
-        use symphonia_core::packet::Packet;
-        use symphonia_core::units::{Duration, Timestamp};
-
-        let mut params = AudioCodecParameters::new();
-        params.for_codec(CODEC_ID_FLAC).with_extra_data(streaminfo(format).into_boxed_slice());
-        let mut decoder = symphonia_bundle_flac::FlacDecoder::try_new(&params, &AudioDecoderOptions::default()).unwrap();
-        let width = format.sample.bytes();
+        let mut decoder = FlacDecoder::new(format).unwrap();
         let mut out = Vec::new();
         for msg in messages {
             assert_eq!(msg[0], 0xE4);
             assert_eq!(&msg[1..4], &[0, 0, 0]);
             let len = u32::from_be_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
             assert_eq!(msg.len(), 8 + len);
-            let packet = Packet::new(0, Timestamp::new(0), Duration::new(format.block_frames() as u64), msg[8..].to_vec());
-            let decoded = decoder.decode(&packet).unwrap();
-            assert_eq!(decoded.frames(), format.block_frames());
-            let mut samples: Vec<i32> = Vec::new();
-            decoded.copy_to_vec_interleaved(&mut samples);
-            for sample in samples {
-                // The decoder scales to 32 bits; back down to the format's width.
-                let value = sample >> (32 - 8 * width);
-                let mut bytes = value.to_le_bytes();
-                if format.sample.unsigned() {
-                    bytes[width - 1] ^= 0x80;
-                }
-                out.extend_from_slice(&bytes[..width]);
-            }
+            assert!(len <= MAX_AUDIO_FRAME);
+            out.extend(decoder.decode(&msg[8..]).unwrap());
         }
         out
+    }
+
+    /// The header's fields where the FLAC specification puts them, read back
+    /// bit by bit rather than with the packing that wrote them.
+    #[test]
+    fn the_streaminfo_has_the_specified_layout() {
+        let info = streaminfo(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }).unwrap();
+        assert_eq!(&info[0..4], &[0x03, 0xC0, 0x03, 0xC0], "960 at both ends");
+        assert_eq!(&info[4..10], &[0; 6], "frame sizes unknown");
+        // 48000 = 0x0BB80 in 20 bits, then 001 for two channels, then 01111 for
+        // 16 bits, then a total of zero.
+        assert_eq!(&info[10..14], &[0x0B, 0xB8, 0x02, 0xF0]);
+        assert_eq!(&info[14..34], &[0; 20]);
+    }
+
+    /// A format outside the extension's has no header, encoder or decoder:
+    /// no channels would underflow the header's field, and a rate past 20 bits
+    /// would spill into the ones after it.
+    #[test]
+    fn a_format_the_extension_does_not_carry_is_refused_everywhere() {
+        let good = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        for (format, error) in [
+            (AudioFormat { channels: 0, ..good }, AudioParseError::BadChannels(0)),
+            (AudioFormat { channels: 3, ..good }, AudioParseError::BadChannels(3)),
+            (AudioFormat { frequency: MIN_FREQUENCY - 1, ..good }, AudioParseError::FrequencyTooLow(MIN_FREQUENCY - 1)),
+            (AudioFormat { frequency: 1 << 20, ..good }, AudioParseError::FrequencyTooHigh(1 << 20)),
+        ] {
+            assert_eq!(streaminfo(format), Err(error.clone()));
+            assert!(matches!(FlacEncoder::new(format), Err(AudioEncodeError::Format(_))));
+            assert_eq!(FlacDecoder::new(format).err(), Some(AudioDecodeError::Format(error.to_string())));
+            assert_eq!(crate::client::audio_set_format(&format), Err(error));
+        }
+    }
+
+    /// A frame that is not one, and a frame of the wrong length for the format
+    /// that was set, are errors rather than samples: the client drops that
+    /// frame and goes on with the next.
+    #[test]
+    fn a_frame_that_does_not_decode_to_the_agreed_block_is_refused() {
+        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let mut decoder = FlacDecoder::new(format).unwrap();
+        assert!(matches!(decoder.decode(&[0xFF, 0xF8, 1, 2, 3]), Err(AudioDecodeError::Decode(_))));
+
+        let other = AudioFormat { frequency: 44_100, ..format };
+        let messages = FlacEncoder::new(other).unwrap().push(&signal(other, other.block_frames())).unwrap();
+        assert!(decoder.decode(&messages[0][8..]).is_err(), "882 frames where 960 were agreed");
+
+        // And the decoder is still good for a frame that is right.
+        let pcm = signal(format, format.block_frames());
+        let messages = FlacEncoder::new(format).unwrap().push(&pcm).unwrap();
+        assert_eq!(decoder.decode(&messages[0][8..]).unwrap(), pcm);
     }
 
     /// A tone with noise on it, in whatever format: every byte a sample of it,

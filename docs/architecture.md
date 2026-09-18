@@ -275,8 +275,8 @@ which is where the gateway's half of this lives.
 ## The audio extension
 
 The desktop's sound, as FLAC, on the connection the pixels use. It is private —
-pseudo-encoding `0x574c5346` (`WLSF`) and server message type `0xE4` — and the
-remotex gateway is the client it is for. The client's messages and the stream's
+pseudo-encoding `0x574c5346` (`WLSF`) and server message type `0xE4` — and its
+clients are the remotex gateway and the macOS viewer. The client's messages and the stream's
 begin and end are borrowed from the QEMU Audio extension `rfbproto` registers,
 message type `255` submessage `1`; QEMU's pseudo-encoding, `-259`, is not
 spoken, because what it promises is raw samples and none are sent. A client that
@@ -315,8 +315,12 @@ capture produced.
 FLAC is lossless, so the gateway's Opus encode stays the only lossy step, while
 music and speech cost about two-thirds of their 1.5 Mbit/s PCM rate or less and
 a silent desktop a few bytes a frame. `wlshare-rfb` encodes with `flacenc`, and
-its tests decode every frame with symphonia's decoder, which shares nothing
-with it.
+decodes with symphonia's decoder, which shares nothing with it — the client's
+half, `audio::FlacDecoder` beside `audio::streaminfo`, is what the encoder's
+tests read every frame back with. The decoder is behind the crate's `decode`
+feature, which a client turns on and the daemon does not. A frame length past 64 KiB is fatal to a
+client: the largest block there is, 20 ms of 16-bit stereo at 96 kHz, is 7680
+bytes before compression.
 
 `audio.rs` starts one PipeWire capture per client that enables audio, on a
 thread of its own. It is a `Stream/Input/Audio` node with
