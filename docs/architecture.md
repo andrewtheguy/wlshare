@@ -334,11 +334,27 @@ the other. A frame length past 64 KiB is fatal to a
 client: the largest block there is, 20 ms of 16-bit stereo at 96 kHz, is 7680
 bytes before compression.
 
+While any client listens the host is silent, the way a remote desktop's sound
+is: the desktop plays into the **speaker**, a sink of wlshare's own, rather than
+into the host's. `audio.rs` makes it with the first client's enable and removes
+it with the last one's disable or disconnect — a `support.null-audio-sink` named
+`wlshare-speaker`, described as "wlshare remote audio", on a thread of its own.
+Nothing on the host is changed to get there, no sink muted and no default
+written. The speaker's `priority.session` is 100000, and WirePlumber makes the
+available sink with the highest priority the default, after adding 30000 to the
+one the user configured and up to 20000 to those configured before it; a
+hardware sink's own is in the low thousands, so the speaker is the default
+while it exists, chosen sink or not, and every stream that follows the default
+moves to it. The node belongs to the speaker thread's PipeWire connection, so
+when the thread quits or the daemon dies PipeWire removes it, WirePlumber makes
+the host's sink the default again, and the streams follow it back. A stream an
+application pinned to a sink of its own stays there and is heard on the host.
+
 `audio.rs` starts one PipeWire capture per client that enables audio, on a
 thread of its own. It is a `Stream/Input/Audio` node with
-`stream.capture.sink = "true"`, which connects it to the **default sink's
-monitor** — what the desktop is playing, whatever is playing it — and
-`node.latency` asks for 20 ms buffers. The process callback runs on that
+`stream.capture.sink = "true"` and `target.object` the speaker, which connects
+it to the **speaker's monitor** — what the desktop is playing, whatever is
+playing it — and `node.latency` asks for 20 ms buffers. The process callback runs on that
 thread's loop and not on the graph's real-time one — `RT_PROCESS` is
 deliberately not set, because the callback encodes, allocates, takes a mutex
 and wakes a task, and doing any of that on the data thread could stall the whole
@@ -354,8 +370,8 @@ running stream restarts the capture in the new format, and a disable or a
 disconnect stops it; what is left of a frame goes with it.
 
 The session drains that queue before every framebuffer update, so sound is never
-held behind a ZRLE frame it was ready before. A headless session still has a
-sink to capture — PipeWire's Dummy Output is one.
+held behind a ZRLE frame it was ready before. A headless session needs no sink
+of its own: the speaker is one.
 
 `audio = false` in the configuration turns the announcement off, and a client
 that lists the pseudo-encoding is then told nothing.

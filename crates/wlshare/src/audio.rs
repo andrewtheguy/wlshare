@@ -1,22 +1,27 @@
-//! The desktop's sound: a PipeWire capture of the default sink's monitor, one
-//! per client that enabled audio, in the format that client asked for and
-//! encoded as FLAC.
+//! The desktop's sound: a PipeWire capture of the monitor of wlshare's own
+//! sink, one per client that enabled audio, in the format that client asked for
+//! and encoded as FLAC.
 //!
 //! wlshare runs inside the user's session, where the audio graph is, so it
 //! reads what the desktop plays the same way it reads what the desktop draws:
-//! from the compositor's side, with nothing configured on the client. The
-//! stream is a `Stream/Input/Audio` node with `stream.capture.sink` set, which
-//! is PipeWire's word for "the monitor of whatever the default sink is", so it
-//! follows the default output when that changes. PipeWire converts the graph's
-//! own rate and sample format into the client's, and is asked for buffers of
-//! twenty milliseconds — one FLAC frame's worth, and one Opus packet's at the
-//! gateway.
+//! from the compositor's side, with nothing configured on the client. While any
+//! client listens, the desktop plays into a [`Speaker`], a null sink of
+//! wlshare's own, rather than into the host's: the sound goes where the client
+//! is, and the room the host is in stays silent, the way a remote desktop's
+//! sound does. The capture is a `Stream/Input/Audio` node with
+//! `stream.capture.sink` set and the speaker as its target, which is
+//! PipeWire's word for "the monitor of that sink". PipeWire converts the
+//! graph's own rate and sample format into the client's, and is asked for
+//! buffers of twenty milliseconds — one FLAC frame's worth, and one Opus
+//! packet's at the gateway.
 //!
 //! Per client rather than shared, because the format is the client's choice
 //! and two clients may choose differently; a capture stream is cheap, and a
-//! desktop with two listeners is rare. Nothing runs while no client has
-//! enabled audio: the stream, its thread and its PipeWire connection exist
-//! between an enable and the disable or disconnect that ends it.
+//! desktop with two listeners is rare. The speaker is shared: every capture
+//! reads the one sink the desktop plays into. Nothing runs while no client has
+//! enabled audio: a capture's stream, its thread and its PipeWire connection
+//! exist between an enable and the disable or disconnect that ends it, and the
+//! speaker from the first listener's enable to the last one's end.
 //!
 //! PipeWire's loop wants a thread of its own, so each capture is one, and the
 //! process callback runs on that loop rather than on the graph's real-time
@@ -31,7 +36,9 @@
 //! newest, so what it does send is live, and each FLAC frame decodes on its
 //! own, so a lost one costs the client nothing but its own samples.
 
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -51,6 +58,17 @@ const QUEUE_DEPTH: usize = 16;
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// The buffer PipeWire is asked for, in milliseconds of the client's rate.
 const BUFFER_MS: u32 = 20;
+/// The speaker's node name, which every capture targets.
+const SPEAKER_NAME: &str = "wlshare-speaker";
+/// The speaker's session priority. WirePlumber makes the available sink with
+/// the highest one the default, after adding 30000 to the sink the user
+/// configured and up to 20000 to the ones configured before it; a hardware
+/// sink's own is in the low thousands, so this is past every sink the host has,
+/// chosen or not, and the desktop plays into the speaker while it exists.
+const SPEAKER_PRIORITY: u32 = 100_000;
+
+/// The speaker, while any capture holds a [`Lease`] on it.
+static SPEAKER: Mutex<Option<Speaker>> = Mutex::new(None);
 
 /// One client's capture: the thread running PipeWire's loop, and the FLAC
 /// frame messages it has produced.
@@ -58,6 +76,9 @@ pub struct Capture {
     quit: pw::channel::Sender<()>,
     thread: Option<JoinHandle<()>>,
     queue: Arc<Queue>,
+    /// Dropped after the thread has been joined, so the speaker outlives the
+    /// capture of its monitor.
+    _speaker: Lease,
 }
 
 struct Queue {
@@ -71,6 +92,7 @@ impl Capture {
     /// Open a capture in `format` for `client`. Blocks until PipeWire has taken
     /// the stream or refused it, so it belongs on a blocking thread.
     pub fn start(client: ClientId, format: AudioFormat) -> anyhow::Result<Self> {
+        let speaker = Lease::take()?;
         let encoder = FlacEncoder::new(format).context("setting up the FLAC encoder")?;
         let queue = Arc::new(Queue {
             buffers: Mutex::new(VecDeque::with_capacity(QUEUE_DEPTH)),
@@ -84,7 +106,7 @@ impl Capture {
             .name(format!("audio-{}", client.0))
             .spawn(move || run(client, format, encoder, thread_queue, quit_rx, ready_tx))
             .context("spawning the audio thread")?;
-        let mut capture = Self { quit, thread: Some(thread), queue };
+        let mut capture = Self { quit, thread: Some(thread), queue, _speaker: speaker };
         match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(capture),
             Ok(Err(e)) => {
@@ -168,6 +190,7 @@ fn run(
         *pw::keys::MEDIA_CATEGORY => "Capture",
         *pw::keys::MEDIA_ROLE => "Music",
         *pw::keys::STREAM_CAPTURE_SINK => "true",
+        *pw::keys::TARGET_OBJECT => SPEAKER_NAME,
         *pw::keys::APP_NAME => "wlshare",
     };
     props.insert(*pw::keys::NODE_NAME, format!("wlshare client {}", client.0));
@@ -256,10 +279,166 @@ fn run(
     let loop_ = mainloop.clone();
     let _quit = quit.attach(mainloop.loop_(), move |()| loop_.quit());
     info!(
-        "client {}: capturing the default sink's monitor as {:?} x{} at {} Hz, {frames} frames a buffer",
+        "client {}: capturing the speaker's monitor as {:?} x{} at {} Hz, {frames} frames a buffer",
         client.0, format.sample, format.channels, format.frequency
     );
     let _ = ready.send(Ok(()));
     mainloop.run();
     debug!("client {}: audio capture closed", client.0);
+}
+
+/// A capture's hold on the speaker: the first one makes it, and the last one to
+/// go takes it away.
+struct Lease;
+
+impl Lease {
+    /// Blocks until PipeWire has taken the speaker, when there is none yet.
+    fn take() -> anyhow::Result<Self> {
+        let mut speaker = SPEAKER.lock().unwrap();
+        match speaker.as_mut() {
+            Some(speaker) => speaker.leases += 1,
+            None => *speaker = Some(Speaker::start()?),
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let mut speaker = SPEAKER.lock().unwrap();
+        let Some(held) = speaker.as_mut() else { return };
+        held.leases -= 1;
+        if held.leases == 0 {
+            // Under the lock, so a new first listener waits for this node to go
+            // rather than making a second of the same name beside it.
+            drop(speaker.take());
+        }
+    }
+}
+
+/// The sink the desktop plays into while a client listens: a null sink, whose
+/// only output is its monitor, with a priority that makes it the default.
+///
+/// Nothing on the host is changed to get there — no sink muted, no default
+/// written — so nothing needs undoing. The node belongs to this thread's
+/// PipeWire connection: when it quits, or the daemon dies, PipeWire removes the
+/// node, WirePlumber makes the host's own sink the default again, and every
+/// stream that followed the default follows it back. A stream an application
+/// pinned to a sink of its own stays there, and is heard on the host.
+struct Speaker {
+    quit: pw::channel::Sender<()>,
+    thread: Option<JoinHandle<()>>,
+    /// Captures holding a [`Lease`].
+    leases: usize,
+}
+
+impl Speaker {
+    fn start() -> anyhow::Result<Self> {
+        let (quit, quit_rx) = pw::channel::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("speaker".into())
+            .spawn(move || serve(quit_rx, ready_tx))
+            .context("spawning the speaker thread")?;
+        let mut speaker = Self { quit, thread: Some(thread), leases: 1 };
+        match ready_rx.recv_timeout(START_TIMEOUT) {
+            Ok(Ok(())) => Ok(speaker),
+            Ok(Err(e)) => {
+                // The thread has already returned.
+                speaker.thread.take().map(JoinHandle::join);
+                Err(e)
+            }
+            Err(_) => {
+                // Stuck coming up: ask it to quit and let it go rather than
+                // wait for a loop that may never run.
+                let _ = speaker.quit.send(());
+                speaker.thread.take();
+                anyhow::bail!("PipeWire did not take the speaker within {START_TIMEOUT:?}")
+            }
+        }
+    }
+}
+
+impl Drop for Speaker {
+    fn drop(&mut self) {
+        let _ = self.quit.send(());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The speaker thread: PipeWire's loop, from the node's creation to quit.
+/// `ready` is told once, when the server has made the node or refused it.
+fn serve(quit: pw::channel::Receiver<()>, ready: std::sync::mpsc::Sender<anyhow::Result<()>>) {
+    macro_rules! up {
+        ($e:expr, $what:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = ready.send(Err(anyhow::Error::from(e).context($what)));
+                    return;
+                }
+            }
+        };
+    }
+    pw::init();
+    let mainloop = up!(pw::main_loop::MainLoopRc::new(None), "creating PipeWire's loop");
+    let context = up!(pw::context::ContextRc::new(&mainloop, None), "creating PipeWire's context");
+    let core = up!(context.connect_rc(None), "connecting to PipeWire");
+
+    let mut props = pw::properties::properties! {
+        *pw::keys::FACTORY_NAME => "support.null-audio-sink",
+        *pw::keys::MEDIA_CLASS => "Audio/Sink",
+        *pw::keys::NODE_NAME => SPEAKER_NAME,
+        // Named for where it plays, in the desktop's list of outputs.
+        *pw::keys::NODE_DESCRIPTION => "wlshare remote audio",
+        "audio.position" => "FL,FR",
+    };
+    props.insert(*pw::keys::PRIORITY_SESSION, SPEAKER_PRIORITY.to_string());
+    let _node = up!(core.create_object::<pw::node::Node>("adapter", &props), "creating the speaker");
+
+    // The node is made on the server's side; a round trip says whether it was.
+    let pending = up!(core.sync(0), "waiting for PipeWire to make the speaker");
+    let refused = Rc::new(RefCell::new(None::<String>));
+    let settled = Rc::new(Cell::new(false));
+    let _core_listener = core
+        .add_listener_local()
+        .done({
+            let loop_ = mainloop.clone();
+            let settled = settled.clone();
+            move |id, seq| {
+                if id == pw::core::PW_ID_CORE && seq == pending {
+                    settled.set(true);
+                    loop_.quit();
+                }
+            }
+        })
+        .error({
+            let loop_ = mainloop.clone();
+            let refused = refused.clone();
+            let settled = settled.clone();
+            move |id, _, res, message| {
+                if settled.get() {
+                    warn!("audio speaker: PipeWire error on object {id}: {message} ({res})");
+                } else {
+                    *refused.borrow_mut() = Some(format!("{message} ({res})"));
+                    settled.set(true);
+                    loop_.quit();
+                }
+            }
+        })
+        .register();
+    mainloop.run();
+    if let Some(message) = refused.take() {
+        let _ = ready.send(Err(anyhow::anyhow!("PipeWire refused the speaker: {message}")));
+        return;
+    }
+
+    let loop_ = mainloop.clone();
+    let _quit = quit.attach(mainloop.loop_(), move |()| loop_.quit());
+    info!("audio: the desktop plays into {SPEAKER_NAME} while a client listens");
+    let _ = ready.send(Ok(()));
+    mainloop.run();
+    debug!("audio: speaker closed");
 }
