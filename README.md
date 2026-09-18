@@ -29,7 +29,10 @@ pseudo-encoding can connect. Cursor support is required because wlshare never
 puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; remotex asks for both on
 every plain `vnc` target. Audio is a private extension that remotex asks for when a target has
-`audio = true`: the default sink's monitor, encoded as lossless FLAC. A client
+`audio = true`: while it listens wlshare's own sink is the default, so every
+stream that follows the default plays there rather than on the host's speakers,
+and that sink's monitor is sent encoded as lossless FLAC. An application pinned
+to a sink of the host's stays there and is heard on the host. A client
 that does not list it hears nothing.
 `audio = false` turns the offer off. A client that lists the camera extension —
 remotex does, for a target with `camera = true` — can lend the desktop its camera:

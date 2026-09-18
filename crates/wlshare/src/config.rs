@@ -43,8 +43,10 @@ pub struct Config {
     #[serde(default = "default_handshake_timeout_secs")]
     pub handshake_timeout_secs: u64,
     /// Whether a client may hear the desktop: the audio extension is
-    /// announced to a client that asks, and what the default sink plays is
-    /// captured from PipeWire while the client has it enabled.
+    /// announced to a client that asks, and while the client has it enabled a
+    /// sink of wlshare's own is the default, captured from PipeWire: streams
+    /// that follow the default play there and are silent on the host, and one
+    /// pinned to a sink of the host's is still heard on it.
     #[serde(default = "default_true")]
     pub audio: bool,
     /// Whether a client may lend the desktop its camera: the camera extension is
