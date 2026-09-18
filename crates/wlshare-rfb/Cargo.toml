@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The RFB wire wlshare speaks: message parsing and building, RSA-AES, the ZRLE encoder and the density extension"
+description = "The RFB wire wlshare speaks: message parsing and building, RSA-AES, the ZRLE encoder, the FLAC audio and the private extensions"
 
 # Platform-independent and dependency-light on purpose: this crate is where the
 # bytes on the wire are decided, and it must build and unit-test on any OS,
@@ -27,6 +27,13 @@ aes = "0.9"
 eax = "0.6"
 sha1 = "0.11"
 sha2 = "0.11"
+# The audio extension's FLAC frames. Pure Rust; without its default features, so
+# no worker threads, serde or logging come with it.
+flacenc = { version = "0.5", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+# The independent decoder every FLAC frame is read back with: symphonia's, which
+# shares nothing with flacenc.
+symphonia-bundle-flac = "0.6"
+symphonia-core = "0.6"

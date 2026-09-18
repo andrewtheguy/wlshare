@@ -44,17 +44,15 @@
 //!
 //! ## Sending sound
 //!
-//! A client that listed the QEMU Audio pseudo-encoding is told so by an empty
+//! A client that listed the audio pseudo-encoding is told so by an empty
 //! rectangle in an update of its own, which waits for a request like any other
 //! announcement. Its enable opens a PipeWire capture in the format it set
 //! ([`crate::audio`]), answered with *begin*; its disable, or its leaving,
-//! closes the capture, answered with *end*. Captured buffers ride the same
-//! connection as the pixels, and go first: every pass of the loop drains what
-//! the capture has queued before it considers a framebuffer update, so sound
-//! waits for at most the update already being written, never for the next one.
-//! A client that also listed the silence pseudo-encoding is sent a count of
-//! frames in place of each run of buffers that are nothing but silence, which
-//! is most of the time on most desktops.
+//! closes the capture, answered with *end*. The capture's FLAC frames ride the
+//! same connection as the pixels, and go first: every pass of the loop drains
+//! what the capture has queued before it considers a framebuffer update, so
+//! sound waits for at most the update already being written, never for the
+//! next one.
 //!
 //! ## Lending a camera
 //!
@@ -102,7 +100,7 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
-use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_data, audio_end, audio_rect, audio_silence};
+use wlshare_rfb::audio::{AudioFormat, audio_begin, audio_end, audio_rect};
 use wlshare_rfb::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
 use wlshare_rfb::clipboard::{self, Caps, Message as ClipboardMessage};
 use wlshare_rfb::cursor::{alpha_cursor_rect, cursor_rect};
@@ -114,8 +112,8 @@ use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
-    ENCODING_AUDIO_SILENCE, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
-    ENCODING_OUTPUTS, ENCODING_QEMU_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
+    ENCODING_OUTPUTS, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_ZRLE,
 };
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
@@ -161,7 +159,7 @@ pub struct SessionConfig {
     pub security: Security,
     pub name: String,
     pub resize: bool,
-    /// Whether the QEMU Audio extension is announced and served.
+    /// Whether the audio extension is announced and served.
     pub audio: bool,
     /// Whether the camera extension is announced and served.
     pub camera: bool,
@@ -241,7 +239,6 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         outputs: false,
         audio_supported: false,
         announce_audio: false,
-        audio_silence: false,
         audio_format: AudioFormat::DEFAULT,
         audio: None,
         camera_supported: false,
@@ -370,14 +367,11 @@ struct Session {
     /// The client listed the outputs pseudo-encoding: it is sent the list of
     /// outputs and may ask for another one.
     outputs: bool,
-    /// The client listed the QEMU Audio pseudo-encoding and the configuration
+    /// The client listed the audio pseudo-encoding and the configuration
     /// allows it.
     audio_supported: bool,
     /// The audio announcement is owed: sent as its own update, once.
     announce_audio: bool,
-    /// The client also listed the silence pseudo-encoding: silent buffers go
-    /// out as a count of frames.
-    audio_silence: bool,
     /// The sample format the client set, or the extension's default.
     audio_format: AudioFormat,
     /// The capture, while the client has audio enabled.
@@ -527,28 +521,10 @@ impl Session {
         Ok(())
     }
 
-    /// Send every buffer the capture has queued. For a client that takes the
-    /// silence extension, a run of silent buffers goes out as one count of
-    /// frames, sent before the audible buffer that ends it or when the queue
-    /// is empty — never held for a later drain, which would leave the client's
-    /// timeline short.
+    /// Send every FLAC frame the capture has queued.
     async fn flush_audio(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
-        let mut silent: u32 = 0;
-        while let Some(samples) = self.audio.as_ref().and_then(Capture::take) {
-            if self.audio_silence
-                && let Some(frames) = self.audio_format.silent_frames(&samples)
-            {
-                silent += frames;
-                continue;
-            }
-            if silent > 0 {
-                writer.send(&audio_silence(silent)).await.context("writing audio")?;
-                silent = 0;
-            }
-            writer.send(&audio_data(&samples)).await.context("writing audio")?;
-        }
-        if silent > 0 {
-            writer.send(&audio_silence(silent)).await.context("writing audio")?;
+        while let Some(frame) = self.audio.as_ref().and_then(Capture::take) {
+            writer.send(&frame).await.context("writing audio")?;
         }
         Ok(())
     }
@@ -621,7 +597,7 @@ impl Session {
                     info!("client {}: asked for the output list", self.id.0);
                 }
                 self.outputs = outputs;
-                let audio = has(ENCODING_QEMU_AUDIO);
+                let audio = has(ENCODING_AUDIO);
                 if audio && !self.config.audio && !self.audio_supported {
                     info!("client {}: asked for audio, which the configuration turns off", self.id.0);
                 }
@@ -631,11 +607,6 @@ impl Session {
                     self.announce_audio = true;
                 }
                 self.audio_supported = audio;
-                let silence = audio && has(ENCODING_AUDIO_SILENCE);
-                if silence && !self.audio_silence {
-                    info!("client {}: takes silence as a count of frames", self.id.0);
-                }
-                self.audio_silence = silence;
                 let camera = has(ENCODING_CAMERA);
                 if camera && !self.config.camera && !self.camera_supported {
                     info!("client {}: offers a camera, which the configuration turns off", self.id.0);
@@ -663,7 +634,7 @@ impl Session {
                     false => None,
                 };
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} audio_silence={} camera={} microphone={} clipboard={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
@@ -674,7 +645,6 @@ impl Session {
                     self.density,
                     self.outputs,
                     self.audio_supported,
-                    self.audio_silence,
                     self.camera_supported,
                     self.microphone_supported,
                     self.clipboard.is_some()

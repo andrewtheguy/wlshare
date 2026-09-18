@@ -28,9 +28,9 @@ Any VNC client that decodes ZRLE and advertises the standard Cursor
 pseudo-encoding can connect. Cursor support is required because wlshare never
 puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; remotex asks for both on
-every plain `vnc` target. Audio is the QEMU Audio extension `rfbproto` registers, which
-QEMU, gtk-vnc and remotex already speak: a client that lists its pseudo-encoding
-is offered the default sink's monitor, and one that does not hears nothing.
+every plain `vnc` target. Audio is a private extension that remotex asks for when a target has
+`audio = true`: the default sink's monitor, encoded as lossless FLAC. A client
+that does not list it hears nothing.
 `audio = false` turns the offer off. A client that lists the camera extension —
 remotex does, for a target with `camera = true` — can lend the desktop its camera:
 the H.264 it sends is decoded with the system's libavcodec into a PipeWire video

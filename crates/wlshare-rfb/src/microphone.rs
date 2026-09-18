@@ -3,7 +3,7 @@
 //!
 //! The camera extension's twin ([`crate::camera`]), and the fourth of wlshare's
 //! private pairs: one pseudo-encoding and one message type, used in both
-//! directions. The QEMU Audio extension carries sound from the server alone, and
+//! directions. The audio extension ([`crate::audio`]) carries sound from the server alone, and
 //! no registered extension carries it the other way.
 //!
 //! - The client lists [`crate::ENCODING_MICROPHONE`] in `SetEncodings`. A server
