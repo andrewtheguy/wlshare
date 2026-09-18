@@ -317,7 +317,8 @@ music and speech cost about two-thirds of their 1.5 Mbit/s PCM rate or less and
 a silent desktop a few bytes a frame. `wlshare-rfb` encodes with `flacenc`, and
 decodes with symphonia's decoder, which shares nothing with it — the client's
 half, `audio::FlacDecoder` beside `audio::streaminfo`, is what the encoder's
-tests read every frame back with. A frame length past 64 KiB is fatal to a
+tests read every frame back with. The decoder is behind the crate's `decode`
+feature, which a client turns on and the daemon does not. A frame length past 64 KiB is fatal to a
 client: the largest block there is, 20 ms of 16-bit stereo at 96 kHz, is 7680
 bytes before compression.
 

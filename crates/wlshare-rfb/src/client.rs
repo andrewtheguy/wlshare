@@ -13,7 +13,7 @@
 //! an unknown message by. A rectangle's pixels are framed here and decoded
 //! elsewhere: Raw bytes are the pixels, a ZRLE payload goes to
 //! [`crate::zrle::ZrleDecoder`], a cursor to [`crate::cursor::CursorImage`],
-//! and a FLAC frame to [`crate::audio::FlacDecoder`].
+//! and a FLAC frame to `audio::FlacDecoder`, behind the `decode` feature.
 
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
@@ -303,7 +303,7 @@ pub enum ServerMsg {
     /// The audio extension: the stream stopped.
     AudioEnd,
     /// The audio extension: one FLAC frame, without its message header, for
-    /// the stream's [`crate::audio::FlacDecoder`].
+    /// the stream's `audio::FlacDecoder`.
     AudioFrame(Vec<u8>),
 }
 

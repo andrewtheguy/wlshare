@@ -30,7 +30,8 @@
 //! its own samples.
 //!
 //! The client's half is here too: [`streaminfo`] is the header it builds, and
-//! [`FlacDecoder`] turns each frame back into samples in the format it set.
+//! `FlacDecoder`, behind the `decode` feature, turns each frame back into
+//! samples in the format it set.
 //! The messages themselves are framed and built in [`crate::client`].
 //!
 //! FLAC stores only signed samples, of at most 24 bits, so the formats are the
@@ -362,6 +363,7 @@ pub fn streaminfo(format: AudioFormat) -> [u8; 34] {
 }
 
 /// Why a FLAC frame could not be read back.
+#[cfg(feature = "decode")]
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AudioDecodeError {
     /// symphonia's own error is carried as its message, as flacenc's is.
@@ -379,12 +381,14 @@ pub enum AudioDecodeError {
 ///
 /// Every frame decodes on its own, so a frame that fails costs its own twenty
 /// milliseconds and the decoder goes on with the next.
+#[cfg(feature = "decode")]
 pub struct FlacDecoder {
     format: AudioFormat,
     decoder: symphonia_bundle_flac::FlacDecoder,
     samples: Vec<i32>,
 }
 
+#[cfg(feature = "decode")]
 impl FlacDecoder {
     pub fn new(format: AudioFormat) -> Result<Self, AudioDecodeError> {
         use symphonia_core::codecs::audio::well_known::CODEC_ID_FLAC;
