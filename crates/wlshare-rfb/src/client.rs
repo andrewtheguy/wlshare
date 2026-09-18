@@ -12,11 +12,16 @@
 //! or fails — after which the connection is over, RFB having no framing to skip
 //! an unknown message by. A rectangle's pixels are framed here and decoded
 //! elsewhere: Raw bytes are the pixels, a ZRLE payload goes to
-//! [`crate::zrle::ZrleDecoder`], and a cursor to [`crate::cursor::CursorImage`].
+//! [`crate::zrle::ZrleDecoder`], a cursor to [`crate::cursor::CursorImage`],
+//! and a FLAC frame to [`crate::audio::FlacDecoder`].
 
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
+use crate::audio::{
+    AUDIO_FRAME_HEADER_LEN, AudioFormat, CLIENT_AUDIO_DISABLE, CLIENT_AUDIO_ENABLE, CLIENT_AUDIO_FORMAT_LEN, CLIENT_AUDIO_SET_FORMAT,
+    CLIENT_AUDIO_SWITCH_LEN, MAX_AUDIO_FRAME, MSG_AUDIO_FRAME, MSG_QEMU, SERVER_AUDIO_BEGIN, SERVER_AUDIO_END, SUBMESSAGE_AUDIO,
+};
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY, to_fixed};
 use crate::msg::{
     CLIENT_ENABLE_CONTINUOUS_UPDATES, CLIENT_FENCE, CLIENT_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_KEY_EVENT, CLIENT_POINTER_EVENT,
@@ -24,7 +29,10 @@ use crate::msg::{
     SERVER_END_OF_CONTINUOUS_UPDATES, SERVER_FENCE, SERVER_FRAMEBUFFER_UPDATE, Screen,
 };
 use crate::pixel::PixelFormat;
-use crate::{ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW, ENCODING_ZRLE};
+use crate::{
+    ENCODING_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW,
+    ENCODING_ZRLE,
+};
 
 // ── Handshake ────────────────────────────────────────────────────────────────
 
@@ -211,6 +219,32 @@ pub fn client_density(scale: f64) -> [u8; CLIENT_DENSITY_LEN] {
     msg
 }
 
+fn audio_op(operation: u16) -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
+    let op = operation.to_be_bytes();
+    [MSG_QEMU, SUBMESSAGE_AUDIO, op[0], op[1]]
+}
+
+/// The audio extension: start sending the desktop's sound, in the format last
+/// set ([`crate::audio`]).
+pub fn audio_enable() -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
+    audio_op(CLIENT_AUDIO_ENABLE)
+}
+
+/// The audio extension: stop.
+pub fn audio_disable() -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
+    audio_op(CLIENT_AUDIO_DISABLE)
+}
+
+/// The audio extension: the format every FLAC frame is to decode to.
+pub fn audio_set_format(format: &AudioFormat) -> [u8; CLIENT_AUDIO_FORMAT_LEN] {
+    let mut msg = [0u8; CLIENT_AUDIO_FORMAT_LEN];
+    msg[..4].copy_from_slice(&audio_op(CLIENT_AUDIO_SET_FORMAT));
+    msg[4] = format.sample as u8;
+    msg[5] = format.channels;
+    msg[6..].copy_from_slice(&format.frequency.to_be_bytes());
+    msg
+}
+
 // ── Server messages ──────────────────────────────────────────────────────────
 
 /// The most bytes one rectangle may carry: past any framebuffer a desktop has,
@@ -235,6 +269,9 @@ pub enum RectBody {
     Cursor { pixels: Vec<u8>, mask: Vec<u8> },
     /// The pointer as premultiplied RGBA; empty for no pointer.
     AlphaCursor(Vec<u8>),
+    /// The server speaks the audio extension, which this client listed: an
+    /// empty rectangle, and the only way that is ever said.
+    Audio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +298,13 @@ pub enum ServerMsg {
     /// The density extension's `OutputScale`: the framebuffer's size and the
     /// scale it is drawn at, as 16.16 fixed point.
     OutputScale { width: u16, height: u16, fixed: u32 },
+    /// The audio extension: a stream is starting, and FLAC frames follow.
+    AudioBegin,
+    /// The audio extension: the stream stopped.
+    AudioEnd,
+    /// The audio extension: one FLAC frame, without its message header, for
+    /// the stream's [`crate::audio::FlacDecoder`].
+    AudioFrame(Vec<u8>),
 }
 
 /// Why a server's bytes could not be a message.
@@ -278,6 +322,14 @@ pub enum ParseError {
     CutTextTooLong(usize),
     #[error("a fence payload of {0} bytes is over the {FENCE_MAX_PAYLOAD}-byte ceiling")]
     FencePayloadTooLong(usize),
+    /// The QEMU submessages share no length field, so one that is not audio
+    /// cannot be measured, and the stream is at an offset nothing recovers from.
+    #[error("QEMU submessage {0} is not audio, the one QEMU extension spoken here")]
+    UnknownQemuSubmessage(u8),
+    #[error("audio operation {0} is not begin or end")]
+    UnknownAudioOperation(u16),
+    #[error("a FLAC frame of {0} bytes is over the {MAX_AUDIO_FRAME}-byte ceiling")]
+    AudioFrameTooLong(usize),
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -338,6 +390,26 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
         MSG_DENSITY => {
             need!(10);
             (ServerMsg::OutputScale { width: u16_at(buf, 2), height: u16_at(buf, 4), fixed: u32_at(buf, 6) }, 10)
+        }
+        MSG_QEMU => {
+            need!(4);
+            if buf[1] != SUBMESSAGE_AUDIO {
+                return Err(ParseError::UnknownQemuSubmessage(buf[1]));
+            }
+            match u16_at(buf, 2) {
+                SERVER_AUDIO_BEGIN => (ServerMsg::AudioBegin, 4),
+                SERVER_AUDIO_END => (ServerMsg::AudioEnd, 4),
+                other => return Err(ParseError::UnknownAudioOperation(other)),
+            }
+        }
+        MSG_AUDIO_FRAME => {
+            need!(AUDIO_FRAME_HEADER_LEN);
+            let len = u32_at(buf, 4) as usize;
+            if len > MAX_AUDIO_FRAME {
+                return Err(ParseError::AudioFrameTooLong(len));
+            }
+            need!(AUDIO_FRAME_HEADER_LEN + len);
+            (ServerMsg::AudioFrame(buf[AUDIO_FRAME_HEADER_LEN..AUDIO_FRAME_HEADER_LEN + len].to_vec()), AUDIO_FRAME_HEADER_LEN + len)
         }
         other => return Err(ParseError::UnknownType(other)),
     };
@@ -416,6 +488,7 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             let Some(rgba) = take(16, pixels)? else { return Ok(None) };
             (RectBody::AlphaCursor(rgba), 16 + pixels)
         }
+        ENCODING_AUDIO => (RectBody::Audio, 12),
         other => return Err(ParseError::UnknownEncoding(other)),
     };
     Ok(Some((Rect { x, y, width, height, body }, used)))
@@ -424,6 +497,7 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::{FlacEncoder, SampleFormat, audio_begin, audio_end, audio_rect};
     use crate::cursor::{CursorImage, alpha_cursor_rect, cursor_rect};
     use crate::msg::{self, ClientMsg};
 
@@ -459,6 +533,14 @@ mod tests {
         );
         assert_eq!(parsed(&client_density(1.5)), ClientMsg::ClientDensity { fixed: 0x0001_8000 });
         assert_eq!(parsed(&client_extended_cut_text(&[2, 0, 0, 1])), ClientMsg::ExtendedCutText(vec![2, 0, 0, 1]));
+        assert_eq!(parsed(&audio_enable()), ClientMsg::AudioEnable);
+        assert_eq!(parsed(&audio_disable()), ClientMsg::AudioDisable);
+        for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
+            let format = AudioFormat { sample, channels: 1, frequency: 44_100 };
+            assert_eq!(parsed(&audio_set_format(&format)), ClientMsg::AudioFormat(format));
+        }
+        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        assert_eq!(parsed(&audio_set_format(&format)), ClientMsg::AudioFormat(format));
     }
 
     #[test]
@@ -474,6 +556,43 @@ mod tests {
         let wire = crate::density::output_scale(3456, 1802, 2.0);
         assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::OutputScale { width: 3456, height: 1802, fixed: 0x0002_0000 }, 10));
         assert_eq!(parse(&[7]), Err(ParseError::UnknownType(7)));
+    }
+
+    /// The audio extension as the daemon sends it: the announcement, begin and
+    /// end, and a frame the encoder made, each whole or not at all.
+    #[test]
+    fn the_client_parses_the_audio_the_server_builds() {
+        let mut wire = msg::update_header(1).to_vec();
+        wire.extend_from_slice(&audio_rect());
+        let (m, n) = parse(&wire).unwrap().unwrap();
+        assert_eq!((m, n), (ServerMsg::Update(vec![Rect { x: 0, y: 0, width: 0, height: 0, body: RectBody::Audio }]), wire.len()));
+
+        assert_eq!(parse(&audio_begin()).unwrap().unwrap(), (ServerMsg::AudioBegin, 4));
+        assert_eq!(parse(&audio_end()).unwrap().unwrap(), (ServerMsg::AudioEnd, 4));
+        assert_eq!(parse(&audio_begin()[..3]), Ok(None));
+
+        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let frames = FlacEncoder::new(format).unwrap().push(&vec![0; format.block_frames() * format.frame_bytes()]).unwrap();
+        let mut wire = frames[0].clone();
+        let whole = wire.len();
+        wire.push(0xFF);
+        for short in 0..whole {
+            assert_eq!(parse(&wire[..short]), Ok(None), "{short} of {whole} bytes");
+        }
+        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::AudioFrame(frames[0][8..].to_vec()), whole));
+    }
+
+    /// A QEMU submessage or operation that cannot be measured leaves the stream
+    /// where nothing recovers it, and a frame length past any frame is a server
+    /// that has lost its framing: all three end the connection.
+    #[test]
+    fn audio_that_cannot_be_framed_is_fatal() {
+        assert_eq!(parse(&[255, 2, 0, 0]), Err(ParseError::UnknownQemuSubmessage(2)));
+        // QEMU's own raw data, which this extension never sends.
+        assert_eq!(parse(&[255, 1, 0, 2]), Err(ParseError::UnknownAudioOperation(2)));
+        let mut wire = vec![0xE4, 0, 0, 0];
+        wire.extend_from_slice(&(MAX_AUDIO_FRAME as u32 + 1).to_be_bytes());
+        assert_eq!(parse(&wire), Err(ParseError::AudioFrameTooLong(MAX_AUDIO_FRAME + 1)));
     }
 
     /// One update with a rectangle of every kind, fed a byte short at every
