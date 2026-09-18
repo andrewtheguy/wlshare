@@ -607,6 +607,12 @@ impl Session {
                     self.announce_audio = true;
                 }
                 self.audio_supported = audio;
+                if !audio {
+                    // A list without the extension withdraws it: nothing more is
+                    // announced, and a running stream ends.
+                    self.announce_audio = false;
+                    self.stop_audio(writer).await?;
+                }
                 let camera = has(ENCODING_CAMERA);
                 if camera && !self.config.camera && !self.camera_supported {
                     info!("client {}: offers a camera, which the configuration turns off", self.id.0);
