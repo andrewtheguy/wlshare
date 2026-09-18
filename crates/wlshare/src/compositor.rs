@@ -56,6 +56,9 @@ pub struct Compositor {
     /// A client's SetDesktopSize the compositor accepted, until the frame at that
     /// size arrives.
     pub pending_resize: Option<(ClientId, u16, u16)>,
+    /// A declaration that arrived while another's configuration was out, run
+    /// once that one settles: client, width, height, scale.
+    queued_declaration: Option<(ClientId, u16, u16, f64)>,
     pub max_fps: u32,
     resize_allowed: bool,
     xkb: Xkb,
@@ -196,6 +199,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
         clipboard: Clipboard::default(),
         client: None,
         pending_resize: None,
+        queued_declaration: None,
         max_fps,
         resize_allowed: resize,
         xkb,
@@ -501,7 +505,19 @@ impl Compositor {
     /// configuration, so every application on it redraws once. Only what differs
     /// is asked for, and a declaration that changes nothing, or cannot change
     /// anything, is answered at once with the output as it is.
+    ///
+    /// One declaration's configuration is out at a time, so each settles on its
+    /// own and is answered once. One arriving meanwhile waits for that one to
+    /// settle; a newer one replaces it, and the one replaced is answered with
+    /// the output as it is.
     fn declare(&mut self, client: ClientId, width: u16, height: u16, scale: f64) {
+        if self.outputs.declaring.is_some() {
+            debug!("client {}: a declaration waits for the one before it to settle", client.0);
+            if let Some((waiting, ..)) = self.queued_declaration.replace((client, width, height, scale)) {
+                self.answer_geometry(Some(waiting));
+            }
+            return;
+        }
         let current = self.outputs.scale();
         let current_size = self.outputs.size();
         let new_scale = ((current - scale).abs() >= 0.005).then_some(scale);
@@ -520,9 +536,21 @@ impl Compositor {
         // The frame at the new size is this client's resize, as a SetDesktopSize's is.
         self.pending_resize = new_size.map(|(w, h)| (client, w, h));
         let qh = self.qh.clone();
-        if !self.outputs.configure(&qh, new_size, new_scale, ConfigKind::Declare) {
+        let id = self.outputs.next_declaration;
+        self.outputs.next_declaration += 1;
+        if !self.outputs.configure(&qh, new_size, new_scale, ConfigKind::Declare { id }) {
             self.pending_resize = None;
             self.answer_geometry(Some(client));
+        }
+    }
+
+    /// The declaration out has been answered: run the one waiting, if its
+    /// client still holds the desktop.
+    pub fn declaration_settled(&mut self) {
+        if let Some((client, width, height, scale)) = self.queued_declaration.take()
+            && self.client == Some(client)
+        {
+            self.declare(client, width, height, scale);
         }
     }
 }

@@ -215,7 +215,11 @@ are 16.16 unsigned fixed point.
   declaration matches, is refused, or cannot be applied. A configuration the
   compositor accepts without changing the scale is answered too: `succeeded` is
   followed by one `wl_display.sync` round trip, after which the output is
-  reported as it is if no head change arrived. A new size reaches the client as
+  reported as it is if no head change arrived. One declaration's configuration
+  is out at a time, and its events are told from any other's, so each is
+  answered once: one arriving meanwhile waits for it to settle, and a newer one
+  replaces it, the replaced one answered with the output as it is. A new size
+  reaches the client as
   an ExtendedDesktopSize rectangle whose reason is this client, as a
   SetDesktopSize's does.
 
