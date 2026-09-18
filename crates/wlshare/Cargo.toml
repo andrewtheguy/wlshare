@@ -61,7 +61,12 @@ priority = "optional"
 # wayland-client loads libwayland-client at runtime, so dpkg-shlibdeps cannot see it.
 # wlroots is the compositor's, not linked here: 0.19 is the first whose headless
 # backend keeps the cursor out of a screencopy without overlay_cursor.
-depends = "$auto, libwayland-client0 (>= 1.20), libwlroots-0.19 (>= 0.19.0)"
+# libpipewire is only the client library: the speaker, the camera and the
+# microphone are nodes in a graph the session's PipeWire server runs. Trixie's
+# `pipewire` is that server alone, with no session manager to make the speaker
+# the default or link anything to it, and no PulseAudio server for most
+# applications to play through, so wireplumber and pipewire-pulse come with it.
+depends = "$auto, libwayland-client0 (>= 1.20), libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
 # The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
 # edits survive an upgrade.
 conf-files = ["/etc/pam.d/wlshare"]

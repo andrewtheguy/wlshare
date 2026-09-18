@@ -124,7 +124,11 @@ release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
 before running the workflow. The package version is the crate's, and the
 distribution is in the file name only. The package depends on
 `libwlroots-0.19 (>= 0.19.0)`, the first wlroots that keeps the cursor out of a
-headless capture.
+headless capture, and on `pipewire`, `wireplumber` and `pipewire-pulse`: the
+PipeWire server the speaker, the camera and the microphone live in, the session
+manager that makes the speaker the default and links streams to it, and the
+PulseAudio server most applications play through. Without them the desktop's
+sound never reaches the speaker and the client hears nothing.
 
 ## Sway, labwc and wlroots for Debian trixie
 
