@@ -41,7 +41,9 @@
 //!   wants shared ([`outputs`]).
 //! - **The QEMU Audio extension**, the registered one, which carries the
 //!   desktop's sound over the same connection as raw samples in the format the
-//!   client chose ([`audio`]).
+//!   client chose ([`audio`]), and **the silence extension**, a private
+//!   pseudo-encoding and message type beside it, which lets a client that lists
+//!   it be sent a count of silent frames instead of the frames.
 //! - **The camera extension**, a third private pair, which is how a client lends
 //!   the desktop a camera: the client plugs it and sends H.264, and the server
 //!   says when the desktop's applications want frames ([`camera`]).
@@ -101,6 +103,10 @@ pub const ENCODING_OUTPUTS: i32 = 0x574c_534f;
 pub const ENCODING_CAMERA: i32 = 0x574c_5343;
 /// The microphone extension's pseudo-encoding, the ASCII bytes `WLSM`.
 pub const ENCODING_MICROPHONE: i32 = 0x574c_534d;
+/// The silence extension's pseudo-encoding, the ASCII bytes `WLSA`: a client
+/// that lists it beside [`ENCODING_QEMU_AUDIO`] accepts
+/// [`audio::audio_silence`] in place of samples that are all silence.
+pub const ENCODING_AUDIO_SILENCE: i32 = 0x574c_5341;
 /// The QEMU Audio extension's pseudo-encoding: a client that lists it can
 /// take the desktop's sound, and is told so by an empty rectangle of this
 /// encoding ([`audio`]).

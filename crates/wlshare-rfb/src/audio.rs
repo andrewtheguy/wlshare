@@ -25,6 +25,20 @@
 //! **samples are little-endian** here. The sample format, channel count and frequency are
 //! the client's to choose; the server converts whatever the desktop plays into
 //! them.
+//!
+//! ## Silence
+//!
+//! Raw samples cost the same whether anything is playing or not, and a desktop
+//! is silent most of the time. A client that also lists the private
+//! pseudo-encoding [`crate::ENCODING_AUDIO_SILENCE`] (`WLSA`) accepts
+//! [`audio_silence`] — message type [`MSG_AUDIO_SILENCE`] — in place of an
+//! [`audio_data`] whose every sample is silence ([`SampleFormat::silence`]):
+//! a count of frames rather than the frames, which the client expands back into
+//! exactly the samples it stands for. Nothing is lost and nothing about the
+//! stream's timing changes; eight bytes stand in for a buffer of any length.
+//! Listing the encoding is the whole negotiation, as it is for LastRect: the
+//! server announces nothing, and a client that does not list it is sent every
+//! sample.
 
 use thiserror::Error;
 
@@ -33,6 +47,12 @@ use thiserror::Error;
 pub const MSG_QEMU: u8 = 255;
 /// The submessage type under [`MSG_QEMU`] that is audio.
 pub const SUBMESSAGE_AUDIO: u8 = 1;
+
+/// The silence message's type, server → client only; outside every registered
+/// type.
+pub const MSG_AUDIO_SILENCE: u8 = 0xE4;
+/// The bytes of a silence message, type included.
+pub const AUDIO_SILENCE_LEN: usize = 8;
 
 /// Client operation: start sending audio.
 pub const CLIENT_AUDIO_ENABLE: u16 = 0;
@@ -96,6 +116,19 @@ impl SampleFormat {
             Self::U32 | Self::S32 => 4,
         }
     }
+
+    /// One sample of silence, little-endian: zero in the signed formats, the
+    /// midpoint in the unsigned ones.
+    pub fn silence(self) -> &'static [u8] {
+        match self {
+            Self::U8 => &[0x80],
+            Self::S8 => &[0],
+            Self::U16 => &[0, 0x80],
+            Self::S16 => &[0, 0],
+            Self::U32 => &[0, 0, 0, 0x80],
+            Self::S32 => &[0, 0, 0, 0],
+        }
+    }
 }
 
 /// The format a client asked for: what every sample in an [`audio_data`] is.
@@ -116,6 +149,18 @@ impl AudioFormat {
     /// The bytes of one frame: one sample per channel.
     pub fn frame_bytes(&self) -> usize {
         self.sample.bytes() * usize::from(self.channels)
+    }
+
+    /// The frames in `samples` when every sample is silence, which is when an
+    /// [`audio_silence`] of that many frames may stand in for them. `None` for
+    /// anything audible, and for an empty or ragged buffer.
+    pub fn silent_frames(&self, samples: &[u8]) -> Option<u32> {
+        let frames = samples.len() / self.frame_bytes();
+        if frames == 0 || !samples.len().is_multiple_of(self.frame_bytes()) {
+            return None;
+        }
+        let silence = self.sample.silence();
+        samples.chunks_exact(silence.len()).all(|sample| sample == silence).then_some(frames as u32)
     }
 }
 
@@ -219,6 +264,22 @@ pub fn audio_data(samples: &[u8]) -> Vec<u8> {
     msg
 }
 
+/// Server → client, to a client that listed [`crate::ENCODING_AUDIO_SILENCE`]:
+/// `frames` frames of silence in the client's format, in place of the
+/// [`audio_data`] that would have carried them.
+///
+/// | Offset | Type | Field |
+/// |---|---|---|
+/// | 0 | U8 | 0xE4 |
+/// | 1 | U8[3] | padding |
+/// | 4 | U32 | frames |
+pub fn audio_silence(frames: u32) -> [u8; AUDIO_SILENCE_LEN] {
+    let mut msg = [0u8; AUDIO_SILENCE_LEN];
+    msg[0] = MSG_AUDIO_SILENCE;
+    msg[4..].copy_from_slice(&frames.to_be_bytes());
+    msg
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +352,70 @@ mod tests {
         assert_eq!(len, 8);
         assert_eq!(&data[8..8 + len], &[1, 2, 3, 4, 5, 6, 7, 8]);
         assert_eq!(data.len(), 8 + len);
+    }
+
+    /// Silence is the zero of a signed format and the midpoint of an unsigned
+    /// one, and only a buffer of nothing but that, in whole frames, is silent.
+    #[test]
+    fn only_whole_frames_of_silence_are_silent() {
+        let s16 = AudioFormat::DEFAULT;
+        assert_eq!(s16.silent_frames(&[0; 3840]), Some(960));
+        let mut one_off = [0u8; 3840];
+        one_off[3000] = 1;
+        assert_eq!(s16.silent_frames(&one_off), None);
+        assert_eq!(s16.silent_frames(&[]), None);
+        assert_eq!(s16.silent_frames(&[0; 6]), None);
+
+        let u8_mono = AudioFormat { sample: SampleFormat::U8, channels: 1, frequency: 8000 };
+        assert_eq!(u8_mono.silent_frames(&[0x80; 160]), Some(160));
+        assert_eq!(u8_mono.silent_frames(&[0; 160]), None, "zero is full negative scale unsigned");
+
+        let u16_stereo = AudioFormat { sample: SampleFormat::U16, channels: 2, frequency: 48_000 };
+        assert_eq!(u16_stereo.silent_frames(&[0x00, 0x80, 0x00, 0x80]), Some(1));
+        assert_eq!(u16_stereo.silent_frames(&[0x80, 0x00, 0x80, 0x00]), None, "the midpoint is little-endian");
+
+        let u32_mono = AudioFormat { sample: SampleFormat::U32, channels: 1, frequency: 48_000 };
+        assert_eq!(u32_mono.silent_frames(&[0, 0, 0, 0x80, 0, 0, 0, 0x80]), Some(2));
+        let s32_mono = AudioFormat { sample: SampleFormat::S32, channels: 1, frequency: 48_000 };
+        assert_eq!(s32_mono.silent_frames(&[0; 8]), Some(2));
+        let s8_mono = AudioFormat { sample: SampleFormat::S8, channels: 1, frequency: 8000 };
+        assert_eq!(s8_mono.silent_frames(&[0; 3]), Some(3));
+    }
+
+    /// Every sample of silence is one sample wide, and is what the extension's
+    /// own numbers say the middle of the range is.
+    #[test]
+    fn silence_is_the_middle_of_each_range() {
+        for code in 0..=5 {
+            let sample = SampleFormat::from_wire(code).unwrap();
+            let silence = sample.silence();
+            assert_eq!(silence.len(), sample.bytes());
+            let mut wide = [0u8; 8];
+            wide[..silence.len()].copy_from_slice(silence);
+            let value = u64::from_le_bytes(wide);
+            let expected = match sample {
+                SampleFormat::U8 | SampleFormat::U16 | SampleFormat::U32 => 1u64 << (8 * sample.bytes() - 1),
+                SampleFormat::S8 | SampleFormat::S16 | SampleFormat::S32 => 0,
+            };
+            assert_eq!(value, expected, "{sample:?}");
+        }
+    }
+
+    /// The silence message, read back by a decoder written from its layout, and
+    /// expanded into the samples it stands for.
+    #[test]
+    fn a_silence_message_stands_for_its_frames() {
+        let samples = [0u8; 3840];
+        let frames = AudioFormat::DEFAULT.silent_frames(&samples).unwrap();
+        let msg = audio_silence(frames);
+        assert_eq!(msg.len(), 8);
+        assert_eq!(msg[0], 0xE4);
+        assert_eq!(&msg[1..4], &[0, 0, 0]);
+        let decoded = u32::from_be_bytes([msg[4], msg[5], msg[6], msg[7]]);
+        assert_eq!(decoded, 960);
+        // 16-bit stereo: four bytes a frame, every one zero.
+        let expanded = vec![0u8; decoded as usize * 4];
+        assert_eq!(expanded, samples);
+        assert_eq!(audio_silence(0x0102_0304), [0xE4, 0, 0, 0, 1, 2, 3, 4]);
     }
 }

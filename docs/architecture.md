@@ -313,6 +313,31 @@ headless session still has a sink to capture — PipeWire's Dummy Output is one.
 `audio = false` in the configuration turns the announcement off, and a client
 that lists the pseudo-encoding is then told nothing.
 
+### Silence
+
+The capture keeps the default sink's monitor running, so a desktop playing
+nothing still produces a buffer of zeros every 20 ms — at 48 kHz stereo 16-bit,
+192 kB/s of silence. A client that also lists the private pseudo-encoding
+`0x574c5341` (`WLSA`) is sent a count of frames instead:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | U8 | message type, `0xE4` |
+| 1 | U8[3] | padding |
+| 4 | U32 | frames |
+
+It stands, between a *begin* and an *end*, for that many frames in the client's
+format with every sample silent — zero in a signed format, the midpoint
+(`0x80`, `0x8000`, `0x80000000`) in an unsigned one. That is exact, not a
+threshold, so the client's expansion is bit-for-bit what the capture produced
+and the stream's timing is untouched; a desktop's idle output then costs eight
+bytes per 20 ms. The session coalesces the silent buffers of one drain into a
+single count, sent before the audible buffer that ends the run or when the
+queue is empty, never held for a later drain. Listing the encoding is the whole
+negotiation, as it is for LastRect: nothing is announced, and a client that
+does not list it gets every sample. The remotex gateway is the one client that
+lists it.
+
 ## The camera extension
 
 A client's camera, lent to the desktop. RFB carries nothing from a client but
