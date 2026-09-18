@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The RFB wire wlshare speaks: message parsing and building, RSA-AES, the ZRLE encoder, the FLAC audio and the private extensions"
+description = "The RFB wire wlshare speaks: message parsing and building, RSA-AES, the ZRLE encoder, the VP9 encoding, the FLAC audio and the private extensions"
 
 # Platform-independent and dependency-light on purpose: this crate is where the
 # bytes on the wire are decided, and it must build and unit-test on any OS,
@@ -35,14 +35,22 @@ flacenc = { version = "0.5", default-features = false, optional = true }
 # trait and the packet it takes.
 symphonia-bundle-flac = { version = "0.6", optional = true }
 symphonia-core = { version = "0.6", optional = true }
+# The VP9 encoding's codec, behind both features: libvpx 1.16 as a static
+# archive for this target, downloaded and checked by the crate's build script —
+# nothing to configure, assemble or install. The archives cover macOS arm64,
+# Linux x86_64 and aarch64 and Windows x86_64, which is every place a daemon or
+# a client of this crate is built.
+vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260906161241-e55a2da", optional = true }
 
 [features]
-# The server's FLAC encoder, `audio::FlacEncoder`. Off by default, so a client,
-# which only decodes, does not build an encoder it never runs.
-encode = ["dep:flacenc"]
-# The client's FLAC decoder, `audio::FlacDecoder`. Off by default, so the daemon,
-# which only encodes, does not build a decoder it never runs.
-decode = ["dep:symphonia-bundle-flac", "dep:symphonia-core"]
+# The server's FLAC encoder, `audio::FlacEncoder`, and VP9 encoder,
+# `vp9::Vp9Encoder`. Off by default, so a client, which only decodes, does not
+# build an encoder it never runs.
+encode = ["dep:flacenc", "dep:vpx-sys"]
+# The client's FLAC decoder, `audio::FlacDecoder`, and VP9 decoder,
+# `vp9::Vp9Decoder`. Off by default, so the daemon, which only encodes, does not
+# build a decoder it never runs.
+decode = ["dep:symphonia-bundle-flac", "dep:symphonia-core", "dep:vpx-sys"]
 
 [dev-dependencies]
 # The encoder's tests read every frame back with the client's decoder, which

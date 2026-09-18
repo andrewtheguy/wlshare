@@ -2,8 +2,9 @@
 
 A VNC server for wlroots-based Wayland compositors, built for the
 [remotex](https://github.com/andrewtheguy/remotex) gateway. It captures one
-output through wlr-screencopy, serves it over RFB 3.8 with ZRLE as its one pixel
-encoding, injects input through the virtual keyboard and pointer protocols,
+output through wlr-screencopy, serves it over RFB 3.8 with ZRLE — or, to one of
+wlshare's own desktop clients that asks, as a VP9 4:4:4 stream at a fixed
+quality — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is

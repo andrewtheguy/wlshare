@@ -1,7 +1,7 @@
 //! The configuration file: what the server listens on, who may connect, which
-//! output it shares, whether its sound goes with it, whether a client may lend it
-//! a camera and a microphone, and how the virtual
-//! keyboard is laid out.
+//! output it shares, the quality of the VP9 encoding, whether its sound goes
+//! with it, whether a client may lend it a camera and a microphone, and how the
+//! virtual keyboard is laid out.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,11 @@ pub struct Config {
     /// The most frames captured per second.
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
+    /// The quality, 1–100, of the VP9 encoding a desktop client may ask for
+    /// instead of ZRLE: a fixed quantizer, which nothing moves while a session
+    /// runs ([`wlshare_rfb::vp9`]).
+    #[serde(default = "default_vp9_quality")]
+    pub vp9_quality: u8,
     /// How many seconds a connection has to finish the handshake — the
     /// security exchange and the login — before it is dropped. A client that
     /// asks its user to confirm the server key and then type a password spends
@@ -127,6 +132,10 @@ fn default_max_fps() -> u32 {
     60
 }
 
+fn default_vp9_quality() -> u8 {
+    60
+}
+
 fn default_handshake_timeout_secs() -> u64 {
     120
 }
@@ -147,6 +156,12 @@ impl Config {
     /// can finish inside, and one answer to the question of who may connect.
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.max_fps > 0, "max_fps must be at least 1");
+        anyhow::ensure!(
+            (wlshare_rfb::vp9::QUALITY_MIN..=wlshare_rfb::vp9::QUALITY_MAX).contains(&self.vp9_quality),
+            "vp9_quality must be from {} to {}",
+            wlshare_rfb::vp9::QUALITY_MIN,
+            wlshare_rfb::vp9::QUALITY_MAX
+        );
         anyhow::ensure!(self.handshake_timeout_secs > 0, "handshake_timeout_secs must be at least 1");
         anyhow::ensure!(
             !(self.pam.is_some() && self.password.is_some()),
@@ -187,6 +202,7 @@ mod tests {
         assert_eq!(c.listen, default_listen());
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
+        assert_eq!(c.vp9_quality, 60);
         assert_eq!(c.handshake_timeout_secs, 120);
         assert!(!c.audio);
         assert!(!c.camera);
@@ -230,6 +246,17 @@ mod tests {
         assert_eq!(c.handshake_timeout_secs, 30);
         let zero: Config = toml::from_str("handshake_timeout_secs = 0").unwrap();
         assert!(zero.validate().is_err());
+    }
+
+    #[test]
+    fn the_vp9_quality_is_on_the_dial() {
+        let c: Config = toml::from_str("vp9_quality = 100").unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.vp9_quality, 100);
+        for off in ["vp9_quality = 0", "vp9_quality = 101"] {
+            let c: Config = toml::from_str(off).unwrap();
+            assert!(c.validate().is_err(), "{off}");
+        }
     }
 
     #[test]
