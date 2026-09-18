@@ -21,7 +21,7 @@
 //!   lossless encoding, every client worth naming decodes it, and the remotex
 //!   gateway asks for it first. **The VP9 encoding** is a private one for
 //!   wlshare's own desktop clients: the whole framebuffer as one 4:4:4 VP9
-//!   stream at a fixed quality ([`vp9`]), for a desktop that moves. Raw is
+//!   stream at a quality its owner sets ([`vp9`]), for a desktop that moves. Raw is
 //!   produced only before the client's first `SetEncodings`, where the RFC
 //!   requires it, and for a client whose list names neither. Tight, Hextile,
 //!   RRE, CopyRect and every other lossy encoding are absent.

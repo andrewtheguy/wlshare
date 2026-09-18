@@ -217,10 +217,19 @@ fixed:
 - **BT.601 at studio swing**, converted from the framebuffer's `B, G, R, X` and
   declared in the keyframe header, so a decoder converts back with the same
   matrix. The client's pixel format does not apply.
-- **A fixed quantizer.** `vp9_quality` (1–100, 60 by default) maps onto VP9's
-  8–63, finest last, as remotex's dial does; rate control is pinned to it, with
-  no bitrate, no adaptive quantization and no dropped frames, so a picture that
-  settles is sent at exactly that quality. Screen-content tuning, libvpx's
+- **A quantizer that follows the link.** The 1–100 dial maps onto VP9's 8–63,
+  finest last, as remotex's dial does; rate control is pinned to wherever the
+  dial is, with no bitrate, no adaptive quantization and no dropped frames.
+  A session starts at `vp9_quality` (60 by default), which is a ceiling it
+  never goes above, and walks down to `vp9_quality_min` (20, or `vp9_quality`
+  if that is lower) while the client is behind — remotex's walk: ten points
+  after two frames each queued 60 ms or more, three back after thirty that
+  queued 30 ms or less, at most once a second. A frame's queueing is its
+  fence's round trip, answered once the client has decoded it, less the
+  shortest of the last 32, so distance does not read as queueing; a keyframe
+  counts towards that floor but is no verdict. Without Fence it is how long
+  writing the frame blocked. The dial moves on the running encoder, so a move
+  costs no keyframe, and an encoder made at a new size starts where it stands. Screen-content tuning, libvpx's
   realtime speed 7, no lag, and threads with row and tile parallelism.
 - **Keyframes only when a decoder needs one**: the first frame after the
   encoding is listed, the first at a new size (the encoder is made again for
@@ -660,8 +669,9 @@ bare reason "authentication failed"; the actual reason is logged.
 
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the VP9
 one: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
-lossless choice. VP9 at 4:2:0, a VP9 quality that follows the link, and the VP9
-encoding for anything but a desktop client that lists it.
+lossless choice. VP9 at 4:2:0, a VP9 quality above the configured one however
+much room the link has, and the VP9 encoding for anything but a desktop client
+that lists it.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the
 cursor session does report positions, but only when the output repaints.

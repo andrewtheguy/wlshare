@@ -32,11 +32,15 @@
 //!
 //! A client that lists the VP9 encoding gets every update as one rectangle
 //! over the whole framebuffer, the next frame of one VP9 stream
-//! ([`wlshare_rfb::vp9`]), at the quality the configuration fixes. The encoder
-//! is made again at every new size, whose first frame is a keyframe, and a
-//! non-incremental request or the encoding's being listed anew asks for one.
-//! The encode runs on this task's worker, told it is blocking, and the fence
-//! keeps it to one frame in flight like any other update. A list that drops
+//! ([`wlshare_rfb::vp9`]). The encoder is made again at every new size, whose
+//! first frame is a keyframe, and a non-incremental request or the encoding's
+//! being listed anew asks for one. The encode runs on this task's worker, told
+//! it is blocking, and the fence keeps it to one frame in flight like any other
+//! update. Its quality starts at the configured one and follows the link
+//! ([`crate::quality`]): each frame's fence, answered once the client has
+//! decoded it, is how long that frame took, and a client without Fence is
+//! measured by how long writing the frame blocked. The dial moves on the
+//! running encoder, so a move costs no keyframe. A list that drops
 //! VP9 is answered with the whole framebuffer in ZRLE, since the picture the
 //! client has is a lossy one.
 //!
@@ -106,7 +110,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
@@ -136,6 +140,7 @@ use crate::auth::Login;
 use crate::camera::{Camera, Signal as CameraSignal};
 use crate::framebuffer::{Rect, ResizeOrigin};
 use crate::microphone::{Microphone, Signal as MicrophoneSignal};
+use crate::quality::QualityWalk;
 use crate::shared::{ClientId, Command, Event, Shared};
 
 /// What the server offers at the security step, and what it checks the client
@@ -170,8 +175,10 @@ pub struct SessionConfig {
     pub security: Security,
     pub name: String,
     pub resize: bool,
-    /// The VP9 encoding's quality, 1–100.
+    /// The VP9 encoding's finest quality, 1–100, where a session starts.
     pub vp9_quality: u8,
+    /// The coarsest the VP9 encoding's quality goes on a link that is behind.
+    pub vp9_quality_min: u8,
     /// Whether the audio extension is announced and served.
     pub audio: bool,
     /// Whether the camera extension is announced and served.
@@ -234,6 +241,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
 
     let events = shared.events.subscribe();
     let frames = shared.frame_tx.subscribe();
+    let walk = QualityWalk::new(config.vp9_quality, config.vp9_quality_min);
     let mut session = Session {
         id,
         shared,
@@ -244,6 +252,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         vp9: None,
         use_vp9: false,
         keyframe_owed: false,
+        walk,
+        vp9_in_flight: None,
         continuous_supported: false,
         fence_supported: false,
         eds_supported: false,
@@ -375,6 +385,11 @@ struct Session {
     use_vp9: bool,
     /// The next VP9 frame must be a keyframe.
     keyframe_owed: bool,
+    /// The VP9 quality this client's link will bear.
+    walk: QualityWalk,
+    /// The VP9 frame whose fence is outstanding: when it was written, and
+    /// whether it was a keyframe.
+    vp9_in_flight: Option<(Instant, bool)>,
     continuous_supported: bool,
     fence_supported: bool,
     eds_supported: bool,
@@ -601,7 +616,12 @@ impl Session {
                 }
                 let vp9 = has(ENCODING_VP9);
                 if vp9 && !self.use_vp9 {
-                    info!("client {}: asked for VP9 at quality {}", self.id.0, self.config.vp9_quality);
+                    info!(
+                        "client {}: asked for VP9 at quality {}, as low as {} on a link that is behind",
+                        self.id.0,
+                        self.walk.quality(),
+                        self.config.vp9_quality_min
+                    );
                     // A decoder that has seen nothing of this stream starts at a keyframe.
                     self.keyframe_owed = true;
                 } else if !vp9 && self.use_vp9 {
@@ -746,6 +766,11 @@ impl Session {
                     writer.send(&msg::fence(echo, &payload)).await?;
                 } else {
                     self.fence_outstanding = false;
+                    if let Some((sent, keyframe)) = self.vp9_in_flight.take() {
+                        let now = Instant::now();
+                        let moved = self.walk.fenced(now.saturating_duration_since(sent), keyframe, now);
+                        self.follow_walk(moved)?;
+                    }
                 }
             }
             ClientMsg::SetDesktopSize { width, height, screens } => {
@@ -1115,17 +1140,29 @@ impl Session {
 
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(pieces.len() as u16));
-        if self.use_vp9 {
-            self.encode_vp9(full)?;
+        // Whether the update is a VP9 frame, and if so whether a keyframe.
+        let keyframe = if self.use_vp9 {
+            Some(self.encode_vp9(full)?)
         } else {
             self.encode_pieces(&pieces);
-        }
+            None
+        };
         if self.fence_supported {
             self.fence_seq = self.fence_seq.wrapping_add(1);
             self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
             self.fence_outstanding = true;
         }
+        let sent = Instant::now();
         writer.send(&self.out).await.context("writing an update")?;
+        match keyframe {
+            Some(keyframe) if self.fence_supported => self.vp9_in_flight = Some((sent, keyframe)),
+            Some(false) => {
+                let now = Instant::now();
+                let moved = self.walk.written(now.saturating_duration_since(sent), now);
+                self.follow_walk(moved)?;
+            }
+            _ => {}
+        }
         self.seen = generation;
         self.pending = None;
         Ok(())
@@ -1133,10 +1170,11 @@ impl Session {
 
     /// The whole framebuffer, copied into `scratch`, as the next frame of the
     /// VP9 stream: a keyframe when the update is a full one or one is owed.
-    fn encode_vp9(&mut self, full: bool) -> anyhow::Result<()> {
+    /// Returns whether it was one.
+    fn encode_vp9(&mut self, full: bool) -> anyhow::Result<bool> {
         let (width, height) = self.known_size;
         if self.vp9.as_ref().is_none_or(|encoder| encoder.size() != (width, height)) {
-            let encoder = Vp9Encoder::new(width, height, self.config.vp9_quality)
+            let encoder = Vp9Encoder::new(width, height, self.walk.quality())
                 .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
             self.vp9 = Some(encoder);
         }
@@ -1148,6 +1186,19 @@ impl Session {
         tokio::task::block_in_place(|| encoder.encode_rect(pixels, usize::from(width) * 4, keyframe, out))
             .with_context(|| format!("encoding a {width}x{height} VP9 frame"))?;
         self.keyframe_owed = false;
+        Ok(keyframe)
+    }
+
+    /// Move the running encoder's dial to where the walk went, if it went
+    /// anywhere; an encoder made later starts there anyway.
+    fn follow_walk(&mut self, moved: Option<u8>) -> anyhow::Result<()> {
+        let Some(quality) = moved else {
+            return Ok(());
+        };
+        debug!("client {}: VP9 quality {quality}", self.id.0);
+        if let Some(encoder) = &mut self.vp9 {
+            encoder.set_quality(quality).context("moving the VP9 quality")?;
+        }
         Ok(())
     }
 
