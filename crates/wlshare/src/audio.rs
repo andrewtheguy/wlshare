@@ -349,10 +349,10 @@ impl Speaker {
                 Err(e)
             }
             Err(_) => {
-                // Stuck coming up: ask it to quit and let it go rather than
-                // wait for a loop that may never run.
-                let _ = speaker.quit.send(());
-                speaker.thread.take();
+                // Stuck waiting on the server: the quit was attached before the
+                // loop ran, so it ends that wait, and dropping the speaker joins
+                // the thread, its node and its connection gone with it.
+                drop(speaker);
                 anyhow::bail!("PipeWire did not take the speaker within {START_TIMEOUT:?}")
             }
         }
@@ -399,6 +399,17 @@ fn serve(quit: pw::channel::Receiver<()>, ready: std::sync::mpsc::Sender<anyhow:
     let _node = up!(core.create_object::<pw::node::Node>("adapter", &props), "creating the speaker");
 
     // The node is made on the server's side; a round trip says whether it was.
+    // Attached before the round trip, so a start that timed out can end a wait
+    // the server never answers.
+    let cancelled = Rc::new(Cell::new(false));
+    let _quit = quit.attach(mainloop.loop_(), {
+        let loop_ = mainloop.clone();
+        let cancelled = cancelled.clone();
+        move |()| {
+            cancelled.set(true);
+            loop_.quit();
+        }
+    });
     let pending = up!(core.sync(0), "waiting for PipeWire to make the speaker");
     let refused = Rc::new(RefCell::new(None::<String>));
     let settled = Rc::new(Cell::new(false));
@@ -430,13 +441,15 @@ fn serve(quit: pw::channel::Receiver<()>, ready: std::sync::mpsc::Sender<anyhow:
         })
         .register();
     mainloop.run();
+    if cancelled.get() {
+        debug!("audio: speaker start cancelled");
+        return;
+    }
     if let Some(message) = refused.take() {
         let _ = ready.send(Err(anyhow::anyhow!("PipeWire refused the speaker: {message}")));
         return;
     }
 
-    let loop_ = mainloop.clone();
-    let _quit = quit.attach(mainloop.loop_(), move |()| loop_.quit());
     info!("audio: the desktop plays into {SPEAKER_NAME} while a client listens");
     let _ = ready.send(Ok(()));
     mainloop.run();
