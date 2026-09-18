@@ -287,13 +287,16 @@ fn run(
     debug!("client {}: audio capture closed", client.0);
 }
 
-/// A capture's hold on the speaker: the first one makes it, and the last one to
-/// go takes it away.
-struct Lease;
+/// A hold on the speaker: the first one makes it, and the last one to go takes
+/// it away. Every capture has one; a session restarting its capture holds one
+/// more across the restart, so the host is not heard between the two.
+pub struct Lease;
 
 impl Lease {
-    /// Blocks until PipeWire has taken the speaker, when there is none yet.
-    fn take() -> anyhow::Result<Self> {
+    /// Blocks until PipeWire has taken the speaker, when there is none yet, and
+    /// dropping the last one joins its thread, so both belong on a blocking
+    /// thread.
+    pub fn take() -> anyhow::Result<Self> {
         let mut speaker = SPEAKER.lock().unwrap();
         match speaker.as_mut() {
             Some(speaker) => speaker.leases += 1,

@@ -120,7 +120,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, watch};
 
-use crate::audio::Capture;
+use crate::audio::{Capture, Lease};
 use crate::auth::Login;
 use crate::camera::{Camera, Signal as CameraSignal};
 use crate::framebuffer::{Rect, ResizeOrigin};
@@ -784,10 +784,20 @@ impl Session {
                 }
                 debug!("client {}: wants audio as {:?} x{} at {} Hz", self.id.0, format.sample, format.channels, format.frequency);
                 self.audio_format = format;
-                // A format set while the stream runs restarts it in the new one.
+                // A format set while the stream runs restarts it in the new one,
+                // with the speaker held across, so the desktop keeps playing
+                // into it rather than on the host between the two captures.
                 if self.audio.is_some() {
-                    self.stop_audio(writer).await?;
-                    self.start_audio(writer).await?;
+                    let speaker = tokio::task::spawn_blocking(Lease::take).await.context("the speaker thread did not start")??;
+                    let restarted = async {
+                        self.stop_audio(writer).await?;
+                        self.start_audio(writer).await
+                    }
+                    .await;
+                    // The last hold, when the new capture did not start, joins the
+                    // speaker's thread.
+                    tokio::task::spawn_blocking(move || drop(speaker)).await.context("the speaker thread did not stop")?;
+                    restarted?;
                 }
             }
             ClientMsg::CameraPlug(format) => {

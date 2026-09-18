@@ -366,7 +366,8 @@ requested one, so the first buffers of a session are often shorter than 20 ms â€
 and queues each frame it completes in a sixteen-deep queue, dropping the oldest
 when a client cannot keep up: each FLAC frame decodes on its own, so a dropped
 one is a 20 ms hole, and a stalled capture callback is worse. A set-format on a
-running stream restarts the capture in the new format, and a disable or a
+running stream restarts the capture in the new format, holding the speaker
+across so the host is not heard between the two captures, and a disable or a
 disconnect stops it; what is left of a frame goes with it.
 
 The session drains that queue before every framebuffer update, so sound is never

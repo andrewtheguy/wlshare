@@ -47,12 +47,15 @@ max_fps = 60
 # connection) spends most of this waiting on the person.
 handshake_timeout_secs = 120
 
-# Whether a client may hear the desktop. A client that asks for wlshare's audio
-# extension (the remotex gateway, for a target with audio = true) is sent what
-# the default sink plays, captured from PipeWire in the session in the sample
-# format the client chose and encoded as FLAC. A headless session needs a
-# sink for applications to play into; PipeWire's own Dummy Output, which
-# WirePlumber provides when no device is present, is enough.
+# Whether a client may hear the desktop. While a client that asks for wlshare's
+# audio extension (the remotex gateway, for a target with audio = true) has it
+# enabled, wlshare adds a PipeWire sink of its own, "wlshare remote audio", and
+# makes it the default: every stream that follows the default plays there and is
+# silent on the host, and one an application pinned to a sink of the host's is
+# still heard on it. What that sink plays is sent in the sample format the client
+# chose, encoded as FLAC. When the last client stops listening the sink goes and
+# the host's own is the default again. A headless session needs no sink of its
+# own: wlshare's is one.
 audio = true
 
 # Whether a client may lend the desktop its camera. A client that asks for the
