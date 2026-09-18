@@ -38,6 +38,12 @@ lossy step) stays the only one.
   format stay as they are. The FLAC stream header (`STREAMINFO`) is never
   sent: the format is the one the client set, and each frame's own header
   carries its block size.
+- FLAC stores only signed samples, and a client may choose U8, U16 or U32.
+  The encoder flips the top bit of each unsigned sample, which is the same
+  as subtracting the midpoint. That maps the unsigned range exactly onto the
+  signed one of the same width, with silence landing on zero. The decoder
+  flips the bit back, and since the flip is its own inverse, the client gets
+  the original values bit for bit. Signed formats are encoded as they are.
 - It would replace the silence extension rather than sit beside it, because
   FLAC already encodes silence in a few bytes. Once it lands, `WLSA` and
   `0xE4` go (no legacy paths).
