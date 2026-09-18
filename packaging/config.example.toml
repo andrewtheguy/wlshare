@@ -47,9 +47,10 @@ max_fps = 60
 # connection) spends most of this waiting on the person.
 handshake_timeout_secs = 120
 
-# Whether a client may hear the desktop. A client that asks for the QEMU Audio
-# extension is sent what the default sink plays, captured from PipeWire in the
-# session, in the sample format the client chose. A headless session needs a
+# Whether a client may hear the desktop. A client that asks for wlshare's audio
+# extension (the remotex gateway, for a target with audio = true) is sent what
+# the default sink plays, captured from PipeWire in the session in the sample
+# format the client chose and encoded as FLAC. A headless session needs a
 # sink for applications to play into; PipeWire's own Dummy Output, which
 # WirePlumber provides when no device is present, is enough.
 audio = true

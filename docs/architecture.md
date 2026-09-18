@@ -274,22 +274,49 @@ which is where the gateway's half of this lives.
 
 ## The audio extension
 
-The one audio extension `rfbproto` registers — pseudo-encoding `-259`, message
-type `255` submessage `1` — spoken by QEMU as a server and gtk-vnc as a client.
-Nothing about it is private, which is why it was taken over a second `WLSH`-style
-message: a client that already speaks it hears wlshare with nothing new to learn.
+The desktop's sound, as FLAC, on the connection the pixels use. It is private —
+pseudo-encoding `0x574c5346` (`WLSF`) and server message type `0xE4` — and the
+remotex gateway is the client it is for. The client's messages and the stream's
+begin and end are borrowed from the QEMU Audio extension `rfbproto` registers,
+message type `255` submessage `1`; QEMU's pseudo-encoding, `-259`, is not
+spoken, because what it promises is raw samples and none are sent. A client that
+lists only `-259`, gtk-vnc for one, hears nothing.
 
 - **The announcement**, server → client: an empty pseudo-rectangle of encoding
-  `-259` in a `FramebufferUpdate` of its own, sent ahead of any pixels to a
+  `WLSF` in a `FramebufferUpdate` of its own, sent ahead of any pixels to a
   client whose `SetEncodings` listed it. The only way support is announced.
-- **Set format, enable, disable**, client → server: the sample format, channel
-  count and frequency are the client's to choose, and the server converts what
-  the desktop plays into them. The frequency is bounded at 192 kHz — above every
-  rate real audio uses, and below where a server's own arithmetic on it starts
-  to overflow.
-- **Begin, data, end**, server → client. Samples are interleaved and
-  little-endian — the specification is silent on the byte order, QEMU writes
-  host-native and gtk-vnc reads little-endian.
+- **Set format, enable, disable**, client → server, QEMU's messages: the sample
+  format, channel count and frequency are the client's to choose, and the
+  server converts what the desktop plays into them. The formats are QEMU's
+  codes 0–3, U8, S8, U16 and S16; its 32-bit codes are refused, because FLAC
+  stores at most 24 bits. The frequency is bounded at 8 kHz, below which a
+  frame is shorter than the encoder takes, and at 96 kHz, flacenc's own
+  ceiling. A code or rate outside those is fatal.
+- **Begin and end**, server → client, QEMU's messages.
+- **A FLAC frame**, server → client, between a begin and an end:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | U8 | message type, `0xE4` |
+| 1 | U8[3] | padding |
+| 4 | U32 | length of the frame |
+| 8 | U8[] | one FLAC frame |
+
+Every frame holds exactly `frequency / 50` frames of samples, rounded down —
+twenty milliseconds, 960 at 48 kHz — in fixed-blocking mode, numbered from zero
+at each begin. The FLAC stream header, `STREAMINFO`, is never sent: everything
+in it is already agreed, so a client builds it from the format it set, with
+that block size as both minimum and maximum. An unsigned format has the top
+bit of every sample flipped before it is encoded, which maps its range onto the
+signed one of the same width with silence on zero; the client flips it back.
+Decoded samples are interleaved and little-endian, and bit for bit what the
+capture produced.
+
+FLAC is lossless, so the gateway's Opus encode stays the only lossy step, while
+music and speech cost about two-thirds of their 1.5 Mbit/s PCM rate or less and
+a silent desktop a few bytes a frame. `wlshare-rfb` encodes with `flacenc`, and
+its tests decode every frame with symphonia's decoder, which shares nothing
+with it.
 
 `audio.rs` starts one PipeWire capture per client that enables audio, on a
 thread of its own. It is a `Stream/Input/Audio` node with
@@ -297,46 +324,25 @@ thread of its own. It is a `Stream/Input/Audio` node with
 monitor** — what the desktop is playing, whatever is playing it — and
 `node.latency` asks for 20 ms buffers. The process callback runs on that
 thread's loop and not on the graph's real-time one — `RT_PROCESS` is
-deliberately not set, because the callback allocates, takes a mutex and wakes a
-task, and doing any of that on the data thread could stall the whole audio graph
-and give every application on the host an xrun. It copies whole frames into a
-sixteen-deep queue, dropping the oldest when a client cannot keep up: a dropped
-buffer is a hole, and a stalled capture callback is worse. A set-format on a running stream
-restarts the capture in the new format, and a disable or a disconnect stops it.
+deliberately not set, because the callback encodes, allocates, takes a mutex
+and wakes a task, and doing any of that on the data thread could stall the whole
+audio graph and give every application on the host an xrun. Encoding there
+keeps it off the session's task, which has pixels to compress; a 20 ms buffer
+takes a fraction of a millisecond. The encoder keeps what does not fill a frame
+for the next buffer — PipeWire honours its own quantum before settling on the
+requested one, so the first buffers of a session are often shorter than 20 ms —
+and queues each frame it completes in a sixteen-deep queue, dropping the oldest
+when a client cannot keep up: each FLAC frame decodes on its own, so a dropped
+one is a 20 ms hole, and a stalled capture callback is worse. A set-format on a
+running stream restarts the capture in the new format, and a disable or a
+disconnect stops it; what is left of a frame goes with it.
 
 The session drains that queue before every framebuffer update, so sound is never
-held behind a ZRLE frame it was ready before. PipeWire honours its own quantum
-before settling on the requested one, so the first buffers of a session are
-often shorter than 20 ms; every one of them is a whole number of frames. A
-headless session still has a sink to capture — PipeWire's Dummy Output is one.
+held behind a ZRLE frame it was ready before. A headless session still has a
+sink to capture — PipeWire's Dummy Output is one.
 
 `audio = false` in the configuration turns the announcement off, and a client
 that lists the pseudo-encoding is then told nothing.
-
-### Silence
-
-The capture keeps the default sink's monitor running, so a desktop playing
-nothing still produces a buffer of zeros every 20 ms — at 48 kHz stereo 16-bit,
-192 kB/s of silence. A client that also lists the private pseudo-encoding
-`0x574c5341` (`WLSA`) is sent a count of frames instead:
-
-| Offset | Type | Field |
-|---|---|---|
-| 0 | U8 | message type, `0xE4` |
-| 1 | U8[3] | padding |
-| 4 | U32 | frames |
-
-It stands, between a *begin* and an *end*, for that many frames in the client's
-format with every sample silent — zero in a signed format, the midpoint
-(`0x80`, `0x8000`, `0x80000000`) in an unsigned one. That is exact, not a
-threshold, so the client's expansion is bit-for-bit what the capture produced
-and the stream's timing is untouched; a desktop's idle output then costs eight
-bytes per 20 ms. The session coalesces the silent buffers of one drain into a
-single count, sent before the audible buffer that ends the run or when the
-queue is empty, never held for a later drain. Listing the encoding is the whole
-negotiation, as it is for LastRect: nothing is announced, and a client that
-does not list it gets every sample. The remotex gateway is the one client that
-lists it.
 
 ## The camera extension
 

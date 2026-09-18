@@ -1,5 +1,6 @@
 //! The desktop's sound: a PipeWire capture of the default sink's monitor, one
-//! per client that enabled audio, in the format that client asked for.
+//! per client that enabled audio, in the format that client asked for and
+//! encoded as FLAC.
 //!
 //! wlshare runs inside the user's session, where the audio graph is, so it
 //! reads what the desktop plays the same way it reads what the desktop draws:
@@ -8,7 +9,8 @@
 //! is PipeWire's word for "the monitor of whatever the default sink is", so it
 //! follows the default output when that changes. PipeWire converts the graph's
 //! own rate and sample format into the client's, and is asked for buffers of
-//! twenty milliseconds — one Opus packet's worth at the gateway.
+//! twenty milliseconds — one FLAC frame's worth, and one Opus packet's at the
+//! gateway.
 //!
 //! Per client rather than shared, because the format is the client's choice
 //! and two clients may choose differently; a capture stream is cheap, and a
@@ -18,13 +20,16 @@
 //!
 //! PipeWire's loop wants a thread of its own, so each capture is one, and the
 //! process callback runs on that loop rather than on the graph's real-time
-//! thread — `RT_PROCESS` is deliberately not set. The callback copies the
-//! buffer into a queue, which allocates, takes a mutex and wakes a task, and
-//! none of that is real-time safe: run on the data thread it could stall the
-//! whole audio graph and give every application on the host an xrun. The
-//! thread this capture already owns is the right place for it, and a
-//! twenty-millisecond buffer has time to spare. A session that falls behind
-//! loses the oldest buffers, never the newest, so what it does send is live.
+//! thread — `RT_PROCESS` is deliberately not set. The callback encodes the
+//! buffer ([`FlacEncoder`]) and queues the frames it completes, which
+//! allocates, takes a mutex and wakes a task, and none of that is real-time
+//! safe: run on the data thread it could stall the whole audio graph and give
+//! every application on the host an xrun. The thread this capture already owns
+//! is the right place for it, and off the session's task, which has pixels to
+//! compress; a twenty-millisecond buffer takes a fraction of a millisecond to
+//! encode. A session that falls behind loses the oldest frames, never the
+//! newest, so what it does send is live, and each FLAC frame decodes on its
+//! own, so a lost one costs the client nothing but its own samples.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -36,19 +41,19 @@ use log::{debug, info, warn};
 use pipewire as pw;
 use pw::spa;
 use tokio::sync::Notify;
-use wlshare_rfb::audio::{AudioFormat, SampleFormat};
+use wlshare_rfb::audio::{AudioFormat, FlacEncoder, SampleFormat};
 
 use crate::shared::ClientId;
 
-/// Buffers kept for a session slow to send them; the oldest goes first.
+/// Frames kept for a session slow to send them; the oldest goes first.
 const QUEUE_DEPTH: usize = 16;
 /// How long PipeWire may take to come up before an enable is refused.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// The buffer PipeWire is asked for, in milliseconds of the client's rate.
 const BUFFER_MS: u32 = 20;
 
-/// One client's capture: the thread running PipeWire's loop, and the buffers
-/// it has produced.
+/// One client's capture: the thread running PipeWire's loop, and the FLAC
+/// frame messages it has produced.
 pub struct Capture {
     quit: pw::channel::Sender<()>,
     thread: Option<JoinHandle<()>>,
@@ -57,7 +62,7 @@ pub struct Capture {
 
 struct Queue {
     buffers: Mutex<VecDeque<Vec<u8>>>,
-    /// Signalled when a buffer is queued; a permit is kept when nobody waits.
+    /// Signalled when a frame is queued; a permit is kept when nobody waits.
     ready: Notify,
     dropped: std::sync::atomic::AtomicU64,
 }
@@ -66,6 +71,7 @@ impl Capture {
     /// Open a capture in `format` for `client`. Blocks until PipeWire has taken
     /// the stream or refused it, so it belongs on a blocking thread.
     pub fn start(client: ClientId, format: AudioFormat) -> anyhow::Result<Self> {
+        let encoder = FlacEncoder::new(format).context("setting up the FLAC encoder")?;
         let queue = Arc::new(Queue {
             buffers: Mutex::new(VecDeque::with_capacity(QUEUE_DEPTH)),
             ready: Notify::new(),
@@ -76,7 +82,7 @@ impl Capture {
         let thread_queue = queue.clone();
         let thread = std::thread::Builder::new()
             .name(format!("audio-{}", client.0))
-            .spawn(move || run(client, format, thread_queue, quit_rx, ready_tx))
+            .spawn(move || run(client, format, encoder, thread_queue, quit_rx, ready_tx))
             .context("spawning the audio thread")?;
         let mut capture = Self { quit, thread: Some(thread), queue };
         match ready_rx.recv_timeout(START_TIMEOUT) {
@@ -96,12 +102,12 @@ impl Capture {
         }
     }
 
-    /// The oldest buffer not yet sent, if any.
+    /// The oldest FLAC frame message not yet sent, if any.
     pub fn take(&self) -> Option<Vec<u8>> {
         self.queue.buffers.lock().unwrap().pop_front()
     }
 
-    /// Resolves once a buffer has been queued since the last wait.
+    /// Resolves once a frame has been queued since the last wait.
     pub async fn ready(&self) {
         self.queue.ready.notified().await;
     }
@@ -115,7 +121,7 @@ impl Drop for Capture {
         }
         let dropped = self.queue.dropped.load(std::sync::atomic::Ordering::Relaxed);
         if dropped > 0 {
-            debug!("audio: {dropped} buffer(s) were dropped for a session that fell behind");
+            debug!("audio: {dropped} frame(s) were dropped for a session that fell behind");
         }
     }
 }
@@ -127,8 +133,6 @@ fn spa_format(sample: SampleFormat) -> spa::param::audio::AudioFormat {
         SampleFormat::S8 => F::S8,
         SampleFormat::U16 => F::U16LE,
         SampleFormat::S16 => F::S16LE,
-        SampleFormat::U32 => F::U32LE,
-        SampleFormat::S32 => F::S32LE,
     }
 }
 
@@ -137,6 +141,7 @@ fn spa_format(sample: SampleFormat) -> spa::param::audio::AudioFormat {
 fn run(
     client: ClientId,
     format: AudioFormat,
+    mut encoder: FlacEncoder,
     queue: Arc<Queue>,
     quit: pw::channel::Receiver<()>,
     ready: std::sync::mpsc::Sender<anyhow::Result<()>>,
@@ -195,13 +200,24 @@ fn run(
                 if whole == 0 {
                     return;
                 }
-                let samples = bytes[start..start + whole].to_vec();
-                let mut buffers = process_queue.buffers.lock().unwrap();
-                if buffers.len() >= QUEUE_DEPTH {
-                    buffers.pop_front();
-                    process_queue.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let frames = match encoder.push(&bytes[start..start + whole]) {
+                    Ok(frames) => frames,
+                    Err(e) => {
+                        warn!("client {}: audio: {e}", client.0);
+                        return;
+                    }
+                };
+                if frames.is_empty() {
+                    return;
                 }
-                buffers.push_back(samples);
+                let mut buffers = process_queue.buffers.lock().unwrap();
+                for frame in frames {
+                    if buffers.len() >= QUEUE_DEPTH {
+                        buffers.pop_front();
+                        process_queue.dropped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    buffers.push_back(frame);
+                }
                 drop(buffers);
                 process_queue.ready.notify_one();
             })

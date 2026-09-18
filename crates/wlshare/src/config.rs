@@ -42,7 +42,7 @@ pub struct Config {
     /// most of this waiting on the person.
     #[serde(default = "default_handshake_timeout_secs")]
     pub handshake_timeout_secs: u64,
-    /// Whether a client may hear the desktop: the QEMU Audio extension is
+    /// Whether a client may hear the desktop: the audio extension is
     /// announced to a client that asks, and what the default sink plays is
     /// captured from PipeWire while the client has it enabled.
     #[serde(default = "default_true")]
