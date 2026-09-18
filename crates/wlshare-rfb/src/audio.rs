@@ -18,7 +18,7 @@
 //! - The server sends [`audio_begin`] when a stream starts and [`audio_end`]
 //!   when it stops, QEMU's messages again, and between them the sound as FLAC
 //!   frames, one to a message of the private type [`MSG_AUDIO_FRAME`]
-//!   ([`FlacEncoder`]).
+//!   (`FlacEncoder`, behind the `encode` feature).
 //!
 //! FLAC is lossless: the client decodes exactly the samples the capture
 //! produced, while music and speech take about two-thirds of their PCM rate or
@@ -41,10 +41,15 @@
 //! flip is its own inverse it gets the original values bit for bit. Samples are
 //! little-endian on both sides of the codec.
 
+#[cfg(feature = "encode")]
 use flacenc::bitsink::ByteSink;
+#[cfg(feature = "encode")]
 use flacenc::component::{BitRepr, StreamInfo};
+#[cfg(feature = "encode")]
 use flacenc::config;
+#[cfg(feature = "encode")]
 use flacenc::error::{Verified, Verify};
+#[cfg(feature = "encode")]
 use flacenc::source::{Fill, FrameBuf};
 use thiserror::Error;
 
@@ -253,6 +258,7 @@ pub fn audio_end() -> [u8; 4] {
 }
 
 /// Why a FLAC frame could not be made.
+#[cfg(feature = "encode")]
 #[derive(Debug, Error)]
 pub enum AudioEncodeError {
     #[error("FLAC cannot carry this format: {0}")]
@@ -281,6 +287,7 @@ pub enum AudioEncodeError {
 /// | 1 | U8[3] | padding |
 /// | 4 | U32 | length of the frame |
 /// | 8 | U8[] | one FLAC frame |
+#[cfg(feature = "encode")]
 pub struct FlacEncoder {
     format: AudioFormat,
     config: Verified<config::Encoder>,
@@ -295,6 +302,7 @@ pub struct FlacEncoder {
     frame_number: usize,
 }
 
+#[cfg(feature = "encode")]
 impl FlacEncoder {
     pub fn new(format: AudioFormat) -> Result<Self, AudioEncodeError> {
         format.check().map_err(|e| AudioEncodeError::Format(e.to_string()))?;
@@ -386,7 +394,7 @@ pub enum AudioDecodeError {
     Shape { got: usize, channels: usize, want: usize, expected: usize },
 }
 
-/// One stream's decoder, the client's end of [`FlacEncoder`]: the frame a
+/// One stream's decoder, the client's end of `FlacEncoder`: the frame a
 /// [`MSG_AUDIO_FRAME`] message carries in, interleaved little-endian samples in
 /// the client's format out. Made at a begin, from the format that was set.
 ///
