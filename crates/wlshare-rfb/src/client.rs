@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
 use crate::audio::{
-    AUDIO_FRAME_HEADER_LEN, AudioFormat, CLIENT_AUDIO_DISABLE, CLIENT_AUDIO_ENABLE, CLIENT_AUDIO_FORMAT_LEN, CLIENT_AUDIO_SET_FORMAT,
+    AUDIO_FRAME_HEADER_LEN, AudioFormat, AudioParseError, CLIENT_AUDIO_DISABLE, CLIENT_AUDIO_ENABLE, CLIENT_AUDIO_FORMAT_LEN, CLIENT_AUDIO_SET_FORMAT,
     CLIENT_AUDIO_SWITCH_LEN, MAX_AUDIO_FRAME, MSG_AUDIO_FRAME, MSG_QEMU, SERVER_AUDIO_BEGIN, SERVER_AUDIO_END, SUBMESSAGE_AUDIO,
 };
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY, to_fixed};
@@ -235,14 +235,17 @@ pub fn audio_disable() -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
     audio_op(CLIENT_AUDIO_DISABLE)
 }
 
-/// The audio extension: the format every FLAC frame is to decode to.
-pub fn audio_set_format(format: &AudioFormat) -> [u8; CLIENT_AUDIO_FORMAT_LEN] {
+/// The audio extension: the format every FLAC frame is to decode to, if it is
+/// one the extension carries — the server takes any other as the end of the
+/// connection.
+pub fn audio_set_format(format: &AudioFormat) -> Result<[u8; CLIENT_AUDIO_FORMAT_LEN], AudioParseError> {
+    format.check()?;
     let mut msg = [0u8; CLIENT_AUDIO_FORMAT_LEN];
     msg[..4].copy_from_slice(&audio_op(CLIENT_AUDIO_SET_FORMAT));
     msg[4] = format.sample as u8;
     msg[5] = format.channels;
     msg[6..].copy_from_slice(&format.frequency.to_be_bytes());
-    msg
+    Ok(msg)
 }
 
 // ── Server messages ──────────────────────────────────────────────────────────
@@ -537,10 +540,10 @@ mod tests {
         assert_eq!(parsed(&audio_disable()), ClientMsg::AudioDisable);
         for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
             let format = AudioFormat { sample, channels: 1, frequency: 44_100 };
-            assert_eq!(parsed(&audio_set_format(&format)), ClientMsg::AudioFormat(format));
+            assert_eq!(parsed(&audio_set_format(&format).unwrap()), ClientMsg::AudioFormat(format));
         }
         let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
-        assert_eq!(parsed(&audio_set_format(&format)), ClientMsg::AudioFormat(format));
+        assert_eq!(parsed(&audio_set_format(&format).unwrap()), ClientMsg::AudioFormat(format));
     }
 
     #[test]

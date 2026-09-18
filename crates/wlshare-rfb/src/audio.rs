@@ -160,6 +160,23 @@ impl AudioFormat {
     pub fn block_frames(&self) -> usize {
         (self.frequency / 50) as usize
     }
+
+    /// Whether this is a format the extension carries: 1 or 2 channels, at
+    /// [`MIN_FREQUENCY`] to [`MAX_FREQUENCY`]. A set-format is parsed only
+    /// into one that is, and nothing is encoded, decoded or sent in one that
+    /// is not.
+    pub fn check(&self) -> Result<(), AudioParseError> {
+        if !(1..=2).contains(&self.channels) {
+            return Err(AudioParseError::BadChannels(self.channels));
+        }
+        if self.frequency < MIN_FREQUENCY {
+            return Err(AudioParseError::FrequencyTooLow(self.frequency));
+        }
+        if self.frequency > MAX_FREQUENCY {
+            return Err(AudioParseError::FrequencyTooHigh(self.frequency));
+        }
+        Ok(())
+    }
 }
 
 /// An audio submessage from the client.
@@ -171,7 +188,7 @@ pub enum ClientAudio {
 }
 
 /// Why a client's audio submessage could not be one.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AudioParseError {
     #[error("QEMU submessage {0} is not audio, the one QEMU extension spoken here")]
     UnknownSubmessage(u8),
@@ -206,18 +223,9 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioPar
                 return Ok(None);
             }
             let sample = SampleFormat::from_wire(buf[4]).ok_or(AudioParseError::UnknownSampleFormat(buf[4]))?;
-            let channels = buf[5];
-            if !(1..=2).contains(&channels) {
-                return Err(AudioParseError::BadChannels(channels));
-            }
-            let frequency = u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]);
-            if frequency < MIN_FREQUENCY {
-                return Err(AudioParseError::FrequencyTooLow(frequency));
-            }
-            if frequency > MAX_FREQUENCY {
-                return Err(AudioParseError::FrequencyTooHigh(frequency));
-            }
-            Ok(Some((ClientAudio::SetFormat(AudioFormat { sample, channels, frequency }), CLIENT_AUDIO_FORMAT_LEN)))
+            let format = AudioFormat { sample, channels: buf[5], frequency: u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) };
+            format.check()?;
+            Ok(Some((ClientAudio::SetFormat(format), CLIENT_AUDIO_FORMAT_LEN)))
         }
         other => Err(AudioParseError::UnknownOperation(other)),
     }
@@ -289,6 +297,7 @@ pub struct FlacEncoder {
 
 impl FlacEncoder {
     pub fn new(format: AudioFormat) -> Result<Self, AudioEncodeError> {
+        format.check().map_err(|e| AudioEncodeError::Format(e.to_string()))?;
         let block = format.block_frames();
         let bad = |e: flacenc::error::VerifyError| AudioEncodeError::Format(e.to_string());
         let mut info = StreamInfo::new(format.frequency as usize, usize::from(format.channels), 8 * format.sample.bytes()).map_err(bad)?;
@@ -348,8 +357,10 @@ impl FlacEncoder {
 /// The FLAC stream header a client builds from the format it set, as the FLAC
 /// specification lays out `STREAMINFO`'s 34 bytes: nothing in it comes from the
 /// server. The block size is [`AudioFormat::block_frames`] at both ends, and
-/// the frame sizes, the total and the MD5 are unknown.
-pub fn streaminfo(format: AudioFormat) -> [u8; 34] {
+/// the frame sizes, the total and the MD5 are unknown. A format
+/// [`AudioFormat::check`] refuses has no header.
+pub fn streaminfo(format: AudioFormat) -> Result<[u8; 34], AudioParseError> {
+    format.check()?;
     let block = (format.block_frames() as u16).to_be_bytes();
     let mut info = [0u8; 34];
     info[0..2].copy_from_slice(&block);
@@ -359,7 +370,7 @@ pub fn streaminfo(format: AudioFormat) -> [u8; 34] {
     let bits = 8 * format.sample.bytes() as u64;
     let packed = (u64::from(format.frequency) << 44) | (u64::from(format.channels - 1) << 41) | ((bits - 1) << 36);
     info[10..18].copy_from_slice(&packed.to_be_bytes());
-    info
+    Ok(info)
 }
 
 /// Why a FLAC frame could not be read back.
@@ -394,8 +405,9 @@ impl FlacDecoder {
         use symphonia_core::codecs::audio::well_known::CODEC_ID_FLAC;
         use symphonia_core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
 
+        let info = streaminfo(format).map_err(|e| AudioDecodeError::Format(e.to_string()))?;
         let mut params = AudioCodecParameters::new();
-        params.for_codec(CODEC_ID_FLAC).with_extra_data(Box::new(streaminfo(format)));
+        params.for_codec(CODEC_ID_FLAC).with_extra_data(Box::new(info));
         let decoder = symphonia_bundle_flac::FlacDecoder::try_new(&params, &AudioDecoderOptions::default())
             .map_err(|e| AudioDecodeError::Format(e.to_string()))?;
         Ok(Self { format, decoder, samples: Vec::new() })
@@ -531,13 +543,32 @@ mod tests {
     /// bit by bit rather than with the packing that wrote them.
     #[test]
     fn the_streaminfo_has_the_specified_layout() {
-        let info = streaminfo(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 });
+        let info = streaminfo(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }).unwrap();
         assert_eq!(&info[0..4], &[0x03, 0xC0, 0x03, 0xC0], "960 at both ends");
         assert_eq!(&info[4..10], &[0; 6], "frame sizes unknown");
         // 48000 = 0x0BB80 in 20 bits, then 001 for two channels, then 01111 for
         // 16 bits, then a total of zero.
         assert_eq!(&info[10..14], &[0x0B, 0xB8, 0x02, 0xF0]);
         assert_eq!(&info[14..34], &[0; 20]);
+    }
+
+    /// A format outside the extension's has no header, encoder or decoder:
+    /// no channels would underflow the header's field, and a rate past 20 bits
+    /// would spill into the ones after it.
+    #[test]
+    fn a_format_the_extension_does_not_carry_is_refused_everywhere() {
+        let good = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        for (format, error) in [
+            (AudioFormat { channels: 0, ..good }, AudioParseError::BadChannels(0)),
+            (AudioFormat { channels: 3, ..good }, AudioParseError::BadChannels(3)),
+            (AudioFormat { frequency: MIN_FREQUENCY - 1, ..good }, AudioParseError::FrequencyTooLow(MIN_FREQUENCY - 1)),
+            (AudioFormat { frequency: 1 << 20, ..good }, AudioParseError::FrequencyTooHigh(1 << 20)),
+        ] {
+            assert_eq!(streaminfo(format), Err(error.clone()));
+            assert!(matches!(FlacEncoder::new(format), Err(AudioEncodeError::Format(_))));
+            assert_eq!(FlacDecoder::new(format).err(), Some(AudioDecodeError::Format(error.to_string())));
+            assert_eq!(crate::client::audio_set_format(&format), Err(error));
+        }
     }
 
     /// A frame that is not one, and a frame of the wrong length for the format
