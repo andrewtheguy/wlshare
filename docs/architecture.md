@@ -374,8 +374,8 @@ The session drains that queue before every framebuffer update, so sound is never
 held behind a ZRLE frame it was ready before. A headless session needs no sink
 of its own: the speaker is one.
 
-`audio = false` in the configuration turns the announcement off, and a client
-that lists the pseudo-encoding is then told nothing.
+The announcement is off unless the configuration sets `audio = true`, and while
+it is, a client that lists the pseudo-encoding is told nothing.
 
 ## The camera extension
 
@@ -458,8 +458,8 @@ xdg-desktop-portal 1.20.3: with only `xdg-desktop-portal-wlr` installed, the
 portal exported no `org.freedesktop.portal.Camera`, and with
 `xdg-desktop-portal-gtk` added and the portal restarted, it did.
 
-`camera = false` in the configuration turns the announcement off, and a client
-that lists the pseudo-encoding is then told nothing.
+The announcement is off unless the configuration sets `camera = true`, and while
+it is, a client that lists the pseudo-encoding is told nothing.
 
 ## The microphone extension
 
@@ -517,8 +517,8 @@ two. Each recording sent start as it linked and stop as it left; past the first
 half second both held the tone at 440 Hz with no silent 10 ms block, and the node
 was gone from the graph after the unplug.
 
-`microphone = false` in the configuration turns the announcement off, and a
-client that lists the pseudo-encoding is then told nothing.
+The announcement is off unless the configuration sets `microphone = true`, and
+while it is, a client that lists the pseudo-encoding is told nothing.
 
 ## Resize
 
