@@ -640,26 +640,26 @@ mod round_trip {
     fn the_dial_moves_on_a_running_encoder_without_a_keyframe() {
         let (width, height) = (64, 48);
         let (base, _) = stems(width, height);
+        // Two encoders with the same history: the same base at the same
+        // quality, so their next frames are deltas against the same reference.
         let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
+        let mut coarse_encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
         let mut decoder = Vp9Decoder::new().unwrap();
         let mut out = vec![0; width * height * 4];
         decoder.decode_rect(&encode(&mut encoder, &base, false), width, height, &mut out, width * 4).unwrap();
+        encode(&mut coarse_encoder, &base, false);
 
-        // The same change twice from the same picture, once at each end.
-        let changed = |shift: usize| {
-            let mut pixels = base.clone();
-            for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                if (i + shift).is_multiple_of(3) {
-                    *pixel = [200, 60, 90, 0];
-                }
+        // The same change from the same picture, once at each end of the dial.
+        let mut changed = base.clone();
+        for (i, pixel) in changed.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            if i.is_multiple_of(3) {
+                *pixel = [200, 60, 90, 0];
             }
-            pixels
-        };
-        let coarse = encode(&mut encoder, &changed(0), false);
-        decoder.decode_rect(&coarse, width, height, &mut out, width * 4).unwrap();
+        }
+        let coarse = encode(&mut coarse_encoder, &changed, false);
         encoder.set_quality(QUALITY_MAX).unwrap();
         assert_eq!(encoder.quality(), QUALITY_MAX);
-        let fine = encode(&mut encoder, &changed(1), false);
+        let fine = encode(&mut encoder, &changed, false);
         assert!(!is_keyframe(&fine), "moving the dial is not a keyframe");
         decoder.decode_rect(&fine, width, height, &mut out, width * 4).unwrap();
         assert!(fine.len() > coarse.len(), "{} bytes at the finest end against {} at the coarsest", fine.len(), coarse.len());
