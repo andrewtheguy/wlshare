@@ -20,11 +20,11 @@
 //! pixel, since the loss 4:2:0 costs a desktop is its text's colour and not its
 //! edges — converted from the framebuffer as BT.601 at studio swing, which the
 //! keyframe header says so a decoder does not guess. The quantizer is pinned by
-//! a 1–100 quality dial ([`quality_to_q`]) and nothing moves it: no bitrate, no
-//! adaptive quantization, no dropped frames, so a picture that settles is sent
-//! at exactly the quality the server was configured with. The client's pixel
-//! format does not apply to this encoding; what it decodes to is its own
-//! business, and [`Vp9Decoder`] writes `B, G, R, X`.
+//! a 1–100 quality dial ([`quality_to_q`]), which only the encoder's owner
+//! moves ([`Vp9Encoder::set_quality`]): no bitrate, no adaptive quantization,
+//! no dropped frames, so every frame is sent at exactly the dial's quality at
+//! the time. The client's pixel format does not apply to this encoding; what it
+//! decodes to is its own business, and [`Vp9Decoder`] writes `B, G, R, X`.
 //!
 //! libvpx does the coding, from the static archive `libvpx-prebuilt` publishes,
 //! behind `encode` on the server's side and `decode` on the client's. Its C API
@@ -157,6 +157,11 @@ pub struct Vp9Encoder {
     /// Boxed so that its address never changes: libvpx is handed a pointer to
     /// it at init and every call after.
     ctx: Box<vpx::vpx_codec_ctx_t>,
+    /// The configuration libvpx was initialised with, kept so the quantizer
+    /// can be moved by [`Self::set_quality`] with everything else unchanged.
+    cfg: vpx::vpx_codec_enc_cfg_t,
+    /// The dial's position, clamped.
+    quality: u8,
     /// An image that borrows `planes`: `vpx_img_wrap` allocated nothing, so it
     /// is never freed, and its plane pointers are set before every encode.
     img: vpx::vpx_image_t,
@@ -177,6 +182,7 @@ impl Vp9Encoder {
         if width == 0 || height == 0 {
             return Err(Vp9Error::Empty(width, height));
         }
+        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
         let q = quality_to_q(quality);
         let threads = threads();
 
@@ -227,6 +233,8 @@ impl Vp9Encoder {
         let samples = usize::from(width) * usize::from(height);
         let mut encoder = Self {
             ctx,
+            cfg,
+            quality,
             // SAFETY: zeroed, then filled in by `vpx_img_wrap` below.
             img: unsafe { std::mem::zeroed() },
             width,
@@ -277,6 +285,35 @@ impl Vp9Encoder {
     /// The picture size this encoder codes.
     pub fn size(&self) -> (u16, u16) {
         (self.width, self.height)
+    }
+
+    /// The quality the next frame is coded at, clamped to the dial.
+    pub fn quality(&self) -> u8 {
+        self.quality
+    }
+
+    /// Move the dial on the running encoder, clamped to it. The next frame is
+    /// coded at the new quantizer against the frames before it: rebuilding the
+    /// encoder would cost a keyframe, the most bytes a frame can be, at the
+    /// moment a slow link can least afford them.
+    pub fn set_quality(&mut self, quality: u8) -> Result<(), Vp9Error> {
+        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
+        let q = quality_to_q(quality);
+        self.quality = quality;
+        if q == self.cfg.rc_min_quantizer {
+            return Ok(());
+        }
+        self.cfg.rc_min_quantizer = q;
+        self.cfg.rc_max_quantizer = q;
+        // SAFETY: `cfg` is what libvpx accepted at init with the quantizer
+        // bounds changed, and libvpx validates it again rather than trusting
+        // it. Both halves are needed: the bounds in the configuration, and the
+        // level `VPX_Q` actually reads, as at init.
+        unsafe {
+            check(vpx::vpx_codec_enc_config_set(&mut *self.ctx, &self.cfg), "enc_config_set")?;
+            self.control(vpx::vp8e_enc_control_id_VP8E_SET_CQ_LEVEL, q as c_int, "cq_level")?;
+        }
+        Ok(())
     }
 
     /// Encode the picture — [`Self::size`] of `B, G, R, X` pixels whose rows
@@ -595,6 +632,40 @@ mod round_trip {
             let lit = &out[(step * 4 + 4) * 4..][..3];
             assert!(lit.iter().all(|&c| c > 200), "frame {step} did not decode to its own picture: {lit:?}");
         }
+    }
+
+    /// Moving the dial takes effect on the next frame without a keyframe, and
+    /// the finer quantizer costs more bytes for the same change.
+    #[test]
+    fn the_dial_moves_on_a_running_encoder_without_a_keyframe() {
+        let (width, height) = (64, 48);
+        let (base, _) = stems(width, height);
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
+        let mut decoder = Vp9Decoder::new().unwrap();
+        let mut out = vec![0; width * height * 4];
+        decoder.decode_rect(&encode(&mut encoder, &base, false), width, height, &mut out, width * 4).unwrap();
+
+        // The same change twice from the same picture, once at each end.
+        let changed = |shift: usize| {
+            let mut pixels = base.clone();
+            for (i, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                if (i + shift).is_multiple_of(3) {
+                    *pixel = [200, 60, 90, 0];
+                }
+            }
+            pixels
+        };
+        let coarse = encode(&mut encoder, &changed(0), false);
+        decoder.decode_rect(&coarse, width, height, &mut out, width * 4).unwrap();
+        encoder.set_quality(QUALITY_MAX).unwrap();
+        assert_eq!(encoder.quality(), QUALITY_MAX);
+        let fine = encode(&mut encoder, &changed(1), false);
+        assert!(!is_keyframe(&fine), "moving the dial is not a keyframe");
+        decoder.decode_rect(&fine, width, height, &mut out, width * 4).unwrap();
+        assert!(fine.len() > coarse.len(), "{} bytes at the finest end against {} at the coarsest", fine.len(), coarse.len());
+
+        encoder.set_quality(0).unwrap();
+        assert_eq!(encoder.quality(), QUALITY_MIN, "clamped, not wrapped");
     }
 
     #[test]
