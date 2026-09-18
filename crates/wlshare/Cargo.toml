@@ -11,7 +11,7 @@ name = "wlshare"
 path = "src/main.rs"
 
 [dependencies]
-wlshare-rfb = { path = "../wlshare-rfb" }
+wlshare-rfb = { path = "../wlshare-rfb", features = ["encode"] }
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true
