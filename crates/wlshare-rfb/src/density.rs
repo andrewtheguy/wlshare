@@ -13,11 +13,14 @@
 //!   another whenever the captured output's scale or size changes, *before* the
 //!   resize rectangle that carries the new framebuffer.
 //! - The client may send a `ClientDensity` ([`crate::msg::ClientMsg::ClientDensity`])
-//!   naming the density it would like the output drawn at. The server sets the
-//!   output's scale to it where it may, and answers every declaration with an
-//!   `OutputScale`: after the change, or at once with the scale as it is when
-//!   nothing is to be changed or nothing can be. A declaration is never left
-//!   without an answer.
+//!   naming the density it would like the output drawn at and the size in pixels
+//!   it wants at that density — both, every time, so a change of density is one
+//!   reconfiguration of the output rather than a scale and then a mode. The
+//!   server sets the output's mode and scale to them together where it may, and
+//!   answers every declaration with an `OutputScale`: after the change, or at
+//!   once with the output as it is when nothing is to be changed or nothing can
+//!   be. A declaration is never left without an answer. A resize at an unchanged
+//!   density is standard RFB's `SetDesktopSize`.
 //!
 //! Scales are 16.16 unsigned fixed point: `0x0002_0000` is 2.0, `0x0001_8000`
 //! is 1.5. The server sends the compositor's exact value, fractional included.
@@ -26,7 +29,7 @@
 pub const MSG_DENSITY: u8 = 0xE0;
 
 /// The bytes of a `ClientDensity`, type included.
-pub const CLIENT_DENSITY_LEN: usize = 8;
+pub const CLIENT_DENSITY_LEN: usize = 10;
 
 /// A scale as 16.16 fixed point.
 pub fn to_fixed(scale: f64) -> u32 {

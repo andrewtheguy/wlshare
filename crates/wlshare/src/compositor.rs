@@ -368,9 +368,9 @@ impl Compositor {
                     self.resize(client, width, height);
                 }
             }
-            Command::Declare { client, scale } => {
+            Command::Declare { client, width, height, scale } => {
                 if self.client == Some(client) {
-                    self.declare(client, scale);
+                    self.declare(client, width, height, scale);
                 }
             }
             Command::SelectOutput { client, id } => {
@@ -497,18 +497,31 @@ impl Compositor {
         input.retarget(&self.qh, pointers, seat, output);
     }
 
-    fn declare(&mut self, client: ClientId, scale: f64) {
+    /// Follow a client's density: the output's mode and scale in one
+    /// configuration, so every application on it redraws once. Only what differs
+    /// is asked for, and a declaration that changes nothing, or cannot change
+    /// anything, is answered at once with the output as it is.
+    fn declare(&mut self, client: ClientId, width: u16, height: u16, scale: f64) {
         let current = self.outputs.scale();
-        if (current - scale).abs() < 0.005 {
+        let current_size = self.outputs.size();
+        let new_scale = ((current - scale).abs() >= 0.005).then_some(scale);
+        let new_size = ((width, height) != current_size).then_some((width, height));
+        if new_scale.is_none() && new_size.is_none() {
             return self.answer_geometry(Some(client));
         }
         if !self.resize_allowed {
-            info!("not following client {}'s density {scale:.2}: resizing is disabled", client.0);
+            info!("not following client {}'s density {scale:.2} at {width}x{height}: resizing is disabled", client.0);
             return self.answer_geometry(Some(client));
         }
-        info!("following client {}'s density: output scale {current:.2} -> {scale:.2}", client.0);
+        info!(
+            "following client {}'s density: output {}x{} at scale {current:.2} -> {width}x{height} at scale {scale:.2}",
+            client.0, current_size.0, current_size.1
+        );
+        // The frame at the new size is this client's resize, as a SetDesktopSize's is.
+        self.pending_resize = new_size.map(|(w, h)| (client, w, h));
         let qh = self.qh.clone();
-        if !self.outputs.configure(&qh, None, Some(scale), ConfigKind::Scale) {
+        if !self.outputs.configure(&qh, new_size, new_scale, ConfigKind::Declare) {
+            self.pending_resize = None;
             self.answer_geometry(Some(client));
         }
     }

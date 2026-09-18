@@ -5,7 +5,8 @@
 //! an integer scale (wlroots reports the ceiling of a fractional one).
 //! wlr-output-management gives the exact scale as the compositor has it, and is
 //! the only way to *change* anything: a custom mode for a client's resize, a
-//! scale for a client's density. Heads are matched to outputs by name.
+//! mode and a scale together for a client's density. Heads are matched to
+//! outputs by name.
 //!
 //! Only a headless output is ever reconfigured, the way wayvnc has it: a real
 //! monitor's mode belongs to the person sitting at it.
@@ -79,13 +80,16 @@ pub struct ModeInfo {
 /// What a configuration was for, so its outcome can be reported.
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigKind {
+    /// A SetDesktopSize: the mode alone.
     Resize { client: ClientId },
-    Scale,
+    /// A density declaration: the mode and the scale together, whichever differ.
+    Declare,
 }
 
-/// A `wl_display.sync` after a scale configuration succeeded: when it comes back
-/// with no head scale change seen, the compositor accepted the configuration and
-/// left the scale as it was, and the declaration still needs its answer.
+/// A `wl_display.sync` after a declaration's configuration succeeded: when it
+/// comes back with no head scale change seen, the compositor accepted the
+/// configuration without changing the scale — it changed the mode alone, or
+/// nothing — and the declaration still needs its answer.
 pub struct ScaleSettle;
 
 #[derive(Default)]
@@ -97,7 +101,7 @@ pub struct Outputs {
     pub serial: u32,
     /// The name of the shared output, once chosen.
     pub selected: Option<String>,
-    /// A scale configuration is out and the compositor has not settled it.
+    /// A declaration's configuration is out and the compositor has not settled it.
     pub scale_pending: bool,
     scale_changed_since_apply: bool,
 }
@@ -258,7 +262,7 @@ impl Outputs {
             .map_or(0, |m| m.refresh);
 
         let config = manager.create_configuration(self.serial, qh, kind);
-        if matches!(kind, ConfigKind::Scale) {
+        if matches!(kind, ConfigKind::Declare) {
             self.scale_pending = true;
             self.scale_changed_since_apply = false;
         }
@@ -420,7 +424,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
         match event {
             zwlr_output_configuration_v1::Event::Succeeded => {
                 debug!("output configuration succeeded ({kind:?})");
-                if let ConfigKind::Scale = kind {
+                if let ConfigKind::Declare = kind {
                     // `succeeded` says nothing about whether a head changed: the
                     // changes and their `done` follow when there are any. Sway, the
                     // measured compositor, sends them first when it commits on the
@@ -438,7 +442,8 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                         state.pending_resize = None;
                         state.shared().emit(Event::ResizeRefused { client: *client, status: wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
                     }
-                    ConfigKind::Scale => {
+                    ConfigKind::Declare => {
+                        state.pending_resize = None;
                         state.outputs.scale_pending = false;
                         state.answer_geometry(None);
                     }
@@ -457,7 +462,7 @@ impl Dispatch<WlCallback, ScaleSettle> for Compositor {
         {
             state.outputs.scale_pending = false;
             if !state.outputs.scale_changed_since_apply {
-                info!("the compositor applied the scale configuration without changing the scale; reporting it as it is");
+                info!("the compositor applied the declaration's configuration without changing the scale; reporting the output as it is");
                 state.answer_geometry(None);
             }
         }

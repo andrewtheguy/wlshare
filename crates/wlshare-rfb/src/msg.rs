@@ -90,9 +90,10 @@ pub enum ClientMsg {
     EnableContinuousUpdates { enable: bool, x: u16, y: u16, width: u16, height: u16 },
     Fence { flags: u32, payload: Vec<u8> },
     SetDesktopSize { width: u16, height: u16, screens: Vec<Screen> },
-    /// The density extension's declaration: the scale the client wants, as
-    /// 16.16 fixed point ([`crate::density::from_fixed`]).
-    ClientDensity { fixed: u32 },
+    /// The density extension's declaration: the size in pixels the client wants
+    /// and the scale it wants them drawn at, as 16.16 fixed point
+    /// ([`crate::density::from_fixed`]).
+    ClientDensity { width: u16, height: u16, fixed: u32 },
     /// The outputs extension's request: share the output with this id, as the
     /// last list named it ([`crate::outputs`]).
     SelectOutput { id: u32 },
@@ -246,7 +247,7 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
         }
         MSG_DENSITY => {
             need!(CLIENT_DENSITY_LEN);
-            (ClientMsg::ClientDensity { fixed: u32_at(buf, 4) }, CLIENT_DENSITY_LEN)
+            (ClientMsg::ClientDensity { width: u16_at(buf, 2), height: u16_at(buf, 4), fixed: u32_at(buf, 6) }, CLIENT_DENSITY_LEN)
         }
         MSG_OUTPUTS => {
             need!(SELECT_OUTPUT_LEN);
@@ -429,8 +430,10 @@ mod tests {
         assert_eq!(m, ClientMsg::PointerEvent { buttons: 5, x: 10, y: 20 });
         let (m, _) = parse(&[150, 1, 0, 0, 0, 0, 0, 8, 0, 4]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::EnableContinuousUpdates { enable: true, x: 0, y: 0, width: 8, height: 4 });
-        let (m, _) = parse(&[0xE0, 0, 0, 0, 0, 2, 0, 0]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::ClientDensity { fixed: 0x0002_0000 });
+        let (m, n) = parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0, 0]).unwrap().unwrap();
+        assert_eq!(m, ClientMsg::ClientDensity { width: 3456, height: 1802, fixed: 0x0002_0000 });
+        assert_eq!(n, 10);
+        assert_eq!(parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0]).unwrap(), None, "a short ClientDensity asks for more");
         let (m, n) = parse(&[0xE1, 0, 0, 0, 0, 0, 0, 7]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::SelectOutput { id: 7 });
         assert_eq!(n, 8);
