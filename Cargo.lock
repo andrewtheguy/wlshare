@@ -1746,7 +1746,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wlshare"
-version = "0.0.33"
+version = "0.0.34"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1773,8 +1773,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wlshare-client"
+version = "0.0.34"
+dependencies = [
+ "anyhow",
+ "env_logger",
+ "log",
+ "tokio",
+ "wlshare-rfb",
+]
+
+[[package]]
 name = "wlshare-rfb"
-version = "0.0.33"
+version = "0.0.34"
 dependencies = [
  "aes",
  "eax",

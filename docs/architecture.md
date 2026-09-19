@@ -24,6 +24,31 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `shared.rs` is what crosses between them.
+- `crates/wlshare-client` is the other end: the desktop client the macOS and
+  Windows apps (`wlshare-macos`, `wlshare-windows`) are built on, everything
+  but the window. See [The desktop client](#the-desktop-client).
+
+## The desktop client
+
+`wlshare-client` is the session the native apps run: the handshake, the
+density and resize rules, VP9 or ZRLE decoded into a framebuffer and its
+damage, the pointer's shape, the clipboard both ways and the sound into a
+playback buffer — the daemon's `session.rs` read from the other end, every
+byte of it through `wlshare-rfb`. `Client::connect` runs it on a thread of its
+own; the window reads pixels, the cursor, the clipboard and the sound under
+short locks and posts input as commands.
+
+Each app keeps what is about its platform in a small core of its own on top of
+this crate: the table that turns its key events into keysyms, the gathering of
+its scrolls into wheel notches, and the C ABI its app calls in through — a
+static library and a C header on macOS, a DLL and P/Invoke on Windows. Those
+cores depend on `wlshare-client` by this repository's release tag, and it
+re-exports `wlshare-rfb`, so an app moves one tag. A change to how a client
+behaves on the wire is made here once, for both, and reaches them as a release.
+
+Like `wlshare-rfb` it has no platform dependency and a bare `cargo test` covers
+it; its live tests (`tests/live_session.rs`, ignored by default) talk to a
+real wlshare.
 
 ## One session at a time
 
