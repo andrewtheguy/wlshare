@@ -1238,9 +1238,12 @@ impl Session {
     /// When the desktop is to be settled at the configured quality: a frame
     /// below it went out, the client has it, and nothing has been sent since.
     /// `None` while there is nothing to settle or the frame is still in
-    /// flight — its fence coming back is what starts the quiet.
+    /// flight — its fence coming back is what starts the quiet — and while the
+    /// desktop has changed since that frame: it is not quiet, and the frame
+    /// that carries the change, when the client asks for it, starts the quiet
+    /// again.
     fn settle_at(&self) -> Option<Instant> {
-        if !self.use_vp9 || self.settle_owed || self.vp9_in_flight.is_some() {
+        if !self.use_vp9 || self.settle_owed || self.vp9_in_flight.is_some() || *self.frames.borrow() > self.seen {
             return None;
         }
         self.coarse_since.map(|since| since + SETTLE_IDLE)
