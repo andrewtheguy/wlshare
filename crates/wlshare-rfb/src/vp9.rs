@@ -80,7 +80,7 @@ pub enum Vp9Error {
     #[error("the frame is {0}x{1} and its rectangle {2}x{3}")]
     Size(u32, u32, usize, usize),
     #[error("the frame is not 8-bit 4:4:4 (format {0}, {1} bits)")]
-    Format(u32, u32),
+    Format(vpx::vpx_img_fmt_t, u32),
 }
 
 /// Turn a libvpx return code into a [`Vp9Error`] naming the call.
