@@ -245,7 +245,7 @@ fixed:
 - **A quantizer that follows the link.** The 1–100 dial maps onto VP9's 8–63,
   finest last, as remotex's dial does; rate control is pinned to wherever the
   dial is, with no bitrate, no adaptive quantization and no dropped frames.
-  A session starts at `vp9_quality` (60 by default), which is a ceiling it
+  A session starts at `vp9_quality` (90 by default, for the LAN wlshare mostly runs on), which is a ceiling it
   never goes above, and walks down to `vp9_quality_min` (20, or `vp9_quality`
   if that is lower) while the client is behind — remotex's walk: ten points
   after two frames each queued 60 ms or more, three back after thirty that

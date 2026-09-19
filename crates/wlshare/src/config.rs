@@ -135,8 +135,10 @@ fn default_max_fps() -> u32 {
     60
 }
 
+/// Fine, because wlshare is mostly used on a LAN, which has the room for it;
+/// the walk still gives it up on a link that does not.
 fn default_vp9_quality() -> u8 {
-    60
+    90
 }
 
 /// The VP9 floor when none is configured: low enough to keep a slow link
@@ -222,7 +224,7 @@ mod tests {
         assert_eq!(c.listen, default_listen());
         assert!(c.resize);
         assert_eq!(c.max_fps, 60);
-        assert_eq!(c.vp9_quality, 60);
+        assert_eq!(c.vp9_quality, 90);
         assert_eq!(c.vp9_quality_min(), 20);
         assert_eq!(c.handshake_timeout_secs, 120);
         assert!(!c.audio);
