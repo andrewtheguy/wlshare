@@ -15,6 +15,8 @@
 //! goal. Quick to give quality up, slow to take it back, so a link that is
 //! intermittently bad settles at a quality it can hold rather than oscillating
 //! around one it cannot. The same walk remotex runs for its own VP9 streams.
+//! The one exception is [`QualityWalk::settle`], the ceiling taken back at
+//! once for a desktop that went quiet coarse, which the session decides.
 //!
 //! Pure, and takes `now` rather than reading a clock, so every decision is
 //! testable without waiting for one.
@@ -95,6 +97,28 @@ impl QualityWalk {
         }
         let floor = self.recent.iter().min().copied().unwrap_or_default();
         self.observe(delivery.saturating_sub(floor), now)
+    }
+
+    /// Take the ceiling back outright, for a desktop that went quiet once the
+    /// client had the last frame: an idle link is the clearest evidence of
+    /// room it will ever get, and one frame at the ceiling is what sharpens
+    /// everything a coarser quality left behind. The cooldown restarts from
+    /// here, like any other move. Returns the new quality if the dial moves.
+    pub fn settle(&mut self, now: Instant) -> Option<u8> {
+        self.behind = 0;
+        self.clear = 0;
+        if self.quality == self.ceiling {
+            return None;
+        }
+        self.quality = self.ceiling;
+        self.changed_at = Some(now);
+        Some(self.ceiling)
+    }
+
+    /// Whether `quality` is below the ceiling: a frame encoded there is one a
+    /// quiet desktop owes a settle for.
+    pub fn coarse(&self, quality: u8) -> bool {
+        quality < self.ceiling
     }
 
     /// A delta frame, for a client without Fence, took `blocked` to write:
@@ -217,6 +241,21 @@ mod tests {
             assert_eq!(walk.fenced(85 * MS, false, start + ADJUST_COOLDOWN + i * 50 * MS), None);
         }
         assert_eq!(walk.quality(), 50);
+    }
+
+    #[test]
+    fn settling_takes_the_ceiling_back_and_restarts_the_cooldown() {
+        let start = Instant::now();
+        let mut walk = walk(60, 20, start);
+        walk.fenced(140 * MS, false, start);
+        assert_eq!(walk.fenced(140 * MS, false, start), Some(50));
+        assert!(walk.coarse(walk.quality()));
+        assert_eq!(walk.settle(start + 200 * MS), Some(60), "not held by the cooldown");
+        assert!(!walk.coarse(walk.quality()));
+        assert_eq!(walk.settle(start + 300 * MS), None, "already there");
+        walk.fenced(140 * MS, false, start + 400 * MS);
+        assert_eq!(walk.fenced(140 * MS, false, start + 400 * MS), None, "the settle was a move");
+        assert_eq!(walk.fenced(140 * MS, false, start + 1300 * MS), Some(50));
     }
 
     #[test]

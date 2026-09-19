@@ -668,6 +668,57 @@ mod round_trip {
         assert_eq!(encoder.quality(), QUALITY_MIN, "clamped, not wrapped");
     }
 
+    /// What the daemon's settle rests on: the same unchanged picture encoded
+    /// again at a finer quantizer sharpens it, as an inter frame. Were libvpx
+    /// to skip blocks whose source had not moved, a desktop sent coarse on a
+    /// link that was behind would stay coarse until it next changed, and the
+    /// settle would have to spend a keyframe instead.
+    #[test]
+    fn a_finer_quantizer_sharpens_an_unchanged_picture_without_a_keyframe() {
+        let (width, height) = (320, 240);
+        // Speckle, so a coarse quantizer has detail to lose.
+        let mut picture = [240u8, 240, 240, 0].repeat(width * height);
+        let mut seed = 12_345u32;
+        for pixel in picture.as_chunks_mut::<4>().0 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            if (seed >> 16).is_multiple_of(5) {
+                *pixel = [20, 20, 20, 0];
+            }
+        }
+        let error = |decoded: &[u8]| {
+            let sum: u64 = decoded
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(picture.as_chunks::<4>().0)
+                .map(|(a, b)| (0..3).map(|c| u64::from(a[c].abs_diff(b[c]))).sum::<u64>())
+                .sum();
+            sum as f64 / (width * height * 3) as f64
+        };
+
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
+        let mut decoder = Vp9Decoder::new().unwrap();
+        let mut out = vec![0; width * height * 4];
+        decoder.decode_rect(&encode(&mut encoder, &picture, false), width, height, &mut out, width * 4).unwrap();
+        let coarse = error(&out);
+
+        encoder.set_quality(QUALITY_MAX).unwrap();
+        let settle = encode(&mut encoder, &picture, false);
+        assert!(!is_keyframe(&settle), "the settle frame cost a keyframe");
+        decoder.decode_rect(&settle, width, height, &mut out, width * 4).unwrap();
+        let settled = error(&out);
+
+        let mut fresh = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX).unwrap();
+        let mut fine_out = vec![0; width * height * 4];
+        Vp9Decoder::new().unwrap().decode_rect(&encode(&mut fresh, &picture, false), width, height, &mut fine_out, width * 4).unwrap();
+        let fine = error(&fine_out);
+        assert!(
+            settled < coarse / 4.0 && settled < fine * 2.0,
+            "one frame at the finest quality left the unchanged picture at error {settled:.2} (coarse {coarse:.2}, \
+             a keyframe at the finest {fine:.2}): the encoder skipped blocks that did not move"
+        );
+    }
+
     #[test]
     fn the_bitstream_says_bt601_studio_swing_444() {
         let mut encoder = Vp9Encoder::new(16, 16, 60).unwrap();
