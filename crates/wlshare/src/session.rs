@@ -40,7 +40,13 @@
 //! ([`crate::quality`]): each frame's fence, answered once the client has
 //! decoded it, is how long that frame took, and a client without Fence is
 //! measured by how long writing the frame blocked. The dial moves on the
-//! running encoder, so a move costs no keyframe. A list that drops
+//! running encoder, so a move costs no keyframe. The walk only runs when a
+//! frame goes out, and a frame only goes out when something changed, so a
+//! desktop that stops right after the link coarsened it would keep that
+//! picture: once a frame below the configured quality has been delivered and
+//! nothing has changed for [`SETTLE_IDLE`], the dial is taken back to the
+//! configured quality and the unchanged picture is sent again as one inter
+//! frame, which sharpens every block without a keyframe. A list that drops
 //! VP9 is answered with the whole framebuffer in ZRLE, since the picture the
 //! client has is a lossy one.
 //!
@@ -254,6 +260,8 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         keyframe_owed: false,
         walk,
         vp9_in_flight: None,
+        coarse_since: None,
+        settle_owed: false,
         continuous_supported: false,
         fence_supported: false,
         eds_supported: false,
@@ -390,6 +398,13 @@ struct Session {
     /// The VP9 frame whose fence is outstanding: when it was written, and
     /// whether it was a keyframe.
     vp9_in_flight: Option<(Instant, bool)>,
+    /// The last VP9 frame went out below the configured quality, and the
+    /// client has had it since then: the desktop is settled at the configured
+    /// quality once it has stayed quiet [`SETTLE_IDLE`] from there. `None`
+    /// once a frame at the configured quality has gone out.
+    coarse_since: Option<Instant>,
+    /// The unchanged picture is owed as a frame at the configured quality.
+    settle_owed: bool,
     continuous_supported: bool,
     fence_supported: bool,
     eds_supported: bool,
@@ -444,6 +459,13 @@ struct Session {
     out: Vec<u8>,
 }
 
+/// How long a desktop sent below the configured VP9 quality must stay quiet,
+/// with the client holding the last frame, before it is settled at that
+/// quality. Long enough that a pause in motion is not chased with a redundant
+/// frame, short enough that the picture sharpens while the eye is still on it.
+/// remotex's `CLEANUP_IDLE`.
+const SETTLE_IDLE: Duration = Duration::from_millis(500);
+
 /// A damaged rectangle and its pixels, taken out of the framebuffer.
 struct Piece {
     rect: Rect,
@@ -456,6 +478,7 @@ impl Session {
         loop {
             self.flush_audio(&mut writer).await?;
             self.maybe_update(&mut writer).await?;
+            let settle_at = self.settle_at();
             tokio::select! {
                 read = reader.read_buf(&mut inbuf) => {
                     let n = read.context("reading from the client")?;
@@ -487,6 +510,7 @@ impl Session {
                     }
                     Err(broadcast::error::RecvError::Closed) => anyhow::bail!("the compositor thread is gone"),
                 },
+                () = until(settle_at) => self.settle()?,
                 // Woken to drain the capture at the top of the loop.
                 () = audio_ready(&self.audio) => {}
                 signal = camera_signal(&mut self.camera) => self.send_camera_signal(signal, &mut writer).await?,
@@ -629,6 +653,8 @@ impl Session {
                     // alone would leave most of it on the screen.
                     self.vp9 = None;
                     self.seen = 0;
+                    self.coarse_since = None;
+                    self.settle_owed = false;
                 }
                 self.use_vp9 = vp9;
                 if !self.use_vp9 && !self.use_zrle && !has(ENCODING_RAW) {
@@ -770,6 +796,11 @@ impl Session {
                         let now = Instant::now();
                         let moved = self.walk.fenced(now.saturating_duration_since(sent), keyframe, now);
                         self.follow_walk(moved)?;
+                        // Quiet is counted from when the client had the frame,
+                        // not from when it was written.
+                        if self.coarse_since.is_some() {
+                            self.coarse_since = Some(now);
+                        }
                     }
                 }
             }
@@ -1082,7 +1113,9 @@ impl Session {
                 resized = Some(fb.resize_origin);
             }
             full = resized.is_some() || self.pending == Some(false) || self.seen == 0;
-            let rects = if full {
+            // A settle is the whole picture whether or not anything changed,
+            // and an inter frame all the same.
+            let rects = if full || self.settle_owed {
                 vec![Rect::whole(fb.width, fb.height)]
             } else {
                 match fb.damage_since(self.seen) {
@@ -1154,14 +1187,27 @@ impl Session {
         }
         let sent = Instant::now();
         writer.send(&self.out).await.context("writing an update")?;
+        if keyframe.is_some() {
+            // Judged by the quality the frame was encoded at, which is what the
+            // client is holding.
+            let quality = self.vp9.as_ref().expect("a VP9 frame was encoded").quality();
+            self.coarse_since = self.walk.coarse(quality).then_some(sent);
+            self.settle_owed = false;
+        }
         match keyframe {
             Some(keyframe) if self.fence_supported => self.vp9_in_flight = Some((sent, keyframe)),
-            Some(false) => {
+            Some(keyframe) => {
                 let now = Instant::now();
-                let moved = self.walk.written(now.saturating_duration_since(sent), now);
-                self.follow_walk(moved)?;
+                if !keyframe {
+                    let moved = self.walk.written(now.saturating_duration_since(sent), now);
+                    self.follow_walk(moved)?;
+                }
+                // Without Fence, a written frame is as delivered as it gets.
+                if self.coarse_since.is_some() {
+                    self.coarse_since = Some(now);
+                }
             }
-            _ => {}
+            None => {}
         }
         self.seen = generation;
         self.pending = None;
@@ -1187,6 +1233,31 @@ impl Session {
             .with_context(|| format!("encoding a {width}x{height} VP9 frame"))?;
         self.keyframe_owed = false;
         Ok(keyframe)
+    }
+
+    /// When the desktop is to be settled at the configured quality: a frame
+    /// below it went out, the client has it, and nothing has been sent since.
+    /// `None` while there is nothing to settle or the frame is still in
+    /// flight — its fence coming back is what starts the quiet — and while the
+    /// desktop has changed since that frame: it is not quiet, and the frame
+    /// that carries the change, when the client asks for it, starts the quiet
+    /// again.
+    fn settle_at(&self) -> Option<Instant> {
+        if !self.use_vp9 || self.settle_owed || self.vp9_in_flight.is_some() || *self.frames.borrow() > self.seen {
+            return None;
+        }
+        self.coarse_since.map(|since| since + SETTLE_IDLE)
+    }
+
+    /// Take the dial back to the configured quality and owe the unchanged
+    /// picture at it, which the next update sends as one inter frame.
+    fn settle(&mut self) -> anyhow::Result<()> {
+        let moved = self.walk.settle(Instant::now());
+        self.follow_walk(moved)?;
+        debug!("client {}: the desktop went quiet below VP9 quality {}; settling it there", self.id.0, self.config.vp9_quality);
+        self.coarse_since = None;
+        self.settle_owed = true;
+        Ok(())
     }
 
     /// Move the running encoder's dial to where the walk went, if it went
@@ -1218,6 +1289,14 @@ impl Session {
                 _ => encode_raw_rect(pixels, stride, usize::from(r.width), usize::from(r.height), &self.format, &mut self.out),
             }
         }
+    }
+}
+
+/// Resolves at `at`; never, without one.
+async fn until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
     }
 }
 

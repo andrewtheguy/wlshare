@@ -245,7 +245,7 @@ fixed:
 - **A quantizer that follows the link.** The 1–100 dial maps onto VP9's 8–63,
   finest last, as remotex's dial does; rate control is pinned to wherever the
   dial is, with no bitrate, no adaptive quantization and no dropped frames.
-  A session starts at `vp9_quality` (60 by default), which is a ceiling it
+  A session starts at `vp9_quality` (90 by default, for the LAN wlshare mostly runs on), which is a ceiling it
   never goes above, and walks down to `vp9_quality_min` (20, or `vp9_quality`
   if that is lower) while the client is behind — remotex's walk: ten points
   after two frames each queued 60 ms or more, three back after thirty that
@@ -256,6 +256,20 @@ fixed:
   writing the frame blocked. The dial moves on the running encoder, so a move
   costs no keyframe, and an encoder made at a new size starts where it stands. Screen-content tuning, libvpx's
   realtime speed 7, no lag, and threads with row and tile parallelism.
+- **A quiet desktop settles at `vp9_quality`.** The walk only runs when a
+  frame goes out, and a frame only goes out when something changed, so a
+  desktop that stops right after the link coarsened it would keep that
+  picture, and the walk would stay below the dial, until it changed again.
+  Once a frame encoded below `vp9_quality` has been delivered — its fence
+  answered, or without Fence its write finished — and nothing has been sent
+  for 500 ms since, the dial is taken back to `vp9_quality` and the unchanged
+  picture goes out again, at the next update the client asks for, as one inter
+  frame: libvpx codes the residual of unchanged blocks at the finer quantizer,
+  so it sharpens the whole desktop without a keyframe
+  (`a_finer_quantizer_sharpens_an_unchanged_picture_without_a_keyframe`
+  guards that). A frame that went out at `vp9_quality` owes nothing, and a
+  desktop that goes quiet after one sends nothing. remotex's settle for its
+  own whole-desktop streams.
 - **Keyframes only when a decoder needs one**: the first frame after the
   encoding is listed, the first at a new size (the encoder is made again for
   it), and the frame that answers a non-incremental request. There is no
