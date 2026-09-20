@@ -22,7 +22,16 @@
 //! - **Cursor and Cursor With Alpha**, because captured frames have no pointer
 //!   painted in them and a client that does not draw one has no pointer at all.
 //! - **Fence and ContinuousUpdates**, so frames arrive as the desktop changes
-//!   with one update in flight, rather than one round trip per frame.
+//!   with one update in flight, rather than one round trip per frame. The
+//!   fence that ends an update is echoed once the *window* has taken the
+//!   pixels, not the moment they are decoded: the server times that round trip
+//!   to decide what quality the link and this client will bear, so an echo
+//!   sent from the decoder would tell it about the link and nothing about the
+//!   screen. A window that cannot upload as fast as the desktop moves is
+//!   exactly the client a coarser picture is for, and until the echo goes out
+//!   the server encodes nothing further — a frame this window would only have
+//!   overwritten unseen is never made. [`PAINT_GRACE`] is the cutoff for a
+//!   window that is not drawing at all.
 //! - **The density extension**, which is what the window's 1× or 2× is: the
 //!   window says what scale the desktop should be drawn at, the server draws it at that
 //!   scale, and `SetDesktopSize` asks for a framebuffer the size of the window in
@@ -44,6 +53,7 @@
 //! pseudo-encodings are not listed, so the server never offers them.
 
 use std::future::{Future, pending};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -51,6 +61,7 @@ use anyhow::{Context as _, bail};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::Notify;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 use wlshare_rfb::audio::FlacDecoder;
@@ -114,6 +125,17 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const RESIZE_SETTLE: Duration = Duration::from_millis(120);
 /// Read this much of the socket at a time.
 const CHUNK: usize = 256 * 1024;
+
+/// How long a fence waits for the window to take the frame before it is echoed
+/// anyway.
+///
+/// The wait is pacing, not a protocol promise: a window that has stopped
+/// drawing — hidden, minimised, an app that only redraws on demand — must not
+/// be able to stop the session. Past this the echo goes out unpainted and the
+/// window is counted as one that is not drawing, so the fences after it are
+/// echoed at once and the desktop keeps streaming at whatever the link bears;
+/// the first paint after that puts the window back in the loop.
+const PAINT_GRACE: Duration = Duration::from_millis(500);
 
 /// Where to connect and as whom.
 #[derive(Debug, Clone)]
@@ -225,6 +247,13 @@ pub struct Shared {
     /// Called from the session's thread whenever there is something new to
     /// draw. The window uses it to post itself a redraw; it must not block.
     wake: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// How many times the window has taken pixels off the framebuffer
+    /// ([`Shared::took_frame`]). Counted rather than flagged so the session can
+    /// tell a window that has drawn since it gave up waiting for one from a
+    /// window that still has not.
+    paints: AtomicU64,
+    /// Woken by the same, for the fence the session is holding.
+    painted: Notify,
 }
 
 impl Default for Shared {
@@ -236,6 +265,8 @@ impl Default for Shared {
             clipboard: Mutex::new((0, None)),
             audio: Mutex::new(Playback::default()),
             wake: Mutex::new(None),
+            paints: AtomicU64::new(0),
+            painted: Notify::new(),
         }
     }
 }
@@ -243,6 +274,23 @@ impl Default for Shared {
 impl Shared {
     pub fn set_wake(&self, wake: Option<Box<dyn Fn() + Send + Sync>>) {
         *self.wake.lock().unwrap() = wake;
+    }
+
+    /// The window took what was decoded: called from the window's thread, by
+    /// `Client::with_frame` and only when there was damage to take. It is what
+    /// releases the fence the session is holding, so it must be called after
+    /// the pixels are on their way to the screen and not before.
+    pub fn took_frame(&self) {
+        self.paints.fetch_add(1, Ordering::Relaxed);
+        // A permit rather than only waking whoever is registered: a paint
+        // between the session reading the damage and waiting on this would
+        // otherwise be a wake-up lost, and the fence would sit out its grace.
+        self.painted.notify_one();
+    }
+
+    /// How many frames the window has taken.
+    fn paints(&self) -> u64 {
+        self.paints.load(Ordering::Relaxed)
     }
 
     pub fn wake(&self) {
@@ -369,6 +417,8 @@ async fn connect_and_run(config: Config, surface: Surface, shared: &Arc<Shared>,
         awaiting_scale: false,
         held_surface: None,
         cursor_generation: 0,
+        owed_fence: None,
+        gave_up_at: None,
         server_clipboard: None,
         local_clipboard,
         clipboard_generation: 0,
@@ -382,6 +432,10 @@ async fn connect_and_run(config: Config, surface: Surface, shared: &Arc<Shared>,
     let mut settle: Option<Instant> = None;
 
     loop {
+        // Copied out before the select: the wait below is a future for as long
+        // as the select runs, and the branches that answer it take the session
+        // by value.
+        let owed = session.owed_fence_deadline();
         tokio::select! {
             read = reader.read(&mut chunk) => {
                 let read = read.context("reading from the server")?;
@@ -422,6 +476,9 @@ async fn connect_and_run(config: Config, surface: Surface, shared: &Arc<Shared>,
                         session.announce_clipboard(&mut writer).await?;
                     }
                 }
+            }
+            painted = async { match owed { Some(at) => wait_for_paint(shared, at).await, None => pending().await } } => {
+                session.fence_painted(painted, &mut writer).await?;
             }
             () = async { match settle { Some(at) => tokio::time::sleep_until(at).await, None => pending().await } } => {
                 settle = None;
@@ -540,6 +597,13 @@ struct Live {
     /// answered ([`Live::ask_for`]).
     held_surface: Option<Surface>,
     cursor_generation: u64,
+    /// The fence the server asked for, held until the window has taken the
+    /// frame the update in front of it decoded.
+    owed_fence: Option<OwedFence>,
+    /// The paint count when a held fence last ran out its grace, for as long as
+    /// the window has not drawn since. `None` while the window is keeping up,
+    /// which is every fence's starting state.
+    gave_up_at: Option<u64>,
     /// What the server takes of the clipboard, from its caps. `None` until they
     /// arrive, and for a server that never sends them: no clipboard is shared.
     server_clipboard: Option<Caps>,
@@ -549,6 +613,57 @@ struct Live {
     local_clipboard: Option<String>,
     clipboard_generation: u64,
     audio: Audio,
+}
+
+/// A fence echo waiting for the window, as [`Live::owe_fence`] left it.
+struct OwedFence {
+    /// The server's flags without [`FENCE_REQUEST`]: what an echo is.
+    flags: u32,
+    /// Echoed back untouched — it is the server's own, and how it tells one
+    /// frame's round trip from another's.
+    payload: Vec<u8>,
+    /// When [`PAINT_GRACE`] runs out.
+    deadline: Instant,
+}
+
+/// What became of a fence the window was given time to paint for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Painted {
+    /// The window took the frame, which is what the fence was waiting for.
+    Took,
+    /// The grace ran out first, with the paint count as it stood then — read
+    /// where a paint could not have slipped past it, so that a window drawing
+    /// again is told apart from the draw that was already counted.
+    GaveUp { paints: u64 },
+}
+
+/// Wait until the window has taken everything decoded, or until the grace runs
+/// out. Borrows the session's shared state and not the session, so the `select!`
+/// this sits in can still hand the answer back to it.
+async fn wait_for_paint(shared: &Shared, deadline: Instant) -> Painted {
+    loop {
+        // Registered before the damage is read, so a paint between the two is a
+        // permit waiting here rather than a wake-up missed.
+        let painted = shared.painted.notified();
+        tokio::pin!(painted);
+        painted.as_mut().enable();
+        if !shared.framebuffer.lock().unwrap().has_damage() {
+            return Painted::Took;
+        }
+        if tokio::time::timeout_at(deadline, painted).await.is_err() {
+            // Under the lock the paint itself takes, which is what makes the
+            // count worth carrying: a window drawing as the grace ran out
+            // either cleared the damage — and this is no giving up at all — or
+            // has not reached `took_frame` yet, so its paint counts as the
+            // drawing that puts it back in the loop rather than as the one
+            // that was given up on.
+            let framebuffer = shared.framebuffer.lock().unwrap();
+            if !framebuffer.has_damage() {
+                return Painted::Took;
+            }
+            return Painted::GaveUp { paints: shared.paints() };
+        }
+    }
 }
 
 /// How far the audio extension has got on this connection.
@@ -640,6 +755,68 @@ impl Live {
         (map(x, self.surface.width, fb.width()), map(y, self.surface.height, fb.height()))
     }
 
+    /// Answer a fence the server asked for, holding the echo until the window
+    /// has taken what the update in front of it decoded.
+    ///
+    /// The server sends one update at a time and waits for this echo, and it
+    /// times the round trip to decide the quality the next frame is coded at.
+    /// Answering from the decoder would time the link alone and call a window
+    /// that cannot keep up a healthy one; answering from the paint is what
+    /// makes the picture follow the whole path a frame takes to the screen.
+    /// Nothing is held for a window with nothing to take — an update that drew
+    /// no pixels, or one the window has already been through.
+    async fn owe_fence<W: AsyncWrite + Unpin>(
+        &mut self,
+        flags: u32,
+        payload: Vec<u8>,
+        writer: &mut Writer<W>,
+    ) -> anyhow::Result<()> {
+        // A second request with one still held cannot happen while the server
+        // keeps one update in flight, and if it ever did, the held one goes out
+        // first: an echo dropped would stop the desktop for good.
+        if let Some(owed) = self.owed_fence.take() {
+            writer.send(&client::fence(owed.flags, &owed.payload)).await?;
+        }
+        let drawing = match self.gave_up_at {
+            // The window has drawn since the fence that gave up on it, so it is
+            // back in the loop.
+            Some(paints) => self.shared.paints() > paints,
+            None => true,
+        };
+        if drawing {
+            self.gave_up_at = None;
+            if self.shared.framebuffer.lock().unwrap().has_damage() {
+                self.owed_fence = Some(OwedFence { flags, payload, deadline: Instant::now() + PAINT_GRACE });
+                return Ok(());
+            }
+        }
+        writer.send(&client::fence(flags, &payload)).await?;
+        Ok(())
+    }
+
+    /// When the fence being held runs out of grace, for the loop to wait on.
+    /// `None` when none is held.
+    fn owed_fence_deadline(&self) -> Option<Instant> {
+        self.owed_fence.as_ref().map(|owed| owed.deadline)
+    }
+
+    /// Echo the held fence, now that the window has taken the frame or has
+    /// shown that it is not going to.
+    async fn fence_painted<W: AsyncWrite + Unpin>(&mut self, painted: Painted, writer: &mut Writer<W>) -> anyhow::Result<()> {
+        let Some(owed) = self.owed_fence.take() else { return Ok(()) };
+        match painted {
+            Painted::Took => self.gave_up_at = None,
+            // The count the wait read, not one read here: the window may have
+            // drawn since, and that paint is what puts it back in the loop.
+            Painted::GaveUp { paints } => {
+                log::debug!("the window has taken no frame in {PAINT_GRACE:?}; the desktop is not paced by it until it draws again");
+                self.gave_up_at = Some(paints);
+            }
+        }
+        writer.send(&client::fence(owed.flags, &owed.payload)).await?;
+        Ok(())
+    }
+
     async fn handle<W: AsyncWrite + Unpin>(&mut self, msg: ServerMsg, writer: &mut Writer<W>) -> anyhow::Result<()> {
         match msg {
             ServerMsg::Update(rects) => {
@@ -669,10 +846,11 @@ impl Live {
                 }
             }
             // Echoed as the same fence without the request bit, which is what
-            // lets the server send the next update.
+            // lets the server send the next update — once the window has the
+            // frame this one followed.
             ServerMsg::Fence { flags, payload } => {
                 if flags & FENCE_REQUEST != 0 {
-                    writer.send(&client::fence(flags & !FENCE_REQUEST, &payload)).await?;
+                    self.owe_fence(flags & !FENCE_REQUEST, payload, writer).await?;
                 }
             }
             ServerMsg::OutputScale { width, height, fixed } => {
@@ -1005,6 +1183,8 @@ mod tests {
             awaiting_scale: false,
             held_surface: None,
             cursor_generation: 0,
+            owed_fence: None,
+            gave_up_at: None,
             server_clipboard: None,
             local_clipboard: None,
             clipboard_generation: 0,
@@ -1135,6 +1315,8 @@ mod tests {
     async fn a_fence_is_echoed_without_the_bit_that_asked_for_it() {
         let mut live = live();
         let mut writer = writer();
+        // A framebuffer with nothing in it owes the window no paint, so this
+        // one is not held for one.
         live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![1, 2, 3] }, &mut writer).await.unwrap();
         assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![1, 2, 3] }]);
 
@@ -1142,6 +1324,97 @@ mod tests {
         // each other for as long as the session lasted.
         live.handle(ServerMsg::Fence { flags: 4, payload: vec![1] }, &mut writer).await.unwrap();
         assert_eq!(sent(&mut writer), vec![]);
+    }
+
+    /// The server sends one update at a time and codes the next one at the
+    /// quality this round trip says the client can take, so what it has to
+    /// measure is the window: an echo from the decoder would call a window
+    /// that cannot upload as fast as the desktop moves a healthy one.
+    #[tokio::test]
+    async fn a_fence_waits_for_the_window_to_take_the_frame() {
+        let mut live = live();
+        let mut writer = writer();
+        // A frame decoded into the framebuffer and not taken yet.
+        live.shared.framebuffer.lock().unwrap().resize(64, 32).unwrap();
+
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![1, 2, 3] }, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![], "nothing goes back while the window still owes a paint");
+        let deadline = live.owed_fence_deadline().expect("the fence is being held");
+
+        // The window draws: it takes the damage and says so, as `with_frame`
+        // does.
+        let painter = tokio::spawn({
+            let shared = Arc::clone(&live.shared);
+            async move {
+                shared.framebuffer.lock().unwrap().take_damage();
+                shared.took_frame();
+            }
+        });
+        assert_eq!(wait_for_paint(&live.shared, deadline).await, Painted::Took);
+        painter.await.unwrap();
+
+        live.fence_painted(Painted::Took, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![1, 2, 3] }]);
+        assert!(live.owed_fence_deadline().is_none(), "and nothing is held after it");
+    }
+
+    /// A hidden window draws nothing, and a session that waited for it would
+    /// be a desktop stopped by a window nobody is looking at.
+    #[tokio::test(start_paused = true)]
+    async fn a_window_that_is_not_drawing_does_not_hold_the_desktop_up() {
+        let mut live = live();
+        let mut writer = writer();
+        live.shared.framebuffer.lock().unwrap().resize(64, 32).unwrap();
+
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![1] }, &mut writer).await.unwrap();
+        let deadline = live.owed_fence_deadline().expect("the fence is being held");
+        let painted = wait_for_paint(&live.shared, deadline).await;
+        assert_eq!(painted, Painted::GaveUp { paints: 0 }, "the grace runs out, with the paints there had been");
+        live.fence_painted(painted, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![1] }]);
+
+        // The frame is still untaken, and the next fence goes back at once all
+        // the same: a window that is not drawing is not something to pace to.
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![2] }, &mut writer).await.unwrap();
+        assert!(live.shared.framebuffer.lock().unwrap().has_damage());
+        assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![2] }]);
+        assert!(live.owed_fence_deadline().is_none());
+
+        // One paint puts the window back in the loop.
+        live.shared.took_frame();
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![3] }, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![]);
+        assert!(live.owed_fence_deadline().is_some());
+    }
+
+    /// The window runs on its own thread, so a draw can land between the grace
+    /// running out and the fence going back. Counting the paints at that point
+    /// rather than at the wait's would swallow that draw, and the window would
+    /// owe another one before the session paced to it again.
+    #[tokio::test(start_paused = true)]
+    async fn a_paint_that_lands_as_the_grace_runs_out_still_counts() {
+        let mut live = live();
+        let mut writer = writer();
+        live.shared.framebuffer.lock().unwrap().resize(64, 32).unwrap();
+
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![1] }, &mut writer).await.unwrap();
+        let deadline = live.owed_fence_deadline().expect("the fence is being held");
+        let painted = wait_for_paint(&live.shared, deadline).await;
+        assert_eq!(painted, Painted::GaveUp { paints: 0 });
+
+        // The window draws between the two: the frame this fence waited for is
+        // taken after all, just too late for the grace.
+        live.shared.framebuffer.lock().unwrap().take_damage();
+        live.shared.took_frame();
+        live.fence_painted(painted, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![1] }]);
+
+        // That draw is what puts the window back in the loop, so the next
+        // frame's fence is held for it rather than echoed at once.
+        live.shared.framebuffer.lock().unwrap().damage_all();
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![2] }, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![]);
+        assert!(live.owed_fence_deadline().is_some());
     }
 
     #[tokio::test]

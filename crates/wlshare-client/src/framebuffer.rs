@@ -168,6 +168,13 @@ impl Framebuffer {
     pub fn take_damage(&mut self) -> Option<Region> {
         self.damage.take()
     }
+
+    /// Whether anything written is still waiting for the window to take it.
+    /// What the session holds a fence for: no damage is everything decoded
+    /// already on its way to the screen.
+    pub fn has_damage(&self) -> bool {
+        self.damage.is_some()
+    }
 }
 
 #[cfg(test)]

@@ -21,7 +21,9 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "io-
 [dev-dependencies]
 # The session's tests play the server, which encodes what it sends.
 wlshare-rfb = { path = "../wlshare-rfb", features = ["decode", "encode"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }
+# `test-util` is the paused clock the paint grace is tested on, so no test
+# waits half a second for it.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "time", "test-util"] }
 # The live tests talk to a real server; `RUST_LOG=debug` is how one says what it
 # sent when it did not send what was expected.
 env_logger = "0.11"
