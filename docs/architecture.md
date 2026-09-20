@@ -207,6 +207,10 @@ next update waits for the echo. One update is in flight at a time, so a slow
 link is never flooded and frames coalesce in the framebuffer meanwhile. remotex
 negotiates both ContinuousUpdates and Fence.
 
+What the echo means is the client's to decide, and `wlshare-client` holds it
+until its *window* has taken the frame rather than answering from the decoder
+([below](#the-desktop-clients-paint)).
+
 A size change goes out first, as its own update — an ExtendedDesktopSize
 rectangle whose reason says who asked (the server, this client, another
 client), or a DesktopSize rectangle for a client without the extension — and the
@@ -250,7 +254,9 @@ fixed:
   if that is lower) while the client is behind — remotex's walk: ten points
   after two frames each queued 60 ms or more, three back after thirty that
   queued 30 ms or less, at most once a second. A frame's queueing is its
-  fence's round trip, answered once the client has decoded it, less the
+  fence's round trip — answered once the client has the frame, which for
+  wlshare's own client means once its window has drawn it
+  ([below](#the-desktop-clients-paint)) — less the
   shortest of the last 32, so distance does not read as queueing; a keyframe
   counts towards that floor but is no verdict. Without Fence it is how long
   writing the frame blocked. The dial moves on the running encoder, so a move
@@ -284,6 +290,29 @@ client is holding a lossy picture.
 
 libvpx comes from `libvpx-prebuilt`'s static archive, behind the crate's
 `encode` and `decode` features.
+
+### The desktop client's paint
+
+The walk above is only as honest as the fence it times, and a fence echoed the
+moment a frame is decoded times the link and the decoder and nothing else. A
+window that cannot upload a 4K frame as fast as the desktop draws one would
+read as a healthy client: the server would keep coding at the dial, the window
+would keep overwriting frames it never showed, and the person would watch a
+picture that lags while every measurement said the link was clear.
+
+So `wlshare-client` holds the echo until the window has taken the pixels —
+`Client::with_frame` handing back damage is the acknowledgment, the same shape
+as the `paintAck` remotex's browser sends after its painter draws. The whole
+path a frame takes to the screen is then inside the round trip the walk reads,
+and, because the server sends nothing until the echo arrives, a frame the
+window would only have overwritten unseen is never encoded at all.
+
+A window that is not drawing must not be able to stop the desktop, so the echo
+goes out unheld after 500 ms — `PAINT_GRACE`, remotex's `PAINT_WINDOW_GRACE` —
+and the window is then counted as one that is not drawing: the fences after it
+are echoed at once, and the desktop keeps streaming at whatever the link bears
+until the first paint puts the window back in the loop. A hidden window costs
+the session nothing and never drags the quality down with it.
 
 ## The density extension
 

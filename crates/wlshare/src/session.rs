@@ -37,9 +37,10 @@
 //! being listed anew asks for one. The encode runs on this task's worker, told
 //! it is blocking, and the fence keeps it to one frame in flight like any other
 //! update. Its quality starts at the configured one and follows the link
-//! ([`crate::quality`]): each frame's fence, answered once the client has
-//! decoded it, is how long that frame took, and a client without Fence is
-//! measured by how long writing the frame blocked. The dial moves on the
+//! ([`crate::quality`]): each frame's fence, answered once the client has the
+//! frame — wlshare's own client answers once its window has drawn it, so the
+//! walk reads the whole path to the screen — is how long that frame took, and
+//! a client without Fence is measured by how long writing the frame blocked. The dial moves on the
 //! running encoder, so a move costs no keyframe. The walk only runs when a
 //! frame goes out, and a frame only goes out when something changed, so a
 //! desktop that stops right after the link coarsened it would keep that

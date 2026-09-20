@@ -107,10 +107,24 @@ impl Client {
     /// Show `visit` the framebuffer and the region of it that has changed since
     /// the last visit, and clear that region. The lock is held throughout, so
     /// `visit` uploads and returns; it must not wait for anything.
+    ///
+    /// A visit that had something to take is also the window's acknowledgment:
+    /// the session holds the fence that ends each update until it happens, and
+    /// the server times that round trip to pick the quality it codes the next
+    /// frame at (`session::owe_fence`). So a window draws by calling this —
+    /// not by reading the pixels some other way — and calls it from the draw
+    /// itself, where what it costs to upload a frame is part of what the
+    /// server is told.
     pub fn with_frame<T>(&self, visit: impl FnOnce(&Framebuffer, Option<Region>) -> T) -> T {
         let mut fb = self.shared.framebuffer.lock().unwrap();
         let damage = fb.take_damage();
-        visit(&fb, damage)
+        let taken = visit(&fb, damage);
+        // Under the lock: the session reads the damage under it too, so a
+        // paint can never be announced before the damage it took is cleared.
+        if damage.is_some() {
+            self.shared.took_frame();
+        }
+        taken
     }
 
     /// The framebuffer's size, leaving its damage for [`Client::with_frame`].

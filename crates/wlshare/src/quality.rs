@@ -2,9 +2,10 @@
 //!
 //! The configured `vp9_quality` is a ceiling and `vp9_quality_min` a floor;
 //! between them the dial walks down when the client falls behind and back up
-//! when it keeps up. The signal is how long a frame takes to be delivered and
-//! decoded — the round trip of the fence that follows it, or, for a client
-//! without Fence, how long writing it blocked — less the link's own floor, the
+//! when it keeps up. The signal is how long a frame takes to be delivered,
+//! decoded and — for a client that answers its fence from its window, as
+//! wlshare's own does — drawn: the round trip of the fence that follows it,
+//! or, for a client without Fence, how long writing it blocked — less the link's own floor, the
 //! shortest delivery seen lately, so a distant link that keeps up reads as
 //! keeping up. What is left is queueing: time spent behind frames the link or
 //! the client could not take as fast as they came.
