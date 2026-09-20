@@ -631,8 +631,10 @@ struct OwedFence {
 enum Painted {
     /// The window took the frame, which is what the fence was waiting for.
     Took,
-    /// The grace ran out first.
-    GaveUp,
+    /// The grace ran out first, with the paint count as it stood then — read
+    /// where a paint could not have slipped past it, so that a window drawing
+    /// again is told apart from the draw that was already counted.
+    GaveUp { paints: u64 },
 }
 
 /// Wait until the window has taken everything decoded, or until the grace runs
@@ -649,7 +651,17 @@ async fn wait_for_paint(shared: &Shared, deadline: Instant) -> Painted {
             return Painted::Took;
         }
         if tokio::time::timeout_at(deadline, painted).await.is_err() {
-            return Painted::GaveUp;
+            // Under the lock the paint itself takes, which is what makes the
+            // count worth carrying: a window drawing as the grace ran out
+            // either cleared the damage — and this is no giving up at all — or
+            // has not reached `took_frame` yet, so its paint counts as the
+            // drawing that puts it back in the loop rather than as the one
+            // that was given up on.
+            let framebuffer = shared.framebuffer.lock().unwrap();
+            if !framebuffer.has_damage() {
+                return Painted::Took;
+            }
+            return Painted::GaveUp { paints: shared.paints() };
         }
     }
 }
@@ -794,9 +806,11 @@ impl Live {
         let Some(owed) = self.owed_fence.take() else { return Ok(()) };
         match painted {
             Painted::Took => self.gave_up_at = None,
-            Painted::GaveUp => {
+            // The count the wait read, not one read here: the window may have
+            // drawn since, and that paint is what puts it back in the loop.
+            Painted::GaveUp { paints } => {
                 log::debug!("the window has taken no frame in {PAINT_GRACE:?}; the desktop is not paced by it until it draws again");
-                self.gave_up_at = Some(self.shared.paints());
+                self.gave_up_at = Some(paints);
             }
         }
         writer.send(&client::fence(owed.flags, &owed.payload)).await?;
@@ -1354,8 +1368,9 @@ mod tests {
 
         live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![1] }, &mut writer).await.unwrap();
         let deadline = live.owed_fence_deadline().expect("the fence is being held");
-        assert_eq!(wait_for_paint(&live.shared, deadline).await, Painted::GaveUp, "the grace runs out");
-        live.fence_painted(Painted::GaveUp, &mut writer).await.unwrap();
+        let painted = wait_for_paint(&live.shared, deadline).await;
+        assert_eq!(painted, Painted::GaveUp { paints: 0 }, "the grace runs out, with the paints there had been");
+        live.fence_painted(painted, &mut writer).await.unwrap();
         assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![1] }]);
 
         // The frame is still untaken, and the next fence goes back at once all
@@ -1368,6 +1383,36 @@ mod tests {
         // One paint puts the window back in the loop.
         live.shared.took_frame();
         live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![3] }, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![]);
+        assert!(live.owed_fence_deadline().is_some());
+    }
+
+    /// The window runs on its own thread, so a draw can land between the grace
+    /// running out and the fence going back. Counting the paints at that point
+    /// rather than at the wait's would swallow that draw, and the window would
+    /// owe another one before the session paced to it again.
+    #[tokio::test(start_paused = true)]
+    async fn a_paint_that_lands_as_the_grace_runs_out_still_counts() {
+        let mut live = live();
+        let mut writer = writer();
+        live.shared.framebuffer.lock().unwrap().resize(64, 32).unwrap();
+
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![1] }, &mut writer).await.unwrap();
+        let deadline = live.owed_fence_deadline().expect("the fence is being held");
+        let painted = wait_for_paint(&live.shared, deadline).await;
+        assert_eq!(painted, Painted::GaveUp { paints: 0 });
+
+        // The window draws between the two: the frame this fence waited for is
+        // taken after all, just too late for the grace.
+        live.shared.framebuffer.lock().unwrap().take_damage();
+        live.shared.took_frame();
+        live.fence_painted(painted, &mut writer).await.unwrap();
+        assert_eq!(sent(&mut writer), vec![ClientMsg::Fence { flags: 4, payload: vec![1] }]);
+
+        // That draw is what puts the window back in the loop, so the next
+        // frame's fence is held for it rather than echoed at once.
+        live.shared.framebuffer.lock().unwrap().damage_all();
+        live.handle(ServerMsg::Fence { flags: FENCE_REQUEST | 4, payload: vec![2] }, &mut writer).await.unwrap();
         assert_eq!(sent(&mut writer), vec![]);
         assert!(live.owed_fence_deadline().is_some());
     }
