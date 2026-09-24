@@ -307,12 +307,15 @@ impl Vp9Encoder {
             encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_COLOR_RANGE, vpx::vpx_color_range_VPX_CR_STUDIO_RANGE as c_int, "color_range")?;
             // Adaptive quantization would move the quantizer off the dial.
             encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_AQ_MODE, 0, "aq_mode")?;
+            // Tile columns for the threads to split, which libvpx clamps to
+            // what the width allows. Set whatever the thread count: libvpx's
+            // default is 6, every column the width allows, which one thread
+            // would code one after another for the bytes and nothing else.
+            encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TILE_COLUMNS, threads.ilog2() as c_int, "tile_columns")?;
             if threads > 1 {
                 // What makes the threads work on one picture: rows within a
-                // tile, and tile columns for them to split. libvpx clamps the
-                // columns to what the width allows.
+                // tile. Inert at one thread.
                 encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_ROW_MT, 1, "row_mt")?;
-                encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TILE_COLUMNS, threads.ilog2() as c_int, "tile_columns")?;
             }
             // A non-null pointer that is never read is libvpx's own way of
             // asking for the layout and no allocation.
