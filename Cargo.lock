@@ -879,7 +879,7 @@ dependencies = [
 [[package]]
 name = "libvpx-prebuilt-sys"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libvpx-prebuilt?tag=v1.16.0-20260918235810-31a9bf7#31a9bf7ba659ae668e7ef58883d3009b87f5e2a3"
+source = "git+https://github.com/andrewtheguy/libvpx-prebuilt?tag=v1.16.0-20260924182850-e78d74f#e78d74fff89fe8d03a6ee0323da9421cf6c5dc73"
 
 [[package]]
 name = "linux-raw-sys"
@@ -1746,7 +1746,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wlshare"
-version = "0.0.38"
+version = "0.0.39"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-client"
-version = "0.0.38"
+version = "0.0.39"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-rfb"
-version = "0.0.38"
+version = "0.0.39"
 dependencies = [
  "aes",
  "eax",

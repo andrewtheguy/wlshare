@@ -40,7 +40,7 @@ symphonia-core = { version = "0.6", optional = true }
 # nothing to configure, assemble or install. The archives cover macOS arm64,
 # Linux x86_64 and aarch64 and Windows x86_64, which is every place a daemon or
 # a client of this crate is built.
-vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260918235810-31a9bf7", optional = true }
+vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260924182850-e78d74f", optional = true }
 # The conversion between the framebuffer's `B, G, R, X` and the encoding's
 # 4:4:4 planes, behind both features: pure Rust with AVX2 and NEON paths chosen
 # at run time, which is three to four times the speed of a scalar loop on a 4K
