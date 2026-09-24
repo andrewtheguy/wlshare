@@ -116,9 +116,12 @@ fn decoder_threads() -> u32 {
 }
 
 /// Whether `len` bytes hold a `width`×`height` picture of 4-byte pixels whose
-/// rows are `stride` apart.
+/// rows are `stride` apart, in measures the conversions' `u32` can carry.
 #[cfg_attr(not(any(feature = "encode", feature = "decode")), allow(dead_code))]
 fn fits(width: usize, height: usize, stride: usize, len: usize) -> bool {
+    if [width, height, stride].iter().any(|&n| u32::try_from(n).is_err()) {
+        return false;
+    }
     width == 0 || height == 0 || (stride >= width * 4 && len >= (height - 1) * stride + width * 4)
 }
 
@@ -130,20 +133,30 @@ fn fits(width: usize, height: usize, stride: usize, len: usize) -> bool {
 fn bgrx_to_i444(pixels: &[u8], stride: usize, width: usize, height: usize, planes: [&mut [u8]; 3]) {
     use yuv::{BufferStoreMut, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix};
     let [y_plane, u_plane, v_plane] = planes;
-    let (width, height) = (width as u32, height as u32);
-    let mut image = YuvPlanarImageMut {
-        y_plane: BufferStoreMut::Borrowed(y_plane),
-        y_stride: width,
-        u_plane: BufferStoreMut::Borrowed(u_plane),
-        u_stride: width,
-        v_plane: BufferStoreMut::Borrowed(v_plane),
-        v_stride: width,
-        width,
-        height,
+    let row = width * 4;
+    let mut convert = |pixels: &[u8], stride: usize, planes_from: usize, rows: usize| {
+        let at = planes_from * width..(planes_from + rows) * width;
+        let mut image = YuvPlanarImageMut {
+            y_plane: BufferStoreMut::Borrowed(&mut y_plane[at.clone()]),
+            y_stride: width as u32,
+            u_plane: BufferStoreMut::Borrowed(&mut u_plane[at.clone()]),
+            u_stride: width as u32,
+            v_plane: BufferStoreMut::Borrowed(&mut v_plane[at]),
+            v_stride: width as u32,
+            width: width as u32,
+            height: rows as u32,
+        };
+        // The X byte is the alpha channel of a BGRA picture, which this ignores.
+        yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced)
+            .expect("the picture fits its buffers, which the caller checked");
     };
-    // The X byte is the alpha channel of a BGRA picture, which this ignores.
-    yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced)
-        .expect("the picture fits its buffers, which the caller checked");
+    // The crate takes rows as whole strides, so a last row with nothing after
+    // it — which is a picture that fits — would be skipped: it goes on its own.
+    let (body, last) = pixels.split_at((height - 1) * stride);
+    if height > 1 {
+        convert(body, stride, 0, height - 1);
+    }
+    convert(&last[..row], row, height - 1, 1);
 }
 
 /// BT.601 studio-swing 4:4:4 planes back into `B, G, R, X`, the X byte zero as
@@ -547,6 +560,33 @@ mod tests {
         }
     }
 
+    /// A last row with nothing after it is converted like the rows before it,
+    /// which have a stride's padding after them.
+    #[test]
+    fn the_last_row_needs_no_padding_after_it() {
+        let (width, height, stride) = (3, 3, 3 * 4 + 8);
+        let colour = |row: usize| [40 * row as u8, 200 - 50 * row as u8, 90, 0];
+        let mut pixels = vec![0xAA; (height - 1) * stride + width * 4];
+        for row in 0..height {
+            for x in 0..width {
+                pixels[row * stride + x * 4..][..4].copy_from_slice(&colour(row));
+            }
+        }
+        let mut planes = [vec![0; width * height], vec![0; width * height], vec![0; width * height]];
+        let [y, u, v] = &mut planes;
+        bgrx_to_i444(&pixels, stride, width, height, [y.as_mut_slice(), u.as_mut_slice(), v.as_mut_slice()]);
+        let mut back = vec![0xAA; (height - 1) * stride + width * 4];
+        i444_to_bgrx([&planes[0], &planes[1], &planes[2]], [width; 3], width, height, &mut back, stride);
+        for row in 0..height {
+            for x in 0..width {
+                let got = &back[row * stride + x * 4..][..4];
+                let want = colour(row);
+                assert!((0..3).all(|c| want[c].abs_diff(got[c]) <= 3) && got[3] == 0, "row {row}: {want:?} came back {got:?}");
+            }
+        }
+        assert!(back[width * 4..stride].iter().all(|&b| b == 0xAA), "the padding is not written");
+    }
+
     #[test]
     fn a_picture_that_does_not_fit_its_buffer_is_refused() {
         assert!(fits(4, 2, 16, 32));
@@ -554,6 +594,7 @@ mod tests {
         assert!(!fits(4, 2, 12, 32), "a stride shorter than a row");
         assert!(!fits(4, 2, 16, 31));
         assert!(fits(0, 0, 0, 0));
+        assert!(!fits(4, 1, usize::MAX, 16), "a stride the conversion cannot carry, however the bytes add up");
     }
 }
 
