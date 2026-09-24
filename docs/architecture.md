@@ -261,7 +261,14 @@ fixed:
   counts towards that floor but is no verdict. Without Fence it is how long
   writing the frame blocked. The dial moves on the running encoder, so a move
   costs no keyframe, and an encoder made at a new size starts where it stands. Screen-content tuning, libvpx's
-  realtime speed 7, no lag, and threads with row and tile parallelism.
+  realtime speed 7, no lag, and threads with row and tile parallelism: the
+  machine's cores less two, at most eight, for the encoder, since an encode
+  is a burst the person at the other end waits on, and libvpx clamps the tile
+  columns to what the width allows; half the machine, at most four, for the
+  decoder, which gains nothing past the stream's tiles. The conversion
+  between the framebuffer's pixels and the planes is the `yuv` crate's, on
+  the AVX2 or NEON path the machine has: a scalar loop over a 4K frame was a
+  fifth of an encode and a third of a decode.
 - **A quiet desktop settles at `vp9_quality`.** The walk only runs when a
   frame goes out, and a frame only goes out when something changed, so a
   desktop that stops right after the link coarsened it would keep that

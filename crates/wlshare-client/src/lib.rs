@@ -98,10 +98,17 @@ impl Client {
     /// a size, a state. It runs on the session's thread and must not block, so
     /// what belongs in it is one "this window is dirty" and nothing else.
     ///
+    /// It is called once as it is installed, on this thread: the session has
+    /// been running since [`Client::connect`], and a state it reached before
+    /// there was anyone to tell — a connection refused at once — would
+    /// otherwise never be announced. A window that is told it is dirty when it
+    /// is not draws once for nothing.
+    ///
     /// It is cleared before the session thread is joined, so it can never run
     /// after [`Client`] is dropped.
     pub fn on_frame(&self, wake: Option<Box<dyn Fn() + Send + Sync>>) {
         self.shared.set_wake(wake);
+        self.shared.wake();
     }
 
     /// Show `visit` the framebuffer and the region of it that has changed since
@@ -236,6 +243,26 @@ mod tests {
         };
         assert!(status.error.is_some(), "a session that failed says why");
         assert!(woken.load(Ordering::SeqCst) > 0, "the window is woken when the state changes");
+    }
+
+    /// The session runs from `connect`, so a window that installs its wake
+    /// after the session has already ended must still be told to look.
+    #[test]
+    fn a_wake_installed_after_the_state_changed_still_fires() {
+        let client = Client::connect(nowhere(), Surface { width: 800, height: 600, scale: 2.0 });
+        while client.status().state != State::Closed {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let woken = Arc::new(AtomicUsize::new(0));
+        client.on_frame(Some(Box::new({
+            let woken = Arc::clone(&woken);
+            move || {
+                woken.fetch_add(1, Ordering::SeqCst);
+            }
+        })));
+        assert_eq!(woken.load(Ordering::SeqCst), 1, "installing the wake is the one call a closed session makes");
+        client.on_frame(None);
+        assert_eq!(woken.load(Ordering::SeqCst), 1, "clearing it calls nothing");
     }
 
     #[test]

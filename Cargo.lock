@@ -1746,7 +1746,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wlshare"
-version = "0.0.36"
+version = "0.0.37"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-client"
-version = "0.0.36"
+version = "0.0.37"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-rfb"
-version = "0.0.36"
+version = "0.0.37"
 dependencies = [
  "aes",
  "eax",
@@ -1803,6 +1803,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "wlshare-rfb",
+ "yuv",
 ]
 
 [[package]]
@@ -1821,6 +1822,15 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+
+[[package]]
+name = "yuv"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a295923535c00a4e72a50a0a1130097f93160b39892dd4d2d006b1e2b90d6bf9"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "zeroize"

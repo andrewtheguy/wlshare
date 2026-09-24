@@ -41,16 +41,21 @@ symphonia-core = { version = "0.6", optional = true }
 # Linux x86_64 and aarch64 and Windows x86_64, which is every place a daemon or
 # a client of this crate is built.
 vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260918235810-31a9bf7", optional = true }
+# The conversion between the framebuffer's `B, G, R, X` and the encoding's
+# 4:4:4 planes, behind both features: pure Rust with AVX2 and NEON paths chosen
+# at run time, which is three to four times the speed of a scalar loop on a 4K
+# frame, and a third of the client's decode step was that loop.
+yuv = { version = "0.8", optional = true }
 
 [features]
 # The server's FLAC encoder, `audio::FlacEncoder`, and VP9 encoder,
 # `vp9::Vp9Encoder`. Off by default, so a client, which only decodes, does not
 # build an encoder it never runs.
-encode = ["dep:flacenc", "dep:vpx-sys"]
+encode = ["dep:flacenc", "dep:vpx-sys", "dep:yuv"]
 # The client's FLAC decoder, `audio::FlacDecoder`, and VP9 decoder,
 # `vp9::Vp9Decoder`. Off by default, so the daemon, which only encodes, does not
 # build a decoder it never runs.
-decode = ["dep:symphonia-bundle-flac", "dep:symphonia-core", "dep:vpx-sys"]
+decode = ["dep:symphonia-bundle-flac", "dep:symphonia-core", "dep:vpx-sys", "dep:yuv"]
 
 [dev-dependencies]
 # The encoder's tests read every frame back with the client's decoder, which
