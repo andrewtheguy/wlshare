@@ -95,10 +95,23 @@ fn check(err: vpx::vpx_codec_err_t, call: &'static str) -> Result<(), Vp9Error> 
     Err(Vp9Error::Codec { call, detail: detail.to_string_lossy().into_owned() })
 }
 
-/// How many threads a codec gets: half the machine, at most four — the session
-/// and the capture still need somewhere to run.
-#[cfg(any(feature = "encode", feature = "decode"))]
-fn threads() -> u32 {
+/// How many threads the encoder gets: the machine less two cores, at most
+/// eight. An encode is a burst of tens of milliseconds a frame that the person
+/// at the other end is waiting on, and libvpx splits it across threads by
+/// rows and tile columns; the two cores kept back are for the compositor and
+/// the session, which are what make the next frame. Six threads on a
+/// six-core host coded a scrolling 4K frame in three quarters of the time
+/// three did, and a keyframe in a little over half.
+#[cfg(feature = "encode")]
+fn encoder_threads() -> u32 {
+    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, 8) as u32
+}
+
+/// How many threads the decoder gets: half the machine, at most four. A
+/// decode gains nothing past the stream's tile columns, and the window still
+/// needs somewhere to draw.
+#[cfg(feature = "decode")]
+fn decoder_threads() -> u32 {
     std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 4) as u32
 }
 
@@ -110,40 +123,52 @@ fn fits(width: usize, height: usize, stride: usize, len: usize) -> bool {
 }
 
 /// `B, G, R, X` pixels into BT.601 studio-swing 4:4:4 planes, `width` samples
-/// a row. Integer arithmetic, rounded.
+/// a row. The `yuv` crate's conversion, which takes the AVX2 or NEON path the
+/// machine has: a 4K frame is eight million pixels, and a scalar loop over
+/// them was a fifth of the time an encode took.
 #[cfg_attr(not(feature = "encode"), allow(dead_code))]
 fn bgrx_to_i444(pixels: &[u8], stride: usize, width: usize, height: usize, planes: [&mut [u8]; 3]) {
+    use yuv::{BufferStoreMut, YuvConversionMode, YuvPlanarImageMut, YuvRange, YuvStandardMatrix};
     let [y_plane, u_plane, v_plane] = planes;
-    for row in 0..height {
-        let src = &pixels[row * stride..row * stride + width * 4];
-        let at = row * width..(row + 1) * width;
-        let (ys, us, vs) = (&mut y_plane[at.clone()], &mut u_plane[at.clone()], &mut v_plane[at]);
-        for (((pixel, y), u), v) in src.as_chunks::<4>().0.iter().zip(ys).zip(us).zip(vs) {
-            let (b, g, r) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
-            *y = (((66 * r + 129 * g + 25 * b + 128) >> 8) + 16) as u8;
-            *u = (((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128) as u8;
-            *v = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
-        }
-    }
+    let (width, height) = (width as u32, height as u32);
+    let mut image = YuvPlanarImageMut {
+        y_plane: BufferStoreMut::Borrowed(y_plane),
+        y_stride: width,
+        u_plane: BufferStoreMut::Borrowed(u_plane),
+        u_stride: width,
+        v_plane: BufferStoreMut::Borrowed(v_plane),
+        v_stride: width,
+        width,
+        height,
+    };
+    // The X byte is the alpha channel of a BGRA picture, which this ignores.
+    yuv::bgra_to_yuv444(&mut image, pixels, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Balanced)
+        .expect("the picture fits its buffers, which the caller checked");
 }
 
 /// BT.601 studio-swing 4:4:4 planes back into `B, G, R, X`, the X byte zero as
-/// every other decoder here writes it. `strides` are the planes'.
+/// every other decoder here writes it. `strides` are the planes'. The `yuv`
+/// crate's conversion, as [`bgrx_to_i444`] is: on a 4K frame the scalar loop
+/// it replaces was a third of the client's whole decode step.
 #[cfg_attr(not(feature = "decode"), allow(dead_code))]
 fn i444_to_bgrx(planes: [&[u8]; 3], strides: [usize; 3], width: usize, height: usize, out: &mut [u8], stride: usize) {
+    use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
     let [y_plane, u_plane, v_plane] = planes;
-    let clamp = |value: i32| value.clamp(0, 255) as u8;
+    let image = YuvPlanarImage {
+        y_plane,
+        y_stride: strides[0] as u32,
+        u_plane,
+        u_stride: strides[1] as u32,
+        v_plane,
+        v_stride: strides[2] as u32,
+        width: width as u32,
+        height: height as u32,
+    };
+    yuv::yuv444_to_bgra(&image, out, stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601)
+        .expect("the picture fits its buffers, which the caller checked");
+    // It writes an opaque alpha where the X byte goes.
     for row in 0..height {
-        let ys = &y_plane[row * strides[0]..][..width];
-        let us = &u_plane[row * strides[1]..][..width];
-        let vs = &v_plane[row * strides[2]..][..width];
-        let dst = &mut out[row * stride..row * stride + width * 4];
-        for (((pixel, &y), &u), &v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(ys).zip(us).zip(vs) {
-            let c = 298 * (i32::from(y) - 16);
-            let (d, e) = (i32::from(u) - 128, i32::from(v) - 128);
-            pixel[0] = clamp((c + 516 * d + 128) >> 8);
-            pixel[1] = clamp((c - 100 * d - 208 * e + 128) >> 8);
-            pixel[2] = clamp((c + 409 * e + 128) >> 8);
+        for pixel in out[row * stride..row * stride + width * 4].as_chunks_mut::<4>().0 {
             pixel[3] = 0;
         }
     }
@@ -184,7 +209,7 @@ impl Vp9Encoder {
         }
         let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
         let q = quality_to_q(quality);
-        let threads = threads();
+        let threads = encoder_threads();
 
         // SAFETY: takes nothing and returns a static interface descriptor.
         let iface = unsafe { vpx::vpx_codec_vp9_cx() };
@@ -416,7 +441,7 @@ impl Vp9Decoder {
         // `dec_init_ver`, and the ABI version of the linked archive's headers.
         unsafe {
             let iface = vpx::vpx_codec_vp9_dx();
-            let cfg = vpx::vpx_codec_dec_cfg_t { threads: threads(), w: 0, h: 0 };
+            let cfg = vpx::vpx_codec_dec_cfg_t { threads: decoder_threads(), w: 0, h: 0 };
             let mut ctx: Box<vpx::vpx_codec_ctx_t> = Box::new(std::mem::zeroed());
             check(vpx::vpx_codec_dec_init_ver(&mut *ctx, iface, &cfg, 0, vpx::VPX_DECODER_ABI_VERSION as c_int), "dec_init_ver")?;
             Ok(Self { ctx })
@@ -513,8 +538,10 @@ mod tests {
         let mut back = vec![0xAA; width * 4];
         i444_to_bgrx([&planes[0], &planes[1], &planes[2]], [width; 3], width, 1, &mut back, width * 4);
         for (i, (want, got)) in pixels.as_chunks::<4>().0.iter().zip(back.as_chunks::<4>().0).enumerate() {
+            // Studio swing folds 256 levels into 219, so a channel can come
+            // back three off; a wrong matrix would be off by tens.
             for channel in 0..3 {
-                assert!(want[channel].abs_diff(got[channel]) <= 2, "pixel {i}: {want:?} came back {got:?}");
+                assert!(want[channel].abs_diff(got[channel]) <= 3, "pixel {i}: {want:?} came back {got:?}");
             }
             assert_eq!(got[3], 0, "X is written as zero");
         }
