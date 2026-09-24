@@ -96,16 +96,27 @@ fn check(err: vpx::vpx_codec_err_t, call: &'static str) -> Result<(), Vp9Error> 
 }
 
 /// How many threads the encoder gets: the machine less two cores, at most
-/// eight. An encode is a burst of tens of milliseconds a frame that the person
-/// at the other end is waiting on, and libvpx splits it across threads by
-/// rows and tile columns; the two cores kept back are for the compositor and
-/// the session, which are what make the next frame. Six threads on a
-/// six-core host coded a scrolling 4K frame in three quarters of the time
-/// three did, and a keyframe in a little over half.
+/// [`MAX_ENCODER_THREADS`]. An encode is a burst of tens of milliseconds a
+/// frame that the person at the other end is waiting on, and libvpx splits it
+/// across threads by rows and tile columns; the two cores kept back are for
+/// the compositor and the session, which are what make the next frame. Six
+/// threads on a six-core host coded a scrolling 4K frame in three quarters of
+/// the time three did, and a keyframe in a little over half.
 #[cfg(feature = "encode")]
 fn encoder_threads() -> u32 {
-    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, 8) as u32
+    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS) as u32
 }
+
+/// The most threads the encoder takes, whatever the machine: what a 4K
+/// picture can use. The useful count is the picture's, not the machine's —
+/// libvpx hands out superblock rows within each tile column, so the work to
+/// share grows with the picture — and the measurements, 1080p saturating at
+/// three threads and 4K still gaining at six, put it at about one thread a
+/// megapixel: eight for 4K's 8.3. 4K is the largest desktop this is tuned
+/// for; a larger one is an edge case that streams, not a target, and gets the
+/// 4K count. Not measured past six threads, since the host had six cores.
+#[cfg(feature = "encode")]
+const MAX_ENCODER_THREADS: usize = 8;
 
 /// How many threads the decoder gets: half the machine, at most four. A
 /// decode gains nothing past the stream's tile columns, and the window still
