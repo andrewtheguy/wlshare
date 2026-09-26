@@ -221,11 +221,13 @@ update too, and waits for a request like any other.
 
 ## The VP9 encoding
 
-A private encoding, `WLSV` (`0x574c5356`), for wlshare's own desktop clients:
-the whole desktop as one VP9 stream, for a client that would rather have a
-picture that moves than one that is exact. remotex never lists it — it re-encodes
-every tile itself and wants ZRLE's exact pixels to do it from — and nor does any
-other VNC client, so nothing changes for them.
+A private encoding, `WLSV` (`0x574c5356`), for wlshare's own desktop clients
+and the remotex gateway: the whole desktop as one VP9 stream, for a client that
+would rather have a picture that moves than one that is exact. remotex lists it
+for a browser that decodes 4:4:4 and passes each frame to the browser as it
+came, since it is the stream remotex would otherwise encode from ZRLE's pixels;
+for a browser that does not, it lists ZRLE and encodes 4:2:0 itself. No other VNC
+client lists it, so nothing changes for them.
 
 A client that lists it gets it instead of ZRLE, wherever in the list it is. Each
 update is then one rectangle covering the whole framebuffer, whose body is a
@@ -745,8 +747,8 @@ bare reason "authentication failed"; the actual reason is logged.
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the VP9
 one: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
 lossless choice. VP9 at 4:2:0, a VP9 quality above the configured one however
-much room the link has, and the VP9 encoding for anything but a desktop client
-that lists it.
+much room the link has, and the VP9 encoding for any client that does not list
+it.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the
 cursor session does report positions, but only when the output repaints.
