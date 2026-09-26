@@ -259,6 +259,10 @@ impl Vp9Encoder {
         // reason, and so would a periodic keyframe: every keyframe is asked for.
         cfg.g_error_resilient = 0;
         cfg.kf_mode = vpx::vpx_kf_mode_VPX_KF_DISABLED;
+        // Which is not enough on its own: libvpx 1.16's one-pass rate control
+        // still counts down `kf_max_dist`, 128 by default, and codes a keyframe
+        // when it runs out — measured at frames 128 and 256 of a moving picture.
+        cfg.kf_max_dist = i32::MAX as u32;
         // Constant quality, the quantizer pinned top and bottom: the bytes land
         // wherever the picture puts them.
         cfg.rc_end_usage = vpx::vpx_rc_mode_VPX_Q;
@@ -713,6 +717,22 @@ mod round_trip {
             decoder.decode_rect(&frame, width, height, &mut out, width * 4).unwrap();
             let lit = &out[(step * 4 + 4) * 4..][..3];
             assert!(lit.iter().all(|&c| c > 200), "frame {step} did not decode to its own picture: {lit:?}");
+        }
+    }
+
+    /// However long a stream runs, no keyframe comes that was not asked for.
+    #[test]
+    fn no_keyframe_comes_unasked() {
+        let (width, height) = (64, 32);
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, 60).unwrap();
+        for step in 0..300usize {
+            let mut pixels = [80u8, 40, 20, 0].repeat(width * height);
+            let x = step % width;
+            for y in 0..height {
+                pixels[(y * width + x) * 4..][..3].copy_from_slice(&[240, (step * 7) as u8, 240]);
+            }
+            let frame = encode(&mut encoder, &pixels, false);
+            assert_eq!(is_keyframe(&frame), step == 0, "frame {step}");
         }
     }
 
