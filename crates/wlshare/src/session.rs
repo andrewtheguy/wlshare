@@ -39,8 +39,8 @@
 //!
 //! A client that lists the VP9 encoding gets every pixel update as one rectangle
 //! over the whole framebuffer, the next frame of one VP9 stream
-//! ([`wlshare_rfb::vp9`]). The encoder is made again at every new size or chroma,
-//! whose first frame is a keyframe; a non-incremental request or the encoding's
+//! ([`wlshare_rfb::vp9`]), 4:4:4 throughout. The encoder is made again at every
+//! new size, whose first frame is a keyframe; a non-incremental request or the encoding's
 //! being listed anew also asks for one. A frame between them is handed the
 //! damage since the client's last one, and the encoder converts and codes that
 //! alone: a small change costs a small encode. The encode runs on this task's worker,
@@ -146,7 +146,7 @@ use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
-use wlshare_rfb::vp9::{self, Chroma, Vp9Encoder, Vp9Stream};
+use wlshare_rfb::vp9::{self, Vp9Encoder, Vp9Stream};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
     ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
@@ -197,7 +197,7 @@ impl Security {
 /// from: a list that asks for VP9 names the stream it asks for, and a client
 /// that has seen nothing of a stream starts it at a keyframe whatever this
 /// held.
-const UNLISTED: Vp9Stream = Vp9Stream { chroma: Chroma::Full, quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true };
+const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true };
 
 pub struct SessionConfig {
     pub security: Security,
@@ -508,10 +508,8 @@ struct Session {
     capture: Option<wlshare_rfb::capture::Writer<BufWriter<File>>>,
     /// The client listed the VP9 encoding, which it gets instead of Raw or ZRLE.
     use_vp9: bool,
-    /// What the VP9 stream is to be: its chroma, the ceiling of its quality
-    /// and whether the walk moves it below, as the client's list asks
-    /// ([`Vp9Stream`]). 4:4:4 at the configured quality, with the walk, for a
-    /// list that asks nothing.
+    /// What the VP9 stream is to be: the ceiling of its quality and whether
+    /// the walk moves it below, as the client's list asks ([`Vp9Stream`]).
     stream: Vp9Stream,
     /// The next VP9 frame must be a keyframe.
     keyframe_owed: bool,
@@ -790,23 +788,14 @@ impl Session {
                 let changed = listed.is_some_and(|stream| stream != self.stream);
                 if let Some(stream) = listed.filter(|_| changed) {
                     // A new ceiling or walk is a fresh walk from the ceiling, which
-                    // a running encoder follows without a keyframe; a new chroma
-                    // is a new stream, which starts at one. Either is owed the
-                    // picture the client holds whether or not the desktop changed:
-                    // the whole desktop as a keyframe for a new stream, and once at
-                    // a new ceiling, as a settle sends it, for a running one.
-                    let rechroma = stream.chroma != self.stream.chroma;
+                    // a running encoder follows without a keyframe. A new ceiling
+                    // is owed the picture the client holds whether or not the
+                    // desktop changed, once at it, as a settle sends it.
                     let new_ceiling = stream.quality != self.stream.quality;
                     self.stream = stream;
                     self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
                     self.settle_owed = false;
-                    if rechroma {
-                        self.vp9 = None;
-                        self.keyframe_owed = true;
-                        if vp9 {
-                            self.seen = 0;
-                        }
-                    } else if let Some(encoder) = &mut self.vp9 {
+                    if let Some(encoder) = &mut self.vp9 {
                         encoder.set_quality(self.walk.quality()).context("moving the VP9 quality to the client's ceiling")?;
                         self.settle_owed = new_ceiling && vp9;
                     }
@@ -814,9 +803,8 @@ impl Session {
                 if vp9 && (changed || !self.use_vp9) {
                     let stream = self.stream;
                     info!(
-                        "client {}: asked for VP9, {} up to quality {}, {}",
+                        "client {}: asked for VP9 up to quality {}, {}",
                         self.id.0,
-                        stream.chroma.name(),
                         stream.quality,
                         if stream.adaptive { "walked by its lag" } else { "held there" }
                     );
@@ -1324,8 +1312,8 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.stream.chroma, self.walk.quality())
-                    .with_context(|| format!("starting a {} VP9 stream for a {width}x{height} desktop", self.stream.chroma.name()))?;
+                let encoder = Vp9Encoder::new(width, height, self.walk.quality())
+                    .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
                 self.vp9 = Some(encoder);
                 self.keyframe_owed = true;
             };
@@ -1376,8 +1364,8 @@ impl Session {
                     // the rest of `scratch` is what the frames before left
                     // there, which is the picture as the client holds it.
                     // Copied out to whole 2×2 groups, an even row and column
-                    // with the odd ones after them, which a 4:2:0 stream
-                    // reads together.
+                    // with the odd ones after them, which a 4:2:0 replay of
+                    // the capture (`vp9cap --chroma 420`) reads together.
                     let row_len = usize::from(fb.width) * 4;
                     self.scratch.resize(row_len * usize::from(fb.height), 0);
                     let whole = [Rect::whole(fb.width, fb.height)];
