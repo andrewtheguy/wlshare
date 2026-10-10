@@ -15,7 +15,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - [screen-vp9](https://github.com/andrewtheguy/screen-vp9), a repository of
   its own that this workspace and the remotex gateway each pin by release tag,
   is the one place libvpx is spoken to: the encoder configuration a desktop is
-  coded with, the planes in front of it at either chroma, the decoder, what a
+  coded with, the planes in front of it, the decoder, what a
   frame says about itself, and the quality walk. It has no platform dependency,
   and a change to how a desktop is coded is made there once for the daemon and
   the gateway, and reaches each as a pin bump. See
@@ -311,8 +311,9 @@ desktop as one VP9 stream, for a client that
 would rather have a picture that moves than one that is exact. While the
 framebuffer is within its video ceiling, remotex lists it for every browser on a
 target with `subtype = "wlshare"` and passes each frame to the browser as it came, since it is the stream remotex would
-otherwise encode from ZRLE's pixels — at the chroma the browser's decoder takes
-and the target's own dial, which it names beside the encoding, below. A client
+otherwise encode from ZRLE's pixels — 4:4:4 at the target's own dial, which it
+names beside the encoding, below; a browser with no profile-1 decoder of its own
+decodes it in the page. A client
 that does not list it is unchanged.
 
 A client that lists it, with a quality beside it (below), gets it instead of a
@@ -334,13 +335,12 @@ keyframe that was not asked for, and the colour declared in the bitstream.
 `crates/wlshare-rfb/src/vp9.rs` is the framing over it — the length word and
 its ceiling, the framebuffer's pixels in and out. What a frame holds is fixed:
 
-- **8-bit 4:4:4, VP9 profile 1, unless the client asks for 4:2:0.** A colour
-  sample per pixel: the loss 4:2:0 costs a desktop is its text's colour — a
-  one-pixel coloured stem shares its sample with three pixels of background —
-  and no quantizer puts it back. The gateway asks for 4:2:0 (profile 0) for a
-  browser whose decoder takes nothing else, since a stream that browser refuses
-  by name carries no colour at all, by listing `WLS0` beside the encoding
-  (below).
+- **8-bit 4:4:4, VP9 profile 1, always.** A colour sample per pixel: the
+  loss 4:2:0 costs a desktop is its text's colour — a one-pixel coloured stem
+  shares its sample with three pixels of background — and no quantizer puts it
+  back. There is no 4:2:0 stream to ask for: where a browser's own decoder
+  takes only profile 0, the gateway decodes the stream in the page with a
+  WebAssembly VP9 decoder.
 - **BT.601 at studio swing**, converted from the framebuffer's `B, G, R, X` and
   declared in the keyframe header, so a decoder converts back with the same
   matrix. The client's pixel format does not apply.
@@ -385,23 +385,20 @@ its ceiling, the framebuffer's pixels in and out. What a frame holds is fixed:
   message, because a server that is not wlshare ignores an encoding it does
   not know where a message it does not know ends the connection, and because
   they ride the list that names the encoding, so the first frame is already
-  what was asked for. `WLS0` (`0x574c5330`) asks for 4:2:0 in place of 4:4:4;
-  `0x574c5100` plus a quality 1–100 (`WLQ` and the value) names the ceiling the
+  what was asked for. `0x574c5100` plus a quality 1–100 (`WLQ` and the value) names the ceiling the
   walk never goes above; `WLSD` (`0x574c5344`)
   holds the dial there, with a walk that hears nothing in a fence — only a
   frame whose write blocked moves it, fence or no fence — and a settle with
   nothing to sharpen. The gateway lists them from the target's keys, so
-  `render_chroma`, `video_quality` and `render_adaptive` mean on a passed
-  stream what they mean on one the gateway codes. Read at every
-  `SetEncodings`, and owed a frame whether or not the desktop changed: a new
-  chroma starts the stream over at a keyframe, a new ceiling moves the running
-  encoder's dial and sends the picture once at it, as a settle does, and a new
-  walk moves the dial alone. A list that names VP9 without a quality is
+  `video_quality` and `render_adaptive` mean on a passed stream what they mean
+  on one the gateway codes. Read at every `SetEncodings`: a new ceiling moves
+  the running encoder's dial and sends the picture once at it, as a settle
+  does, whether or not the desktop changed, and a new walk moves the dial
+  alone. Neither costs a keyframe. A list that names VP9 without a quality is
   fatal, as a malformed message is: wlshare has no quality of its own, the
   gateway names one beside the encoding on every list, and a client that is
   not the gateway — a plain `vnc` target reads wlshare through the RFB
-  baseline — lists no VP9 at all. Without `WLS0` the stream is 4:4:4, and
-  without `WLSD` it walks.
+  baseline — lists no VP9 at all. Without `WLSD` the stream walks.
   Screen-content tuning, libvpx's
   realtime speed 7, no lag, and threads with row and tile parallelism: the
   machine's cores less two, at most eight, for the encoder, since an encode
@@ -435,12 +432,12 @@ its ceiling, the framebuffer's pixels in and out. What a frame holds is fixed:
   still owed its settle. remotex's settle for its own whole-desktop
   streams.
 - **Keyframes only when a decoder needs one**: the first frame after the
-  encoding is listed, the first at a new size or chroma (the encoder is made
+  encoding is listed, the first at a new size (the encoder is made
   again for it), and the frame that answers a non-incremental request. There is
   no periodic keyframe; nothing is lost on TCP.
 
 A normal VP9 update is sent when anything is damaged; a non-incremental request,
-a chroma or quality-ceiling change and the settle described above can also owe
+a quality-ceiling change and the settle described above can also owe
 one. The frame is the whole picture, and what did not change costs it
 nearly nothing, in bytes or in time: the session hands the encoder the damage
 since the client's last frame, the encoder converts the rectangles of the damage
