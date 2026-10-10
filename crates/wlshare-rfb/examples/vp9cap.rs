@@ -24,7 +24,7 @@
 //! `streams` codes every frame as the session did — its rectangles, its dial,
 //! its keyframe where one was asked — into one stream per run of a size,
 //! `DIR/NAME-WxH.ivf`, with `-2`, `-3` for a size the capture comes
-//! back to. A run the encoder made fewer than `--least` frames of is left
+//! back to. A run of fewer than `--least` frames is left
 //! out: the second or two a session spent at another size before it was
 //! resized into its own is in a capture for an encoder's sake, and is no
 //! stream to test a decoder on. Beside each is `.ivf.csv`, `frame,ms,bytes,keyframe,quality`: the
@@ -53,7 +53,7 @@ use std::io::{BufReader, BufWriter, Read, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use screen_vp9::Stream;
+use screen_vp9_native::Stream;
 use wlshare_rfb::capture::{Frame, Reader};
 
 type Error = Box<dyn std::error::Error>;
@@ -281,19 +281,16 @@ impl Output {
     }
 
     /// Code `frame` as the session did, or as a keyframe of the whole picture
-    /// where the stream starts with it. A frame the encoder makes nothing of
-    /// is not a frame of the stream.
+    /// where the stream starts with it.
     fn frame(&mut self, frame: &Frame<'_>) -> Result<(), Error> {
         let starting = self.began.is_none();
         if self.stream.quality() != frame.quality {
-            self.stream.set_quality(frame.quality)?;
+            self.stream.set_quality(frame.quality);
         }
         self.unit.clear();
         let changed = if starting { None } else { frame.changed };
         self.stream.read_bgrx(frame.pixels, usize::from(self.size.0) * 4, changed)?;
-        let Some(keyframe) = self.stream.encode(starting || frame.keyframe, &mut self.unit)? else {
-            return Ok(());
-        };
+        let keyframe = self.stream.encode(starting || frame.keyframe, &mut self.unit)?;
         let micros = frame.at.as_micros() as u64;
         let ms = (micros - *self.began.get_or_insert(micros)) / 1000;
         if starting {
@@ -399,11 +396,6 @@ fn sample(args: &Args) -> Result<(), Error> {
     }
     drop(source);
     let output = output.expect("the run is in the capture");
-    if (output.frames as usize) < args.frames {
-        let frames = output.frames;
-        output.discard();
-        return Err(format!("the encoder made {frames} frames of the {} from frame {start} of the {width}x{height} run", args.frames).into());
-    }
     let Some(shape) = keyframe_shape(&output.first) else {
         output.discard();
         return Err("the stream's first frame is not a keyframe this reads".into());

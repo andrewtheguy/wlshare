@@ -46,7 +46,7 @@
 //! alone: a small change costs a small encode. The encode runs on this task's worker,
 //! told it is blocking, and the fence keeps it to one frame in flight as it does
 //! a standard pixel update. Its quality starts at the configured one and follows
-//! the link through screen-vp9's quality walk: each frame's fence, answered
+//! the link through screen-vp9-native's quality walk: each frame's fence, answered
 //! once the client has the frame — remotex answers once the browser has taken
 //! it, so the walk reads the whole path to the screen — is how long that frame
 //! took, and a client without Fence is measured by how long writing the frame
@@ -54,7 +54,7 @@
 //! Ordinarily a frame only goes out when something changed, so a desktop that
 //! stops right after the link coarsened it would keep that picture. Once a frame
 //! below the configured quality has been delivered and nothing has changed for
-//! [`SETTLE_IDLE`](screen_vp9::walk::SETTLE_IDLE), the dial is taken back to the configured quality and the
+//! [`SETTLE_IDLE`](screen_vp9_native::walk::SETTLE_IDLE), the dial is taken back to the configured quality and the
 //! unchanged picture is sent again as one inter frame, coded whole, which
 //! sharpens every block without a keyframe. A list that drops VP9
 //! is answered with the whole framebuffer in the standard encoding it selected
@@ -162,7 +162,7 @@ use crate::auth::Login;
 use crate::camera::{Camera, Signal as CameraSignal};
 use crate::framebuffer::{Rect, ResizeOrigin};
 use crate::microphone::{Microphone, Signal as MicrophoneSignal};
-use screen_vp9::walk::{Pace, QualityWalk};
+use screen_vp9_native::walk::{Pace, QualityWalk};
 use crate::shared::{BESIDE, ClientId, Command, Event, FIRST, Seats, Shared};
 
 /// What the server offers at the security step, and what it checks the client
@@ -796,7 +796,7 @@ impl Session {
                     self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
                     self.settle_owed = false;
                     if let Some(encoder) = &mut self.vp9 {
-                        encoder.set_quality(self.walk.quality()).context("moving the VP9 quality to the client's ceiling")?;
+                        encoder.set_quality(self.walk.quality());
                         self.settle_owed = new_ceiling && vp9;
                     }
                 }
@@ -977,7 +977,7 @@ impl Session {
                         if moved.is_some() {
                             debug!("client {}: the frame before took {}ms to deliver", self.id.0, delivery.as_millis());
                         }
-                        self.follow_walk(moved)?;
+                        self.follow_walk(moved);
                         // Quiet is counted from when the client had the frame,
                         // not from when it was written.
                         self.walk.delivered(now);
@@ -1427,13 +1427,7 @@ impl Session {
         // rounds after it to leave.
         let settling = self.use_vp9 && self.settle_owed;
         let vp9 = if self.use_vp9 {
-            let Some(keyframe) = self.encode_vp9(full, changed.as_deref())? else {
-                // Nothing to send, and nothing changes hands: the damage stays
-                // unseen, the request pending and the keyframe owed, for the
-                // frame the next change brings.
-                warn!("client {}: the VP9 encoder produced no frame; waiting for the next change", self.id.0);
-                return Ok(());
-            };
+            let keyframe = self.encode_vp9(full, changed.as_deref())?;
             Some((keyframe, !keyframe && !settling))
         } else {
             self.encode_pieces(&pieces);
@@ -1466,7 +1460,7 @@ impl Session {
                 // How long the socket had no room for the frame, which the
                 // walk hears now or leaves to the fence.
                 let moved = self.walk.written(now.saturating_duration_since(sent), self.fence_supported, now);
-                self.follow_walk(moved)?;
+                self.follow_walk(moved);
             }
             if self.fence_supported {
                 self.vp9_in_flight = Some((sent, verdict));
@@ -1484,15 +1478,13 @@ impl Session {
     /// keyframe when the update is a full one or one is owed. `changed` is the
     /// damage the frame carries, or `None` for a whole picture, which is what
     /// a capture is told; the stream knows what it read. Returns whether the
-    /// frame was a keyframe, or `None` when the encoder produced no frame:
-    /// `out` is left as it was, and so is the keyframe owed. A settle, which
+    /// frame was a keyframe. A settle, which
     /// is a whole picture, is coded at the configured quality, with the
     /// encoder returned to the walk's after it — a retune and not a rebuild
     /// either way, so no keyframe is spent on it.
-    fn encode_vp9(&mut self, full: bool, changed: Option<&[vp9::Rect]>) -> anyhow::Result<Option<bool>> {
+    fn encode_vp9(&mut self, full: bool, changed: Option<&[vp9::Rect]>) -> anyhow::Result<bool> {
         let settling = self.settle_owed;
         let (width, height) = self.known_size;
-        let rect_at = self.out.len();
         self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VP9));
         let (encoder, out) = (self.vp9.as_mut().expect("made for the read"), &mut self.out);
         let keyframe = full || self.keyframe_owed;
@@ -1519,20 +1511,16 @@ impl Session {
         // is the worker's to spend and not the runtime's to wait on.
         // The settle's frame is the whole picture at the configured quality,
         // and leaves the dial at the walk's.
-        let encoded = tokio::task::block_in_place(|| {
+        tokio::task::block_in_place(|| {
             if settling {
                 encoder.settle(self.stream.quality, keyframe, out)
             } else {
                 encoder.encode(keyframe, out)
             }
         })
-        .with_context(|| format!("encoding a {width}x{height} VP9 frame"));
-        if !encoded? {
-            self.out.truncate(rect_at);
-            return Ok(None);
-        }
+        .with_context(|| format!("encoding a {width}x{height} VP9 frame"))?;
         self.keyframe_owed = false;
-        Ok(Some(keyframe))
+        Ok(keyframe)
     }
 
     /// When a frame the walk slowed may go out, or `None` when the next frame
@@ -1580,9 +1568,9 @@ impl Session {
     /// Move the running encoder's dial to where the walk went, if it went
     /// anywhere; an encoder made later starts there anyway. The interval the
     /// walk asks for is read when a frame goes out.
-    fn follow_walk(&mut self, moved: Option<Pace>) -> anyhow::Result<()> {
+    fn follow_walk(&mut self, moved: Option<Pace>) {
         let Some(pace) = moved else {
-            return Ok(());
+            return;
         };
         if self.walk.slowed() {
             debug!("client {}: VP9 quality {}, at most one frame per {:?}", self.id.0, pace.quality, pace.interval);
@@ -1590,9 +1578,8 @@ impl Session {
             debug!("client {}: VP9 quality {}", self.id.0, pace.quality);
         }
         if let Some(encoder) = &mut self.vp9 {
-            encoder.set_quality(pace.quality).context("moving the VP9 quality")?;
+            encoder.set_quality(pace.quality);
         }
-        Ok(())
     }
 
     /// The damaged rectangles, each as ZRLE or — for a client that never listed
