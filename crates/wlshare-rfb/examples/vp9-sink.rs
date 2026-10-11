@@ -5,7 +5,7 @@
 //! without the remotex gateway.
 //!
 //! ```text
-//! vp9-sink ADDR --size WxH [--quality 1..100] [--held] [--seconds N]
+//! vp9-sink ADDR --size WxH [--quality 1..100] [--held] [--native] [--seconds N]
 //!          [--frames N] [--resize SECS:WxH] [--slow SECS:SECS:MILLIS]
 //!          [--keyframe SECS] [--keys] [--ivf FILE] [--login USER]
 //! ```
@@ -49,7 +49,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use wlshare_rfb::rsa_aes::{self, ClientKey, Credentials, FrameReader, SECURITY_RSA_AES_128, SECURITY_RSA_AES_256, Sealer, Strength};
 use wlshare_rfb::client::{self, RectBody, ServerMsg};
 use wlshare_rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
-use wlshare_rfb::vp9::{ENCODING_VP9_HELD, ENCODING_VP9_QUALITY_BASE};
+use wlshare_rfb::vp9::{ENCODING_VP9_HELD, ENCODING_VP9_NATIVE, ENCODING_VP9_QUALITY_BASE};
 use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_VP9};
 
 struct Args {
@@ -57,6 +57,7 @@ struct Args {
     size: (u16, u16),
     quality: u8,
     held: bool,
+    native: bool,
     seconds: u64,
     frames: u64,
     resize: Option<(f64, (u16, u16))>,
@@ -117,13 +118,14 @@ fn at<T>(s: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<(f64, T),
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let addr = args.next().ok_or("an address to connect to")?;
-    let mut parsed = Args { addr, size: (0, 0), quality: 90, held: false, seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, ivf: None, login: None };
+    let mut parsed = Args { addr, size: (0, 0), quality: 90, held: false, native: false, seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, ivf: None, login: None };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
             "--size" => parsed.size = size(&value()?)?,
             "--quality" => parsed.quality = value()?.parse().map_err(|_| "a quality 1..100")?,
             "--held" => parsed.held = true,
+            "--native" => parsed.native = true,
             "--seconds" => parsed.seconds = value()?.parse().map_err(|_| "a number of seconds")?,
             "--frames" => parsed.frames = value()?.parse().map_err(|_| "a number of frames")?,
             "--resize" => parsed.resize = Some(at(&value()?, size)?),
@@ -210,6 +212,9 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     ];
     if args.held {
         encodings.push(ENCODING_VP9_HELD);
+    }
+    if args.native {
+        encodings.push(ENCODING_VP9_NATIVE);
     }
     out.send(&client::set_encodings(&encodings)).await?;
     let (mut width, mut height) = (init.width, init.height);

@@ -9,9 +9,9 @@
 //! The crate is platform-independent so that all of it is unit-tested on any
 //! machine, the daemon being buildable only where libwayland and libxkbcommon
 //! are. The audio extension's FLAC encoder is libFLAC and its Opus encoder
-//! libopus, each from a prebuilt static archive, and its VP9 encoder is
-//! `screen-vp9-native`'s, which is Rust alone, so the crate builds and runs
-//! with none of them installed.
+//! libopus, each from a prebuilt static archive, as libvpx is under
+//! `screen-vp9`, and its experimental VP9 encoder, `screen-vp9-native`'s, is
+//! Rust alone, so the crate builds and runs with none of them installed.
 //! Tests here use an independent decoder for
 //! every encoder, so the two halves cannot share a misunderstanding.
 //!

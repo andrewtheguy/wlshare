@@ -2,11 +2,15 @@
 # Make the VP9 streams a decoder is tested and timed on from the captures
 # scripts/capture-frames.sh left: each capture played into the encoder as it is
 # pinned now (crates/wlshare-rfb/examples/vp9cap.rs), so that a change to how
-# a desktop is coded — a pin bump of screen-vp9-native — is one run of this and no
+# a desktop is coded — a pin bump of either encoder — is one run of this and no
 # desktop has to be played again.
 #
 #   ./scripts/vp9-samples.sh [--captures DIR] [--out DIR] [--streams DIR] [--clean]
 #                            [--frames N] [--threads N] [--quiet NAME] [--busy NAME]
+#                            [--native]
+#
+# The encoder is libvpx's, screen-vp9, or with `--native` the experimental one,
+# screen-vp9-native: the two a session's list chooses between.
 #
 # For every size the captures in `--captures` (dist/captures) have, `--out`
 # (dist/vp9-bench) gets a quiet and a busy sample, `--frames` (120) frames
@@ -40,6 +44,8 @@ frames=120
 threads=4
 quiet=terminal
 busy=flood
+native=()
+coder=screen-vp9
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--captures) captures="$2"; shift 2 ;;
@@ -50,6 +56,7 @@ while [[ $# -gt 0 ]]; do
 		--threads) threads="$2"; shift 2 ;;
 		--quiet) quiet="$2"; shift 2 ;;
 		--busy) busy="$2"; shift 2 ;;
+		--native) native=(--native); coder=screen-vp9-native; shift ;;
 		*) echo "$0: $1: not a flag" >&2; exit 2 ;;
 	esac
 done
@@ -67,7 +74,7 @@ shopt -u nullglob
 
 cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-rfb --example vp9cap
 vp9cap="${here}/target/release/examples/vp9cap"
-coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"screen-vp9-native","version":"\([^"]*\)".*/screen-vp9-native \1/p' | head -n 1)"
+coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"'"$coder"'","version":"\([^"]*\)".*/'"$coder"' \1/p' | head -n 1)"
 
 # The MD5 of every frame of the streams named, as libvpx decodes them, and
 # the same from ffmpeg's own decoder, which shares no code with it.
@@ -99,7 +106,7 @@ sample() {
 	local kind=$1 capture=$2 ivf said
 	shift 2
 	said="$(mktemp)"
-	ivf="$("$vp9cap" sample "$capture" --dir "$out" --name "$kind" --frames "$frames" --threads "$threads" "$@" 2>"$said")" || { cat "$said" >&2; rm -f "$said"; exit 1; }
+	ivf="$("$vp9cap" sample "$capture" --dir "$out" --name "$kind" --frames "$frames" --threads "$threads" "${native[@]}" "$@" 2>"$said")" || { cat "$said" >&2; rm -f "$said"; exit 1; }
 	# `vp9cap: <kind>: frames A..B of N`
 	local window
 	window="$(sed -n 's/.*: frames \([0-9]*\)\.\.\([0-9]*\) of .*/\1–\2/p' "$said")"
@@ -144,7 +151,7 @@ if [[ -n "$streams" ]]; then
 		scenario="$(basename "$capture" .wlcap.zst)"
 		scenario="${scenario%%-*}"
 		# Before any of them is read, so that a capture it failed on stops the run.
-		made="$("$vp9cap" streams "$capture" --dir "$streams" --name "$scenario" --least 30 --threads "$threads")"
+		made="$("$vp9cap" streams "$capture" --dir "$streams" --name "$scenario" --least 30 --threads "$threads" "${native[@]}")"
 		while read -r ivf; do
 			[[ -n "$ivf" ]] || continue
 			framemd5 "$ivf"

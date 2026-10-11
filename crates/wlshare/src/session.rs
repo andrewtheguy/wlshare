@@ -146,7 +146,7 @@ use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
-use wlshare_rfb::vp9::{self, Vp9Encoder, Vp9Stream};
+use wlshare_rfb::vp9::{self, Vp9Coder, Vp9Encoder, Vp9Stream};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
     ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
@@ -197,7 +197,7 @@ impl Security {
 /// from: a list that asks for VP9 names the stream it asks for, and a client
 /// that has seen nothing of a stream starts it at a keyframe whatever this
 /// held.
-const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true };
+const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true, coder: Vp9Coder::Libvpx };
 
 pub struct SessionConfig {
     pub security: Security,
@@ -792,6 +792,11 @@ impl Session {
                     // is owed the picture the client holds whether or not the
                     // desktop changed, once at it, as a settle sends it.
                     let new_ceiling = stream.quality != self.stream.quality;
+                    // Another encoder is another stream: the running one goes,
+                    // and the one made in its place begins at a keyframe.
+                    if stream.coder != self.stream.coder {
+                        self.vp9 = None;
+                    }
                     self.stream = stream;
                     self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
                     self.settle_owed = false;
@@ -803,10 +808,11 @@ impl Session {
                 if vp9 && (changed || !self.use_vp9) {
                     let stream = self.stream;
                     info!(
-                        "client {}: asked for VP9 up to quality {}, {}",
+                        "client {}: asked for VP9 up to quality {}, {}, coded by {}",
                         self.id.0,
                         stream.quality,
-                        if stream.adaptive { "walked by its lag" } else { "held there" }
+                        if stream.adaptive { "walked by its lag" } else { "held there" },
+                        stream.coder.label()
                     );
                 }
                 if vp9 && !self.use_vp9 {
@@ -1312,7 +1318,7 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.walk.quality())
+                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), self.stream.coder)
                     .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
                 self.vp9 = Some(encoder);
                 self.keyframe_owed = true;
@@ -1427,7 +1433,13 @@ impl Session {
         // rounds after it to leave.
         let settling = self.use_vp9 && self.settle_owed;
         let vp9 = if self.use_vp9 {
-            let keyframe = self.encode_vp9(full, changed.as_deref())?;
+            let Some(keyframe) = self.encode_vp9(full, changed.as_deref())? else {
+                // Nothing to send, and nothing changes hands: the damage stays
+                // unseen, the request pending and the keyframe owed, for the
+                // frame the next change brings.
+                warn!("client {}: libvpx made no frame of the desktop; waiting for the next change", self.id.0);
+                return Ok(());
+            };
             Some((keyframe, !keyframe && !settling))
         } else {
             self.encode_pieces(&pieces);
@@ -1478,13 +1490,15 @@ impl Session {
     /// keyframe when the update is a full one or one is owed. `changed` is the
     /// damage the frame carries, or `None` for a whole picture, which is what
     /// a capture is told; the stream knows what it read. Returns whether the
-    /// frame was a keyframe. A settle, which
+    /// frame was a keyframe, or `None` when libvpx made no frame of it:
+    /// `out` is left as it was, and so is the keyframe owed. A settle, which
     /// is a whole picture, is coded at the configured quality, with the
     /// encoder returned to the walk's after it — a retune and not a rebuild
     /// either way, so no keyframe is spent on it.
-    fn encode_vp9(&mut self, full: bool, changed: Option<&[vp9::Rect]>) -> anyhow::Result<bool> {
+    fn encode_vp9(&mut self, full: bool, changed: Option<&[vp9::Rect]>) -> anyhow::Result<Option<bool>> {
         let settling = self.settle_owed;
         let (width, height) = self.known_size;
+        let rect_at = self.out.len();
         self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VP9));
         let (encoder, out) = (self.vp9.as_mut().expect("made for the read"), &mut self.out);
         let keyframe = full || self.keyframe_owed;
@@ -1511,7 +1525,7 @@ impl Session {
         // is the worker's to spend and not the runtime's to wait on.
         // The settle's frame is the whole picture at the configured quality,
         // and leaves the dial at the walk's.
-        tokio::task::block_in_place(|| {
+        let encoded = tokio::task::block_in_place(|| {
             if settling {
                 encoder.settle(self.stream.quality, keyframe, out)
             } else {
@@ -1519,8 +1533,12 @@ impl Session {
             }
         })
         .with_context(|| format!("encoding a {width}x{height} VP9 frame"))?;
+        if !encoded {
+            self.out.truncate(rect_at);
+            return Ok(None);
+        }
         self.keyframe_owed = false;
-        Ok(keyframe)
+        Ok(Some(keyframe))
     }
 
     /// When a frame the walk slowed may go out, or `None` when the next frame
