@@ -115,9 +115,6 @@ pub enum Vp9Error {
     #[cfg(test)]
     #[error("the frame is {0}x{1} and its rectangle {2}x{3}")]
     Size(u32, u32, usize, usize),
-    #[cfg(test)]
-    #[error("the frame is {0}, not the 4:4:4 this encoding carries")]
-    Chroma(&'static str),
 }
 
 /// How many threads the encoder gets: the machine less two cores, at most
@@ -148,7 +145,7 @@ fn decoder_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 4)
 }
 
-/// One connection's VP9 stream, server side: screen-vp9's 4:4:4 stream at one
+/// One connection's VP9 stream, server side: screen-vp9's stream at one
 /// picture size, which converts the framebuffer and codes it. A framebuffer of
 /// another size needs another encoder, whose first frame is a keyframe by
 /// construction.
@@ -157,9 +154,9 @@ pub struct Vp9Encoder {
 }
 
 impl Vp9Encoder {
-    /// An encoder for a `width`×`height` 4:4:4 picture at `quality` (1–100).
+    /// An encoder for a `width`×`height` picture at `quality` (1–100).
     pub fn new(width: u16, height: u16, quality: u8) -> Result<Self, Vp9Error> {
-        Ok(Self { stream: screen_vp9::Stream::new(width, height, screen_vp9::Chroma::Full, quality, encoder_threads())? })
+        Ok(Self { stream: screen_vp9::Stream::new(width, height, quality, encoder_threads())? })
     }
 
     /// The picture size this encoder codes.
@@ -283,9 +280,6 @@ impl Vp9Decoder {
         if (w as usize, h as usize) != (width, height) {
             return Err(Vp9Error::Size(w, h, width, height));
         }
-        if decoded.chroma() != screen_vp9::Chroma::Full {
-            return Err(Vp9Error::Chroma(decoded.chroma().name()));
-        }
         if width == 0 || height == 0 {
             return Ok(());
         }
@@ -296,7 +290,7 @@ impl Vp9Decoder {
 /// The encoder read back by the decoder, through the rectangle's framing. The
 /// coding itself is proved in `screen-vp9`; what these hold is the half this
 /// module owns — the length word, its ceiling, the pixels in and out — and
-/// that a client's decoder refuses what the encoding does not carry.
+/// that a client's decoder refuses a frame of another size.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,7 +359,7 @@ mod tests {
         let (pixels, at) = stems(width, height);
         let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX).unwrap();
         let frame = encode(&mut encoder, &pixels, false);
-        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == 1), "an encoder's first frame is a 4:4:4 keyframe");
+        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == screen_vp9::PROFILE), "an encoder's first frame is a 4:4:4 keyframe");
 
         let mut decoder = Vp9Decoder::new().unwrap();
         let stride = width * 4 + 8;
@@ -471,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_of_another_size_or_chroma_or_no_frame_at_all_is_an_error() {
+    fn a_frame_of_another_size_or_no_frame_at_all_is_an_error() {
         let mut encoder = Vp9Encoder::new(32, 16, 60).unwrap();
         let frame = encode(&mut encoder, &[0u8; 32 * 16 * 4], false);
         let mut out = vec![0; 64 * 64 * 4];
@@ -481,15 +475,6 @@ mod tests {
         assert!(matches!(decoder.decode_rect(&frame, 32, 16, &mut out[..10], 128), Err(Vp9Error::Codec(screen_vp9::Error::Buffer { .. }))));
         assert!(matches!(Vp9Encoder::new(0, 16, 60), Err(Vp9Error::Codec(screen_vp9::Error::Empty(0, 16)))));
         assert!(matches!(encoder.read(&[0; 12], 128, None), Err(Vp9Error::Codec(screen_vp9::Error::Buffer { .. }))));
-
-        // A 4:2:0 frame, which this encoding never carries, is not one a
-        // client's decoder takes.
-        let mut subsampled = screen_vp9::Stream::new(32, 16, screen_vp9::Chroma::Subsampled, 60, 1).unwrap();
-        subsampled.read_bgrx(&[0u8; 32 * 16 * 4], 32 * 4, None).unwrap();
-        let mut frame = Vec::new();
-        assert!(subsampled.encode(false, &mut frame).unwrap().is_some(), "a frame");
-        assert_eq!(screen_vp9::frame_header(&frame).expect("a VP9 frame").profile, 0);
-        assert!(matches!(Vp9Decoder::new().unwrap().decode_rect(&frame, 32, 16, &mut out, 128), Err(Vp9Error::Chroma("4:2:0"))));
     }
 }
 

@@ -1363,20 +1363,17 @@ impl Session {
                     // a copy kept for it: the rectangles that changed, and
                     // the rest of `scratch` is what the frames before left
                     // there, which is the picture as the client holds it.
-                    // Copied out to whole 2×2 groups, an even row and column
-                    // with the odd ones after them, which a 4:2:0 replay of
-                    // the capture (`vp9cap --chroma 420`) reads together.
                     let row_len = usize::from(fb.width) * 4;
                     self.scratch.resize(row_len * usize::from(fb.height), 0);
                     let whole = [Rect::whole(fb.width, fb.height)];
                     for rect in damage.as_deref().unwrap_or(&whole) {
-                        let right = (usize::from(rect.x) + usize::from(rect.width)).next_multiple_of(2).min(usize::from(fb.width));
-                        let bottom = (usize::from(rect.y) + usize::from(rect.height)).next_multiple_of(2).min(usize::from(fb.height));
-                        let cols = (usize::from(rect.x) & !1) * 4..right * 4;
+                        let right = (usize::from(rect.x) + usize::from(rect.width)).min(usize::from(fb.width));
+                        let bottom = (usize::from(rect.y) + usize::from(rect.height)).min(usize::from(fb.height));
+                        let cols = usize::from(rect.x) * 4..right * 4;
                         if cols.is_empty() {
                             continue;
                         }
-                        for row in usize::from(rect.y) & !1..bottom {
+                        for row in usize::from(rect.y)..bottom {
                             self.scratch[row * row_len..][cols.clone()].copy_from_slice(&fb.pixels[row * stride..][cols.clone()]);
                         }
                     }
