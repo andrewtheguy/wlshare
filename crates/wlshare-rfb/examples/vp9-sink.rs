@@ -7,14 +7,16 @@
 //! ```text
 //! vp9-sink ADDR --size WxH [--quality 1..100] [--held] [--native] [--seconds N]
 //!          [--frames N] [--resize SECS:WxH] [--slow SECS:SECS:MILLIS]
-//!          [--keyframe SECS] [--keys] [--ivf FILE] [--login USER]
+//!          [--keyframe SECS] [--keys] [--ivf FILE]
+//!          [--login USER --fingerprint FINGERPRINT]
 //! ```
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
 //! without a `[pam]` or `[password]` table, or with `--login` RSA-AES: the
 //! exchange `wlshare_rfb::rsa_aes` has both ends of, answered with that
-//! username and the password in the environment's `VP9_SINK_PASSWORD`, the
-//! server's fingerprint printed and not pinned. The list names VP9 at the
+//! username and the password in the environment's `VP9_SINK_PASSWORD`, and
+//! only to the server whose key has `--fingerprint`, which is what the daemon
+//! logs of its key as it starts: neither goes to any other. The list names VP9 at the
 //! quality, Fence and ContinuousUpdates so frames flow and the walk is
 //! answered, and ExtendedDesktopSize so the desktop can be resized: `--size`
 //! is sent as a SetDesktopSize before the first frame, so the headless output
@@ -36,7 +38,10 @@
 //! the daemon as a person at a client does, on the daemon's own keyboard.
 //! With `--ivf` the frames are not thrown away but written to that file as
 //! an IVF, in the order they came and one a tick, for a decoder that is not
-//! this repository's to be run on what a session was sent.
+//! this repository's to be run on what a session was sent. An IVF says one
+//! size for all its frames, so the file is begun at the first frame and at
+//! that frame's size, and a frame of another size, which a resize brings,
+//! begins another: `FILE.2`, `FILE.3` and so on.
 //! Every second a line
 //! says how many frames and bytes came and how many were keyframes.
 
@@ -66,6 +71,7 @@ struct Args {
     keys: bool,
     ivf: Option<String>,
     login: Option<String>,
+    fingerprint: Option<String>,
 }
 
 /// The way out to the daemon: in the clear, or in the frames of the RSA-AES
@@ -105,6 +111,37 @@ fn ivf_header(width: u16, height: u16) -> [u8; 32] {
     header
 }
 
+/// The IVF being written and what it holds: every frame of one is of the size
+/// its header says.
+struct Ivf {
+    file: std::io::BufWriter<std::fs::File>,
+    size: (u16, u16),
+    frames: u64,
+}
+
+/// Write a frame of this size to the `--ivf` file: the one being written if
+/// that is its size, and otherwise one begun for it, the first at the path and
+/// each after it at the path with its number.
+fn record(path: &str, ivf: &mut Option<Ivf>, streams: &mut u32, size: (u16, u16), frame: &[u8]) -> std::io::Result<()> {
+    if ivf.as_ref().is_none_or(|ivf| ivf.size != size) {
+        if let Some(mut done) = ivf.take() {
+            done.file.flush()?;
+        }
+        *streams += 1;
+        let path = if *streams == 1 { path.to_owned() } else { format!("{path}.{streams}") };
+        eprintln!("vp9-sink: {path} is the frames at {}x{}", size.0, size.1);
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        file.write_all(&ivf_header(size.0, size.1))?;
+        *ivf = Some(Ivf { file, size, frames: 0 });
+    }
+    let ivf = ivf.as_mut().expect("begun above");
+    ivf.file.write_all(&(frame.len() as u32).to_le_bytes())?;
+    ivf.file.write_all(&ivf.frames.to_le_bytes())?;
+    ivf.file.write_all(frame)?;
+    ivf.frames += 1;
+    Ok(())
+}
+
 fn size(s: &str) -> Result<(u16, u16), String> {
     let (w, h) = s.split_once('x').ok_or_else(|| format!("{s}: not WxH"))?;
     Ok((w.parse().map_err(|_| format!("{w}: not a width"))?, h.parse().map_err(|_| format!("{h}: not a height"))?))
@@ -118,7 +155,7 @@ fn at<T>(s: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<(f64, T),
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let addr = args.next().ok_or("an address to connect to")?;
-    let mut parsed = Args { addr, size: (0, 0), quality: 90, held: false, native: false, seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, ivf: None, login: None };
+    let mut parsed = Args { addr, size: (0, 0), quality: 90, held: false, native: false, seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, ivf: None, login: None, fingerprint: None };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -133,6 +170,7 @@ fn parse_args() -> Result<Args, String> {
             "--keys" => parsed.keys = true,
             "--ivf" => parsed.ivf = Some(value()?),
             "--login" => parsed.login = Some(value()?),
+            "--fingerprint" => parsed.fingerprint = Some(value()?),
             "--keyframe" => parsed.keyframe = Some(value()?.parse().map_err(|_| "seconds")?),
             other => return Err(format!("{other}: not a flag")),
         }
@@ -142,6 +180,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if !(1..=100).contains(&parsed.quality) {
         return Err("--quality takes 1..100".into());
+    }
+    if parsed.login.is_some() != parsed.fingerprint.is_some() {
+        return Err("--login and --fingerprint are given together: the credentials go only to the server whose key has that fingerprint".into());
     }
     Ok(parsed)
 }
@@ -189,6 +230,12 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let password = std::env::var("VP9_SINK_PASSWORD").map_err(|_| "--login takes its password from VP9_SINK_PASSWORD")?;
             out.send(&[chosen]).await?;
             let exchange = rsa_aes::begin(&mut reader, &mut out.half, strength, ClientKey::of_bits(2048)?).await?;
+            // Before the credentials: whoever holds another key is not the
+            // daemon they are for.
+            let pinned = args.fingerprint.as_deref().expect("--login comes with --fingerprint");
+            if !exchange.fingerprint().eq_ignore_ascii_case(pinned) {
+                return Err(format!("the server's key is {}, not --fingerprint's {pinned}: nothing was sent to it", exchange.fingerprint()).into());
+            }
             eprintln!("vp9-sink: the server's key is {}, asking for {:?}", exchange.fingerprint(), exchange.subtype());
             let session = exchange.login(&mut out.half, &Credentials { username: username.clone(), password }).await?;
             out.sealer = Some(session.sealer);
@@ -229,14 +276,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let last = began + Duration::from_secs(args.seconds * 10);
     let (mut resize, mut keyframe) = (args.resize, args.keyframe);
     let mut slowed = false;
-    let mut ivf = match &args.ivf {
-        Some(path) => {
-            let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-            file.write_all(&ivf_header(args.size.0, args.size.1))?;
-            Some(file)
-        }
-        None => None,
-    };
+    let (mut ivf, mut streams) = (None, 0);
     let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
@@ -308,10 +348,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 if screen_vp9::frame_header(&frame).is_some_and(|h| h.keyframe) {
                                     keyframes += 1;
                                 }
-                                if let Some(file) = &mut ivf {
-                                    file.write_all(&(frame.len() as u32).to_le_bytes())?;
-                                    file.write_all(&(frames - 1).to_le_bytes())?;
-                                    file.write_all(&frame)?;
+                                if let Some(path) = &args.ivf {
+                                    record(path, &mut ivf, &mut streams, (rect.width, rect.height), &frame)?;
                                 }
                             }
                             RectBody::ExtendedDesktopSize { .. } => {
@@ -337,8 +375,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("vp9-sink: {second}s {frames} frames {bytes} bytes {keyframes} keyframes");
         }
     }
-    if let Some(mut file) = ivf {
-        file.flush()?;
+    if let Some(mut ivf) = ivf {
+        ivf.file.flush()?;
     }
     eprintln!("vp9-sink: done, {frames} frames {bytes} bytes {keyframes} keyframes");
     Ok(())
