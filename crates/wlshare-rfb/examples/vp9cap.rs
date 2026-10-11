@@ -46,7 +46,7 @@
 //! Each command prints the path of every stream it wrote, one a line.
 //!
 //! The encoder is libvpx's, as `screen-vp9` sets it up, or with `--native`
-//! the experimental one, `screen-vp9-native`'s: the two a session's list
+//! the experimental one that crate has in Rust: the two a session's list
 //! chooses between.
 //!
 //! `--threads` is the encoder's, 4 by default: the tile columns a width is
@@ -304,7 +304,7 @@ impl Output {
             return Err("libvpx produced no frame".into());
         }
         self.unit.drain(..4);
-        let keyframe = screen_vp9_native::frame_header(&self.unit).is_some_and(|header| header.keyframe);
+        let keyframe = screen_vp9::frame_header(&self.unit).is_some_and(|header| header.keyframe);
         let micros = frame.at.as_micros() as u64;
         let ms = (micros - *self.began.get_or_insert(micros)) / 1000;
         if starting {

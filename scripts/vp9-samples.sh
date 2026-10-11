@@ -9,8 +9,8 @@
 #                            [--frames N] [--threads N] [--quiet NAME] [--busy NAME]
 #                            [--native]
 #
-# The encoder is libvpx's, screen-vp9, or with `--native` the experimental one,
-# screen-vp9-native: the two a session's list chooses between.
+# The encoder is screen-vp9's: libvpx, or with `--native` the experimental one
+# it has in Rust, the two a session's list chooses between.
 #
 # For every size the captures in `--captures` (dist/captures) have, `--out`
 # (dist/vp9-bench) gets a quiet and a busy sample, `--frames` (120) frames
@@ -45,7 +45,7 @@ threads=4
 quiet=terminal
 busy=flood
 native=()
-coder=screen-vp9
+coder="libvpx"
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--captures) captures="$2"; shift 2 ;;
@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
 		--threads) threads="$2"; shift 2 ;;
 		--quiet) quiet="$2"; shift 2 ;;
 		--busy) busy="$2"; shift 2 ;;
-		--native) native=(--native); coder=screen-vp9-native; shift ;;
+		--native) native=(--native); coder="its Rust coder (experimental)"; shift ;;
 		*) echo "$0: $1: not a flag" >&2; exit 2 ;;
 	esac
 done
@@ -74,7 +74,7 @@ shopt -u nullglob
 
 cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-rfb --example vp9cap
 vp9cap="${here}/target/release/examples/vp9cap"
-coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"'"$coder"'","version":"\([^"]*\)".*/'"$coder"' \1/p' | head -n 1)"
+coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"screen-vp9","version":"\([^"]*\)".*/screen-vp9 \1/p' | head -n 1), $coder"
 
 # The MD5 of every frame of the streams named, as libvpx decodes them, and
 # the same from ffmpeg's own decoder, which shares no code with it.

@@ -15,11 +15,10 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - [screen-vp9](https://github.com/andrewtheguy/screen-vp9), a repository of
   its own that this workspace pins by release tag, is the VP9 encoder: libvpx
   pinned to a quality dial, 8-bit 4:4:4, with the planes in front of it.
-  [screen-vp9-native](https://github.com/andrewtheguy/screen-vp9-native),
-  pinned the same way, is the **experimental** one a client's list asks for
-  in its place: written in Rust for a desktop, 8-bit 4:4:4 and nothing else,
+  Its `native` feature is the **experimental** one a client's list asks for
+  in libvpx's place: written in Rust for a desktop, 8-bit 4:4:4 and nothing else,
   and where the quality walk is taken from for either. A change to how a
-  desktop is coded is made in one of them and reaches the daemon as a pin
+  desktop is coded is made there and reaches the daemon as a pin
   bump. See [The VP9 encoding](#the-vp9-encoding).
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
   and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding's
@@ -330,7 +329,7 @@ u8[length]   one VP9 frame
 Successive rectangles are one stream, each frame coded against the ones before
 it, so a client decodes them all with one decoder, in order. The coding is
 libvpx's, as screen-vp9 sets it up, or where the client's list asks (`WLSX`,
-below) screen-vp9-native's, an encoder written in Rust for a desktop, which
+below) the encoder screen-vp9 has written in Rust for a desktop, which
 is **experimental**. Either way: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
 asked for, and the colour declared in the bitstream, so a decoder is told
@@ -353,7 +352,7 @@ What a frame holds is fixed:
   to wherever the dial is, with no bitrate, no adaptive quantization and no
   dropped frames. A session starts at the ceiling the client's list names
   (`WLQ`, below), which it never goes above, and
-  walks down to a floor of 20 while the client is behind — screen-vp9-native's
+  walks down to a floor of 20 while the client is behind — screen-vp9's
   `walk`. The floor is a constant, not a key, as
   every adaptive stream's is: where WebRTC's quality scaler hands off from the
   quantizer to resolution and frame rate at its own threshold, this walk hands
@@ -394,7 +393,7 @@ What a frame holds is fixed:
   holds the dial there, with a walk that hears nothing in a fence — only a
   frame whose write blocked moves it, fence or no fence — and a settle with
   nothing to sharpen; `WLSX` (`0x574c5358`) has the stream coded by the
-  **experimental** encoder, screen-vp9-native, in place of libvpx. The
+  **experimental** encoder, screen-vp9's in Rust, in place of libvpx. The
   gateway lists them from the target's keys, so
   `video_quality` and `render_adaptive` mean on a passed stream what they mean
   on one the gateway codes, and `experimental_native_vp9` is how one target is
@@ -466,7 +465,7 @@ listed, Raw otherwise — since the client is holding a lossy picture.
 
 libvpx is in the daemon as screen-vp9 links it, from `libvpx-prebuilt`'s
 static archive, and it is the decoder the VP9 encoding's tests read every
-frame of either encoder back with (`src/vp9_decoder.rs`). An encode libvpx
+frame of either encoder back with (`screen_vp9::Decoder`). An encode libvpx
 makes no frame of sends nothing: the damage stays unseen and the keyframe
 owed, for the frame the next change brings. The experimental encoder makes a
 frame every time.

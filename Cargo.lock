@@ -1142,20 +1142,10 @@ dependencies = [
 
 [[package]]
 name = "screen-vp9"
-version = "0.0.15"
-source = "git+https://github.com/andrewtheguy/screen-vp9?tag=v0.0.15#491be2047104ebc2aeb3496c4b056d35dfa06ece"
+version = "0.0.16"
 dependencies = [
  "libvpx-prebuilt-sys",
  "log",
- "thiserror",
- "yuv",
-]
-
-[[package]]
-name = "screen-vp9-native"
-version = "0.0.1-alpha.5"
-source = "git+https://github.com/andrewtheguy/screen-vp9-native?tag=v0.0.1-alpha.5#9a570ed0fa4908a2fe1a41e6e37dd3192a7473fb"
-dependencies = [
  "thiserror",
  "yuv",
 ]
@@ -1682,7 +1672,7 @@ dependencies = [
  "memmap2",
  "pipewire",
  "rustix",
- "screen-vp9-native",
+ "screen-vp9",
  "serde",
  "thiserror",
  "tokio",
@@ -1702,12 +1692,10 @@ dependencies = [
  "aes",
  "eax",
  "flate2",
- "libvpx-prebuilt-sys",
  "pkcs8",
  "rand",
  "rsa",
  "screen-vp9",
- "screen-vp9-native",
  "sha1",
  "sha2",
  "sound-flac",
@@ -1717,7 +1705,6 @@ dependencies = [
  "symphonia-core",
  "thiserror",
  "tokio",
- "yuv",
 ]
 
 [[package]]

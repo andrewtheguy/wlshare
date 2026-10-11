@@ -184,10 +184,9 @@ read their packets back with — and
 `wlshare`, the daemon, which needs libwayland,
 libxkbcommon, libpipewire and libavcodec and only runs under a wlroots-based
 Wayland compositor. The VP9 coding under them is
-[screen-vp9](https://github.com/andrewtheguy/screen-vp9), which is libvpx,
-and where a client asks for it the **experimental**
-[screen-vp9-native](https://github.com/andrewtheguy/screen-vp9-native), an
-encoder in Rust whose amd64 build needs AVX2 (`.cargo/config.toml` sets it),
+[screen-vp9](https://github.com/andrewtheguy/screen-vp9), which is libvpx
+and, where a client asks for it, the **experimental** encoder that
+repository has in Rust (its `native` feature), whose amd64 build needs AVX2 (`.cargo/config.toml` sets it),
 the FLAC coding
 [sound-flac](https://github.com/andrewtheguy/sound-flac) and the Opus coding
 [sound-opus](https://github.com/andrewtheguy/sound-opus), the last two shared with

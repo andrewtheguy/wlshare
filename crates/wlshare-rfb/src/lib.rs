@@ -10,8 +10,7 @@
 //! machine, the daemon being buildable only where libwayland and libxkbcommon
 //! are. The audio extension's FLAC encoder is libFLAC and its Opus encoder
 //! libopus, each from a prebuilt static archive, as libvpx is under
-//! `screen-vp9`, and its experimental VP9 encoder, `screen-vp9-native`'s, is
-//! Rust alone, so the crate builds and runs with none of them installed.
+//! `screen-vp9`, whose experimental VP9 encoder is Rust alone, so the crate builds and runs with none of them installed.
 //! Tests here use an independent decoder for
 //! every encoder, so the two halves cannot share a misunderstanding.
 //!
@@ -86,8 +85,6 @@ pub mod pixel;
 pub mod rsa_aes;
 pub mod scroll;
 pub mod vp9;
-#[cfg(test)]
-mod vp9_decoder;
 pub mod zrle;
 
 /// Raw: pixels as they are, in the client's format. RFC 6143 §7.7.1 requires

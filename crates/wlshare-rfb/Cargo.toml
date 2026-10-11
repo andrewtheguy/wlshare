@@ -38,24 +38,16 @@ sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.4
 # from a prebuilt static archive, so nothing of it is compiled here or looked
 # for at run time.
 sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.4" }
-# The VP9 encoding's codec: libvpx, spoken to by this one crate for this
-# workspace and for the remotex gateway, each pinned to its release tag.
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16" }
-# EXPERIMENTAL, the VP9 encoding's other codec, which a client's list asks for
-# in libvpx's place (`vp9::ENCODING_VP9_NATIVE`): an encoder written in Rust
-# for a desktop, 8-bit 4:4:4 and nothing else, pinned to its release tag. Its
+# The VP9 encoding's codec, for this workspace and for the remotex gateway,
+# each pinned to its release tag: libvpx, and with the `native` feature the
+# EXPERIMENTAL encoder it has written in Rust for a desktop, which a client's
+# list asks for in libvpx's place (`vp9::ENCODING_VP9_NATIVE`). That one's
 # kernels are AVX2 on amd64, which that target's baseline lacks and this
-# workspace's `.cargo/config.toml` sets, and NEON on arm64.
-screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1-alpha.6" }
+# workspace's `.cargo/config.toml` sets, and NEON on arm64. Its decoder is
+# what the encoding's tests read every frame back with.
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16", features = ["native"] }
 
 [dev-dependencies]
-# libvpx's decoder, which the VP9 encoding's tests read every frame back with
-# (`src/vp9_decoder.rs`), whichever encoder made it: independent of the
-# experimental one, and for libvpx's own frames a decoder set up here and not
-# by `screen-vp9`. The same static archive `screen-vp9` links, and `yuv` for
-# the decode's pixels back out.
-vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewtheguy/libvpx-prebuilt", tag = "v1.16.0-20260924182850-e78d74f" }
-yuv = "0.8"
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
 # which shares nothing with libFLAC: pure Rust, and only the FLAC bundle of it
 # — `symphonia-core` for the decoder trait and the packet it takes.

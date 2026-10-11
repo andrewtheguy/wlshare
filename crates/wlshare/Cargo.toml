@@ -13,8 +13,8 @@ path = "src/main.rs"
 [dependencies]
 wlshare-rfb = { path = "../wlshare-rfb" }
 # The quality walk the VP9 stream's dial follows a link with, whichever
-# encoder codes it.
-screen-vp9-native = { git = "https://github.com/andrewtheguy/screen-vp9-native", tag = "v0.0.1-alpha.6" }
+# coder codes it.
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16", features = ["native"] }
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true
