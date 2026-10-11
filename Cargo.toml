@@ -28,3 +28,14 @@ strip = true
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+
+# screen-vp9, its encoder in Rust and the conversion in front of both its
+# coders (the `yuv` crate) optimised in a debug build as in release, so that a
+# debug daemon codes a desktop at the speed a released one does. A
+# dependency's own profile is ignored; only this workspace's applies.
+# Dependencies compile once, so this costs nothing after.
+[profile.dev.package.screen-vp9]
+opt-level = 3
+
+[profile.dev.package.yuv]
+opt-level = 3
