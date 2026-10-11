@@ -16,7 +16,7 @@
 # benchmark names them, `<quiet|busy>-<WxH>-<tile columns>col-<lf|nolf>`,
 # the last two read from the stream itself. With `--streams DIR`, every
 # capture is also coded whole, one stream per size it ran at for thirty
-# frames or more, `<scenario>-<WxH>-444.ivf` with its `.ivf.csv`.
+# frames or more, `<scenario>-<WxH>.ivf` with its `.ivf.csv`.
 #
 # Beside every `.ivf` is its `.ivf.framemd5`, the MD5 of each decoded frame
 # as libvpx decodes it, written by ffmpeg, and only where ffmpeg's own VP9
