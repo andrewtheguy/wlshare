@@ -38,9 +38,14 @@ sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.4
 # from a prebuilt static archive, so nothing of it is compiled here or looked
 # for at run time.
 sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.4" }
-# The VP9 encoding's codec: the one place libvpx is spoken to, for this
-# workspace and for the remotex gateway, each pinned to its release tag.
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.15" }
+# The VP9 encoding's codec, for this workspace and for the remotex gateway,
+# each pinned to its release tag: libvpx, and with the `native` feature the
+# EXPERIMENTAL encoder it has written in Rust for a desktop, which a client's
+# list asks for in libvpx's place (`vp9::ENCODING_VP9_NATIVE`). That one's
+# kernels are AVX2 on amd64, which that target's baseline lacks and this
+# workspace's `.cargo/config.toml` sets, and NEON on arm64. Its decoder is
+# what the encoding's tests read every frame back with.
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16", features = ["native"] }
 
 [dev-dependencies]
 # The FLAC encoder's tests read every frame back with symphonia's decoder,

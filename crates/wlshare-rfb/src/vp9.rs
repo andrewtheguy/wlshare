@@ -27,13 +27,17 @@
 //! at exactly the dial's quality at the time. The client's pixel format does
 //! not apply to this encoding; what it decodes to is its own business.
 //!
-//! The coding itself is [`screen_vp9`]'s, the one place libvpx is spoken to
-//! for wlshare and for the remotex gateway alike. What this module owns is the
-//! framing — the length word and its ceiling — and the framebuffer's pixels in.
+//! The coding itself is [`screen_vp9`]'s, by one of its two coders, which the
+//! client's list chooses between ([`Vp9Coder`]): libvpx, unless the list asks
+//! for the encoder that crate has written in Rust for a desktop, which is
+//! **experimental**. Both make the same stream to a decoder — 8-bit
+//! 4:4:4 at the dial's quality — so a client reads either the same way. What
+//! this module owns is the framing — the length word and its ceiling — the
+//! framebuffer's pixels in, and which of the two codes them.
 
 use thiserror::Error;
 
-pub use screen_vp9::{QUALITY_MAX, QUALITY_MIN, Rect};
+pub use screen_vp9::{Coder as Vp9Coder, QUALITY_MAX, QUALITY_MIN, Rect};
 
 /// Listed beside [`crate::ENCODING_VP9`] with a quality 1–100 added, names the
 /// ceiling the stream's walk never goes above: the ASCII bytes `WLQ` and the
@@ -47,8 +51,25 @@ pub const ENCODING_VP9_QUALITY_BASE: i32 = 0x574c_5100;
 /// blocked write moves it.
 pub const ENCODING_VP9_HELD: i32 = 0x574c_5344;
 
+/// Listed beside [`crate::ENCODING_VP9`], has the stream coded by the
+/// **experimental** encoder, [`Vp9Coder::Native`], in place of libvpx: the
+/// ASCII bytes `WLSX`. Without it the stream is libvpx's.
+pub const ENCODING_VP9_NATIVE: i32 = 0x574c_5358;
+
+/// A coder as a log line names it, the experimental one as such. Which of
+/// them codes a stream a decoder is told nothing of and needs nothing: both
+/// make 8-bit 4:4:4 frames at the dial's quality. libvpx is what a list that
+/// says nothing gets, and only one that names [`ENCODING_VP9_NATIVE`] the
+/// other.
+pub fn coder_label(coder: Vp9Coder) -> &'static str {
+    match coder {
+        Vp9Coder::Libvpx => "libvpx",
+        Vp9Coder::Native => "screen-vp9's Rust coder (experimental)",
+    }
+}
+
 /// What the client wants the VP9 stream to be, read from its `SetEncodings`:
-/// the two pseudo-encodings above, beside the encoding itself. Pseudo-encodings
+/// the pseudo-encodings above, beside the encoding itself. Pseudo-encodings
 /// rather than a message because a server that is not wlshare ignores an
 /// encoding it does not know, where a message it does not know ends the
 /// connection; and they ride the very list that names the encoding, so the first
@@ -57,15 +78,18 @@ pub const ENCODING_VP9_HELD: i32 = 0x574c_5344;
 /// on one the gateway codes itself. A list that names VP9 without a quality
 /// is fatal ([`NoQuality`]): the server has no quality of its own, the gateway
 /// names one beside the encoding on every list, and a client that is not the
-/// gateway lists no VP9 at all. Without `WLSD` it walks.
+/// gateway lists no VP9 at all. Without `WLSD` it walks, and without `WLSX`
+/// libvpx codes it.
 ///
 /// The stream is 4:4:4 whatever the list says: nothing in it names a chroma.
 /// A change of quality or of the walk moves the running encoder's dial
-/// without a keyframe.
+/// without a keyframe; a change of encoder is another encoder, whose first
+/// frame is one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vp9Stream {
     pub quality: u8,
     pub adaptive: bool,
+    pub coder: Vp9Coder,
 }
 
 impl Vp9Stream {
@@ -82,16 +106,21 @@ impl Vp9Stream {
             .filter_map(|&e| u8::try_from(e.checked_sub(ENCODING_VP9_QUALITY_BASE)?).ok())
             .find(|q| (QUALITY_MIN..=QUALITY_MAX).contains(q))
             .ok_or(NoQuality)?;
-        Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD) }))
+        let coder = if has(ENCODING_VP9_NATIVE) { Vp9Coder::Native } else { Vp9Coder::Libvpx };
+        Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD), coder }))
     }
 
     /// The list that asks for this stream: the encoding, the quality always,
-    /// and the held dial where it is held.
+    /// the held dial where it is held and the experimental encoder where it
+    /// is asked for.
     #[cfg(test)]
     fn encodings(self) -> Vec<i32> {
         let mut listed = vec![crate::ENCODING_VP9, ENCODING_VP9_QUALITY_BASE + i32::from(self.quality)];
         if !self.adaptive {
             listed.push(ENCODING_VP9_HELD);
+        }
+        if self.coder == Vp9Coder::Native {
+            listed.push(ENCODING_VP9_NATIVE);
         }
         listed
     }
@@ -107,7 +136,8 @@ pub struct NoQuality;
 /// Why a picture could not be encoded, or in the tests a frame decoded.
 #[derive(Debug, Error)]
 pub enum Vp9Error {
-    /// The codec, or the pixels in front of it, refused.
+    /// The encoder, or the pixels in front of it, refused; in the tests the
+    /// decoder too.
     #[error(transparent)]
     Codec(#[from] screen_vp9::Error),
     #[error("a frame of {0} bytes is over the {max}-byte ceiling", max = crate::msg::MAX_RECT_BODY)]
@@ -118,24 +148,23 @@ pub enum Vp9Error {
 }
 
 /// How many threads the encoder gets: the machine less two cores, at most
-/// [`MAX_ENCODER_THREADS`]. An encode is a burst of tens of milliseconds a
-/// frame that the person at the other end is waiting on, and libvpx splits it
+/// [`MAX_ENCODER_THREADS`]. An encode is a burst of milliseconds a frame that
+/// the person at the other end is waiting on, and the encoder splits it
 /// across threads by rows and tile columns; the two cores kept back are for
-/// the compositor and the session, which are what make the next frame. Six
-/// threads on a six-core host coded a scrolling 4K frame in three quarters of
-/// the time three did, and a keyframe in a little over half.
+/// the compositor and the session, which are what make the next frame. The
+/// count also bounds the stream's tile columns, and so what a decoder's
+/// threads have to split.
 fn encoder_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
 }
 
 /// The most threads the encoder takes, whatever the machine: what a 4K
 /// picture can use. The useful count is the picture's, not the machine's —
-/// libvpx hands out superblock rows within each tile column, so the work to
-/// share grows with the picture — and the measurements, 1080p saturating at
-/// three threads and 4K still gaining at six, put it at about one thread a
-/// megapixel: eight for 4K's 8.3. 4K is the largest desktop this is tuned
-/// for; a larger one is an edge case that streams, not a target, and gets the
-/// 4K count. Not measured past six threads, since the host had six cores.
+/// superblock rows are handed out within each tile column, so the work to
+/// share grows with the picture — at about one thread a megapixel: eight for
+/// 4K's 8.3. 4K is the largest desktop this is tuned for; a larger one is an
+/// edge case that streams, not a target, and gets the 4K count. Measured on
+/// libvpx, not on the experimental encoder.
 const MAX_ENCODER_THREADS: usize = 8;
 
 /// How many threads the tests' decoder gets: half the machine, at most four.
@@ -145,18 +174,30 @@ fn decoder_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 4)
 }
 
-/// One connection's VP9 stream, server side: screen-vp9's stream at one
-/// picture size, which converts the framebuffer and codes it. A framebuffer of
-/// another size needs another encoder, whose first frame is a keyframe by
-/// construction.
+/// One connection's VP9 stream, server side: a stream of one of the two
+/// coders at one picture size, which converts the framebuffer and codes it. A
+/// framebuffer of another size or another coder needs another of these, whose
+/// first frame is a keyframe by construction.
 pub struct Vp9Encoder {
     stream: screen_vp9::Stream,
 }
 
 impl Vp9Encoder {
-    /// An encoder for a `width`×`height` picture at `quality` (1–100).
-    pub fn new(width: u16, height: u16, quality: u8) -> Result<Self, Vp9Error> {
-        Ok(Self { stream: screen_vp9::Stream::new(width, height, quality, encoder_threads())? })
+    /// An encoder for a `width`×`height` picture at `quality` (1–100), which
+    /// `coder` codes, on as many threads as this machine gives one.
+    pub fn new(width: u16, height: u16, quality: u8, coder: Vp9Coder) -> Result<Self, Vp9Error> {
+        Self::with_threads(width, height, quality, coder, encoder_threads())
+    }
+
+    /// [`Self::new`] on `threads` threads, which a stream's tile columns
+    /// follow: for a stream that is to be the same on any machine.
+    pub fn with_threads(width: u16, height: u16, quality: u8, coder: Vp9Coder, threads: usize) -> Result<Self, Vp9Error> {
+        Ok(Self { stream: screen_vp9::Stream::new(width, height, quality, threads, coder)? })
+    }
+
+    /// Which encoder this is.
+    pub fn coder(&self) -> Vp9Coder {
+        self.stream.coder()
     }
 
     /// The picture size this encoder codes.
@@ -180,9 +221,10 @@ impl Vp9Encoder {
     /// Move the dial on the running encoder, clamped to it. The next frame is
     /// coded at the new quantizer against the frames before it: rebuilding the
     /// encoder would cost a keyframe, the most bytes a frame can be, at the
-    /// moment a slow link can least afford them.
-    pub fn set_quality(&mut self, quality: u8) -> Result<(), Vp9Error> {
-        Ok(self.stream.set_quality(quality)?)
+    /// moment a slow link can least afford them. A libvpx that will not be
+    /// taken to the dial is the error of the frame that would be coded at it.
+    pub fn set_quality(&mut self, quality: u8) {
+        self.stream.set_quality(quality);
     }
 
     /// Read the picture — [`Self::size`] of `B, G, R, X` pixels whose rows
@@ -208,9 +250,12 @@ impl Vp9Encoder {
     /// at the quality it holds it. A keyframe, a picture read whole and the
     /// frame after one that produced nothing are the whole picture.
     ///
-    /// Returns whether a body was appended: `false`, with `out` as it was, when
-    /// the encoder produced no frame, since an empty rectangle is not a frame a
-    /// client can decode and the pixels are the next frame's to carry.
+    /// Returns whether a body was appended: `false`, with `out` as it was,
+    /// when libvpx made no frame of the picture
+    /// ([`screen_vp9::Error::NoFrame`]), since an empty rectangle is not a
+    /// frame a client can decode and the pixels are the next frame's to
+    /// carry. The experimental encoder makes a frame every time. An error
+    /// leaves `out` as it was too.
     pub fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Vp9Error> {
         self.framed(out, |stream, out| stream.encode(keyframe, out))
     }
@@ -221,10 +266,7 @@ impl Vp9Encoder {
     /// frame unless `keyframe` asks, which sharpens every block, with the
     /// frames after it at what the link bears again.
     ///
-    /// Returns whether a body was appended, as [`Self::encode`] does. An
-    /// encoder that would not move its dial back is an error, with `out` as it
-    /// was: the encoder stays at the [`Self::quality`] it reports, and its
-    /// next frame is a keyframe.
+    /// Returns whether a body was appended, as [`Self::encode`] does.
     pub fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Vp9Error> {
         self.framed(out, |stream, out| stream.settle(quality, keyframe, out))
     }
@@ -232,12 +274,12 @@ impl Vp9Encoder {
     /// Append a rectangle's body to `out`: the length word, and the frame
     /// `encode` appends. Nothing is appended for an encode that produced no
     /// frame, failed, or made a frame over the ceiling.
-    fn framed(&mut self, out: &mut Vec<u8>, encode: impl FnOnce(&mut screen_vp9::Stream, &mut Vec<u8>) -> Result<Option<bool>, screen_vp9::Error>) -> Result<bool, Vp9Error> {
+    fn framed(&mut self, out: &mut Vec<u8>, encode: impl FnOnce(&mut screen_vp9::Stream, &mut Vec<u8>) -> Result<bool, screen_vp9::Error>) -> Result<bool, Vp9Error> {
         let length_at = out.len();
         out.extend_from_slice(&[0; 4]);
         match encode(&mut self.stream, out) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
+            Ok(_) => {}
+            Err(screen_vp9::Error::NoFrame) => {
                 out.truncate(length_at);
                 return Ok(false);
             }
@@ -257,8 +299,9 @@ impl Vp9Encoder {
 }
 
 /// One connection's VP9 stream, client side, which the tests read the encoder
-/// back with: every VP9 rectangle is decoded by the same decoder, in the order
-/// they arrive, since each frame is coded against the ones before it.
+/// back with: every VP9 rectangle is decoded by the same decoder, libvpx's,
+/// in the order they arrive, since each frame is coded against the ones
+/// before it.
 #[cfg(test)]
 struct Vp9Decoder {
     decoder: screen_vp9::Decoder,
@@ -280,20 +323,20 @@ impl Vp9Decoder {
         if (w as usize, h as usize) != (width, height) {
             return Err(Vp9Error::Size(w, h, width, height));
         }
-        if width == 0 || height == 0 {
-            return Ok(());
-        }
         Ok(decoded.write_bgrx(out, stride)?)
     }
 }
 
-/// The encoder read back by the decoder, through the rectangle's framing. The
-/// coding itself is proved in `screen-vp9`; what these hold is the half this
-/// module owns — the length word, its ceiling, the pixels in and out — and
+/// Each encoder read back by the decoder, through the rectangle's framing. The
+/// coding itself is proved in `screen-vp9`; what these
+/// hold is the half this module owns — the length word, its ceiling, the pixels in and out — and
 /// that a client's decoder refuses a frame of another size.
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both encoders: every test of the stream holds for each.
+    const CODERS: [Vp9Coder; 2] = [Vp9Coder::Libvpx, Vp9Coder::Native];
 
     /// A dark terminal with one-pixel coloured glyph stems at odd columns: the
     /// picture 4:2:0 could not carry, since each stem would share its colour
@@ -326,81 +369,87 @@ mod tests {
     /// coarse dial left without a keyframe, and leaves the dial where it was.
     #[test]
     fn a_settle_sharpens_the_picture_and_leaves_the_dial() {
-        let (width, height) = (64, 48);
-        let (pixels, _) = stems(width, height);
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
-        let mut decoder = Vp9Decoder::new().unwrap();
-        let mut back = vec![0; width * height * 4];
-        let mut error = |frame: &[u8]| {
-            decoder.decode_rect(frame, width, height, &mut back, width * 4).unwrap();
-            back.chunks(4).zip(pixels.chunks(4)).map(|(got, want)| (0..3).map(|c| u64::from(got[c].abs_diff(want[c]))).sum::<u64>()).sum::<u64>()
-        };
-        let coarse = error(&encode(&mut encoder, &pixels, false));
+        for coder in CODERS {
+            let (width, height) = (64, 48);
+            let (pixels, _) = stems(width, height);
+            let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN, coder).unwrap();
+            let mut decoder = Vp9Decoder::new().unwrap();
+            let mut back = vec![0; width * height * 4];
+            let mut error = |frame: &[u8]| {
+                decoder.decode_rect(frame, width, height, &mut back, width * 4).unwrap();
+                back.chunks(4).zip(pixels.chunks(4)).map(|(got, want)| (0..3).map(|c| u64::from(got[c].abs_diff(want[c]))).sum::<u64>()).sum::<u64>()
+            };
+            let coarse = error(&encode(&mut encoder, &pixels, false));
 
-        let mut out = vec![0xEE];
-        assert!(encoder.settle(QUALITY_MAX, false, &mut out).expect("a settle"), "a frame");
-        assert_eq!((out[0], u32::from_be_bytes(out[1..5].try_into().unwrap()) as usize), (0xEE, out.len() - 5), "the length word is the frame's");
-        let frame = out.split_off(5);
-        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| !header.keyframe), "the settle cost a keyframe");
-        let settled = error(&frame);
-        assert!(settled < coarse / 2, "the settle left the picture at error {settled} of {coarse}");
-        assert_eq!((encoder.quality(), encoder.coarsest()), (QUALITY_MIN, QUALITY_MAX));
+            let mut out = vec![0xEE];
+            assert!(encoder.settle(QUALITY_MAX, false, &mut out).expect("a settle"), "a frame");
+            assert_eq!((out[0], u32::from_be_bytes(out[1..5].try_into().unwrap()) as usize), (0xEE, out.len() - 5), "the length word is the frame's");
+            let frame = out.split_off(5);
+            assert!(screen_vp9::frame_header(&frame).is_some_and(|header| !header.keyframe), "the settle cost a keyframe");
+            let settled = error(&frame);
+            assert!(settled < coarse / 2, "the settle left the picture at error {settled} of {coarse}");
+            assert_eq!((encoder.quality(), encoder.coarsest()), (QUALITY_MIN, QUALITY_MAX));
 
-        // An encoder nothing was read into has nothing to settle.
-        let mut out = vec![0xEE];
-        let mut unread = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
-        assert!(matches!(unread.settle(QUALITY_MAX, false, &mut out), Err(Vp9Error::Codec(screen_vp9::Error::Unread))));
-        assert_eq!((out, unread.quality()), (vec![0xEE], QUALITY_MIN), "a settle that failed left something behind");
+            // An encoder nothing was read into has nothing to settle.
+            let mut out = vec![0xEE];
+            let mut unread = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN, coder).unwrap();
+            assert!(matches!(unread.settle(QUALITY_MAX, false, &mut out), Err(Vp9Error::Codec(screen_vp9::Error::Unread))));
+            assert_eq!((out, unread.quality()), (vec![0xEE], QUALITY_MIN), "a settle that failed left something behind");
+        }
     }
 
     #[test]
     fn a_444_stream_keeps_a_one_pixel_stem_its_colour() {
-        let (width, height) = (64, 48);
-        let (pixels, at) = stems(width, height);
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX).unwrap();
-        let frame = encode(&mut encoder, &pixels, false);
-        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == screen_vp9::PROFILE), "an encoder's first frame is a 4:4:4 keyframe");
+        for coder in CODERS {
+            let (width, height) = (64, 48);
+            let (pixels, at) = stems(width, height);
+            let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX, coder).unwrap();
+            let frame = encode(&mut encoder, &pixels, false);
+            assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == screen_vp9::PROFILE), "an encoder's first frame is a 4:4:4 keyframe");
 
-        let mut decoder = Vp9Decoder::new().unwrap();
-        let stride = width * 4 + 8;
-        let mut out = vec![0; stride * height];
-        decoder.decode_rect(&frame, width, height, &mut out, stride).unwrap();
-        let worst = at
-            .iter()
-            .map(|&(x, y)| {
-                let got = &out[y * stride + x * 4..][..3];
-                got.iter().zip([198u8, 121, 255]).map(|(a, b)| a.abs_diff(b)).max().unwrap()
-            })
-            .max()
-            .unwrap();
-        assert!(worst <= 24, "a stem pixel came back {worst} code values off");
+            let mut decoder = Vp9Decoder::new().unwrap();
+            let stride = width * 4 + 8;
+            let mut out = vec![0; stride * height];
+            decoder.decode_rect(&frame, width, height, &mut out, stride).unwrap();
+            let worst = at
+                .iter()
+                .map(|&(x, y)| {
+                    let got = &out[y * stride + x * 4..][..3];
+                    got.iter().zip([198u8, 121, 255]).map(|(a, b)| a.abs_diff(b)).max().unwrap()
+                })
+                .max()
+                .unwrap();
+            assert!(worst <= 24, "a stem pixel came back {worst} code values off");
+        }
     }
 
     /// Only the frames that are asked to be keyframes are, the ones between
     /// decode against them, and the dial moves without one.
     #[test]
     fn keyframes_come_when_asked_and_the_dial_moves_between_them() {
-        let (width, height) = (64, 32);
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, 60).unwrap();
-        let mut decoder = Vp9Decoder::new().unwrap();
-        let mut out = vec![0; width * height * 4];
-        for step in 0..5usize {
-            let mut pixels = [80u8, 40, 20, 0].repeat(width * height);
-            for x in step * 4..step * 4 + 8 {
-                for y in 0..height {
-                    pixels[(y * width + x) * 4..][..3].copy_from_slice(&[240, 240, 240]);
+        for coder in CODERS {
+            let (width, height) = (64, 32);
+            let mut encoder = Vp9Encoder::new(width as u16, height as u16, 60, coder).unwrap();
+            let mut decoder = Vp9Decoder::new().unwrap();
+            let mut out = vec![0; width * height * 4];
+            for step in 0..5usize {
+                let mut pixels = [80u8, 40, 20, 0].repeat(width * height);
+                for x in step * 4..step * 4 + 8 {
+                    for y in 0..height {
+                        pixels[(y * width + x) * 4..][..3].copy_from_slice(&[240, 240, 240]);
+                    }
                 }
+                if step == 2 {
+                    encoder.set_quality(QUALITY_MAX);
+                    assert_eq!(encoder.quality(), QUALITY_MAX);
+                }
+                let frame = encode(&mut encoder, &pixels, step == 3);
+                let header = screen_vp9::frame_header(&frame).expect("a VP9 frame");
+                assert_eq!(header.keyframe, step == 0 || step == 3, "frame {step}");
+                decoder.decode_rect(&frame, width, height, &mut out, width * 4).unwrap();
+                let lit = &out[(step * 4 + 4) * 4..][..3];
+                assert!(lit.iter().all(|&c| c > 200), "frame {step} did not decode to its own picture: {lit:?}");
             }
-            if step == 2 {
-                encoder.set_quality(QUALITY_MAX).unwrap();
-                assert_eq!(encoder.quality(), QUALITY_MAX);
-            }
-            let frame = encode(&mut encoder, &pixels, step == 3);
-            let header = screen_vp9::frame_header(&frame).expect("a VP9 frame");
-            assert_eq!(header.keyframe, step == 0 || step == 3, "frame {step}");
-            decoder.decode_rect(&frame, width, height, &mut out, width * 4).unwrap();
-            let lit = &out[(step * 4 + 4) * 4..][..3];
-            assert!(lit.iter().all(|&c| c > 200), "frame {step} did not decode to its own picture: {lit:?}");
         }
     }
 
@@ -410,71 +459,75 @@ mod tests {
     /// to, and are read whole.
     #[test]
     fn a_frame_of_damage_reads_and_codes_only_what_it_names() {
-        let (width, height) = (96usize, 80usize);
-        let stride = width * 4;
-        const BACK: [u8; 4] = [80, 40, 20, 0];
-        const LIT: [u8; 4] = [240, 240, 240, 0];
-        let damage = Rect { x: 32, y: 16, width: 32, height: 16 };
-        let lit = |pixels: &mut [u8], rect: Rect| {
-            for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
-                for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
-                    pixels[y * stride + x * 4..][..4].copy_from_slice(&LIT);
+        for coder in CODERS {
+            let (width, height) = (96usize, 80usize);
+            let stride = width * 4;
+            const BACK: [u8; 4] = [80, 40, 20, 0];
+            const LIT: [u8; 4] = [240, 240, 240, 0];
+            let damage = Rect { x: 32, y: 16, width: 32, height: 16 };
+            let lit = |pixels: &mut [u8], rect: Rect| {
+                for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
+                    for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
+                        pixels[y * stride + x * 4..][..4].copy_from_slice(&LIT);
+                    }
                 }
+            };
+            let at = |out: &[u8], x: usize, y: usize| -> [u8; 3] { out[y * stride + x * 4..][..3].try_into().unwrap() };
+            let near = |got: [u8; 3], want: [u8; 4]| (0..3).all(|c| got[c].abs_diff(want[c]) <= 24);
+            let frame = |encoder: &mut Vp9Encoder, pixels: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
+                let mut out = Vec::new();
+                encoder.read(pixels, stride, changed).expect("a read");
+                assert!(encoder.encode(keyframe, &mut out).expect("an encode"), "a frame");
+                out.split_off(4)
+            };
+            let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX, coder).unwrap();
+            let mut decoder = Vp9Decoder::new().unwrap();
+            let mut out = vec![0; stride * height];
+            let whole = BACK.repeat(width * height);
+
+            // The first frame is told of damage it cannot be damage to.
+            let first = frame(&mut encoder, &whole, Some(&[damage]), false);
+            assert!(screen_vp9::frame_header(&first).is_some_and(|header| header.keyframe));
+            decoder.decode_rect(&first, width, height, &mut out, stride).unwrap();
+            assert!(near(at(&out, 4, 70), BACK) && near(at(&out, 48, 24), BACK), "the first frame was not the whole picture");
+
+            // Damage, in a buffer whose other rows are not the picture.
+            let mut rows = [0xAAu8, 0x55, 0xAA, 0].repeat(width * height);
+            let span = usize::from(damage.y) * stride..usize::from(damage.y + damage.height) * stride;
+            rows[span.clone()].copy_from_slice(&whole[span]);
+            lit(&mut rows, damage);
+            let second = frame(&mut encoder, &rows, Some(&[damage]), false);
+            assert!(screen_vp9::frame_header(&second).is_some_and(|header| !header.keyframe));
+            decoder.decode_rect(&second, width, height, &mut out, stride).unwrap();
+            assert!(near(at(&out, 48, 24), LIT), "the damage came back {:?}", at(&out, 48, 24));
+            for (x, y) in [(4, 4), (4, 24), (90, 24), (48, 4), (48, 70)] {
+                assert!(near(at(&out, x, y), BACK), "({x}, {y}), outside the damage, came back {:?}", at(&out, x, y));
             }
-        };
-        let at = |out: &[u8], x: usize, y: usize| -> [u8; 3] { out[y * stride + x * 4..][..3].try_into().unwrap() };
-        let near = |got: [u8; 3], want: [u8; 4]| (0..3).all(|c| got[c].abs_diff(want[c]) <= 24);
-        let frame = |encoder: &mut Vp9Encoder, pixels: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
-            let mut out = Vec::new();
-            encoder.read(pixels, stride, changed).expect("a read");
-            assert!(encoder.encode(keyframe, &mut out).expect("an encode"), "a frame");
-            out.split_off(4)
-        };
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX).unwrap();
-        let mut decoder = Vp9Decoder::new().unwrap();
-        let mut out = vec![0; stride * height];
-        let whole = BACK.repeat(width * height);
 
-        // The first frame is told of damage it cannot be damage to.
-        let first = frame(&mut encoder, &whole, Some(&[damage]), false);
-        assert!(screen_vp9::frame_header(&first).is_some_and(|header| header.keyframe));
-        decoder.decode_rect(&first, width, height, &mut out, stride).unwrap();
-        assert!(near(at(&out, 4, 70), BACK) && near(at(&out, 48, 24), BACK), "the first frame was not the whole picture");
-
-        // Damage, in a buffer whose other rows are not the picture.
-        let mut rows = [0xAAu8, 0x55, 0xAA, 0].repeat(width * height);
-        let span = usize::from(damage.y) * stride..usize::from(damage.y + damage.height) * stride;
-        rows[span.clone()].copy_from_slice(&whole[span]);
-        lit(&mut rows, damage);
-        let second = frame(&mut encoder, &rows, Some(&[damage]), false);
-        assert!(screen_vp9::frame_header(&second).is_some_and(|header| !header.keyframe));
-        decoder.decode_rect(&second, width, height, &mut out, stride).unwrap();
-        assert!(near(at(&out, 48, 24), LIT), "the damage came back {:?}", at(&out, 48, 24));
-        for (x, y) in [(4, 4), (4, 24), (90, 24), (48, 4), (48, 70)] {
-            assert!(near(at(&out, x, y), BACK), "({x}, {y}), outside the damage, came back {:?}", at(&out, x, y));
+            // A picture read whole is the whole buffer, and a keyframe where
+            // one is asked.
+            let mut all = whole.clone();
+            lit(&mut all, Rect { x: 0, y: 64, width: 96, height: 16 });
+            let third = frame(&mut encoder, &all, None, true);
+            assert!(screen_vp9::frame_header(&third).is_some_and(|header| header.keyframe));
+            decoder.decode_rect(&third, width, height, &mut out, stride).unwrap();
+            assert!(near(at(&out, 48, 24), BACK) && near(at(&out, 48, 70), LIT), "the keyframe was not the whole picture");
         }
-
-        // A picture read whole is the whole buffer, and a keyframe where
-        // one is asked.
-        let mut all = whole.clone();
-        lit(&mut all, Rect { x: 0, y: 64, width: 96, height: 16 });
-        let third = frame(&mut encoder, &all, None, true);
-        assert!(screen_vp9::frame_header(&third).is_some_and(|header| header.keyframe));
-        decoder.decode_rect(&third, width, height, &mut out, stride).unwrap();
-        assert!(near(at(&out, 48, 24), BACK) && near(at(&out, 48, 70), LIT), "the keyframe was not the whole picture");
     }
 
     #[test]
     fn a_frame_of_another_size_or_no_frame_at_all_is_an_error() {
-        let mut encoder = Vp9Encoder::new(32, 16, 60).unwrap();
-        let frame = encode(&mut encoder, &[0u8; 32 * 16 * 4], false);
-        let mut out = vec![0; 64 * 64 * 4];
-        let mut decoder = Vp9Decoder::new().unwrap();
-        assert!(matches!(decoder.decode_rect(&frame, 16, 16, &mut out, 64), Err(Vp9Error::Size(32, 16, 16, 16))));
-        assert!(decoder.decode_rect(&[0xFF, 0x00, 0x12], 32, 16, &mut out, 128).is_err());
-        assert!(matches!(decoder.decode_rect(&frame, 32, 16, &mut out[..10], 128), Err(Vp9Error::Codec(screen_vp9::Error::Buffer { .. }))));
-        assert!(matches!(Vp9Encoder::new(0, 16, 60), Err(Vp9Error::Codec(screen_vp9::Error::Empty(0, 16)))));
-        assert!(matches!(encoder.read(&[0; 12], 128, None), Err(Vp9Error::Codec(screen_vp9::Error::Buffer { .. }))));
+        for coder in CODERS {
+            let mut encoder = Vp9Encoder::new(32, 16, 60, coder).unwrap();
+            let frame = encode(&mut encoder, &[0u8; 32 * 16 * 4], false);
+            let mut out = vec![0; 64 * 64 * 4];
+            let mut decoder = Vp9Decoder::new().unwrap();
+            assert!(matches!(decoder.decode_rect(&frame, 16, 16, &mut out, 64), Err(Vp9Error::Size(32, 16, 16, 16))));
+            assert!(decoder.decode_rect(&[0xFF, 0x00, 0x12], 32, 16, &mut out, 128).is_err());
+            assert!(matches!(decoder.decode_rect(&frame, 32, 16, &mut out[..10], 128), Err(Vp9Error::Codec(_))));
+            assert!(matches!(Vp9Encoder::new(0, 16, 60, coder), Err(Vp9Error::Codec(screen_vp9::Error::Empty(0, 16)))));
+            assert!(matches!(encoder.read(&[0; 12], 128, None), Err(Vp9Error::Codec(screen_vp9::Error::Buffer { .. }))));
+        }
     }
 }
 
@@ -485,13 +538,19 @@ mod stream_tests {
 
     #[test]
     fn the_stream_is_read_from_the_list_beside_the_encoding() {
-        let asked = Vp9Stream { quality: 60, adaptive: true };
+        let asked = Vp9Stream { quality: 60, adaptive: true, coder: Vp9Coder::Libvpx };
         assert_eq!(asked.encodings(), [crate::ENCODING_VP9, 0x574c_513c]);
         let listed = [crate::ENCODING_VP9, 0x574c_513c, crate::ENCODING_ZRLE];
         assert_eq!(Vp9Stream::listed(&listed), Ok(Some(asked)));
-        let held = Vp9Stream { quality: 100, adaptive: false };
+        let held = Vp9Stream { quality: 100, adaptive: false, coder: Vp9Coder::Libvpx };
         assert_eq!(held.encodings(), [crate::ENCODING_VP9, 0x574c_5164, 0x574c_5344]);
         assert_eq!(Vp9Stream::listed(&held.encodings()), Ok(Some(held)));
+        // The experimental encoder is asked for by name, and libvpx is what a
+        // list that does not name it gets.
+        let native = Vp9Stream { coder: Vp9Coder::Native, ..asked };
+        assert_eq!(native.encodings(), [crate::ENCODING_VP9, 0x574c_513c, 0x574c_5358]);
+        assert_eq!(Vp9Stream::listed(&native.encodings()), Ok(Some(native)));
+        assert_eq!(ENCODING_VP9_NATIVE, i32::from_be_bytes(*b"WLSX"));
     }
 
     /// A list without VP9 asks for no stream, whatever else it names; the

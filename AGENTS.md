@@ -5,9 +5,15 @@
 - Two crates: `wlshare-rfb` (protocol), platform-independent and tested by a
   bare `cargo test`, and `wlshare` (the daemon, Linux + wlroots-based Wayland
   only). Its one client is the remotex gateway; there is no native client. The
-  VP9 coding is not here: it is the `screen-vp9` repository, shared
-  with the remotex gateway and pinned by release tag, and a libvpx setting or
-  the quality walk changes there and arrives as a pin bump. After Rust
+  VP9 coding is not here: it is the `screen-vp9` repository, pinned by
+  release tag, which is libvpx and, with its `native` feature, an encoder in
+  Rust that is EXPERIMENTAL and codes only the stream of a client that lists
+  `WLSX` beside the encoding; how a desktop is coded changes
+  there and arrives as a pin bump, and the quality walk is the second's for
+  both. Its kernels are
+  AVX2 on amd64, which `.cargo/config.toml` sets and every amd64 build needs.
+  libvpx's decoder is also what `wlshare-rfb`'s VP9 tests read either
+  encoder's frames back with. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
   architecture-specific, and the release builds each architecture in Docker on
