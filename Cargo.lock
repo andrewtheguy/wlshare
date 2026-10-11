@@ -1142,8 +1142,8 @@ dependencies = [
 
 [[package]]
 name = "screen-vp9-native"
-version = "0.0.1-alpha.2"
-source = "git+https://github.com/andrewtheguy/screen-vp9-native?tag=v0.0.1-alpha.2#b1b8ab76cc7545d2885d244a6d947a9574a17f78"
+version = "0.0.1-alpha.5"
+source = "git+https://github.com/andrewtheguy/screen-vp9-native?tag=v0.0.1-alpha.5#9a570ed0fa4908a2fe1a41e6e37dd3192a7473fb"
 dependencies = [
  "thiserror",
  "yuv",
