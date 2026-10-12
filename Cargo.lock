@@ -1142,8 +1142,8 @@ dependencies = [
 
 [[package]]
 name = "screen-vp9"
-version = "0.0.16"
-source = "git+https://github.com/andrewtheguy/screen-vp9?tag=v0.0.16#03de3d13e58ba45de864d895991007669785fbec"
+version = "0.0.17"
+source = "git+https://github.com/andrewtheguy/screen-vp9?tag=v0.0.17#c6676c90c61c154ef2efb02dbadf2ba437f30478"
 dependencies = [
  "libvpx-prebuilt-sys",
  "log",
@@ -1659,7 +1659,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wlshare"
-version = "0.0.65"
+version = "0.0.66"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1688,7 +1688,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-rfb"
-version = "0.0.65"
+version = "0.0.66"
 dependencies = [
  "aes",
  "eax",

@@ -10,8 +10,8 @@
   Rust that is EXPERIMENTAL and codes only the stream of a client that lists
   `WLSX` beside the encoding; how a desktop is coded changes
   there and arrives as a pin bump, and the quality walk is the second's for
-  both. Its kernels are
-  AVX2 on amd64, which `.cargo/config.toml` sets and every amd64 build needs.
+  both. It is built for
+  x86-64-v3 on amd64, which `.cargo/config.toml` sets and every amd64 build needs.
   libvpx's decoder is also what `wlshare-rfb`'s VP9 tests read either
   encoder's frames back with. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
