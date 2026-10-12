@@ -6,8 +6,9 @@
 # in, for LENGTH seconds (its one argument, 20 by default), and closes what
 # it opened. Run one by hand on any sway desktop a daemon is capturing —
 # `wlshare --capture-frames DIR` — or let docker/capture/run.sh run them all.
-# They need swaymsg, wlrctl (the pointer), foot, chromium, mpv and ffmpeg,
-# and for the keys either CAPTURE_KEYS or wtype (`press`, below).
+# They need swaymsg, wlrctl (the pointer), foot, chromium and mpv, for the
+# keys either CAPTURE_KEYS or wtype (`press`, below), and for video.sh a
+# video file in CAPTURE_VIDEO.
 #
 #   quiet: terminal.sh, uncover.sh    little changes a frame, most of it still
 #   busy:  flood.sh, browser.sh, drag.sh, video.sh    most of the picture new
@@ -17,7 +18,7 @@
 set -euo pipefail
 
 LENGTH="${1:-20}"
-# Where the page and the video are made, once.
+# Where the page is made, once.
 MATERIAL="${CAPTURE_MATERIAL:-${XDG_RUNTIME_DIR:-/tmp}/capture-material}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -34,13 +35,9 @@ desktop_size() {
 	[[ -n "$W" && -n "$H" ]] || { log "no output size from swaymsg"; exit 1; }
 }
 
-# The page and the video, made where MATERIAL says if they are not there.
+# The page, made where MATERIAL says if it is not there.
 material() {
 	mkdir -p "$MATERIAL"
-	if [[ ! -s "$MATERIAL/video.mp4" ]]; then
-		# Twenty seconds of a moving test pattern.
-		ffmpeg -loglevel error -y -f lavfi -i testsrc2=size=1280x720:rate=30 -t 20 -c:v libx264 -preset veryfast -pix_fmt yuv420p "$MATERIAL/video.mp4"
-	fi
 	if [[ ! -s "$MATERIAL/page.html" ]]; then
 		# A long page: headings, paragraphs, a table and coloured boxes.
 		{
@@ -120,11 +117,13 @@ browser() {
 	return 1
 }
 
-# The video in a floating 1280×720 window, software rendered.
+# The video CAPTURE_VIDEO names, full screen and cropped to fill it, so that
+# every pixel of the desktop is the video's, software rendered.
 video() {
-	mpv --vo=wlshm --hwdec=no --no-audio --loop=inf --no-border "$MATERIAL/video.mp4" >/dev/null 2>&1 &
+	[[ -s "${CAPTURE_VIDEO:-}" ]] || { log "no video: CAPTURE_VIDEO is '${CAPTURE_VIDEO:-}'"; return 1; }
+	mpv --vo=wlshm --hwdec=no --no-audio --loop=inf --no-border --no-osc --osd-level=0 --panscan=1.0 "$CAPTURE_VIDEO" >/dev/null 2>&1 &
 	await_window mpv
-	swaymsg -q '[app_id="mpv"] floating enable, resize set 1280 720, move position 100 100'
+	swaymsg -q '[app_id="mpv"] fullscreen enable'
 }
 
 # Close the windows a scenario opened: the app ids it names.

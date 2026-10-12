@@ -512,7 +512,9 @@ quiet ones, a terminal typed into and scrolled and a window over a page
 uncovered; the busy ones, a terminal flooded with random coloured lines
 (`flood.sh`, and `busy-lines.sh`, which floods whatever terminal runs it), a
 page scrolled,
-a window dragged, and a video in a window. `run.sh` plays them at each size
+a window dragged, and a video full screen, cropped to fill it, so that every
+pixel is the video's: the file `--video` hands the container, which the
+video and the walk need. `run.sh` plays them at each size
 with a session around each — the first resizes into the size, the video
 asks a keyframe midway, and the walk is the video while the sink reads late
 so the fences come back late and the dial goes down, then back up, then the
