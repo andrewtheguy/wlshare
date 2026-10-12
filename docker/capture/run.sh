@@ -6,8 +6,9 @@
 # `<scenario>-<WxH>[@2].wlcap.zst`. Settings come from the environment:
 # SIZES (WxH, with `@2` for a desktop drawn at scale 2), SCENARIOS (names,
 # or the groups `quiet`, `busy` and `all`), QUALITY (the dial, 90 by
-# default), LENGTH (each scenario's seconds, 20 by default) and FRAMES (the
-# least frames the flood is played for, 150 by default).
+# default), LENGTH (each scenario's seconds, 20 by default), FRAMES (the
+# least frames the flood is played for, 150 by default) and CAPTURE_VIDEO
+# (the video file the video and the walk play, which they need).
 #
 # The content is the scripts in scenarios/, each of which can be run by
 # hand on any sway desktop a daemon is capturing; what this adds is the
@@ -20,7 +21,7 @@
 #   busy   flood     a terminal flooded with coloured random lines, every line new
 #          browser   a long page scrolled by wheel and by key
 #          drag      a floating terminal dragged across the desktop
-#          video     a video playing in a window, with a keyframe asked midway
+#          video     a video playing full screen, with a keyframe asked midway
 #          walk      the video while the client reads late, so the dial walks
 #                    down and back up, then stopped, so the desktop settles
 set -euo pipefail
@@ -74,6 +75,10 @@ expand() {
 	echo "$out" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '
 }
 SCENARIOS=$(expand "$SCENARIOS")
+if [[ " $SCENARIOS " == *" video "* || " $SCENARIOS " == *" walk "* ]] && [[ ! -s "${CAPTURE_VIDEO:-}" ]]; then
+	log "the video and the walk play CAPTURE_VIDEO, and it is '${CAPTURE_VIDEO:-}'"
+	exit 1
+fi
 
 # ── The desktop ──────────────────────────────────────────────────────────────
 
@@ -246,7 +251,7 @@ rmdir "$RAW" 2>/dev/null || true
 	echo "- flood: a terminal flooded with coloured random lines, every line new, for as long past the $LENGTH seconds as $FRAMES frames took"
 	echo "- browser: a long page in Chromium scrolled by wheel, by key, and back"
 	echo "- drag: a floating terminal dragged around the desktop"
-	echo "- video: a test pattern playing in a 1280×720 window, with a keyframe asked at 10 s"
+	echo "- video: \`$(basename "${CAPTURE_VIDEO:-none}")\` playing full screen from its start, cropped to fill it, with a keyframe asked at 10 s"
 	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the dial walks down and back up, then stopped 5 s before the end so the desktop settles"
 	echo
 	echo "$(sway --version), $(wlshare --version)"

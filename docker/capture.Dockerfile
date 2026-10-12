@@ -49,7 +49,7 @@ RUN apt-get update && \
     printf 'Types: deb\nURIs: https://andrewtheguy.github.io/wlshare\nSuites: trixie\nComponents: main\nSigned-By: /etc/apt/keyrings/wlshare.gpg\n' > /etc/apt/sources.list.d/wlshare.sources && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        sway foot chromium mpv wlrctl zstd ffmpeg procps bsdextrautils \
+        sway foot chromium mpv wlrctl zstd procps bsdextrautils \
         fonts-dejavu fonts-noto-core && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/wlshare.deb /tmp/wlshare.deb

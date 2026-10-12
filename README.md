@@ -203,7 +203,8 @@ loads it at build time.
 (`docker/capture/`), with docker or with podman: a headless sway and the daemon started with
 `--capture-frames`, playing a scripted desktop at each size, so that what the
 VP9 encoder was handed — every frame's pixels and damage, exact — lands in
-`dist/captures/`. `scripts/vp9-samples.sh` plays those captures into the
+`dist/captures/`; the video scenarios play full screen the file `--video`
+names. `scripts/vp9-samples.sh` plays those captures into the
 encoder again and writes the streams vp9-wasm's benchmark decodes, a quiet
 and a busy one of each size with every frame's MD5, into `dist/vp9-bench/`:
 run it again after an encoder's pin bump and the samples are the new
