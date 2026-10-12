@@ -14,7 +14,7 @@ path = "src/main.rs"
 wlshare-rfb = { path = "../wlshare-rfb" }
 # The quality walk the VP9 stream's dial follows a link with, whichever
 # coder codes it.
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.16", features = ["native"] }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.17", features = ["native"] }
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true

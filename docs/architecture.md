@@ -415,9 +415,10 @@ What a frame holds is fixed:
   threads, and a stream in four columns or more is coded without the loop
   filter. The conversion
   from the framebuffer's pixels to the planes is the `yuv` crate's, and the
-  encoder's kernels are AVX2 on amd64 and NEON on arm64: an amd64 build sets
-  `-C target-feature=+avx2` (`.cargo/config.toml`), so the daemon needs a
-  processor with AVX2 there, and is refused by the compiler without the flag.
+  encoder is built for x86-64-v3 on amd64 and NEON on arm64: an amd64 build sets
+  `-C target-cpu=x86-64-v3` (`.cargo/config.toml`), so the daemon needs a
+  processor at that level there (AVX2, BMI1 and BMI2, LZCNT, MOVBE, FMA:
+  Haswell and Excavator on), and is refused by the compiler without the flag.
 - **A quiet desktop is sharpened at the ceiling, and the walk keeps its
   place.** The walk only runs when a frame goes out. Ordinarily a frame only
   goes out when something changed, so a desktop that stops right after the link
