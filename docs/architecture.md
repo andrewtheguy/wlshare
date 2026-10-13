@@ -508,8 +508,8 @@ types what the scenarios have it type, so the keys reach the desktop through
 the daemon as a person's do. The
 content is `docker/capture/scenarios/`, a script per scenario that plays on
 any sway desktop and can be run by hand on one a daemon is capturing: the
-quiet ones, a terminal typed into and scrolled and a window over a page
-uncovered; the busy ones, a terminal flooded with random coloured lines
+quiet ones, a terminal typed into and scrolled, a page left alone, and a
+window over a page moved aside and closed; the busy ones, a terminal flooded with random coloured lines
 (`flood.sh`, and `busy-lines.sh`, which floods whatever terminal runs it), a
 page scrolled,
 a window dragged, and a video full screen, cropped to fill it, so that every
@@ -519,7 +519,14 @@ with a session around each — the first resizes into the size, the video
 asks a keyframe midway, and the walk is the video while the sink reads late
 so the fences come back late and the dial goes down, then back up, then the
 video stopped for the settle — each scenario its own session and so its own
-file. The flood's session runs on past its length until it has a hundred and
+file. A script opens its windows and says it is ready before the session
+that captures it connects, and plays once that session has its first frame,
+so that every capture begins with the scenario's windows drawn and not with
+the desktop bare while they open: they open under a session of their own at
+the size, which ends and its capture is thrown away, because the daemon's
+framebuffer takes its size from a client alone and keeps its picture only
+while one is connected, and that picture is what a client connecting is
+first sent. The flood's session runs on past its length until it has a hundred and
 fifty frames: every frame of it is the whole picture new, the slowest there
 is to code, and a large desktop gets a few of them a second. A scenario that
 fails, or whose sink does, leaves no capture and fails the run, so a file
