@@ -10,7 +10,7 @@
 # keys either CAPTURE_KEYS or wtype (`press`, below), and for video.sh a
 # video file in CAPTURE_VIDEO.
 #
-#   quiet: terminal.sh, uncover.sh    little changes a frame, most of it still
+#   quiet: terminal.sh, still.sh, uncover.sh    little changes a frame, most of it still
 #   busy:  flood.sh, browser.sh, drag.sh, video.sh    most of the picture new
 #
 # busy-lines.sh is the flood itself, for any terminal.

@@ -17,6 +17,7 @@
 # the dial moves — and the file each session leaves.
 #
 #   quiet  terminal  a resize into the size, then a terminal typed into and scrolled
+#          still     a page drawn before the session and left alone
 #          uncover   a window over a page moved aside, then closed
 #   busy   flood     a terminal flooded with coloured random lines, every line new
 #          browser   a long page scrolled by wheel and by key
@@ -46,7 +47,7 @@ OUT=/captures
 RAW="$OUT/raw"
 ADDR=127.0.0.1:5900
 SCENARIOS_DIR=/opt/capture/scenarios
-QUIET="terminal uncover"
+QUIET="terminal still uncover"
 BUSY="flood browser drag video walk"
 
 export CAPTURE_MATERIAL=/tmp/capture-material
@@ -158,6 +159,35 @@ scenario_terminal() {
 	finish terminal
 }
 
+scenario_still() {
+	# The page is opened and drawn before the session that captures it, so
+	# that the session's first frame is the page and nothing follows it. The
+	# daemon's framebuffer takes its size from a client alone, and keeps its
+	# picture only while one is connected, which is what a client connecting
+	# is first sent: so the page is opened under a session of its own at the
+	# size, ended once it is drawn and its capture thrown away. The script is
+	# given time enough to outlast both.
+	vp9-sink "$ADDR" --size "$W"x"$H" --quality "$QUALITY" --seconds $((LENGTH * 3)) </dev/null 2>>"$OUT/sink.log" &
+	local before=$! still _
+	sleep 1.5
+	"$SCENARIOS_DIR/still.sh" $((LENGTH * 3)) 2>>"$OUT/scenarios.log" &
+	still=$!
+	for _ in $(seq 150); do
+		swaymsg -t get_tree | grep -q '"app_id": "chromium' && break
+		sleep 0.2
+	done
+	sleep 5
+	kill "$before" 2>/dev/null || true
+	wait "$before" 2>/dev/null || true
+	sleep 1
+	rm -f "$RAW"/*.wlcap
+	sink
+	finish still
+	pkill -P "$still" 2>/dev/null || true
+	kill "$still" 2>/dev/null || true
+	wait "$still" 2>/dev/null || true
+}
+
 scenario_uncover() {
 	sink
 	play uncover
@@ -245,6 +275,7 @@ rmdir "$RAW" 2>/dev/null || true
 	echo
 	echo "Quiet:"
 	echo "- terminal: a resize into the size from the size before, then a terminal typed into one key at a time and scrolled"
+	echo "- still: a page in Chromium, drawn before the session began and left alone"
 	echo "- uncover: a terminal over a page moved aside, then closed"
 	echo
 	echo "Busy:"

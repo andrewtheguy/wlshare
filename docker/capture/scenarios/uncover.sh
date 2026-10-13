@@ -4,6 +4,10 @@
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 material
 browser
+# The kiosk page is fullscreen, and sway draws a fullscreen window over a
+# floating one: tiled, it fills the desktop as before and the terminal is
+# over it.
+swaymsg -q '[app_id="chromium"] fullscreen disable'
 foot -- bash -c 'seq 1 2000 | column -c 100; sleep 1000' >/dev/null 2>&1 &
 await_window foot
 swaymsg -q '[app_id="foot"] floating enable, resize set 900 700, move position 100 100'
