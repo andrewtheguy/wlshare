@@ -2,15 +2,16 @@
 # What the scenario scripts share: the desktop's size, the material they
 # show, and the few actions they are made of. Sourced, not run.
 #
-# A scenario script plays one kind of content on the sway desktop it is run
-# in, for LENGTH seconds (its one argument, 20 by default), and closes what
-# it opened. Run one by hand on any sway desktop a daemon is capturing —
+# A scenario script opens and lays out its windows, says it is `ready`, then
+# plays one kind of content on the sway desktop it is run in, for LENGTH
+# seconds (its one argument, 20 by default) from then, and closes what it
+# opened. Run one by hand on any sway desktop a daemon is capturing —
 # `wlshare --capture-frames DIR` — or let docker/capture/run.sh run them all.
-# They need swaymsg, wlrctl (the pointer), foot, chromium and mpv, for the
+# They need swaymsg, wlrctl (the pointer), foot, chromium, mpv and socat, for the
 # keys either CAPTURE_KEYS or wtype (`press`, below), and for video.sh a
 # video file in CAPTURE_VIDEO.
 #
-#   quiet: terminal.sh, uncover.sh    little changes a frame, most of it still
+#   quiet: terminal.sh, still.sh, uncover.sh    little changes a frame, most of it still
 #   busy:  flood.sh, browser.sh, drag.sh, video.sh    most of the picture new
 #
 # busy-lines.sh is the flood itself, for any terminal.
@@ -118,12 +119,19 @@ browser() {
 }
 
 # The video CAPTURE_VIDEO names, full screen and cropped to fill it, so that
-# every pixel of the desktop is the video's, software rendered.
+# every pixel of the desktop is the video's, software rendered. Paused at
+# its first frame until `unpause`, so that it plays from its start once the
+# scenario goes.
 video() {
 	[[ -s "${CAPTURE_VIDEO:-}" ]] || { log "no video: CAPTURE_VIDEO is '${CAPTURE_VIDEO:-}'"; return 1; }
-	mpv --vo=wlshm --hwdec=no --no-audio --loop=inf --no-border --no-osc --osd-level=0 --panscan=1.0 "$CAPTURE_VIDEO" >/dev/null 2>&1 &
+	mkdir -p "$MATERIAL"
+	mpv --vo=wlshm --hwdec=no --no-audio --loop=inf --no-border --no-osc --osd-level=0 --panscan=1.0 --pause --input-ipc-server="$MATERIAL/mpv.sock" "$CAPTURE_VIDEO" >/dev/null 2>&1 &
 	await_window mpv
 	swaymsg -q '[app_id="mpv"] fullscreen enable'
+}
+
+unpause() {
+	echo '{ "command": ["set_property", "pause", false] }' | socat - "UNIX-CONNECT:$MATERIAL/mpv.sock" >/dev/null
 }
 
 # Close the windows a scenario opened: the app ids it names.
@@ -137,6 +145,23 @@ close() {
 
 # The scenario's clock: sleep until its LENGTH is up, from its start.
 STARTED=$(date +%s)
+
+# The windows are open: once they are drawn, say so where CAPTURE_READY
+# names, and wait there for the word to go, which docker/capture/run.sh
+# gives once the session that captures the scenario has its first frame, so
+# that the capture begins with the scenario's windows and not with their
+# opening. Without CAPTURE_READY it goes at once. The scenario's clock starts
+# here.
+GO="${CAPTURE_READY:+$CAPTURE_READY.go}"
+ready() {
+	sleep 1
+	if [[ -n "$GO" ]]; then
+		touch "$CAPTURE_READY.ready"
+		while [[ ! -e "$GO" ]]; do sleep 0.05; done
+	fi
+	STARTED=$(date +%s)
+}
+
 until_end() {
 	local now
 	now=$(date +%s)

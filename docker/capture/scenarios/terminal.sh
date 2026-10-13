@@ -6,7 +6,7 @@ material
 foot >/dev/null 2>&1 &
 await_window foot
 swaymsg -q '[app_id="foot"] fullscreen enable'
-sleep 1
+ready
 type_slowly $'ls -la /usr/share/fonts/truetype/dejavu\n'
 sleep 0.5
 type_slowly $'for i in $(seq 1 40); do printf "%4d  %s\\n" "$i" "the quick brown fox jumps over the lazy dog"; done\n'
