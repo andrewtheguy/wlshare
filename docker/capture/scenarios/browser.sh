@@ -4,6 +4,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 material
 browser
 wlrctl pointer move $((W / 2)) $((H / 2))
+ready
 for _ in $(seq 40); do
 	wlrctl pointer scroll 15 0
 	sleep 0.1

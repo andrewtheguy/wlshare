@@ -39,9 +39,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Sway 1.11 on wlroots 0.19 from the repository's own APT repository (README),
 # whose headless backend keeps the cursor out of the capture as a deployment's
 # does; the daemon's package depends on that wlroots. foot is the terminal,
-# chromium the browser, mpv the video and wlrctl the pointer; the keys are
-# typed by vp9-sink, through the daemon. bsdextrautils is `column`, which
-# fills the terminals the scenarios show.
+# chromium the browser, mpv the video, socat what starts it playing and
+# wlrctl the pointer; the keys are typed by vp9-sink, through the daemon.
+# bsdextrautils is `column`, which fills the terminals the scenarios show.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     mkdir -p /etc/apt/keyrings && \
@@ -49,7 +49,7 @@ RUN apt-get update && \
     printf 'Types: deb\nURIs: https://andrewtheguy.github.io/wlshare\nSuites: trixie\nComponents: main\nSigned-By: /etc/apt/keyrings/wlshare.gpg\n' > /etc/apt/sources.list.d/wlshare.sources && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        sway foot chromium mpv wlrctl zstd procps bsdextrautils \
+        sway foot chromium mpv socat wlrctl zstd procps bsdextrautils \
         fonts-dejavu fonts-noto-core && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/wlshare.deb /tmp/wlshare.deb

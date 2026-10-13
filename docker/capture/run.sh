@@ -12,12 +12,14 @@
 #
 # The content is the scripts in scenarios/, each of which can be run by
 # hand on any sway desktop a daemon is capturing; what this adds is the
-# session around each — the sink's flags, which make the first one resize
-# into the size, the video ask a keyframe midway, and the walk read late so
-# the dial moves — and the file each session leaves.
+# session around each — its windows opened and drawn before it, so that a
+# capture begins with them and not with the desktop bare, and the sink's
+# flags, which make the first one resize into the size, the video ask a
+# keyframe midway, and the walk read late so the dial moves — and the file
+# each session leaves.
 #
 #   quiet  terminal  a resize into the size, then a terminal typed into and scrolled
-#          still     a page drawn before the session and left alone
+#          still     a page left alone
 #          uncover   a window over a page moved aside, then closed
 #   busy   flood     a terminal flooded with coloured random lines, every line new
 #          browser   a long page scrolled by wheel and by key
@@ -121,20 +123,62 @@ sink() {
 	sleep 1.5
 }
 
-# Run a scenario script for the session's length. One that fails did not
-# play what its capture would be named for.
+# Run a scenario script and the session that captures it, with any flags for
+# the sink. The script opens its windows and says it is ready
+# (scenarios/lib.sh), under a session of their own at the size the capture
+# begins at (START, WxH unless set): the daemon's framebuffer takes its size
+# from a client alone and keeps its picture only while one is connected,
+# which is what a client connecting is first sent, so this one leaves it at
+# that size with the windows drawn, and ends, its capture thrown away. Then
+# the sink connects, and at its first frame the script is told to go, for
+# the session's length (SCRIPT_LENGTH, if the script is to play longer). A
+# script that fails, or is not ready in a minute, did not play what its
+# capture would be named for.
+READY="$XDG_RUNTIME_DIR/scenario"
 BROKEN=""
 FAILED=""
 play() {
-	"$SCENARIOS_DIR/$1.sh" "$LENGTH" 2>>"$OUT/scenarios.log" || BROKEN="the scenario ended with $?"
+	local script=$1 before waited=0
+	shift
+	rm -f "$READY".*
+	vp9-sink "$ADDR" --size "${START:-${W}x${H}}" --quality "$QUALITY" --seconds 600 </dev/null 2>>"$OUT/sink.log" &
+	before=$!
+	sleep 1.5
+	CAPTURE_READY="$READY" "$SCENARIOS_DIR/$script.sh" "${SCRIPT_LENGTH:-$LENGTH}" 2>>"$OUT/scenarios.log" &
+	SCENARIO=$!
+	until [[ -e "$READY.ready" ]] || ! kill -0 "$SCENARIO" 2>/dev/null || ((++waited > 600)); do
+		sleep 0.1
+	done
+	kill "$before" 2>/dev/null || true
+	wait "$before" 2>/dev/null || true
+	sleep 1
+	rm -f "$RAW"/*.wlcap
+	SINK=""
+	if [[ ! -e "$READY.ready" ]]; then
+		BROKEN="the scenario was not ready"
+		return
+	fi
+	sink "$@"
+	touch "$READY.go"
 }
 
-# Wait for the sink, close every window, and move the session's capture to
-# the scenario's name. A session whose scenario or sink failed leaves no
-# capture, and the run ends in failure once the others are done.
+# Wait for the sink, stop the script, close every window, and move the
+# session's capture to the scenario's name. A script still playing past the
+# session is stopped; one that ended before it ended as it would have. A
+# session whose scenario or sink failed leaves no capture, and the run ends
+# in failure once the others are done.
 finish() {
 	local name=$1
-	wait "$SINK" || BROKEN="vp9-sink ended with $?"
+	if [[ -n "$SINK" ]]; then
+		wait "$SINK" || BROKEN="vp9-sink ended with $?"
+	fi
+	if kill -0 "$SCENARIO" 2>/dev/null; then
+		pkill -P "$SCENARIO" 2>/dev/null || true
+		kill "$SCENARIO" 2>/dev/null || true
+		wait "$SCENARIO" 2>/dev/null || true
+	else
+		wait "$SCENARIO" || BROKEN="${BROKEN:-the scenario ended with $?}"
+	fi
 	swaymsg -q '[app_id=".*"] kill' || true
 	sleep 1
 	local newest
@@ -148,48 +192,25 @@ finish() {
 		return
 	fi
 	mv "$newest" "$OUT/$name-$LABEL.wlcap"
-	log "$name-$LABEL: $(du -h "$OUT/$name-$LABEL.wlcap" | cut -f1)"
+	# Compressed at once, over one a run before left, so that a run of many
+	# sizes never holds them all uncompressed.
+	zstd -T0 -q -f --rm "$OUT/$name-$LABEL.wlcap"
+	log "$name-$LABEL: $(du -h "$OUT/$name-$LABEL.wlcap.zst" | cut -f1)"
 }
 
 scenario_terminal() {
 	# Starts at the size before this one and resizes into it, so the resize
 	# and the keyframe it brings are captured too.
-	sink --size "$PREV" --resize 2:"$W"x"$H"
-	play terminal
+	START=$PREV play terminal --size "$PREV" --resize 2:"$W"x"$H"
 	finish terminal
 }
 
 scenario_still() {
-	# The page is opened and drawn before the session that captures it, so
-	# that the session's first frame is the page and nothing follows it. The
-	# daemon's framebuffer takes its size from a client alone, and keeps its
-	# picture only while one is connected, which is what a client connecting
-	# is first sent: so the page is opened under a session of its own at the
-	# size, ended once it is drawn and its capture thrown away. The script is
-	# given time enough to outlast both.
-	vp9-sink "$ADDR" --size "$W"x"$H" --quality "$QUALITY" --seconds $((LENGTH * 3)) </dev/null 2>>"$OUT/sink.log" &
-	local before=$! still _
-	sleep 1.5
-	"$SCENARIOS_DIR/still.sh" $((LENGTH * 3)) 2>>"$OUT/scenarios.log" &
-	still=$!
-	for _ in $(seq 150); do
-		swaymsg -t get_tree | grep -q '"app_id": "chromium' && break
-		sleep 0.2
-	done
-	sleep 5
-	kill "$before" 2>/dev/null || true
-	wait "$before" 2>/dev/null || true
-	sleep 1
-	rm -f "$RAW"/*.wlcap
-	sink
+	play still
 	finish still
-	pkill -P "$still" 2>/dev/null || true
-	kill "$still" 2>/dev/null || true
-	wait "$still" 2>/dev/null || true
 }
 
 scenario_uncover() {
-	sink
 	play uncover
 	finish uncover
 }
@@ -199,30 +220,22 @@ scenario_flood() {
 	# code, and a large desktop gets a few a second: the session runs on
 	# past its length until FRAMES have come, so that there are enough of
 	# them to cut a sample from, and the flood until the session ends.
-	sink --frames "$FRAMES"
-	"$SCENARIOS_DIR/flood.sh" $((LENGTH * 10)) 2>>"$OUT/scenarios.log" &
-	local flood=$!
+	SCRIPT_LENGTH=$((LENGTH * 10)) play flood --frames "$FRAMES"
 	finish flood
-	pkill -P "$flood" 2>/dev/null || true
-	kill "$flood" 2>/dev/null || true
-	wait "$flood" 2>/dev/null || true
 }
 
 scenario_browser() {
-	sink
 	play browser
 	finish browser
 }
 
 scenario_drag() {
-	sink
 	play drag
 	finish drag
 }
 
 scenario_video() {
-	sink --keyframe 10
-	play video
+	play video --keyframe 10
 	finish video
 }
 
@@ -231,8 +244,7 @@ scenario_walk() {
 	# then promptly, for the steps back up; the video stops five seconds
 	# before the end, so the desktop goes quiet below the ceiling and the
 	# settle is captured. Best with LENGTH at 20 or more.
-	sink --slow 4:6:200
-	STOP_BEFORE=5 play video
+	STOP_BEFORE=5 play video --slow 4:6:200
 	finish walk
 }
 
@@ -256,26 +268,23 @@ for size in $SIZES; do
 	PREV=$size
 done
 
-log "compressing"
 shopt -s nullglob
-captures=("$OUT"/*.wlcap)
+captures=("$OUT"/*.wlcap.zst)
 shopt -u nullglob
 cp "$CAPTURE_MATERIAL"/*.log "$OUT/" 2>/dev/null || true
 if [[ ${#captures[@]} -eq 0 ]]; then
 	log "no captures were written"
 	exit 1
 fi
-# Over a capture of the same name a run before left.
-zstd -T0 -q -f --rm "${captures[@]}"
 rmdir "$RAW" 2>/dev/null || true
 {
 	echo "# Frame captures"
 	echo
-	echo "What a wlshare session handed its VP9 encoder, exact, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`crates/wlshare-rfb/src/capture.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. Quality $QUALITY, $LENGTH seconds each; the content is \`docker/capture/scenarios/\`."
+	echo "What a wlshare session handed its VP9 encoder, exact, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`crates/wlshare-rfb/src/capture.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. Quality $QUALITY, $LENGTH seconds each; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
 	echo
 	echo "Quiet:"
 	echo "- terminal: a resize into the size from the size before, then a terminal typed into one key at a time and scrolled"
-	echo "- still: a page in Chromium, drawn before the session began and left alone"
+	echo "- still: a page in Chromium left alone"
 	echo "- uncover: a terminal over a page moved aside, then closed"
 	echo
 	echo "Busy:"

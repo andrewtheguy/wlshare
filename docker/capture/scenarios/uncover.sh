@@ -11,6 +11,7 @@ swaymsg -q '[app_id="chromium"] fullscreen disable'
 foot -- bash -c 'seq 1 2000 | column -c 100; sleep 1000' >/dev/null 2>&1 &
 await_window foot
 swaymsg -q '[app_id="foot"] floating enable, resize set 900 700, move position 100 100'
+ready
 sleep 2
 for x in $(seq 100 20 1000); do
 	swaymsg -q "[app_id=\"foot\"] move position $x 100"
