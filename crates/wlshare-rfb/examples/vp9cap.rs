@@ -10,7 +10,8 @@
 //!        [--native]
 //! vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest]
 //!        [--threads N] [--native]
-//! vp9cap trim CAPTURE --from FRAME --out CAPTURE
+//! vp9cap trim CAPTURE --out CAPTURE (--from FRAME [--frames N]
+//!        | --frames N [--busiest])
 //! ```
 //!
 //! A capture ending in `.zst` is read through `zstd -dc`, and written
@@ -36,18 +37,22 @@
 //! coded again.
 //!
 //! `sample` cuts one stream of exactly N frames from the capture's longest
-//! run of a size: its first N, or with `--busiest` the N in a row whose
-//! frames said the most pixels changed, the earliest such where several tie.
-//! The cut starts with a keyframe of the picture as it stood, and codes the
+//! run of a size ([`window`]): its first N, or with `--busiest` the N in a
+//! row whose frames said the most pixels changed, the earliest such where
+//! several tie. The cut starts with a keyframe of the picture as it stood, and codes the
 //! frames after it as the session did. It is named for what a decoder's
 //! threads make of it, read from the keyframe's own header and not from the
 //! encoder's rule: `DIR/NAME-WxH-<tile columns>col-<lf|nolf>.ivf`. A run
 //! shorter than N is an error.
 //!
-//! `trim` writes the capture from FRAME on as a capture of its own, its
-//! times counted from that frame and that frame a whole picture with a
-//! keyframe asked, as a session's first is: for a capture whose start is no
-//! part of its scenario, such as the seconds it was still before it began.
+//! `trim` writes part of the capture as a capture of its own, its times
+//! counted from its first frame and that frame a whole picture with a
+//! keyframe asked, as a session's first is: from FRAME on, or only the N
+//! frames from there with `--frames`, for a capture whose start is no part
+//! of its scenario, such as the seconds it was still before it began; or,
+//! with `--frames` alone, the N frames `sample` would cut of it, for an
+//! encoder measured on a part of a capture as a decoder is on a sample. A
+//! capture that ends short of the N is an error.
 //!
 //! Each command prints the path of every stream or capture it wrote, one a
 //! line.
@@ -87,7 +92,7 @@ const USAGE: &str = "usage: vp9cap info CAPTURE
        vp9cap shape STREAM.ivf
        vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N] [--native]
        vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N] [--native]
-       vp9cap trim CAPTURE --from FRAME --out CAPTURE";
+       vp9cap trim CAPTURE --out CAPTURE (--from FRAME [--frames N] | --frames N [--busiest])";
 
 fn parse_args() -> Result<(String, Args), String> {
     let mut args = std::env::args().skip(1);
@@ -119,12 +124,15 @@ fn parse_args() -> Result<(String, Args), String> {
                 return Err("--threads takes at least 1".into());
             }
             if (command == "sample") != (parsed.frames > 0) || (parsed.busiest && command != "sample") {
-                return Err("--frames and --busiest are sample's, and --frames is needed there".into());
+                return Err("--frames and --busiest are sample's and trim's, and --frames is needed by sample".into());
             }
         }
         "trim" => {
-            if parsed.from == 0 || parsed.out.as_os_str().is_empty() {
-                return Err("trim takes --from, a frame after the first, and --out".into());
+            if parsed.out.as_os_str().is_empty() || (parsed.from == 0 && parsed.frames == 0) {
+                return Err("trim takes --out, and --from, a frame after the first, or --frames".into());
+            }
+            if parsed.busiest && (parsed.from > 0 || parsed.frames == 0) {
+                return Err("--busiest takes --frames and no --from".into());
             }
         }
         other => return Err(format!("{other}: not a command")),
@@ -394,24 +402,32 @@ fn streams(args: &Args) -> Result<(), Error> {
     keep(output.ok_or("the capture holds no frames")?, &mut written)
 }
 
-fn sample(args: &Args) -> Result<(), Error> {
-    let seen = scan(&args.capture)?;
-    let run = runs(&seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?;
+/// Where the `frames` that `sample` cuts begin, in the capture's longest run
+/// of a size: its start, or with `busiest` the start of the `frames` in a row
+/// whose frames said the most pixels changed, the earliest where several tie.
+fn window(seen: &[Seen], frames: usize, busiest: bool) -> Result<usize, Error> {
+    let run = runs(seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?;
     let (width, height) = seen[run.start].size;
-    if run.len() < args.frames {
-        return Err(format!("its longest run of a size is {} frames of {width}x{height}, short of the {} asked", run.len(), args.frames).into());
+    if run.len() < frames {
+        return Err(format!("its longest run of a size is {} frames of {width}x{height}, short of the {frames} asked", run.len()).into());
     }
     let mut start = run.start;
-    if args.busiest {
-        let mut window: u64 = seen[start..start + args.frames].iter().map(|f| f.changed).sum();
+    if busiest {
+        let mut window: u64 = seen[start..start + frames].iter().map(|f| f.changed).sum();
         let mut most = window;
-        for at in run.start + 1..=run.end - args.frames {
-            window = window - seen[at - 1].changed + seen[at + args.frames - 1].changed;
+        for at in run.start + 1..=run.end - frames {
+            window = window - seen[at - 1].changed + seen[at + frames - 1].changed;
             if window > most {
                 (most, start) = (window, at);
             }
         }
     }
+    Ok(start)
+}
+
+fn sample(args: &Args) -> Result<(), Error> {
+    let seen = scan(&args.capture)?;
+    let start = window(&seen, args.frames, args.busiest)?;
 
     std::fs::create_dir_all(&args.dir)?;
     let mut source = Source::open(&args.capture)?;
@@ -443,6 +459,15 @@ fn sample(args: &Args) -> Result<(), Error> {
 // ── trim ─────────────────────────────────────────────────────────────────────
 
 fn trim(args: &Args) -> Result<(), Error> {
+    // The frames kept, `start..end`.
+    let (start, end) = match (args.from, args.frames as u64) {
+        (from, 0) => (from, u64::MAX),
+        (0, frames) => {
+            let start = window(&scan(&args.capture)?, args.frames, args.busiest)? as u64;
+            (start, start + frames)
+        }
+        (from, frames) => (from, from + frames),
+    };
     let part = args.out.with_file_name(format!(".vp9cap-{}.part", std::process::id()));
     let file = File::create(&part)?;
     let (output, mut zstd): (Box<dyn std::io::Write>, _) = if args.out.extension().is_some_and(|e| e == "zst") {
@@ -454,21 +479,33 @@ fn trim(args: &Args) -> Result<(), Error> {
     let written = (|| {
         let mut writer = Writer::new(BufWriter::with_capacity(1 << 20, output))?;
         let mut source = Source::open(&args.capture)?;
-        let mut began = None;
+        let (mut began, mut kept, mut cut) = (None, 0u64, false);
         while let Some(frame) = source.reader.next()? {
-            if frame.index < args.from {
+            if frame.index < start {
                 continue;
             }
+            if frame.index >= end {
+                cut = true;
+                break;
+            }
+            kept += 1;
             let first = began.is_none();
             let at = frame.at - *began.get_or_insert(frame.at);
             let (keyframe, changed) = if first { (true, None) } else { (frame.keyframe, frame.changed) };
             writer.frame_at(at, frame.size, frame.quality, keyframe, changed, frame.pixels, usize::from(frame.size.0) * 4)?;
         }
-        source.finish()?;
+        // Only a capture read to its end has zstd's exit to answer for.
+        if !cut {
+            source.finish()?;
+        }
         if began.is_none() {
-            return Err(format!("the capture ends before frame {}", args.from).into());
+            return Err(format!("the capture ends before frame {start}").into());
+        }
+        if end != u64::MAX && start + kept < end {
+            return Err(format!("the capture ends after frame {}, short of the {} asked from {start}", start + kept - 1, end - start).into());
         }
         writer.flush()?;
+        eprintln!("vp9cap: trim: frames {start}..{}", start + kept - 1);
         Ok::<_, Error>(())
     })();
     if let Some(child) = &mut zstd {

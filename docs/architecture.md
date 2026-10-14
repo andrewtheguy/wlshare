@@ -557,6 +557,11 @@ and is kept only where ffmpeg's own VP9 decoder, which shares no code with
 libvpx, makes the same pictures. The encoder there is given four threads
 whatever the machine, since the tile columns a width is coded in are capped
 by the threads and a sample must be the same stream wherever it is made.
+An encoder is measured on the captures themselves, and for a quick run on
+parts of them: `scripts/capture-samples.sh` cuts each capture to 120 frames
+under its own name with `vp9cap trim --frames`, chosen as the samples are,
+a quiet scenario's first and a busy one's busiest, the cut's first frame
+the picture as it stood, whole, with a keyframe asked.
 
 ### The client's paint
 
