@@ -10,10 +10,11 @@
 //!        [--native]
 //! vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest]
 //!        [--threads N] [--native]
+//! vp9cap trim CAPTURE --from FRAME --out CAPTURE
 //! ```
 //!
-//! A capture ending in `.zst` is read through `zstd -dc`, which must then be
-//! on the path.
+//! A capture ending in `.zst` is read through `zstd -dc`, and written
+//! through `zstd`, which must then be on the path.
 //!
 //! `info` says what a capture holds: for each run of frames at one size, how
 //! many there are, how many were whole pictures, how much of the picture the
@@ -43,7 +44,13 @@
 //! encoder's rule: `DIR/NAME-WxH-<tile columns>col-<lf|nolf>.ivf`. A run
 //! shorter than N is an error.
 //!
-//! Each command prints the path of every stream it wrote, one a line.
+//! `trim` writes the capture from FRAME on as a capture of its own, its
+//! times counted from that frame and that frame a whole picture with a
+//! keyframe asked, as a session's first is: for a capture whose start is no
+//! part of its scenario, such as the seconds it was still before it began.
+//!
+//! Each command prints the path of every stream or capture it wrote, one a
+//! line.
 //!
 //! The encoder is libvpx's, as `screen-vp9` sets it up, or with `--native`
 //! the experimental one that crate has in Rust: the two a session's list
@@ -59,7 +66,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use wlshare_rfb::vp9::{Vp9Coder, Vp9Encoder};
-use wlshare_rfb::capture::{Frame, Reader};
+use wlshare_rfb::capture::{Frame, Reader, Writer};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -72,18 +79,21 @@ struct Args {
     busiest: bool,
     threads: usize,
     native: bool,
+    from: u64,
+    out: PathBuf,
 }
 
 const USAGE: &str = "usage: vp9cap info CAPTURE
        vp9cap shape STREAM.ivf
        vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N] [--native]
-       vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N] [--native]";
+       vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N] [--native]
+       vp9cap trim CAPTURE --from FRAME --out CAPTURE";
 
 fn parse_args() -> Result<(String, Args), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or("a command")?;
     let capture = PathBuf::from(args.next().ok_or("a capture to read")?);
-    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, native: false };
+    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, native: false, from: 0, out: PathBuf::new() };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -94,6 +104,8 @@ fn parse_args() -> Result<(String, Args), String> {
             "--busiest" => parsed.busiest = true,
             "--threads" => parsed.threads = value()?.parse().map_err(|_| "--threads takes a count")?,
             "--native" => parsed.native = true,
+            "--from" => parsed.from = value()?.parse().map_err(|_| "--from takes a frame")?,
+            "--out" => parsed.out = PathBuf::from(value()?),
             other => return Err(format!("{other}: not a flag")),
         }
     }
@@ -110,7 +122,15 @@ fn parse_args() -> Result<(String, Args), String> {
                 return Err("--frames and --busiest are sample's, and --frames is needed there".into());
             }
         }
+        "trim" => {
+            if parsed.from == 0 || parsed.out.as_os_str().is_empty() {
+                return Err("trim takes --from, a frame after the first, and --out".into());
+            }
+        }
         other => return Err(format!("{other}: not a command")),
+    }
+    if command != "trim" && (parsed.from > 0 || !parsed.out.as_os_str().is_empty()) {
+        return Err("--from and --out are trim's".into());
     }
     Ok((command, parsed))
 }
@@ -127,6 +147,7 @@ fn main() {
         "info" => info(&args),
         "shape" => shape(&args),
         "streams" => streams(&args),
+        "trim" => trim(&args),
         _ => sample(&args),
     };
     if let Err(e) = done {
@@ -417,6 +438,53 @@ fn sample(args: &Args) -> Result<(), Error> {
     eprintln!("vp9cap: {}: frames {start}..{} of {}", args.name, start + args.frames - 1, seen.len());
     let path = args.dir.join(format!("{}-{}.ivf", args.name, shape.name()));
     output.finish(&path)
+}
+
+// ── trim ─────────────────────────────────────────────────────────────────────
+
+fn trim(args: &Args) -> Result<(), Error> {
+    let part = args.out.with_file_name(format!(".vp9cap-{}.part", std::process::id()));
+    let file = File::create(&part)?;
+    let (output, mut zstd): (Box<dyn std::io::Write>, _) = if args.out.extension().is_some_and(|e| e == "zst") {
+        let mut child = Command::new("zstd").arg("-qc").stdin(Stdio::piped()).stdout(file).spawn().map_err(|e| format!("running zstd: {e}"))?;
+        (Box::new(child.stdin.take().expect("piped")), Some(child))
+    } else {
+        (Box::new(file), None)
+    };
+    let written = (|| {
+        let mut writer = Writer::new(BufWriter::with_capacity(1 << 20, output))?;
+        let mut source = Source::open(&args.capture)?;
+        let mut began = None;
+        while let Some(frame) = source.reader.next()? {
+            if frame.index < args.from {
+                continue;
+            }
+            let first = began.is_none();
+            let at = frame.at - *began.get_or_insert(frame.at);
+            let (keyframe, changed) = if first { (true, None) } else { (frame.keyframe, frame.changed) };
+            writer.frame_at(at, frame.size, frame.quality, keyframe, changed, frame.pixels, usize::from(frame.size.0) * 4)?;
+        }
+        source.finish()?;
+        if began.is_none() {
+            return Err(format!("the capture ends before frame {}", args.from).into());
+        }
+        writer.flush()?;
+        Ok::<_, Error>(())
+    })();
+    if let Some(child) = &mut zstd {
+        // The writer, and with it zstd's input, is closed by now.
+        if !child.wait()?.success() && written.is_ok() {
+            let _ = std::fs::remove_file(&part);
+            return Err("zstd could not compress it".into());
+        }
+    }
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    std::fs::rename(&part, &args.out)?;
+    println!("{}", args.out.display());
+    Ok(())
 }
 
 fn shape(args: &Args) -> Result<(), Error> {

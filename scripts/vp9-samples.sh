@@ -16,9 +16,10 @@
 # (dist/vp9-bench) gets a quiet and a busy sample, `--frames` (120) frames
 # each: the quiet one the start of the `--quiet` scenario's capture
 # (terminal), the busy one the frames in a row of the `--busy` scenario's
-# (flood) that said the most pixels changed. They are named as vp9-wasm's
-# benchmark names them, `<quiet|busy>-<WxH>-<tile columns>col-<lf|nolf>`,
-# the last two read from the stream itself. With `--streams DIR`, every
+# (video) that said the most pixels changed. Each is named for the capture it
+# is cut from, as vp9-wasm's benchmark names them,
+# `<scenario>-<WxH>-<tile columns>col-<lf|nolf>`, the last two read from the
+# stream itself. With `--streams DIR`, every
 # capture is also coded whole, one stream per size it ran at for thirty
 # frames or more, `<scenario>-<WxH>.ivf` with its `.ivf.csv`.
 #
@@ -43,7 +44,7 @@ clean=""
 frames=120
 threads=4
 quiet=terminal
-busy=flood
+busy=video
 native=()
 coder="libvpx"
 while [[ $# -gt 0 ]]; do
@@ -119,23 +120,23 @@ sample() {
 	log "$name"
 }
 for capture in "${quiet_captures[@]}"; do
-	sample quiet "$capture"
+	sample "$quiet" "$capture"
 done
 for capture in "${quiet_captures[@]}"; do
 	other="$captures/$busy-$(label "$capture").wlcap.zst"
 	[[ -f "$other" ]] || { echo "$0: $(basename "$capture") has no $(basename "$other") beside it" >&2; exit 1; }
-	sample busy "$other" --busiest
+	sample "$busy" "$other" --busiest
 done
 {
 	echo "# Benchmark samples"
 	echo
-	echo "A quiet and a busy 4:4:4 stream of each size captured, $frames frames each, for vp9-wasm's routine benchmark (\`bench/run.sh\` in that repository). Each is cut from a lossless capture of what a wlshare session handed its VP9 encoder, played into the encoder again by \`scripts/vp9-samples.sh\` in the wlshare repository on $(date -u +%Y-%m-%d): the frames named, the first a keyframe of the picture as it stood and the rest as the session coded them, with their rectangles and their dial, by $coded_by on $threads threads."
+	echo "A \`$quiet\` and a \`$busy\` 4:4:4 stream of each size captured, named for the capture each is cut from, $frames frames each, for vp9-wasm's routine benchmark (\`bench/run.sh\` in that repository). Each is cut from a lossless capture of what a wlshare session handed its VP9 encoder, played into the encoder again by \`scripts/vp9-samples.sh\` in the wlshare repository on $(date -u +%Y-%m-%d): the frames named, the first a keyframe of the picture as it stood and the rest as the session coded them, with their rectangles and their dial, by $coded_by on $threads threads."
 	echo
 	echo "| Sample | From capture | Frames | Tile columns | Loop filter | Size |"
 	echo "|---|---|---|---|---|---|"
 	printf '%s' "$rows"
 	echo
-	echo "The quiet ones are the start of the \`$quiet\` capture at its size; the busy ones are the $frames frames in a row of the \`$busy\` capture whose frames said the most pixels changed, the earliest where several tie. What the scenarios are is in the README.md beside the captures."
+	echo "The \`$quiet\` ones, a quiet desktop, are the start of that capture at its size; the \`$busy\` ones, a busy one, are the $frames frames in a row of that capture whose frames said the most pixels changed, the earliest where several tie. What the scenarios are is in the README.md beside the captures."
 	echo
 	echo "Each \`.ivf\` has its \`.ivf.framemd5\`: the MD5 of each decoded frame in ffmpeg's \`framemd5\` format, a frame hashed as its Y plane, then U, then V, each row at the plane's width. They were written from libvpx, and ffmpeg's own VP9 decoder gave the same for every stream. The time of each frame in the IVF is when the session's encoder was handed it, in milliseconds from the sample's first."
 } >"$out/README.md"
