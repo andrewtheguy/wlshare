@@ -121,7 +121,7 @@ browser() {
 # The video CAPTURE_VIDEO names, full screen and cropped to fill it, so that
 # every pixel of the desktop is the video's, software rendered. Paused at
 # its first frame until `unpause`, so that it plays from its start once the
-# scenario goes.
+# scenario goes; `pause` holds it on the frame it is at.
 video() {
 	[[ -s "${CAPTURE_VIDEO:-}" ]] || { log "no video: CAPTURE_VIDEO is '${CAPTURE_VIDEO:-}'"; return 1; }
 	mkdir -p "$MATERIAL"
@@ -132,6 +132,10 @@ video() {
 
 unpause() {
 	echo '{ "command": ["set_property", "pause", false] }' | socat - "UNIX-CONNECT:$MATERIAL/mpv.sock" >/dev/null
+}
+
+pause() {
+	echo '{ "command": ["set_property", "pause", true] }' | socat - "UNIX-CONNECT:$MATERIAL/mpv.sock" >/dev/null
 }
 
 # Close the windows a scenario opened: the app ids it names.
