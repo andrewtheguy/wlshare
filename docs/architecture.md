@@ -518,7 +518,7 @@ video and the walk need. `run.sh` plays them at each size
 with a session around each — the first resizes into the size, the video
 asks a keyframe midway, and the walk is the video while the sink reads late
 so the fences come back late and the dial goes down, then back up, then the
-video stopped for the settle — each scenario its own session and so its own
+video paused where it stands for the settle of a frame of it — each scenario its own session and so its own
 file. A script opens its windows and says it is ready before the session
 that captures it connects, and plays once that session has its first frame,
 so that every capture begins with the scenario's windows drawn and not with

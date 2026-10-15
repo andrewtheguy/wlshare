@@ -26,7 +26,8 @@
 #          drag      a floating terminal dragged across the desktop
 #          video     a video playing full screen, with a keyframe asked midway
 #          walk      the video while the client reads late, so the dial walks
-#                    down and back up, then stopped, so the desktop settles
+#                    down and back up, then paused, so the desktop settles on
+#                    a frame of it
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
@@ -241,10 +242,12 @@ scenario_video() {
 
 scenario_walk() {
 	# The sink reads late for six seconds, a step down the dial a second,
-	# then promptly, for the steps back up; the video stops five seconds
-	# before the end, so the desktop goes quiet below the ceiling and the
-	# settle is captured. Best with LENGTH at 20 or more.
-	STOP_BEFORE=5 play video --slow 4:6:200
+	# then promptly, for the steps back up; the video pauses seven seconds
+	# before the end, partway up, so the desktop goes quiet below the
+	# ceiling on a frame of the video and the settle of that frame is
+	# captured: at five, a dial that climbed quickly was back at the
+	# ceiling first and there was no settle. Best with LENGTH at 20 or more.
+	PAUSE_BEFORE=7 play video --slow 4:6:200
 	finish walk
 }
 
@@ -292,7 +295,7 @@ rmdir "$RAW" 2>/dev/null || true
 	echo "- browser: a long page in Chromium scrolled by wheel, by key, and back"
 	echo "- drag: a floating terminal dragged around the desktop"
 	echo "- video: \`$(basename "${CAPTURE_VIDEO:-none}")\` playing full screen from its start, cropped to fill it, with a keyframe asked at 10 s"
-	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the dial walks down and back up, then stopped 5 s before the end so the desktop settles"
+	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the dial walks down and back up, then paused 7 s before the end, partway back up, so the desktop settles on a frame of the video"
 	echo
 	echo "$(sway --version), $(wlshare --version)"
 } >"$OUT/README.md"
