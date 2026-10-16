@@ -45,7 +45,7 @@ sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.4
 # built for x86-64-v3 on amd64, which is above that target's baseline and this
 # workspace's `.cargo/config.toml` sets, and for NEON on arm64. Its decoder is
 # what the encoding's tests read every frame back with.
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.18", features = ["native"] }
+screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.21", features = ["native"] }
 
 [dev-dependencies]
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
