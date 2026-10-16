@@ -47,6 +47,13 @@ pub const ENCODING_VP9_QUALITY_BASE: i32 = 0x574c_5100;
 /// blocked write moves it.
 pub const ENCODING_VP9_HELD: i32 = 0x574c_5344;
 
+/// Listed beside [`crate::ENCODING_VP9`], asks for the stream to be coded by
+/// screen-vp9's EXPERIMENTAL encoder written in Rust: the ASCII bytes `WLSX`.
+/// That encoder is in a build from the `native-encoder` branch alone, and
+/// this one refuses the ask ([`Vp9ListError::NoNativeEncoder`]) rather than
+/// code with libvpx a stream that was asked of the other.
+pub const ENCODING_VP9_NATIVE: i32 = 0x574c_5358;
+
 /// What the client wants the VP9 stream to be, read from its `SetEncodings`:
 /// the pseudo-encodings above, beside the encoding itself. Pseudo-encodings
 /// rather than a message because a server that is not wlshare ignores an
@@ -55,9 +62,11 @@ pub const ENCODING_VP9_HELD: i32 = 0x574c_5344;
 /// frame is already what was asked for. The remotex gateway lists them from the
 /// target's own keys, so that those keys mean on a passed stream what they mean
 /// on one the gateway codes itself. A list that names VP9 without a quality
-/// is fatal ([`NoQuality`]): the server has no quality of its own, the gateway
-/// names one beside the encoding on every list, and a client that is not the
-/// gateway lists no VP9 at all. Without `WLSD` it walks.
+/// is fatal ([`Vp9ListError::NoQuality`]): the server has no quality of its
+/// own, the gateway names one beside the encoding on every list, and a client
+/// that is not the gateway lists no VP9 at all. So is one that names `WLSX`
+/// ([`Vp9ListError::NoNativeEncoder`]), whose encoder this build has not.
+/// Without `WLSD` it walks.
 ///
 /// The stream is 4:4:4 whatever the list says: nothing in it names a chroma.
 /// A change of quality or of the walk moves the running encoder's dial
@@ -70,9 +79,9 @@ pub struct Vp9Stream {
 
 impl Vp9Stream {
     /// The stream `encodings` asks for: `None` where the list does not name
-    /// [`crate::ENCODING_VP9`], and [`NoQuality`] where it does and names no
-    /// quality on the dial beside it.
-    pub fn listed(encodings: &[i32]) -> Result<Option<Self>, NoQuality> {
+    /// [`crate::ENCODING_VP9`], and an error where it does and names no
+    /// quality on the dial beside it, or names the encoder this build has not.
+    pub fn listed(encodings: &[i32]) -> Result<Option<Self>, Vp9ListError> {
         let has = |e: i32| encodings.contains(&e);
         if !has(crate::ENCODING_VP9) {
             return Ok(None);
@@ -81,7 +90,10 @@ impl Vp9Stream {
             .iter()
             .filter_map(|&e| u8::try_from(e.checked_sub(ENCODING_VP9_QUALITY_BASE)?).ok())
             .find(|q| (QUALITY_MIN..=QUALITY_MAX).contains(q))
-            .ok_or(NoQuality)?;
+            .ok_or(Vp9ListError::NoQuality)?;
+        if has(ENCODING_VP9_NATIVE) {
+            return Err(Vp9ListError::NoNativeEncoder);
+        }
         Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD) }))
     }
 
@@ -97,12 +109,20 @@ impl Vp9Stream {
     }
 }
 
-/// A list that names VP9 and no quality on the dial beside it, which no client
-/// sends: the gateway names one on every list, and a client that is not the
-/// gateway lists no VP9. Fatal to the connection, as a malformed message is.
+/// Why a list that names VP9 asks for no stream this server codes. Fatal to
+/// the connection, as a malformed message is.
 #[derive(Debug, Error, PartialEq, Eq)]
-#[error("the list names VP9 without a quality 1–100 beside it")]
-pub struct NoQuality;
+pub enum Vp9ListError {
+    /// No quality on the dial beside the encoding, which no client sends: the
+    /// gateway names one on every list, and a client that is not the gateway
+    /// lists no VP9.
+    #[error("the list names VP9 without a quality 1–100 beside it")]
+    NoQuality,
+    /// `WLSX` ([`ENCODING_VP9_NATIVE`]), the experimental encoder in Rust,
+    /// which is in a build from the `native-encoder` branch and not in this.
+    #[error("the list asks for the experimental VP9 encoder in Rust, which this wlshare is not built with: it is on the native-encoder branch")]
+    NoNativeEncoder,
+}
 
 /// Why a picture could not be encoded, or in the tests a frame decoded.
 #[derive(Debug, Error)]
@@ -504,10 +524,20 @@ mod stream_tests {
     fn a_list_that_names_vp9_without_a_quality_is_fatal() {
         assert_eq!(Vp9Stream::listed(&[crate::ENCODING_ZRLE]), Ok(None));
         assert_eq!(Vp9Stream::listed(&[0x574c_513c, 0x574c_5344, crate::ENCODING_ZRLE]), Ok(None), "a quality without the encoding");
-        assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, crate::ENCODING_ZRLE]), Err(NoQuality));
+        assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, crate::ENCODING_ZRLE]), Err(Vp9ListError::NoQuality));
         // A quality off the dial is some other encoding, not a quality.
         for off in [ENCODING_VP9_QUALITY_BASE, ENCODING_VP9_QUALITY_BASE + 101, ENCODING_VP9_QUALITY_BASE + 255, ENCODING_VP9_QUALITY_BASE + 256] {
-            assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, off]), Err(NoQuality), "{off:#x}");
+            assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, off]), Err(Vp9ListError::NoQuality), "{off:#x}");
         }
+    }
+
+    /// A list that asks for the experimental encoder is refused, not coded by
+    /// libvpx in its place; one that does not name VP9 asks for no stream
+    /// whatever else it names.
+    #[test]
+    fn a_list_that_asks_for_the_native_encoder_is_refused() {
+        assert_eq!(ENCODING_VP9_NATIVE, i32::from_be_bytes(*b"WLSX"));
+        assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, 0x574c_513c, ENCODING_VP9_NATIVE]), Err(Vp9ListError::NoNativeEncoder));
+        assert_eq!(Vp9Stream::listed(&[crate::ENCODING_ZRLE, ENCODING_VP9_NATIVE]), Ok(None));
     }
 }

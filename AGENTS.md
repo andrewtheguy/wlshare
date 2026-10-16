@@ -9,9 +9,10 @@
   release tag, which is libvpx; how a desktop is coded changes there and
   arrives as a pin bump, and the quality walk is the second's for both.
   `main` is libvpx alone and is built for its target's baseline, with no CPU
-  floor: screen-vp9's EXPERIMENTAL encoder in Rust, and the `WLSX` encoding a
-  client asked for it with, live on the `native-encoder` branch of each
-  repository, which takes `main` in and is never merged back.
+  floor: screen-vp9's EXPERIMENTAL encoder in Rust lives on the
+  `native-encoder` branch of each repository, which takes `main` in and is
+  never merged back. `main` refuses a list that asks for it (`WLSX`), fatal
+  as a list without a quality is, and never codes such a stream with libvpx.
   libvpx's decoder is also what `wlshare-rfb`'s VP9 tests read the
   encoder's frames back with. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.

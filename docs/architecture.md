@@ -397,7 +397,11 @@ What a frame holds is fixed:
   fatal, as a malformed message is: wlshare has no quality of its own, the
   gateway names one beside the encoding on every list, and a client that is
   not the gateway — a plain `vnc` target reads wlshare through the RFB
-  baseline — lists no VP9 at all. Without `WLSD` the stream walks.
+  baseline — lists no VP9 at all. So is one that names `WLSX`
+  (`0x574c5358`), which asks for screen-vp9's experimental encoder in Rust:
+  that is in a build from the `native-encoder` branch alone, and a build from
+  main refuses the ask rather than code with libvpx a stream asked of the
+  other. Without `WLSD` the stream walks.
   No lag, and threads with row and tile parallelism: the
   machine's cores less two, at most eight, for the encoder, since an encode
   is a burst the person at the other end waits on. The stream's shape follows
