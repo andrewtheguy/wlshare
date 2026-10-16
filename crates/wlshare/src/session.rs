@@ -146,7 +146,7 @@ use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
-use wlshare_rfb::vp9::{self, Vp9Coder, Vp9Encoder, Vp9Stream};
+use wlshare_rfb::vp9::{self, Vp9Encoder, Vp9Stream};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
     ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
@@ -197,7 +197,7 @@ impl Security {
 /// from: a list that asks for VP9 names the stream it asks for, and a client
 /// that has seen nothing of a stream starts it at a keyframe whatever this
 /// held.
-const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true, coder: Vp9Coder::Libvpx };
+const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true };
 
 pub struct SessionConfig {
     pub security: Security,
@@ -792,11 +792,6 @@ impl Session {
                     // is owed the picture the client holds whether or not the
                     // desktop changed, once at it, as a settle sends it.
                     let new_ceiling = stream.quality != self.stream.quality;
-                    // Another encoder is another stream: the running one goes,
-                    // and the one made in its place begins at a keyframe.
-                    if stream.coder != self.stream.coder {
-                        self.vp9 = None;
-                    }
                     self.stream = stream;
                     self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
                     self.settle_owed = false;
@@ -808,11 +803,10 @@ impl Session {
                 if vp9 && (changed || !self.use_vp9) {
                     let stream = self.stream;
                     info!(
-                        "client {}: asked for VP9 up to quality {}, {}, coded by {}",
+                        "client {}: asked for VP9 up to quality {}, {}",
                         self.id.0,
                         stream.quality,
-                        if stream.adaptive { "walked by its lag" } else { "held there" },
-                        vp9::coder_label(stream.coder)
+                        if stream.adaptive { "walked by its lag" } else { "held there" }
                     );
                 }
                 if vp9 && !self.use_vp9 {
@@ -1318,7 +1312,7 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), self.stream.coder)
+                let encoder = Vp9Encoder::new(width, height, self.walk.quality())
                     .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
                 self.vp9 = Some(encoder);
                 self.keyframe_owed = true;

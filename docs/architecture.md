@@ -14,15 +14,13 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 
 - [screen-vp9](https://github.com/andrewtheguy/screen-vp9), a repository of
   its own that this workspace pins by release tag, is the VP9 encoder: libvpx
-  pinned to a quality dial, 8-bit 4:4:4, with the planes in front of it.
-  Its `native` feature is the **experimental** one a client's list asks for
-  in libvpx's place: written in Rust for a desktop, 8-bit 4:4:4 and nothing else,
-  and where the quality walk is taken from for either. A change to how a
+  pinned to a quality dial, 8-bit 4:4:4, with the planes in front of it,
+  and where the quality walk is taken from. A change to how a
   desktop is coded is made there and reaches the daemon as a pin
   bump. See [The VP9 encoding](#the-vp9-encoding).
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
   and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding's
-  framing over the two encoders, the cursor and clipboard encodings, and the
+  framing over its encoder, the cursor and clipboard encodings, and the
   density, outputs, audio, camera and microphone extensions and the scroll
   message. It has no platform
   dependency — the audio extension's FLAC encoder, libFLAC under `sound-flac`,
@@ -328,13 +326,10 @@ u8[length]   one VP9 frame
 
 Successive rectangles are one stream, each frame coded against the ones before
 it, so a client decodes them all with one decoder, in order. The coding is
-libvpx's, as screen-vp9 sets it up, or where the client's list asks (`WLSX`,
-below) the encoder screen-vp9 has written in Rust for a desktop, which
-is **experimental**. Either way: the quantizer
+libvpx's, as screen-vp9 sets it up: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
-asked for, and the colour declared in the bitstream, so a decoder is told
-nothing of which coded a stream and needs nothing.
-`crates/wlshare-rfb/src/vp9.rs` is the framing over them — the length word and
+asked for, and the colour declared in the bitstream.
+`crates/wlshare-rfb/src/vp9.rs` is the framing over it — the length word and
 its ceiling, the framebuffer's pixels in, and which of the two codes them.
 What a frame holds is fixed:
 
@@ -392,21 +387,17 @@ What a frame holds is fixed:
   walk never goes above; `WLSD` (`0x574c5344`)
   holds the dial there, with a walk that hears nothing in a fence — only a
   frame whose write blocked moves it, fence or no fence — and a settle with
-  nothing to sharpen; `WLSX` (`0x574c5358`) has the stream coded by the
-  **experimental** encoder, screen-vp9's in Rust, in place of libvpx. The
+  nothing to sharpen. The
   gateway lists them from the target's keys, so
   `video_quality` and `render_adaptive` mean on a passed stream what they mean
-  on one the gateway codes, and `experimental_native_vp9` is how one target is
-  put beside another to compare the two encoders. Read at every `SetEncodings`: a new ceiling moves
+  on one the gateway codes. Read at every `SetEncodings`: a new ceiling moves
   the running encoder's dial and sends the picture once at it, as a settle
   does, whether or not the desktop changed, and a new walk moves the dial
-  alone. Neither costs a keyframe. A new encoder is another stream, which
-  begins at one. A list that names VP9 without a quality is
+  alone. Neither costs a keyframe. A list that names VP9 without a quality is
   fatal, as a malformed message is: wlshare has no quality of its own, the
   gateway names one beside the encoding on every list, and a client that is
   not the gateway — a plain `vnc` target reads wlshare through the RFB
-  baseline — lists no VP9 at all. Without `WLSD` the stream walks, and
-  without `WLSX` libvpx codes it.
+  baseline — lists no VP9 at all. Without `WLSD` the stream walks.
   No lag, and threads with row and tile parallelism: the
   machine's cores less two, at most eight, for the encoder, since an encode
   is a burst the person at the other end waits on. The stream's shape follows
@@ -414,11 +405,9 @@ What a frame holds is fixed:
   column under 1440 wide, two from 1440, four from 2048, never more than the
   threads, and a stream in four columns or more is coded without the loop
   filter. The conversion
-  from the framebuffer's pixels to the planes is the `yuv` crate's, and the
-  encoder is built for x86-64-v3 on amd64 and NEON on arm64: an amd64 build sets
-  `-C target-cpu=x86-64-v3` (`.cargo/config.toml`), so the daemon needs a
-  processor at that level there (AVX2, BMI1 and BMI2, LZCNT, MOVBE, FMA:
-  Haswell and Excavator on), and is refused by the compiler without the flag.
+  from the framebuffer's pixels to the planes is the `yuv` crate's, which
+  chooses its AVX2 or NEON path at run time: the daemon is built for its
+  target's baseline and asks nothing more of the processor.
 - **A quiet desktop is sharpened at the ceiling, and the walk keeps its
   place.** The walk only runs when a frame goes out. Ordinarily a frame only
   goes out when something changed, so a desktop that stops right after the link
@@ -466,10 +455,9 @@ listed, Raw otherwise — since the client is holding a lossy picture.
 
 libvpx is in the daemon as screen-vp9 links it, from `libvpx-prebuilt`'s
 static archive, and it is the decoder the VP9 encoding's tests read every
-frame of either encoder back with (`screen_vp9::Decoder`). An encode libvpx
+frame back with (`screen_vp9::Decoder`). An encode libvpx
 makes no frame of sends nothing: the damage stays unseen and the keyframe
-owed, for the frame the next change brings. The experimental encoder makes a
-frame every time.
+owed, for the frame the next change brings.
 
 ### Capturing what the encoder is handed
 
@@ -541,7 +529,7 @@ on are made of them: `vp9cap` (`crates/wlshare-rfb/examples/`) plays a
 capture into the encoder again, each frame with its rectangles, at the dial
 it was coded at, a keyframe where one was asked. So a walk's steps and its
 settle are in the stream it makes without a slow link being played again,
-and a change to how a desktop is coded — a pin bump of either encoder — is a run
+and a change to how a desktop is coded — a pin bump of the encoder — is a run
 of `scripts/vp9-samples.sh` over the captures already kept, not a desktop
 played again. The script writes what vp9-wasm's benchmark reads: for each
 size a quiet and a busy sample of 120 frames, the start of the terminal's

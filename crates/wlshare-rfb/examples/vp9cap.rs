@@ -7,9 +7,8 @@
 //! vp9cap info CAPTURE
 //! vp9cap shape STREAM.ivf
 //! vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
-//!        [--native]
 //! vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest]
-//!        [--threads N] [--native]
+//!        [--threads N]
 //! vp9cap trim CAPTURE --out CAPTURE (--from FRAME [--frames N]
 //!        | --frames N [--busiest])
 //! ```
@@ -57,9 +56,7 @@
 //! Each command prints the path of every stream or capture it wrote, one a
 //! line.
 //!
-//! The encoder is libvpx's, as `screen-vp9` sets it up, or with `--native`
-//! the experimental one that crate has in Rust: the two a session's list
-//! chooses between.
+//! The encoder is libvpx's, as `screen-vp9` sets it up, as a session's is.
 //!
 //! `--threads` is the encoder's, 4 by default: the tile columns a width is
 //! coded in are capped by them, so a sample is the same stream on any
@@ -70,7 +67,7 @@ use std::io::{BufReader, BufWriter, Read, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use wlshare_rfb::vp9::{Vp9Coder, Vp9Encoder};
+use wlshare_rfb::vp9::Vp9Encoder;
 use wlshare_rfb::capture::{Frame, Reader, Writer};
 
 type Error = Box<dyn std::error::Error>;
@@ -83,22 +80,21 @@ struct Args {
     least: u32,
     busiest: bool,
     threads: usize,
-    native: bool,
     from: u64,
     out: PathBuf,
 }
 
 const USAGE: &str = "usage: vp9cap info CAPTURE
        vp9cap shape STREAM.ivf
-       vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N] [--native]
-       vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N] [--native]
+       vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
+       vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N]
        vp9cap trim CAPTURE --out CAPTURE (--from FRAME [--frames N] | --frames N [--busiest])";
 
 fn parse_args() -> Result<(String, Args), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or("a command")?;
     let capture = PathBuf::from(args.next().ok_or("a capture to read")?);
-    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, native: false, from: 0, out: PathBuf::new() };
+    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, from: 0, out: PathBuf::new() };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -108,7 +104,6 @@ fn parse_args() -> Result<(String, Args), String> {
             "--least" => parsed.least = value()?.parse().map_err(|_| "--least takes a count")?,
             "--busiest" => parsed.busiest = true,
             "--threads" => parsed.threads = value()?.parse().map_err(|_| "--threads takes a count")?,
-            "--native" => parsed.native = true,
             "--from" => parsed.from = value()?.parse().map_err(|_| "--from takes a frame")?,
             "--out" => parsed.out = PathBuf::from(value()?),
             other => return Err(format!("{other}: not a flag")),
@@ -307,13 +302,13 @@ struct Output {
 }
 
 impl Output {
-    fn new(dir: &Path, size: (u16, u16), quality: u8, threads: usize, native: bool) -> Result<Self, Error> {
+    fn new(dir: &Path, size: (u16, u16), quality: u8, threads: usize) -> Result<Self, Error> {
         let part = dir.join(format!(".vp9cap-{}.part", std::process::id()));
         let mut ivf = BufWriter::new(File::create(&part)?);
         ivf.write_all(&ivf_header(size.0, size.1))?;
         let mut csv = BufWriter::new(File::create(part.with_extension("csv"))?);
         csv.write_all(b"frame,ms,bytes,keyframe,quality\n")?;
-        Ok(Self { stream: Vp9Encoder::with_threads(size.0, size.1, quality, if native { Vp9Coder::Native } else { Vp9Coder::Libvpx }, threads)?, size, ivf, csv, part, began: None, frames: 0, first: Vec::new(), unit: Vec::new() })
+        Ok(Self { stream: Vp9Encoder::with_threads(size.0, size.1, quality, threads)?, size, ivf, csv, part, began: None, frames: 0, first: Vec::new(), unit: Vec::new() })
     }
 
     /// Code `frame` as the session did, or as a keyframe of the whole picture
@@ -394,7 +389,7 @@ fn streams(args: &Args) -> Result<(), Error> {
         }
         let output = match &mut output {
             Some(output) => output,
-            None => output.insert(Output::new(&args.dir, frame.size, frame.quality, args.threads, args.native)?),
+            None => output.insert(Output::new(&args.dir, frame.size, frame.quality, args.threads)?),
         };
         output.frame(&frame)?;
     }
@@ -441,7 +436,7 @@ fn sample(args: &Args) -> Result<(), Error> {
         }
         let output = match &mut output {
             Some(output) => output,
-            None => output.insert(Output::new(&args.dir, frame.size, frame.quality, args.threads, args.native)?),
+            None => output.insert(Output::new(&args.dir, frame.size, frame.quality, args.threads)?),
         };
         output.frame(&frame)?;
     }
