@@ -1,5 +1,5 @@
 # The daemon and the protocol crate it is built on (see docs/architecture.md).
-# The VP9 coding under both is screen-vp9, libvpx as it sets it up, the FLAC coding sound-flac and the
+# The VP9 coding under both is screen-vp9, libvpx and experimentally its encoder in Rust, the FLAC coding sound-flac and the
 # Opus coding sound-opus, each its own repository.
 #
 # `default-members` deliberately omits the daemon: it needs libwayland and
@@ -29,8 +29,8 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 
-# screen-vp9 and the conversion in front of its encoder (the `yuv` crate)
-# optimised in a debug build as in release, so that a
+# screen-vp9, its encoder in Rust and the conversion in front of both its
+# coders (the `yuv` crate) optimised in a debug build as in release, so that a
 # debug daemon codes a desktop at the speed a released one does. A
 # dependency's own profile is ignored; only this workspace's applies.
 # Dependencies compile once, so this costs nothing after.

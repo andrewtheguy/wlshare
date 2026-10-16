@@ -184,13 +184,14 @@ read their packets back with — and
 `wlshare`, the daemon, which needs libwayland,
 libxkbcommon, libpipewire and libavcodec and only runs under a wlroots-based
 Wayland compositor. The VP9 coding under them is
-[screen-vp9](https://github.com/andrewtheguy/screen-vp9), which is libvpx,
+[screen-vp9](https://github.com/andrewtheguy/screen-vp9), which is libvpx
+and, where a client asks for it, the **experimental** encoder that
+repository has in Rust (its `native` feature), whose amd64 build is for x86-64-v3, a processor with AVX2 and BMI2 (`.cargo/config.toml` sets it),
 the FLAC coding
 [sound-flac](https://github.com/andrewtheguy/sound-flac) and the Opus coding
 [sound-opus](https://github.com/andrewtheguy/sound-opus), the last two shared with
-the remotex gateway, each pinned by its release tag. `main` asks nothing of
-the processor beyond its target's baseline: screen-vp9's experimental encoder
-in Rust lives on the `native-encoder` branch here and there. A bare `cargo test` covers the
+the remotex gateway, each pinned by its release tag. The gateway asks for the
+experimental encoder with a target's `experimental_native_vp9`. A bare `cargo test` covers the
 first; build the daemon with
 `cargo build --release -p wlshare` on a Linux host with `libwayland-dev`,
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
@@ -207,7 +208,8 @@ names. `scripts/vp9-samples.sh` plays those captures into the
 encoder again and writes the streams vp9-wasm's benchmark decodes, a quiet
 and a busy one of each size with every frame's MD5, into `dist/vp9-bench/`:
 run it again after an encoder's pin bump and the samples are the new
-encoder's, with no desktop played again. It needs `zstd` and an `ffmpeg`
+encoder's, with no desktop played again; `--native` makes them the
+experimental encoder's and not libvpx's. It needs `zstd` and an `ffmpeg`
 with libvpx on the path. `--capture-frames` is for a daemon run by hand, and one
 systemd started refuses it (`docs/architecture.md`, "Capturing what the
 encoder is handed").
