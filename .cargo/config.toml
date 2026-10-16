@@ -1,6 +1,0 @@
-# screen-vp9's `native` feature, the experimental VP9 encoder in Rust, is built for x86-64-v3 on amd64 (AVX2,
-# BMI1 and BMI2, LZCNT, MOVBE, FMA: Haswell and Excavator on), which is above that target's baseline, and refuses
-# to build under it.
-[target.'cfg(target_arch = "x86_64")']
-rustflags = ["-C", "target-cpu=x86-64-v3"]
-rustdocflags = ["-C", "target-cpu=x86-64-v3"]
