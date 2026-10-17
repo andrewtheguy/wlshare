@@ -178,20 +178,18 @@ the server resolves the client's keysyms through the same keymap it uploads.
 
 ## Building
 
-The workspace has two crates: `wlshare-rfb`, the protocol, which builds
+The workspace has three crates: `wlshare-rfb`, the protocol, which builds
 anywhere and tests wherever `ffmpeg` is installed — the decoder its Opus tests
-read their packets back with — and
+read their packets back with — `wlshare-vp9`, the VP9 coding under it, which
+is libvpx from a prebuilt static archive and builds and tests anywhere, and
 `wlshare`, the daemon, which needs libwayland,
 libxkbcommon, libpipewire and libavcodec and only runs under a wlroots-based
-Wayland compositor. The VP9 coding under them is
-[screen-vp9](https://github.com/andrewtheguy/screen-vp9), which is libvpx,
-the FLAC coding
+Wayland compositor. The FLAC coding is
 [sound-flac](https://github.com/andrewtheguy/sound-flac) and the Opus coding
-[sound-opus](https://github.com/andrewtheguy/sound-opus), the last two shared with
-the remotex gateway, each pinned by its release tag. `main` asks nothing of
-the processor beyond its target's baseline: screen-vp9's experimental encoder
-in Rust lives on the `native-encoder` branch here and there. A bare `cargo test` covers the
-first; build the daemon with
+[sound-opus](https://github.com/andrewtheguy/sound-opus), both shared with
+the remotex gateway, each pinned by its release tag. Nothing asks of the
+processor more than its target's baseline. A bare `cargo test` covers the
+first two; build the daemon with
 `cargo build --release -p wlshare` on a Linux host with `libwayland-dev`,
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
 `libavcodec-dev`, `libclang-dev` and `pkg-config`. libclang links nothing:

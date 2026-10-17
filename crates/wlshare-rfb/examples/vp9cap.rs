@@ -58,7 +58,7 @@
 //! Each command prints the path of every stream or capture it wrote, one a
 //! line.
 //!
-//! The encoder is libvpx's, as `screen-vp9` sets it up, as a session's is.
+//! The encoder is libvpx's, as `wlshare-vp9` sets it up, as a session's is.
 //!
 //! `--threads` is the encoder's, 4 by default: the tile columns a width is
 //! coded in are capped by them, so a sample is the same stream on any
@@ -330,7 +330,7 @@ impl Output {
             return Err("libvpx produced no frame".into());
         }
         self.unit.drain(..4);
-        let keyframe = screen_vp9::frame_header(&self.unit).is_some_and(|header| header.keyframe);
+        let keyframe = wlshare_vp9::frame_header(&self.unit).is_some_and(|header| header.keyframe);
         let micros = frame.at.as_micros() as u64;
         let ms = (micros - *self.began.get_or_insert(micros)) / 1000;
         if starting {

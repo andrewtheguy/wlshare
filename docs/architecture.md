@@ -12,12 +12,10 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
                      data-control
 ```
 
-- [screen-vp9](https://github.com/andrewtheguy/screen-vp9), a repository of
-  its own that this workspace pins by release tag, is the VP9 encoder: libvpx
-  pinned to a quality dial, 8-bit 4:4:4 or 4:2:0, with the planes in front of it,
-  and where the quality walk is taken from. A change to how a
-  desktop is coded is made there and reaches the daemon as a pin
-  bump. See [The VP9 encoding](#the-vp9-encoding).
+- `crates/wlshare-vp9` is the VP9 encoder: libvpx pinned to a quality dial,
+  8-bit 4:4:4 or 4:2:0, with the planes in front of it, its decoder, and the
+  quality walk. It decides nothing about the wire, and like the protocol crate
+  builds and tests on any OS. See [The VP9 encoding](#the-vp9-encoding).
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
   and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding's
   framing over its encoder, the cursor and clipboard encodings, and the
@@ -325,7 +323,7 @@ u8[length]   one VP9 frame
 
 Successive rectangles are one stream, each frame coded against the ones before
 it, so a client decodes them all with one decoder, in order. The coding is
-libvpx's, as screen-vp9 sets it up: the quantizer
+libvpx's, as `wlshare-vp9` sets it up: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
 asked for, and the colour declared in the bitstream.
 `crates/wlshare-rfb/src/vp9.rs` is the framing over it — the length word and
@@ -347,7 +345,7 @@ What a frame holds is fixed:
   to wherever the dial is, with no bitrate, no adaptive quantization and no
   dropped frames. A session starts at the ceiling the client's list names
   (`WLQ`, below), which it never goes above, and
-  walks down to a floor of 20 while the client is behind — screen-vp9's
+  walks down to a floor of 20 while the client is behind — `wlshare-vp9`'s
   `walk`. The floor is a constant, not a key, as
   every adaptive stream's is: where WebRTC's quality scaler hands off from the
   quantizer to resolution and frame rate at its own threshold, this walk hands
@@ -399,11 +397,7 @@ What a frame holds is fixed:
   fatal, as a malformed message is: wlshare has no quality of its own, the
   gateway names one beside the encoding on every list, and a client that is
   not the gateway — a plain `vnc` target reads wlshare through the RFB
-  baseline — lists no VP9 at all. So is one that names `WLSX`
-  (`0x574c5358`), which asks for screen-vp9's experimental encoder in Rust:
-  that is in a build from the `native-encoder` branch alone, and a build from
-  main refuses the ask rather than code with libvpx a stream asked of the
-  other. Without `WLSD` the stream walks, and without `WLSS` it is 4:4:4.
+  baseline — lists no VP9 at all. Without `WLSD` the stream walks, and without `WLSS` it is 4:4:4.
   No lag, and threads with row and tile parallelism: the
   machine's cores less two, at most eight, for the encoder, since an encode
   is a burst the person at the other end waits on. The stream's shape follows
@@ -459,9 +453,9 @@ a standard pixel update. A `SetEncodings` that drops the encoding is answered
 with the whole framebuffer in the standard encoding it selected — ZRLE when
 listed, Raw otherwise — since the client is holding a lossy picture.
 
-libvpx is in the daemon as screen-vp9 links it, from `libvpx-prebuilt`'s
+libvpx is in the daemon as `wlshare-vp9` links it, from `libvpx-prebuilt`'s
 static archive, and it is the decoder the VP9 encoding's tests read every
-frame back with (`screen_vp9::Decoder`). An encode libvpx
+frame back with (`wlshare_vp9::Decoder`). An encode libvpx
 makes no frame of sends nothing: the damage stays unseen and the keyframe
 owed, for the frame the next change brings.
 

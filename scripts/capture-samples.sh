@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cut the captures scripts/capture-frames.sh left into shorter captures of the
 # same names, for an encoder measured on a part of each as vp9-wasm's decoder
-# is on the samples of scripts/vp9-samples.sh: screen-vp9's harness reads a
-# directory of them as it reads the captures whole (`CAPTURES=DIR`).
+# is on the samples of scripts/vp9-samples.sh, which reads a directory of
+# them as it reads the captures whole (`--captures DIR`).
 #
 #   ./scripts/capture-samples.sh [--captures DIR] [--out DIR] [--frames N] [--clean]
 #
