@@ -21,7 +21,7 @@
 //! - **Raw or ZRLE, and VP9 for a client that lists it.** ZRLE is the standard's
 //!   best lossless encoding, and the remotex gateway lists it as its first
 //!   standard pixel encoding. **The VP9 encoding** is a private one for the
-//!   gateway: the whole framebuffer as one VP9 stream, always 4:4:4, at a
+//!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
 //!   quality its owner sets ([`vp9`]), for a desktop
 //!   that moves. Raw is produced before the client's first `SetEncodings`, where
 //!   the RFC requires it, and for a client whose list names neither. Tight,

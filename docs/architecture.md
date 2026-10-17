@@ -14,7 +14,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 
 - [screen-vp9](https://github.com/andrewtheguy/screen-vp9), a repository of
   its own that this workspace pins by release tag, is the VP9 encoder: libvpx
-  pinned to a quality dial, 8-bit 4:4:4, with the planes in front of it,
+  pinned to a quality dial, 8-bit 4:4:4 or 4:2:0, with the planes in front of it,
   and where the quality walk is taken from. A change to how a
   desktop is coded is made there and reaches the daemon as a pin
   bump. See [The VP9 encoding](#the-vp9-encoding).
@@ -309,9 +309,8 @@ desktop as one VP9 stream, for a client that
 would rather have a picture that moves than one that is exact. While the
 framebuffer is within its video ceiling, remotex lists it for every browser on a
 target with `subtype = "wlshare"` and passes each frame to the browser as it came, since it is the stream remotex would
-otherwise encode from ZRLE's pixels — 4:4:4 at the target's own dial, which it
-names beside the encoding, below; a browser with no profile-1 decoder of its own
-decodes it in the page. A client
+otherwise encode from ZRLE's pixels — at the target's own dial and the
+browser's chroma, which it names beside the encoding, below. A client
 that does not list it is unchanged.
 
 A client that lists it, with a quality beside it (below), gets it instead of a
@@ -333,12 +332,13 @@ asked for, and the colour declared in the bitstream.
 its ceiling, the framebuffer's pixels in, and which of the two codes them.
 What a frame holds is fixed:
 
-- **8-bit 4:4:4, VP9 profile 1, always.** A colour sample per pixel: the
-  loss 4:2:0 costs a desktop is its text's colour — a one-pixel coloured stem
-  shares its sample with three pixels of background — and no quantizer puts it
-  back. There is no 4:2:0 stream to ask for: where a browser's own decoder
-  takes only profile 0, the gateway decodes the stream in the page with a
-  WebAssembly VP9 decoder.
+- **8-bit 4:4:4, VP9 profile 1, unless the list asks for 4:2:0.** A colour
+  sample per pixel: the loss 4:2:0 costs a desktop is its text's colour — a
+  one-pixel coloured stem shares its sample with three pixels of background —
+  and no quantizer puts it back. But no browser's hardware VP9 decoder takes
+  profile 1, and a browser with no software one, Safari on iOS and iPadOS,
+  refuses it, so for such a browser the gateway lists `WLSS` (below) and the
+  stream is 4:2:0, VP9 profile 0, which every decoder takes.
 - **BT.601 at studio swing**, converted from the framebuffer's `B, G, R, X` and
   declared in the keyframe header, so a decoder converts back with the same
   matrix. The client's pixel format does not apply.
@@ -387,13 +387,15 @@ What a frame holds is fixed:
   walk never goes above; `WLSD` (`0x574c5344`)
   holds the dial there, with a walk that hears nothing in a fence — only a
   frame whose write blocked moves it, fence or no fence — and a settle with
-  nothing to sharpen. The
-  gateway lists them from the target's keys, so
+  nothing to sharpen; `WLSS` (`0x574c5353`, subsampled) asks for the stream
+  at 4:2:0. The
+  gateway lists the first two from the target's keys, so
   `video_quality` and `render_adaptive` mean on a passed stream what they mean
-  on one the gateway codes. Read at every `SetEncodings`: a new ceiling moves
-  the running encoder's dial and sends the picture once at it, as a settle
-  does, whether or not the desktop changed, and a new walk moves the dial
-  alone. Neither costs a keyframe. A list that names VP9 without a quality is
+  on one the gateway codes, and `WLSS` from what the browser decodes. Read at
+  every `SetEncodings`: a new ceiling moves the running encoder's dial and
+  sends the picture once at it, as a settle does, whether or not the desktop
+  changed, and a new walk moves the dial alone. Neither costs a keyframe; a
+  new chroma is a new stream, from a keyframe. A list that names VP9 without a quality is
   fatal, as a malformed message is: wlshare has no quality of its own, the
   gateway names one beside the encoding on every list, and a client that is
   not the gateway — a plain `vnc` target reads wlshare through the RFB
@@ -401,7 +403,7 @@ What a frame holds is fixed:
   (`0x574c5358`), which asks for screen-vp9's experimental encoder in Rust:
   that is in a build from the `native-encoder` branch alone, and a build from
   main refuses the ask rather than code with libvpx a stream asked of the
-  other. Without `WLSD` the stream walks.
+  other. Without `WLSD` the stream walks, and without `WLSS` it is 4:4:4.
   No lag, and threads with row and tile parallelism: the
   machine's cores less two, at most eight, for the encoder, since an encode
   is a burst the person at the other end waits on. The stream's shape follows

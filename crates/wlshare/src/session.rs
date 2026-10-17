@@ -39,7 +39,7 @@
 //!
 //! A client that lists the VP9 encoding gets every pixel update as one rectangle
 //! over the whole framebuffer, the next frame of one VP9 stream
-//! ([`wlshare_rfb::vp9`]), 4:4:4 throughout. The encoder is made again at every
+//! ([`wlshare_rfb::vp9`]), at the chroma the list asks for. The encoder is made again at every
 //! new size, whose first frame is a keyframe; a non-incremental request or the encoding's
 //! being listed anew also asks for one. A frame between them is handed the
 //! damage since the client's last one, and the encoder converts and codes that
@@ -197,7 +197,7 @@ impl Security {
 /// from: a list that asks for VP9 names the stream it asks for, and a client
 /// that has seen nothing of a stream starts it at a keyframe whatever this
 /// held.
-const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true };
+const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true, chroma: vp9::Chroma::Yuv444 };
 
 pub struct SessionConfig {
     pub security: Security,
@@ -508,8 +508,9 @@ struct Session {
     capture: Option<wlshare_rfb::capture::Writer<BufWriter<File>>>,
     /// The client listed the VP9 encoding, which it gets instead of Raw or ZRLE.
     use_vp9: bool,
-    /// What the VP9 stream is to be: the ceiling of its quality and whether
-    /// the walk moves it below, as the client's list asks ([`Vp9Stream`]).
+    /// What the VP9 stream is to be: the ceiling of its quality, whether the
+    /// walk moves it below, and its chroma, as the client's list asks
+    /// ([`Vp9Stream`]).
     stream: Vp9Stream,
     /// The next VP9 frame must be a keyframe.
     keyframe_owed: bool,
@@ -790,8 +791,13 @@ impl Session {
                     // A new ceiling or walk is a fresh walk from the ceiling, which
                     // a running encoder follows without a keyframe. A new ceiling
                     // is owed the picture the client holds whether or not the
-                    // desktop changed, once at it, as a settle sends it.
+                    // desktop changed, once at it, as a settle sends it. A new
+                    // chroma is a new stream, which the next update makes and
+                    // starts at a keyframe.
                     let new_ceiling = stream.quality != self.stream.quality;
+                    if stream.chroma != self.stream.chroma {
+                        self.vp9 = None;
+                    }
                     self.stream = stream;
                     self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
                     self.settle_owed = false;
@@ -803,8 +809,12 @@ impl Session {
                 if vp9 && (changed || !self.use_vp9) {
                     let stream = self.stream;
                     info!(
-                        "client {}: asked for VP9 up to quality {}, {}",
+                        "client {}: asked for VP9 at {} up to quality {}, {}",
                         self.id.0,
+                        match stream.chroma {
+                            vp9::Chroma::Yuv444 => "4:4:4",
+                            vp9::Chroma::Yuv420 => "4:2:0",
+                        },
                         stream.quality,
                         if stream.adaptive { "walked by its lag" } else { "held there" }
                     );
@@ -1312,7 +1322,7 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.walk.quality())
+                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), self.stream.chroma)
                     .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
                 self.vp9 = Some(encoder);
                 self.keyframe_owed = true;

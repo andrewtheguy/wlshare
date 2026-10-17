@@ -18,10 +18,11 @@
 //!
 //! **What a frame holds.** Every frame is 8-bit VP9 converted from the
 //! framebuffer as BT.601 at studio swing, which the keyframe header says so a
-//! decoder does not guess. Its chroma is **4:4:4** (profile 1), always — a
-//! colour sample per pixel, since the loss 4:2:0 costs a desktop is its text's
-//! colour and not its edges; the remotex gateway decodes it in the page where a
-//! browser has no profile-1 decoder of its own. The quantizer is pinned by a 1–100 quality
+//! decoder does not guess. Its chroma is **4:4:4** (profile 1) — a colour
+//! sample per pixel, since the loss 4:2:0 costs a desktop is its text's colour
+//! and not its edges — unless the client's list asks for **4:2:0** (profile 0,
+//! [`ENCODING_VP9_SUBSAMPLED`]), which the remotex gateway does for a browser
+//! whose own decoder takes no profile 1. The quantizer is pinned by a 1–100 quality
 //! dial, which only the encoder's owner moves ([`Vp9Encoder::set_quality`]): no
 //! bitrate, no adaptive quantization, no dropped frames, so every frame is sent
 //! at exactly the dial's quality at the time. The client's pixel format does
@@ -33,7 +34,7 @@
 
 use thiserror::Error;
 
-pub use screen_vp9::{QUALITY_MAX, QUALITY_MIN, Rect};
+pub use screen_vp9::{Chroma, QUALITY_MAX, QUALITY_MIN, Rect};
 
 /// Listed beside [`crate::ENCODING_VP9`] with a quality 1–100 added, names the
 /// ceiling the stream's walk never goes above: the ASCII bytes `WLQ` and the
@@ -54,6 +55,12 @@ pub const ENCODING_VP9_HELD: i32 = 0x574c_5344;
 /// code with libvpx a stream that was asked of the other.
 pub const ENCODING_VP9_NATIVE: i32 = 0x574c_5358;
 
+/// Listed beside [`crate::ENCODING_VP9`], asks for the stream at 4:2:0, VP9
+/// profile 0, rather than 4:4:4: the ASCII bytes `WLSS`, subsampled. What
+/// every browser's decoder takes, its hardware one included, where some take
+/// no profile 1 at all.
+pub const ENCODING_VP9_SUBSAMPLED: i32 = 0x574c_5353;
+
 /// What the client wants the VP9 stream to be, read from its `SetEncodings`:
 /// the pseudo-encodings above, beside the encoding itself. Pseudo-encodings
 /// rather than a message because a server that is not wlshare ignores an
@@ -66,15 +73,15 @@ pub const ENCODING_VP9_NATIVE: i32 = 0x574c_5358;
 /// own, the gateway names one beside the encoding on every list, and a client
 /// that is not the gateway lists no VP9 at all. So is one that names `WLSX`
 /// ([`Vp9ListError::NoNativeEncoder`]), whose encoder this build has not.
-/// Without `WLSD` it walks.
+/// Without `WLSD` it walks, and without `WLSS` it is 4:4:4.
 ///
-/// The stream is 4:4:4 whatever the list says: nothing in it names a chroma.
 /// A change of quality or of the walk moves the running encoder's dial
-/// without a keyframe.
+/// without a keyframe; a change of chroma is a new stream, from a keyframe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vp9Stream {
     pub quality: u8,
     pub adaptive: bool,
+    pub chroma: Chroma,
 }
 
 impl Vp9Stream {
@@ -94,16 +101,20 @@ impl Vp9Stream {
         if has(ENCODING_VP9_NATIVE) {
             return Err(Vp9ListError::NoNativeEncoder);
         }
-        Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD) }))
+        let chroma = if has(ENCODING_VP9_SUBSAMPLED) { Chroma::Yuv420 } else { Chroma::Yuv444 };
+        Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD), chroma }))
     }
 
     /// The list that asks for this stream: the encoding, the quality always,
-    /// and the held dial where it is held.
+    /// the held dial where it is held, and 4:2:0 where it is subsampled.
     #[cfg(test)]
     fn encodings(self) -> Vec<i32> {
         let mut listed = vec![crate::ENCODING_VP9, ENCODING_VP9_QUALITY_BASE + i32::from(self.quality)];
         if !self.adaptive {
             listed.push(ENCODING_VP9_HELD);
+        }
+        if self.chroma == Chroma::Yuv420 {
+            listed.push(ENCODING_VP9_SUBSAMPLED);
         }
         listed
     }
@@ -172,21 +183,26 @@ pub struct Vp9Encoder {
 }
 
 impl Vp9Encoder {
-    /// An encoder for a `width`×`height` picture at `quality` (1–100), on as
-    /// many threads as this machine gives one.
-    pub fn new(width: u16, height: u16, quality: u8) -> Result<Self, Vp9Error> {
-        Self::with_threads(width, height, quality, encoder_threads())
+    /// An encoder for a `width`×`height` picture at `quality` (1–100) and
+    /// `chroma`, on as many threads as this machine gives one.
+    pub fn new(width: u16, height: u16, quality: u8, chroma: Chroma) -> Result<Self, Vp9Error> {
+        Self::with_threads(width, height, quality, chroma, encoder_threads())
     }
 
     /// [`Self::new`] on `threads` threads, which a stream's tile columns
     /// follow: for a stream that is to be the same on any machine.
-    pub fn with_threads(width: u16, height: u16, quality: u8, threads: usize) -> Result<Self, Vp9Error> {
-        Ok(Self { stream: screen_vp9::Stream::new(width, height, quality, threads, screen_vp9::Coder::Libvpx)? })
+    pub fn with_threads(width: u16, height: u16, quality: u8, chroma: Chroma, threads: usize) -> Result<Self, Vp9Error> {
+        Ok(Self { stream: screen_vp9::Stream::new(width, height, quality, chroma, threads, screen_vp9::Coder::Libvpx)? })
     }
 
     /// The picture size this encoder codes.
     pub fn size(&self) -> (u16, u16) {
         self.stream.size()
+    }
+
+    /// How this encoder's stream samples colour.
+    pub fn chroma(&self) -> Chroma {
+        self.stream.chroma()
     }
 
     /// The quality the next frame is coded at, clamped to the dial.
@@ -351,7 +367,7 @@ mod tests {
     fn a_settle_sharpens_the_picture_and_leaves_the_dial() {
         let (width, height) = (64, 48);
         let (pixels, _) = stems(width, height);
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN, Chroma::Yuv444).unwrap();
         let mut decoder = Vp9Decoder::new().unwrap();
         let mut back = vec![0; width * height * 4];
         let mut error = |frame: &[u8]| {
@@ -371,7 +387,7 @@ mod tests {
 
         // An encoder nothing was read into has nothing to settle.
         let mut out = vec![0xEE];
-        let mut unread = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN).unwrap();
+        let mut unread = Vp9Encoder::new(width as u16, height as u16, QUALITY_MIN, Chroma::Yuv444).unwrap();
         assert!(matches!(unread.settle(QUALITY_MAX, false, &mut out), Err(Vp9Error::Codec(screen_vp9::Error::Unread))));
         assert_eq!((out, unread.quality()), (vec![0xEE], QUALITY_MIN), "a settle that failed left something behind");
     }
@@ -380,9 +396,9 @@ mod tests {
     fn a_444_stream_keeps_a_one_pixel_stem_its_colour() {
         let (width, height) = (64, 48);
         let (pixels, at) = stems(width, height);
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX).unwrap();
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX, Chroma::Yuv444).unwrap();
         let frame = encode(&mut encoder, &pixels, false);
-        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == screen_vp9::PROFILE), "an encoder's first frame is a 4:4:4 keyframe");
+        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == Chroma::Yuv444.profile()), "an encoder's first frame is a 4:4:4 keyframe");
 
         let mut decoder = Vp9Decoder::new().unwrap();
         let stride = width * 4 + 8;
@@ -399,12 +415,29 @@ mod tests {
         assert!(worst <= 24, "a stem pixel came back {worst} code values off");
     }
 
+    /// A subsampled stream is profile 0 and decodes to its picture, framed as
+    /// any other.
+    #[test]
+    fn a_420_stream_is_profile_0_and_decodes() {
+        let (width, height) = (66, 34);
+        let pixels = [40u8, 180, 90, 0].repeat(width * height);
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX, Chroma::Yuv420).unwrap();
+        assert_eq!(encoder.chroma(), Chroma::Yuv420);
+        let frame = encode(&mut encoder, &pixels, false);
+        assert!(screen_vp9::frame_header(&frame).is_some_and(|header| header.keyframe && header.profile == 0), "an encoder's first frame is a 4:2:0 keyframe");
+        let mut decoder = Vp9Decoder::new().unwrap();
+        let mut out = vec![0; width * height * 4];
+        decoder.decode_rect(&frame, width, height, &mut out, width * 4).unwrap();
+        let last = &out[((height - 1) * width + width - 1) * 4..][..3];
+        assert!(last.iter().zip([40u8, 180, 90]).all(|(a, b)| a.abs_diff(b) <= 8), "the last pixel came back {last:?}");
+    }
+
     /// Only the frames that are asked to be keyframes are, the ones between
     /// decode against them, and the dial moves without one.
     #[test]
     fn keyframes_come_when_asked_and_the_dial_moves_between_them() {
         let (width, height) = (64, 32);
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, 60).unwrap();
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, 60, Chroma::Yuv444).unwrap();
         let mut decoder = Vp9Decoder::new().unwrap();
         let mut out = vec![0; width * height * 4];
         for step in 0..5usize {
@@ -453,7 +486,7 @@ mod tests {
             assert!(encoder.encode(keyframe, &mut out).expect("an encode"), "a frame");
             out.split_off(4)
         };
-        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX).unwrap();
+        let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX, Chroma::Yuv444).unwrap();
         let mut decoder = Vp9Decoder::new().unwrap();
         let mut out = vec![0; stride * height];
         let whole = BACK.repeat(width * height);
@@ -489,14 +522,14 @@ mod tests {
 
     #[test]
     fn a_frame_of_another_size_or_no_frame_at_all_is_an_error() {
-        let mut encoder = Vp9Encoder::new(32, 16, 60).unwrap();
+        let mut encoder = Vp9Encoder::new(32, 16, 60, Chroma::Yuv444).unwrap();
         let frame = encode(&mut encoder, &[0u8; 32 * 16 * 4], false);
         let mut out = vec![0; 64 * 64 * 4];
         let mut decoder = Vp9Decoder::new().unwrap();
         assert!(matches!(decoder.decode_rect(&frame, 16, 16, &mut out, 64), Err(Vp9Error::Size(32, 16, 16, 16))));
         assert!(decoder.decode_rect(&[0xFF, 0x00, 0x12], 32, 16, &mut out, 128).is_err());
         assert!(matches!(decoder.decode_rect(&frame, 32, 16, &mut out[..10], 128), Err(Vp9Error::Codec(_))));
-        assert!(matches!(Vp9Encoder::new(0, 16, 60), Err(Vp9Error::Codec(screen_vp9::Error::Empty(0, 16)))));
+        assert!(matches!(Vp9Encoder::new(0, 16, 60, Chroma::Yuv444), Err(Vp9Error::Codec(screen_vp9::Error::Empty(0, 16)))));
         assert!(matches!(encoder.read(&[0; 12], 128, None), Err(Vp9Error::Codec(screen_vp9::Error::Buffer { .. }))));
     }
 }
@@ -508,13 +541,17 @@ mod stream_tests {
 
     #[test]
     fn the_stream_is_read_from_the_list_beside_the_encoding() {
-        let asked = Vp9Stream { quality: 60, adaptive: true };
+        let asked = Vp9Stream { quality: 60, adaptive: true, chroma: Chroma::Yuv444 };
         assert_eq!(asked.encodings(), [crate::ENCODING_VP9, 0x574c_513c]);
         let listed = [crate::ENCODING_VP9, 0x574c_513c, crate::ENCODING_ZRLE];
         assert_eq!(Vp9Stream::listed(&listed), Ok(Some(asked)));
-        let held = Vp9Stream { quality: 100, adaptive: false };
+        let held = Vp9Stream { quality: 100, adaptive: false, chroma: Chroma::Yuv444 };
         assert_eq!(held.encodings(), [crate::ENCODING_VP9, 0x574c_5164, 0x574c_5344]);
         assert_eq!(Vp9Stream::listed(&held.encodings()), Ok(Some(held)));
+        let subsampled = Vp9Stream { quality: 60, adaptive: true, chroma: Chroma::Yuv420 };
+        assert_eq!(ENCODING_VP9_SUBSAMPLED, i32::from_be_bytes(*b"WLSS"));
+        assert_eq!(subsampled.encodings(), [crate::ENCODING_VP9, 0x574c_513c, 0x574c_5353]);
+        assert_eq!(Vp9Stream::listed(&subsampled.encodings()), Ok(Some(subsampled)));
     }
 
     /// A list without VP9 asks for no stream, whatever else it names; the
