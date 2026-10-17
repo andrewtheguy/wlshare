@@ -1,7 +1,9 @@
 //! What is made of a capture ([`wlshare_rfb::capture`]): the file a daemon
 //! started with `--capture-frames` wrote of what its VP9 encoder was handed,
 //! played into the encoder again, as it is pinned now, and written as the
-//! streams a decoder is tested and timed on.
+//! streams a decoder is tested and timed on. At 4:4:4, always: the daemon
+//! captures a 4:4:4 stream alone, and the streams are for the 4:4:4 work a
+//! capture is made for.
 //!
 //! ```text
 //! vp9cap info CAPTURE
@@ -308,7 +310,7 @@ impl Output {
         ivf.write_all(&ivf_header(size.0, size.1))?;
         let mut csv = BufWriter::new(File::create(part.with_extension("csv"))?);
         csv.write_all(b"frame,ms,bytes,keyframe,quality\n")?;
-        Ok(Self { stream: Vp9Encoder::with_threads(size.0, size.1, quality, threads)?, size, ivf, csv, part, began: None, frames: 0, first: Vec::new(), unit: Vec::new() })
+        Ok(Self { stream: Vp9Encoder::with_threads(size.0, size.1, quality, wlshare_rfb::vp9::Chroma::Yuv444, threads)?, size, ivf, csv, part, began: None, frames: 0, first: Vec::new(), unit: Vec::new() })
     }
 
     /// Code `frame` as the session did, or as a keyframe of the whole picture

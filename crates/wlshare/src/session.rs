@@ -39,7 +39,7 @@
 //!
 //! A client that lists the VP9 encoding gets every pixel update as one rectangle
 //! over the whole framebuffer, the next frame of one VP9 stream
-//! ([`wlshare_rfb::vp9`]), 4:4:4 throughout. The encoder is made again at every
+//! ([`wlshare_rfb::vp9`]), at the chroma the list asks for. The encoder is made again at every
 //! new size, whose first frame is a keyframe; a non-incremental request or the encoding's
 //! being listed anew also asks for one. A frame between them is handed the
 //! damage since the client's last one, and the encoder converts and codes that
@@ -197,7 +197,7 @@ impl Security {
 /// from: a list that asks for VP9 names the stream it asks for, and a client
 /// that has seen nothing of a stream starts it at a keyframe whatever this
 /// held.
-const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true };
+const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true, chroma: vp9::Chroma::Yuv444 };
 
 pub struct SessionConfig {
     pub security: Security,
@@ -221,7 +221,9 @@ pub struct SessionConfig {
     /// Where each session writes what its VP9 stream is handed, exact
     /// ([`wlshare_rfb::capture`]), or `None` for no capture: a flag of a
     /// daemon run by hand, for an encoder to be run again on the pictures a
-    /// desktop is shown as.
+    /// desktop is shown as. A 4:4:4 stream's alone: a capture is played back
+    /// at 4:4:4 (`examples/vp9cap.rs`), the chroma every use of one is about,
+    /// so a session asked for 4:2:0 writes none while it is.
     pub capture_frames: Option<PathBuf>,
 }
 
@@ -503,13 +505,15 @@ struct Session {
     /// been sent.
     vp9: Option<Vp9Encoder>,
     /// What the VP9 encoder is handed, written as it is handed it, while the
-    /// daemon was started with a capture directory: opened at the session's
-    /// first VP9 frame, and spanning every encoder the session makes.
+    /// daemon was started with a capture directory and the stream is 4:4:4:
+    /// opened at the session's first such frame, and spanning every encoder
+    /// the session makes.
     capture: Option<wlshare_rfb::capture::Writer<BufWriter<File>>>,
     /// The client listed the VP9 encoding, which it gets instead of Raw or ZRLE.
     use_vp9: bool,
-    /// What the VP9 stream is to be: the ceiling of its quality and whether
-    /// the walk moves it below, as the client's list asks ([`Vp9Stream`]).
+    /// What the VP9 stream is to be: the ceiling of its quality, whether the
+    /// walk moves it below, and its chroma, as the client's list asks
+    /// ([`Vp9Stream`]).
     stream: Vp9Stream,
     /// The next VP9 frame must be a keyframe.
     keyframe_owed: bool,
@@ -790,8 +794,13 @@ impl Session {
                     // A new ceiling or walk is a fresh walk from the ceiling, which
                     // a running encoder follows without a keyframe. A new ceiling
                     // is owed the picture the client holds whether or not the
-                    // desktop changed, once at it, as a settle sends it.
+                    // desktop changed, once at it, as a settle sends it. A new
+                    // chroma is a new stream, which the next update makes and
+                    // starts at a keyframe.
                     let new_ceiling = stream.quality != self.stream.quality;
+                    if stream.chroma != self.stream.chroma {
+                        self.vp9 = None;
+                    }
                     self.stream = stream;
                     self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
                     self.settle_owed = false;
@@ -803,11 +812,18 @@ impl Session {
                 if vp9 && (changed || !self.use_vp9) {
                     let stream = self.stream;
                     info!(
-                        "client {}: asked for VP9 up to quality {}, {}",
+                        "client {}: asked for VP9 at {} up to quality {}, {}",
                         self.id.0,
+                        match stream.chroma {
+                            vp9::Chroma::Yuv444 => "4:4:4",
+                            vp9::Chroma::Yuv420 => "4:2:0",
+                        },
                         stream.quality,
                         if stream.adaptive { "walked by its lag" } else { "held there" }
                     );
+                    if self.config.capture_frames.is_some() && stream.chroma != vp9::Chroma::Yuv444 {
+                        info!("client {}: a 4:2:0 stream is not captured: a capture is 4:4:4's", self.id.0);
+                    }
                 }
                 if vp9 && !self.use_vp9 {
                     // A decoder that has seen nothing of this stream starts at a keyframe.
@@ -1312,7 +1328,7 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.walk.quality())
+                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), self.stream.chroma)
                     .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
                 self.vp9 = Some(encoder);
                 self.keyframe_owed = true;
@@ -1358,7 +1374,7 @@ impl Session {
                     damage.as_ref().map(|rects| rects.iter().map(|r| vp9::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
                 let encoder = self.vp9.as_mut().expect("made before the lock was kept");
                 encoder.read(&fb.pixels, stride, read.as_deref()).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
-                if self.config.capture_frames.is_some() {
+                if self.config.capture_frames.is_some() && self.stream.chroma == vp9::Chroma::Yuv444 {
                     // The capture is written after the lock is let go, from
                     // a copy kept for it: the rectangles that changed, and
                     // the rest of `scratch` is what the frames before left
@@ -1496,7 +1512,8 @@ impl Session {
         self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VP9));
         let (encoder, out) = (self.vp9.as_mut().expect("made for the read"), &mut self.out);
         let keyframe = full || self.keyframe_owed;
-        if let Some(dir) = &self.config.capture_frames {
+        // A 4:4:4 stream's frames alone, which is what a capture is played back as.
+        if let Some(dir) = self.config.capture_frames.as_ref().filter(|_| self.stream.chroma == vp9::Chroma::Yuv444) {
             let capture = match &mut self.capture {
                 Some(capture) => capture,
                 None => {

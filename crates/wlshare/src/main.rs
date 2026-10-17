@@ -59,7 +59,8 @@ struct Args {
     /// Write what every VP9 stream is handed into this directory, exact: each
     /// session's frames as a capture file (`wlshare_rfb::capture`), one
     /// `<unix millis>-client<id>.wlcap` per session, for an encoder to be
-    /// run again on. Uncompressed and large: run `zstd` on them afterwards.
+    /// run again on. A 4:4:4 stream's alone: a client that asks for 4:2:0
+    /// is not captured. Uncompressed and large: run `zstd` on them afterwards.
     /// For a daemon run by hand: a systemd unit that names it is refused.
     #[arg(long, value_name = "DIR")]
     capture_frames: Option<PathBuf>,
