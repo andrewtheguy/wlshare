@@ -617,6 +617,19 @@ impl Compositor {
         input.point(desk, &self.qh, pointers, seat, output);
     }
 
+    /// The compositor laid its outputs out anew — an output's mode, scale,
+    /// transform or position changed, or one came or went, and with it the
+    /// configuration wlr-output-management reports — which may have unbound
+    /// every desk's pointer from its output ([`Input::repoint`]). Each is made
+    /// again against the output its desk shares.
+    pub fn outputs_laid_out(&mut self) {
+        for desk in [FIRST, BESIDE] {
+            let Some(output) = self.outputs.selected(desk).map(|o| o.output.clone()) else { continue };
+            let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
+            input.repoint(desk, &self.qh, pointers, seat, &output);
+        }
+    }
+
     /// Follow a client's density: its desk's output's mode and scale in one
     /// configuration, so every application on it redraws once. Only what differs
     /// is asked for, and a declaration that changes nothing, or cannot change
