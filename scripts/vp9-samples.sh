@@ -8,7 +8,7 @@
 #   ./scripts/vp9-samples.sh [--captures DIR] [--out DIR] [--streams DIR] [--clean]
 #                            [--frames N] [--threads N] [--quiet NAME] [--busy NAME]
 #
-# The encoder is screen-vp9's: libvpx, as a session's is.
+# The encoder is wlshare-vp9's: libvpx, as a session's is.
 #
 # For every size the captures in `--captures` (dist/captures) have, `--out`
 # (dist/vp9-bench) gets a quiet and a busy sample, `--frames` (120) frames
@@ -70,7 +70,7 @@ shopt -u nullglob
 
 cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-rfb --example vp9cap
 vp9cap="${here}/target/release/examples/vp9cap"
-coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"screen-vp9","version":"\([^"]*\)".*/screen-vp9 \1/p' | head -n 1), libvpx"
+coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"wlshare-vp9","version":"\([^"]*\)".*/wlshare-vp9 \1/p' | head -n 1), libvpx"
 
 # The MD5 of every frame of the streams named, as libvpx decodes them, and
 # the same from ffmpeg's own decoder, which shares no code with it.

@@ -1,19 +1,20 @@
-# The daemon and the protocol crate it is built on (see docs/architecture.md).
-# The VP9 coding under both is screen-vp9, libvpx as it sets it up, the FLAC coding sound-flac and the
-# Opus coding sound-opus, each its own repository.
+# The daemon, the protocol crate it is built on and the VP9 coding under both,
+# libvpx as `wlshare-vp9` sets it up (see docs/architecture.md). The FLAC coding
+# is sound-flac and the Opus coding sound-opus, each its own repository.
 #
 # `default-members` deliberately omits the daemon: it needs libwayland and
 # libxkbcommon and only runs against a Wayland compositor, so a bare
 # `cargo test` on a development machine of any OS exercises the protocol crate
-# and nothing else, its Opus tests with the ffmpeg that machine has installed.
+# and the VP9 coding and nothing else, the Opus tests with the ffmpeg that
+# machine has installed.
 # Build the daemon explicitly with `-p wlshare`.
 [workspace]
-members = ["crates/wlshare-rfb", "crates/wlshare"]
-default-members = ["crates/wlshare-rfb"]
+members = ["crates/wlshare-rfb", "crates/wlshare-vp9", "crates/wlshare"]
+default-members = ["crates/wlshare-rfb", "crates/wlshare-vp9"]
 resolver = "3"
 
 [workspace.package]
-version = "0.0.73"
+version = "0.0.74"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/andrewtheguy/wlshare"
@@ -29,12 +30,10 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 
-# screen-vp9 and the conversion in front of its encoder (the `yuv` crate)
-# optimised in a debug build as in release, so that a
-# debug daemon codes a desktop at the speed a released one does. A
-# dependency's own profile is ignored; only this workspace's applies.
-# Dependencies compile once, so this costs nothing after.
-[profile.dev.package.screen-vp9]
+# wlshare-vp9 and the conversion in front of its encoder (the `yuv` crate)
+# optimised in a debug build as in release, so that a debug daemon codes a
+# desktop at the speed a released one does, and the VP9 tests run at it.
+[profile.dev.package.wlshare-vp9]
 opt-level = 3
 
 [profile.dev.package.yuv]

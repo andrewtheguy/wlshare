@@ -2,19 +2,17 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 
-- Two crates: `wlshare-rfb` (protocol), platform-independent and tested by a
-  bare `cargo test`, and `wlshare` (the daemon, Linux + wlroots-based Wayland
-  only). Its one client is the remotex gateway; there is no native client. The
-  VP9 coding is not here: it is the `screen-vp9` repository, pinned by
-  release tag, which is libvpx; how a desktop is coded changes there and
-  arrives as a pin bump, and the quality walk is the second's for both.
-  `main` is libvpx alone and is built for its target's baseline, with no CPU
-  floor: screen-vp9's EXPERIMENTAL encoder in Rust lives on the
-  `native-encoder` branch of each repository, which takes `main` in and is
-  never merged back. `main` refuses a list that asks for it (`WLSX`), fatal
-  as a list without a quality is, and never codes such a stream with libvpx.
+- Three crates: `wlshare-rfb` (protocol) and `wlshare-vp9` (the VP9 coding),
+  platform-independent and tested by a bare `cargo test`, and `wlshare` (the
+  daemon, Linux + wlroots-based Wayland only). Its one client is the remotex
+  gateway; there is no native client. `wlshare-vp9` is libvpx alone, from a
+  prebuilt static archive, set up for a desktop, with the planes in front of
+  it, its decoder and the quality walk; nothing about a wire is decided
+  there. Everything is built for its target's baseline, with no CPU floor.
   libvpx's decoder is also what `wlshare-rfb`'s VP9 tests read the
-  encoder's frames back with. After Rust
+  encoder's frames back with. libvpx's speed (`Speed`) is not public: only
+  the tests move it. A measurement of the encoder is run on an idle machine,
+  alone: no build, test, profile or second measurement beside it. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
   architecture-specific, and the release builds each architecture in Docker on

@@ -38,10 +38,9 @@ sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.4
 # from a prebuilt static archive, so nothing of it is compiled here or looked
 # for at run time.
 sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.4" }
-# The VP9 encoding's codec, for this workspace and for the remotex gateway,
-# each pinned to its release tag: libvpx, set up for a desktop. Its decoder is
-# what the encoding's tests read every frame back with.
-screen-vp9 = { git = "https://github.com/andrewtheguy/screen-vp9", tag = "v0.0.26" }
+# The VP9 encoding's codec: libvpx, set up for a desktop. Its decoder is what
+# the encoding's tests read every frame back with.
+wlshare-vp9 = { path = "../wlshare-vp9" }
 
 [dev-dependencies]
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
