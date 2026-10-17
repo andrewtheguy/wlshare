@@ -479,7 +479,10 @@ in front of an encoder whichever encoder that is. There is one
 hands the encoder its pixels and so spanning every encoder the session makes
 across resizes. Nothing on the way is lossy, which is the point: an encoder
 is run again on the pictures a desktop is actually shown as and the
-rectangles they came with, not on a decode of a stream. The files are
+rectangles they came with, not on a decode of a stream. A capture is a 4:4:4
+stream's alone, the chroma every use of one is about and the one its tools
+play it back at (`examples/vp9cap.rs`): a session whose client asks for
+4:2:0 (`WLSS`) writes no frame of it while it does. The files are
 uncompressed and large — a 4K whole frame is 33 MB — and are `zstd`
 compressed afterwards.
 
