@@ -454,6 +454,26 @@ impl Input {
         self.pointers[desk] = Some(Pointer { pointer, buttons: 0 });
     }
 
+    /// Make a desk's pointer again against the output it is already on: the
+    /// compositor has laid its outputs out anew. labwc then maps every pointer
+    /// back to the output its device names, which for a virtual one is none, so
+    /// the binding made with the pointer is gone and absolute positions span the
+    /// whole layout — the right place only while it is this one output. The new
+    /// pointer is made before the old one goes, so the seat never loses its
+    /// pointer and the cursor session keeps working; the buttons held are let go
+    /// with the pointer that pressed them, the keys stay down.
+    pub fn repoint(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
+        let Some(old) = self.pointers[desk].take() else { return };
+        let held = old.buttons & 7;
+        if held != 0 {
+            Self::set_buttons(&old.pointer, self.time(), held, 0);
+            old.pointer.frame();
+        }
+        let pointer = pointers.create_virtual_pointer_with_output(Some(seat), Some(output), qh, ());
+        old.pointer.destroy();
+        self.pointers[desk] = Some(Pointer { pointer, buttons: 0 });
+    }
+
     /// Take a desk's pointer away, with everything its client held.
     pub fn unpoint(&mut self, desk: usize) {
         self.release_all(desk);

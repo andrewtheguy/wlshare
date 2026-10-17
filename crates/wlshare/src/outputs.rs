@@ -365,6 +365,7 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
             }
             zwlr_output_manager_v1::Event::Done { serial } => {
                 state.outputs.serial = serial;
+                state.outputs_laid_out();
                 let mut changed = Vec::new();
                 for head in &mut state.outputs.heads {
                     if std::mem::take(&mut head.scale_changed) {
