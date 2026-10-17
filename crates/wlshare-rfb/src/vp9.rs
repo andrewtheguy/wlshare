@@ -235,8 +235,9 @@ impl Vp9Encoder {
     ///
     /// `changed` is the damage since the picture read before, or `None` for
     /// a picture that may differ anywhere. With it only the rectangles are
-    /// read from `pixels`. An encoder's first read is the whole picture
-    /// whatever `changed` says.
+    /// read from `pixels`, at 4:2:0 the 2×2 blocks they touch, which the
+    /// framebuffer holds as it holds the rest. An encoder's first read is the
+    /// whole picture whatever `changed` says.
     pub fn read(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), Vp9Error> {
         Ok(self.stream.read_bgrx(pixels, stride, changed)?)
     }
