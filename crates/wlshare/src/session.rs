@@ -292,7 +292,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         shared.command(Command::ClientJoined(id));
         if let Some(wanted) = &config.output
             && !config.output_wait.is_zero()
-            && !shared.displays().shares(FIRST, wanted)
+            && !shared.displays().lists(wanted)
         {
             info!("client {}: waiting up to {:?} for output {wanted}", id.0, config.output_wait);
             // The desktop is held for as long as this waits, so it waits for
@@ -306,8 +306,10 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
                 }
                 () = peer_closed(writer.socket()) => anyhow::bail!("left while waiting for output {wanted}"),
             };
-            if !arrived {
-                warn!("client {}: output {wanted} has not appeared; the desktop is the output shared meanwhile", id.0);
+            match arrived {
+                Arrival::Shared => {}
+                Arrival::Elsewhere => info!("client {}: output {wanted} is here, and the desktop stays on the output a client chose", id.0),
+                Arrival::Absent => warn!("client {}: output {wanted} has not appeared; the desktop is the output shared meanwhile", id.0),
             }
         }
         FIRST
@@ -406,21 +408,40 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
 /// anything below it — 0 included — is the compositor not having read this
 /// session's own join yet, which is what the wait is for. A display beside ends
 /// when the compositor says every such connection up to its id has.
-/// Wait until the desktop is on the output of this name, for at most `wait`.
-/// `false` when it still is not. `arrivals` was subscribed before the join that
-/// may bring the output about, so its arriving is not missed; the list is read
-/// again on every event rather than trusted to one, since a receiver that
-/// lagged has dropped some.
-async fn output_shared(shared: &Shared, wanted: &str, wait: Duration, arrivals: &mut broadcast::Receiver<Event>) -> bool {
+/// Where the output a session waited for stands once the wait is over.
+#[derive(Debug, PartialEq, Eq)]
+enum Arrival {
+    /// The desktop is on it.
+    Shared,
+    /// The compositor has it and the desktop is on another, which a client
+    /// chose: an appearing output is shared before it is listed, so this is
+    /// never one still arriving.
+    Elsewhere,
+    /// It did not appear within the wait.
+    Absent,
+}
+
+/// Wait until the compositor has the output of this name, for at most `wait`.
+/// `arrivals` was subscribed before the join that may bring the output about,
+/// so its arriving is not missed; the list is read again on every event rather
+/// than trusted to one, since a receiver that lagged has dropped some.
+async fn output_shared(shared: &Shared, wanted: &str, wait: Duration, arrivals: &mut broadcast::Receiver<Event>) -> Arrival {
     let waiting = async {
-        while !shared.displays().shares(FIRST, wanted) {
+        while !shared.displays().lists(wanted) {
             if let Err(broadcast::error::RecvError::Closed) = arrivals.recv().await {
                 break;
             }
         }
     };
     let _ = tokio::time::timeout(wait, waiting).await;
-    shared.displays().shares(FIRST, wanted)
+    let displays = shared.displays();
+    if displays.shares(FIRST, wanted) {
+        Arrival::Shared
+    } else if displays.lists(wanted) {
+        Arrival::Elsewhere
+    } else {
+        Arrival::Absent
+    }
 }
 
 /// Resolves when the peer has closed the connection or it has failed, and
@@ -1736,7 +1757,7 @@ mod output_tests {
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
         arrive(&shared);
-        assert!(tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap());
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap(), Arrival::Shared);
     }
 
     /// An output that arrived between the subscription and the wait is found
@@ -1746,7 +1767,18 @@ mod output_tests {
         let shared = shared();
         arrive(&shared);
         let mut arrivals = shared.events.subscribe();
-        assert!(output_shared(&shared, "HEADLESS-1", Duration::from_secs(30), &mut arrivals).await);
+        assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_secs(30), &mut arrivals).await, Arrival::Shared);
+    }
+
+    /// The configured output there and a client's choice elsewhere is no
+    /// output still to come: nothing would move the desktop to it, so the wait
+    /// does not run out on it.
+    #[tokio::test]
+    async fn an_output_a_client_left_keeps_nobody_waiting() {
+        let shared = shared();
+        *shared.displays.lock().unwrap() = Displays { active: [7, 0], entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")] };
+        let mut arrivals = shared.events.subscribe();
+        assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_secs(30), &mut arrivals).await, Arrival::Elsewhere);
     }
 
     /// Both ends of a loopback connection: the client's, and the server's.
@@ -1780,6 +1812,6 @@ mod output_tests {
     async fn the_wait_gives_up_on_an_output_that_never_comes() {
         let shared = shared();
         let mut arrivals = shared.events.subscribe();
-        assert!(!output_shared(&shared, "HEADLESS-1", Duration::from_millis(50), &mut arrivals).await);
+        assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_millis(50), &mut arrivals).await, Arrival::Absent);
     }
 }

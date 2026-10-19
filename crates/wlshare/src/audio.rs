@@ -135,8 +135,10 @@ impl Capture {
     /// and FLAC has no use for. Blocks until PipeWire has taken the stream or
     /// refused it, so it belongs on a blocking thread.
     pub fn start(client: ClientId, codec: Codec, format: AudioFormat, bitrate: Option<u32>) -> anyhow::Result<Self> {
-        let speaker = Lease::take()?;
+        // The encoder first: an enable it refuses must not make the speaker,
+        // which would move the host's streams onto it and back for nothing.
         let encoder = AudioEncoder::new(codec, format, bitrate).with_context(|| format!("setting up the {codec:?} encoder"))?;
+        let speaker = Lease::take()?;
         let queue = Arc::new(Queue {
             buffers: Mutex::new(VecDeque::with_capacity(QUEUE_DEPTH)),
             ready: Notify::new(),

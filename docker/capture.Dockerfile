@@ -13,7 +13,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config git \
-        libwayland-dev libxkbcommon-dev libpam0g-dev \
+        libxkbcommon-dev libpam0g-dev \
         libpipewire-0.3-dev libspa-0.2-dev libavcodec-dev libclang-dev dpkg-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
@@ -57,8 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends /tmp/wlshare.de
 COPY --from=build /out/vp9-sink /usr/local/bin/vp9-sink
 COPY docker/capture/ /opt/capture/
 
-# Nothing here needs root. scripts/capture-frames.sh runs it as whoever owns
-# the directory the captures go to, who may be nobody the image knows: hence
+# Nothing here needs root. scripts/capture-frames.sh runs it as whoever runs
+# that script, who may be nobody the image knows: hence
 # a home anyone can make.
 RUN useradd --create-home --uid 1000 capture && mkdir -p /captures && chown capture /captures
 USER capture

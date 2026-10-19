@@ -5,8 +5,9 @@ FROM ${BASE_IMAGE} AS build
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# The daemon links libwayland-client, libxkbcommon, libpam, libpipewire and
-# libavcodec (the camera's H.264 decoder); cargo-deb reads the resulting .so
+# The daemon links libxkbcommon, libpam, libpipewire and libavcodec (the
+# camera's H.264 decoder) — the Wayland protocol is wayland-client's own Rust,
+# with no libwayland; cargo-deb reads the resulting .so
 # dependencies into the package's Depends. libFLAC and libopus, the audio
 # extension's encoders, are static archives the build downloads. libclang-dev is a build-time need
 # with nothing to link: pipewire-sys, libspa-sys and ffmpeg-sys-next generate
@@ -15,7 +16,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config \
-        libwayland-dev libxkbcommon-dev libpam0g-dev \
+        libxkbcommon-dev libpam0g-dev \
         libpipewire-0.3-dev libspa-0.2-dev libavcodec-dev libclang-dev dpkg-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH

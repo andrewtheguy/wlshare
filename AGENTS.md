@@ -17,14 +17,15 @@
   The daemon has no cross-target check to run: nothing in it is
   architecture-specific, and the release builds each architecture in Docker on
   its own native runner.
-  Linking the daemon's tests needs `libpam0g-dev`, and building it needs
+  Linking the daemon and its tests needs `libpam0g-dev` and
+  `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
   `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder, the
   system's libavcodec linked dynamically.
-  The audio extension's FLAC coding is not here either: it is the
-  `sound-flac` repository, shared with the remotex gateway and pinned by
-  release tag the same way, with libFLAC linked from a prebuilt static archive:
+  The audio extension's FLAC coding is not here: it is the `sound-flac`
+  repository, shared with the remotex gateway and pinned by its release tag,
+  with libFLAC linked from a prebuilt static archive:
   nothing is needed to build or to run.
   Its Opus coding is the `sound-opus` repository, shared and pinned the same
   way, with libopus linked from a prebuilt static archive too: nothing is needed
@@ -35,7 +36,7 @@
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland
   session it shares; packages are built only in Docker, by
   `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the
-  wlroots and Sway the APT repository serves, never on the host.
+  wlroots, Sway and labwc the APT repository serves, never on the host.
 - Do not run `cargo fmt`. Use `anyhow` for application errors and `thiserror` for
   typed protocol errors.
 - Design and wire details live in `docs/architecture.md`, not here.

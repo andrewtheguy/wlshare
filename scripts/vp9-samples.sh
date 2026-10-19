@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Make the VP9 streams a decoder is tested and timed on from the captures
-# scripts/capture-frames.sh left: each capture played into the encoder as it is
-# pinned now (crates/wlshare-rfb/examples/vp9cap.rs), so that a change to how
-# a desktop is coded — a pin bump of the encoder — is one run of this and no
-# desktop has to be played again.
+# scripts/capture-frames.sh left: each capture played into the encoder as the
+# workspace has it now (crates/wlshare-rfb/examples/vp9cap.rs), so that a change
+# to how a desktop is coded — in wlshare-vp9, or a bump of its libvpx — is one
+# run of this and no desktop has to be played again.
 #
 #   ./scripts/vp9-samples.sh [--captures DIR] [--out DIR] [--streams DIR] [--clean]
 #                            [--frames N] [--threads N] [--quiet NAME] [--busy NAME]

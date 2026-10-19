@@ -7,8 +7,8 @@
 //! the results to sockets; it writes no protocol byte of its own.
 //!
 //! The crate is platform-independent so that all of it is unit-tested on any
-//! machine, the daemon being buildable only where libwayland and libxkbcommon
-//! are. The audio extension's FLAC encoder is libFLAC and its Opus encoder
+//! machine, the daemon being buildable only where libxkbcommon, libpam,
+//! libpipewire and libavcodec are. The audio extension's FLAC encoder is libFLAC and its Opus encoder
 //! libopus, each from a prebuilt static archive, as libvpx is under
 //! `wlshare-vp9`, so the crate builds and runs with none of them installed.
 //! Tests here use an independent decoder for
@@ -23,8 +23,7 @@
 //!   standard pixel encoding. **The VP9 encoding** is a private one for the
 //!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
 //!   quality its owner sets ([`vp9`]), for a desktop
-//!   that moves. Raw is produced before the client's first `SetEncodings`, where
-//!   the RFC requires it, and for a client whose list names neither. Tight,
+//!   that moves. Raw is produced for a client whose list names neither. Tight,
 //!   Hextile, RRE, CopyRect and every other lossy encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
 //!   XRGB8888, which is the `B, G, R, X` byte order the gateway forces. A client may

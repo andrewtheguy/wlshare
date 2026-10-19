@@ -339,7 +339,9 @@ impl Dispatch<WlOutput, ()> for Compositor {
                 for desk in state.outputs.desks_on(name.as_deref()) {
                     state.geometry_changed(desk);
                 }
-                state.outputs_changed();
+                // Moved before the list is published, never after: a session
+                // waiting for the configured output reads it listed and not
+                // shared as a client's choice to be elsewhere.
                 if state.outputs.selected[FIRST].is_none() {
                     // Nothing is shared, and this output has just become
                     // something that can be: the desktop starts again on it.
@@ -351,6 +353,7 @@ impl Dispatch<WlOutput, ()> for Compositor {
                     // stays where it asked to be.
                     state.adopt_output();
                 }
+                state.outputs_changed();
             }
             _ => {}
         }
