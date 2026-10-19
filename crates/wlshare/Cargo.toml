@@ -23,7 +23,8 @@ toml = "1"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
 
-# The Wayland side. wayland-client dlopens libwayland-client at runtime.
+# The Wayland side. wayland-client speaks the protocol in its own Rust, with no
+# libwayland linked or loaded.
 wayland-client = { version = "0.31", features = ["log"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
@@ -60,9 +61,8 @@ section = "net"
 priority = "optional"
 # libpipewire, libpam and libavcodec/libavutil (the camera's H.264 decoder) are
 # linked, so $auto names them from the binary.
-# wayland-client loads libwayland-client at runtime, so dpkg-shlibdeps cannot
-# see it. libFLAC and libopus, the audio extension's encoders, are linked
-# statically and need nothing.
+# libxkbcommon too. libFLAC and libopus, the audio extension's encoders, are
+# linked statically and need nothing.
 # wlroots is the compositor's, not linked here: 0.19 is the first whose headless
 # backend keeps the cursor out of a screencopy without overlay_cursor.
 # libpipewire is only the client library: the speaker, the camera and the
@@ -70,7 +70,7 @@ priority = "optional"
 # `pipewire` is that server alone, with no session manager to make the speaker
 # the default or link anything to it, and no PulseAudio server for most
 # applications to play through, so wireplumber and pipewire-pulse come with it.
-depends = "$auto, libwayland-client0 (>= 1.20), libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
+depends = "$auto, libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
 # The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
 # edits survive an upgrade.
 conf-files = ["/etc/pam.d/wlshare"]

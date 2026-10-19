@@ -1,6 +1,6 @@
 //! What is made of a capture ([`wlshare_rfb::capture`]): the file a daemon
 //! started with `--capture-frames` wrote of what its VP9 encoder was handed,
-//! played into the encoder again, as it is pinned now, and written as the
+//! played into the encoder again, as the workspace has it now, and written as the
 //! streams a decoder is tested and timed on. At 4:4:4, always: the daemon
 //! captures a 4:4:4 stream alone, and the streams are for the 4:4:4 work a
 //! capture is made for.
@@ -33,9 +33,7 @@
 //! resized into its own is in a capture for an encoder's sake, and is no
 //! stream to test a decoder on. Beside each is `.ivf.csv`, `frame,ms,bytes,keyframe,quality`: the
 //! time is when the session's encoder was handed the frame, counted from the
-//! stream's first, and it is the IVF timestamp too. This is the file pair
-//! the remotex gateway's `--vp9-capture` writes, from a source that can be
-//! coded again.
+//! stream's first, and it is the IVF timestamp too.
 //!
 //! `sample` cuts one stream of exactly N frames from the capture's longest
 //! run of a size ([`window`]): its first N, or with `--busiest` the N in a

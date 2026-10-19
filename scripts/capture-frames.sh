@@ -7,8 +7,8 @@
 #
 #   ./scripts/capture-frames.sh [--out DIR] [--video FILE] [--sizes "..."] [--scenarios "..."] [--seconds N] [--frames N] [--quality Q]
 #
-# `--out` defaults to dist/captures. `--scenarios` takes names from
-# docker/capture/scenarios/ or the groups `quiet`, `busy` and `all`; the
+# `--out` defaults to dist/captures. `--scenarios` takes the names
+# docker/capture/run.sh lists or the groups `quiet`, `busy` and `all`; the
 # sizes default to run.sh's. The captures are the source: the streams a
 # decoder is tested on are made of them by scripts/vp9-samples.sh, again
 # whenever the encoder changes. `--video` is the video file the video and

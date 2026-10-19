@@ -35,7 +35,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   the system half of that check; `state.rs` tells whoever connects to the state socket
   whether the desktop is held, and `watch.rs` is `wlshare watch`, the process
   that follows it and runs a command for each; `shared.rs` is what crosses
-  between them.
+  between the compositor thread and the sessions.
 
 Its client is the remotex gateway, which every viewer reaches the desktop
 through.
@@ -43,8 +43,8 @@ through.
 ## One session at a time
 
 The desktop belongs to one client. A connection that finishes the handshake
-takes it, and the client that held it is disconnected with a message naming the
-one that took over — the same trade Windows Remote Desktop makes, and the reason
+takes it, and the connection of the client that held it is closed, the daemon
+logging which one took over — the same trade Windows Remote Desktop makes, and the reason
 the takeover happens *after* the handshake: an unauthenticated connection, or
 one whose login is refused, never displaces the session in progress. RFB's ClientInit
 shared flag is read as nothing of the kind; there is no configuration for it and no way to
@@ -53,11 +53,13 @@ is the client's own second, which shows it another output
 ([A display beside](#a-display-beside)).
 
 The compositor thread holds the client id of each of the two, so the rule is one
-comparison: input, resize, density, output selection and clipboard from anyone
-else are dropped, which is what
-a superseded session's last in-flight messages are. Taking over releases the
-keys and buttons the previous client held and its pending resize, and capture
-runs from the first handshake until the client on the desktop leaves.
+comparison: input, resize and density from anyone else are dropped, which is
+what a superseded session's last in-flight messages are; output selection and
+the clipboard are the desktop's client's alone, and a display beside asking to
+switch is answered with the list as it is. Taking over releases the keys and
+buttons the previous client held, its pending resize and queued declaration,
+and ends the display beside it, and capture runs from the first handshake until
+the client on the desktop leaves.
 
 Who is where is a `watch` and not one of the broadcast events: a session slow
 enough to lag the broadcast drops events, and dropping this one would leave two
@@ -91,12 +93,14 @@ and moves the desktop to the configured one each time it appears — on its
 appearing only, so a client that then names another output stays where it asked
 to be. A client takes the desktop before its ServerInit rather than after, so
 the socket says `held` while the client has still been told no size, and with
-`output_wait_secs` set the session waits that long for the configured output to
-be the shared one: whatever follows the socket enables it, and the size the
-client is told first is that output's, not a monitor's it would have been shown
-for a moment and whose mode it cannot change. The wait ends the moment the
-output is shared and otherwise runs out, and the client starts on the output
-shared meanwhile. The desktop is held throughout, so the wait is also raced
+`output_wait_secs` set a session that finds no output of that name waits that
+long for it: whatever follows the socket enables it, and the size the client is
+told first is that output's, not a monitor's it would have been shown for a
+moment and whose mode it cannot change. An output that appears is shared before
+it is listed, so the wait ends the moment the output is listed, and otherwise
+runs out, and the client starts on the output shared meanwhile. One that is
+already there and not shared is a client's choice of another, which nothing
+waiting would undo, so nobody waits for it. The desktop is held throughout, so the wait is also raced
 against the client closing its connection and against a later connection taking
 the desktop, either of which ends the session there. Enabling it is not the daemon's: a compositor reports a
 disabled head with no position, so a daemon enabling one through
@@ -178,13 +182,18 @@ And the frame that comes back is taken whole, whatever the compositor reported
 changed: damage is measured against the frame before, and a framebuffer just
 made, just resized, or just pointed at another output has no frame before, so
 copying only the reported rectangles would leave the rest of it blank. Both
-follow from `painted`, which the framebuffer clears on every resize.
+follow from `painted`, which the framebuffer clears on every resize, and from
+the frame's size: a frame announced at a size the framebuffer does not have yet
+is asked for outright too, since an idle output would otherwise never send the
+frame that resizes it. A frame that reports no damage at all is also taken
+whole.
 
 The framebuffer keeps a log of `(generation, rect)`. A session asks for the
 damage after the generation it last sent and gets the merged union; a session
 behind the log, or one that has seen nothing yet, gets the whole framebuffer.
-Sessions copy the pixels they need out under the lock and encode after releasing
-it, so encoding a slow client's update never holds up a capture.
+Sessions take the pixels they need under the lock — copied out for Raw and
+ZRLE, converted straight into the stream's planes for VP9 — and encode after
+releasing it, so encoding a slow client's update never holds up a capture.
 
 ### The cursor
 
@@ -206,9 +215,9 @@ each time it opens: on every output switch, where retargeting the virtual
 pointer briefly takes the seat's pointer away.
 
 The image is cropped to the pixels it paints and its hotspot, and goes to every
-client in an update of its own whenever it changes. Every client must advertise
-the standard Cursor pseudo-encoding (`-239`) before it asks for framebuffer
-pixels; one that also lists Cursor With Alpha (`-314`) is sent the premultiplied
+client in an update of its own whenever it changes. Every client must list
+the standard Cursor pseudo-encoding (`-239`) in every `SetEncodings`, and so
+before it asks for framebuffer pixels; one that also lists Cursor With Alpha (`-314`) is sent the premultiplied
 RGBA as it is, Raw-encoded, and the rest get pixels in their own format beside a
 mask cut at half alpha, which loses a shadow and antialiased edges. No image — a
 hidden pointer, or one on another output — is an empty rectangle. RFB cursor
@@ -276,8 +285,8 @@ wanted, and retries rather than serving a frozen picture.
 A client gets a pixel update when it has asked (`FramebufferUpdateRequest`, or
 once for all with continuous updates) and there is damage. Each pixel update is
 one `FramebufferUpdate` of merged rectangles, at most 32, ZRLE-encoded on the
-client's own deflate stream, or Raw before the client's first `SetEncodings`
-and for a client whose list names neither ZRLE nor VP9 — or, for a client that
+client's own deflate stream, or Raw for a client whose list names neither
+ZRLE nor VP9 — or, for a client that
 lists the VP9 encoding, one rectangle of the whole framebuffer
 ([below](#the-vp9-encoding)).
 
@@ -327,7 +336,7 @@ libvpx's, as `wlshare-vp9` sets it up: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
 asked for, and the colour declared in the bitstream.
 `crates/wlshare-rfb/src/vp9.rs` is the framing over it — the length word and
-its ceiling, the framebuffer's pixels in, and which of the two codes them.
+its ceiling, and the framebuffer's pixels in.
 What a frame holds is fixed:
 
 - **8-bit 4:4:4, VP9 profile 1, unless the list asks for 4:2:0.** A colour
@@ -384,8 +393,8 @@ What a frame holds is fixed:
   what was asked for. `0x574c5100` plus a quality 1–100 (`WLQ` and the value) names the ceiling the
   walk never goes above; `WLSD` (`0x574c5344`)
   holds the dial there, with a walk that hears nothing in a fence — only a
-  frame whose write blocked moves it, fence or no fence — and a settle with
-  nothing to sharpen; `WLSS` (`0x574c5353`, subsampled) asks for the stream
+  frame whose write blocked moves it, fence or no fence — and a settle only
+  for what such a frame coarsened; `WLSS` (`0x574c5353`, subsampled) asks for the stream
   at 4:2:0. The
   gateway lists the first two from the target's keys, so
   `video_quality` and `render_adaptive` mean on a passed stream what they mean
@@ -402,7 +411,7 @@ What a frame holds is fixed:
   machine's cores less two, at most eight, for the encoder, since an encode
   is a burst the person at the other end waits on. The stream's shape follows
   the picture's width and those threads, for the decoder's sake: one tile
-  column under 1440 wide, two from 1440, four from 2048, never more than the
+  column under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the
   threads, and a stream in four columns or more is coded without the loop
   filter. The conversion
   from the framebuffer's pixels to the planes is the `yuv` crate's, which
@@ -431,8 +440,8 @@ What a frame holds is fixed:
   sharpens only the blocks it codes, so a picture coarsened before it is
   still owed its settle.
 - **Keyframes only when a decoder needs one**: the first frame after the
-  encoding is listed, the first at a new size (the encoder is made
-  again for it), and the frame that answers a non-incremental request. There is
+  encoding is listed, the first at a new size or a new chroma (the encoder
+  is made again for either), and the frame that answers a non-incremental request. There is
   no periodic keyframe; nothing is lost on TCP.
 
 A normal VP9 update is sent when anything is damaged; a non-incremental request,
@@ -440,12 +449,13 @@ a quality-ceiling change and the settle described above can also owe
 one. The frame is the whole picture, and what did not change costs it
 nearly nothing, in bytes or in time: the session hands the encoder the damage
 since the client's last frame, the encoder converts the rectangles of the damage
-and codes the 8×8 blocks they touch, and every other block is left as the client
+and codes the 16×16 blocks they touch, and every other block is left as the client
 holds it, in a segment a decoder reads nothing more of. The conversion is
 straight out of the framebuffer, under its lock, into the encoder's planes, and
 the frame is coded from those once the lock is let go: the pixels are copied
 nowhere between, unless the frames are captured. What the encoder was
-measured at is in its own repository (`docs/benchmarks.md`). A keyframe,
+measured at is beside the constants it was measured for, in
+`crates/wlshare-vp9`. A keyframe,
 an encoder's first frame, a settle and a client the damage log no longer
 reaches back for are coded whole. The encode runs on the session's worker,
 which is told it is blocking, and the fence keeps one frame in flight as it does
@@ -493,7 +503,7 @@ started has another id and is not taken for one.
 0.19, the daemon started by the container's script with the flag and no
 authentication on loopback, and `vp9-sink` (`crates/wlshare-rfb/examples/`),
 the one client the container has, which lists VP9 at a quality with Fence,
-ContinuousUpdates and ExtendedDesktopSize, sets the desktop's size, echoes
+ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's size, echoes
 the fences, throws the frames away, on cue reads late for a while, and
 types what the scenarios have it type, so the keys reach the desktop through
 the daemon as a person's do. The
@@ -521,8 +531,8 @@ first sent. The flood's session runs on past its length until it has a hundred a
 fifty frames: every frame of it is the whole picture new, the slowest there
 is to code, and a large desktop gets a few of them a second. A scenario that
 fails, or whose sink does, leaves no capture and fails the run, so a file
-named for a scenario is never something else. `scripts/capture-frames.sh` builds and runs it, against the encoder the
-workspace pins and nothing else. The remotex gateway is not instrumented for
+named for a scenario is never something else. `scripts/capture-frames.sh` builds and runs it, against the workspace's own
+encoder and nothing else. The remotex gateway is not instrumented for
 this: its Mac in Standard mode and its Windows over RDP hand it exact pixels
 of the same kind of desktop, so a wlshare capture at their sizes stands for
 them.
@@ -532,20 +542,20 @@ on are made of them: `vp9cap` (`crates/wlshare-rfb/examples/`) plays a
 capture into the encoder again, each frame with its rectangles, at the dial
 it was coded at, a keyframe where one was asked. So a walk's steps and its
 settle are in the stream it makes without a slow link being played again,
-and a change to how a desktop is coded — a pin bump of the encoder — is a run
+and a change to how a desktop is coded — in `wlshare-vp9`, or a bump of its
+libvpx — is a run
 of `scripts/vp9-samples.sh` over the captures already kept, not a desktop
 played again. The script writes what vp9-wasm's benchmark reads: for each
 size a quiet and a busy sample of 120 frames, the start of the terminal's
-capture and the frames in a row of the flood's that said the most pixels
+capture and the frames in a row of the video's that said the most pixels
 changed, each starting with a keyframe of the picture as it stood and named
-`<quiet|busy>-<WxH>-<tile columns>col-<lf|nolf>` from what the stream's own
+`<scenario>-<WxH>-<tile columns>col-<lf|nolf>` from what the stream's own
 keyframe header says, not from the encoder's rule. With `--streams` it also
-codes every capture whole, one stream per size the capture ran at, as IVF
-beside a CSV of each frame's time, bytes, keyframe and dial — the file pair
-the remotex gateway's own `--vp9-capture` writes of the streams it encodes.
-Every stream gets the MD5 of each frame libvpx decodes of it, from ffmpeg,
-and is kept only where ffmpeg's own VP9 decoder, which shares no code with
-libvpx, makes the same pictures. The encoder there is given four threads
+codes every capture whole, one stream per run of a size the capture held
+for thirty frames or more, as IVF beside a CSV of each frame's time, bytes,
+keyframe and dial. Every stream gets the MD5 of each frame libvpx decodes of
+it, from ffmpeg, and the run stops at a stream that ffmpeg's own VP9 decoder,
+which shares no code with libvpx, makes other pictures of. The encoder there is given four threads
 whatever the machine, since the tile columns a width is coded in are capped
 by the threads and a sample must be the same stream wherever it is made.
 An encoder is measured on the captures themselves, and for a quick run on
@@ -660,9 +670,9 @@ and one message type, `0xE1`, in both directions.
 | 14 | U8[] | name, UTF-8 |
 
 - **SelectOutput**, client → server, eight bytes: type, three bytes of padding,
-  the id of the output to share. Honoured only from a client that listed the
-  pseudo-encoding and holds the desktop, and **answered with an OutputList**
-  either way: a request naming an output the compositor no longer has, or the one
+  the id of the output to share. Ignored from a client that did not list the
+  pseudo-encoding, honoured only from the client on the desktop, and
+  **answered with an OutputList** either way, a display beside included: a request naming an output the compositor no longer has, or the one
   already shared, is answered with the list as it is. So a client's menu follows
   what is on the canvas rather than what was clicked.
 
@@ -672,10 +682,11 @@ and one message type, `0xE1`, in both directions.
 | 1 | U8[3] | padding |
 | 4 | U32 | id |
 
-A switch stops the capture, points the virtual pointer at the new output —
-`zwlr_virtual_pointer` takes its output when it is made and never again, so what
-the client holds is let go and the pointer is remade — takes the new size into
-the framebuffer blank, reports the geometry, and starts capturing again. The
+A switch stops the capture, takes the new size into the framebuffer blank,
+points the virtual pointer at the new output — `zwlr_virtual_pointer` takes its
+output when it is made and never again, so what the client holds is let go and
+the pointer is remade — reports the geometry and the list, and starts capturing
+again. The
 client is sent nothing until a frame of the output it asked for has arrived: a
 different size reaches it as an ExtendedDesktopSize rectangle with the server as
 the reason, and a same-sized output as a full repaint. Which output is shared to
@@ -689,7 +700,8 @@ an output still arriving cannot become a desktop of no size.
 An output the compositor takes away while it is the shared one is not left as a
 name standing for nothing — that would stop the capture with nothing left to
 start it again, and a client would sit watching a picture that had quietly
-stopped changing. The desktop moves to whatever the list shows first, through the
+stopped changing. The desktop moves to the configured `output` when the
+compositor has it and otherwise to whatever the list shows first, through the
 same sequence a client's own switch runs, so the client is told the new geometry
 and sent the new output's pixels. With no output left the capture stops and the
 list goes out empty, the last geometry and the last picture standing until an
@@ -739,12 +751,13 @@ display's browser tab on *All Displays*, and lists on it the pixel encodings,
 the cursor, the size and the density and nothing else.
 
 Only a headless output is ever resized or rescaled, so switching to a real
-monitor leaves a client's resize and density requests answered *prohibited* —
+monitor leaves a client's resize requests answered *prohibited* and its density
+declarations answered with the output as it is —
 that monitor's mode belongs to the person sitting at it.
 
 The choice outlives the client that made it: the next connection opens on the
-output the last one asked for, not on the configured default, until the daemon
-restarts. Measured on a two-monitor sway session in
+output the last one asked for, not on the configured default, until the
+configured output next appears or the daemon restarts. Measured on a two-monitor sway session in
 [remotex's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/remotex/blob/main/docs/wlshare-outputs.md),
 which is where the gateway's half of this lives.
 
@@ -778,7 +791,7 @@ lists only `-259`, gtk-vnc for one, hears nothing.
   codes 0–3, U8, S8, U16 and S16; its 32-bit codes are refused, because FLAC
   stores at most 24 bits. The frequency is bounded at 8 kHz, the lowest rate
   real audio uses, and at 96 kHz, twice what the desktop's own graph runs at.
-  A code or rate outside those is fatal. Four bytes for an enable or a disable,
+  A code, a channel count other than 1 or 2, or a rate outside those is fatal. Four bytes for an enable or a disable,
   ten for a set-format:
 
 | Offset | Type | Field |
@@ -958,8 +971,8 @@ the operation carries; integers are big-endian.
 - **Plug** makes a camera of the H.264 the client will send; another plug
   replaces it, and an unplug or the client leaving removes it. A plug with no
   pixels or no rate, and a sample over 4 MiB, are fatal: they are a client that
-  means something else by the fields. A plug past 4096x2304 pixels — H.264 level
-  5.2's largest frame — is refused, logged, and leaves the client without a
+  means something else by the fields. A plug of more pixels than 4096x2304 —
+  H.264 level 5.2's largest frame, 36 864 macroblocks — is refused, logged, and leaves the client without a
   camera: the fields reach 65535x65535, whose pictures no buffer should hold.
 - **Start** and **stop** are the desktop's decisions, not the client's: an
   application opened the camera, or the last one closed it. The client sends
@@ -1080,12 +1093,15 @@ while it is off, a client that lists the pseudo-encoding is told nothing.
 ## Resize
 
 `SetDesktopSize` sets a custom mode on the shared output, with the same rules.
-A request that arrives with `resize = false` is answered *prohibited*. A request
-for the current size is answered OK at once; a size the compositor rejects is
-answered *invalid layout*; a request the compositor accepts is answered when the
-frame at that size arrives, with an ExtendedDesktopSize rectangle naming this
-client as the reason. Only a headless output — one named `HEADLESS-*` — is ever
-reconfigured.
+A request from a client that did not list ExtendedDesktopSize is not answered
+at all. One that arrives with `resize = false` is answered *prohibited*; one
+naming other than one screen, or no pixels, *invalid layout*. A request for the
+current size is answered OK at once; one for an output that cannot be
+reconfigured — only a headless output, one named `HEADLESS-*`, ever is, and
+only through wlr-output-management — is answered *prohibited*; a size the
+compositor rejects is answered *invalid layout*; a request the compositor
+accepts is answered when the frame at that size arrives, with an
+ExtendedDesktopSize rectangle naming this client as the reason.
 
 ## Input and clipboard
 
@@ -1120,8 +1136,8 @@ outputs are laid out anew it maps every pointer back to the output its device
 names, none for a virtual one, and absolute positions then span the whole
 layout — off by the output's place in it once there are two. The wlroots the
 APT repository builds carries a patch that gives a virtual pointer its output's
-name, which labwc maps it back to; any other wlroots does not, so each
-wlr-output-management `done`, which follows every change to the layout, remakes
+name, which labwc maps it back to; any other wlroots does not, so on every
+wlroots each wlr-output-management `done`, which follows every change to the layout, remakes
 every desk's pointer against its output, the new one before the old one goes,
 letting go of the buttons held and none of the keys.
 Wheel "buttons" become discrete axis events, a notch apiece.
@@ -1142,8 +1158,10 @@ does not list the extension has no clipboard. Every `SetEncodings` listing it is
 answered with the server's caps — text, every action, and no unsolicited text,
 as the extension recommends, so a client notifies a change and the server asks
 for it. A selection the compositor announces is read off the loop into a pipe
-and kept as the shared clipboard, and the client is sent a notify; the text
-goes when the client requests it, as the shared clipboard is then. A selection
+and kept as the shared clipboard, and the client is sent a notify — or, to a
+client whose caps take no notify but take text unasked, the text itself, within
+the size its caps name; otherwise the text goes when the client requests it, as
+the shared clipboard is then. A selection
 that is cleared or stops being text is kept as empty text, and notified as
 holding nothing. A client's notify is answered with a request, and the text it
 provides becomes the shared clipboard and a data source that takes the

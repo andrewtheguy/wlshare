@@ -113,6 +113,11 @@ impl Displays {
     pub fn shares(&self, desk: usize, name: &str) -> bool {
         self.entries.iter().any(|entry| entry.id == self.active[desk] && entry.name == name)
     }
+
+    /// Whether the compositor has an output of this name to share.
+    pub fn lists(&self, name: &str) -> bool {
+        self.entries.iter().any(|entry| entry.name == name)
+    }
 }
 
 /// Who is where. A `watch` and not an [`Event`]: a session too far behind to

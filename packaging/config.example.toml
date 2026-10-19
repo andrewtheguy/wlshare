@@ -138,6 +138,6 @@ name = "wlshare"
 [xkb]
 # rules = ""
 # model = ""
-# layout = "us"
+# layout = ""
 # variant = ""
 # options = ""
