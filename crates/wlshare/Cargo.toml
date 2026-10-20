@@ -58,7 +58,7 @@ tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_support
 # the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).
 [package.metadata.deb]
 name = "wlshare"
-maintainer = "Andrew Chen <andrew@jaanuu.com>"
+maintainer = "Andrew Chen <hello@andrewtheguy.com>"
 extended-description = """A VNC server for wlroots-based Wayland compositors that captures one output through
 wlr-screencopy, serves it over RFB 3.8 with ZRLE, reports the output's
 pixel density to the remotex gateway over a private extension, and offers the
