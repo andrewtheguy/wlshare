@@ -61,6 +61,20 @@
 //! — ZRLE when listed, Raw otherwise — since the picture the client has is a
 //! lossy one.
 //!
+//! A client that lists the tiles encoding instead gets each pixel update as
+//! exact PNG tiles where the desktop changed and a frame of a stream of its own
+//! for each region that moves ([`wlshare_rfb::tiles`]). The damage since the
+//! client's last update is copied out of the framebuffer under the lock into
+//! the encoder's own picture, and coded on the worker once it is let go, as a
+//! VP9 frame is; a damage that changes nothing the client holds sends nothing.
+//! The regions' streams are held at the quality the list names, with no walk:
+//! the picture is for a link with room. What the encoder still owes once the
+//! desktop stops — a stream to end, a tile a stream carried to send exact — is
+//! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
+//! waits for a request and the fence as any other. A new size starts it over,
+//! and so does a non-incremental request, which ends every stream; a list that
+//! drops it is answered with the whole framebuffer in the encoding it selected.
+//!
 //! A size change goes out first, as its own update, and the whole framebuffer
 //! follows in the next. A client that negotiated neither ExtendedDesktopSize nor
 //! DesktopSize cannot be told and is disconnected at its next update instead of
@@ -146,6 +160,7 @@ use wlshare_rfb::msg::{self, ClientMsg, Screen};
 use wlshare_rfb::outputs::output_list;
 use wlshare_rfb::pixel::PixelFormat;
 use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
+use wlshare_rfb::tiles::{self, TilesEncoder};
 use wlshare_rfb::vp9::{self, Vp9Encoder, Vp9Stream};
 use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use wlshare_rfb::{
@@ -336,6 +351,10 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         vp9: None,
         capture: None,
         use_vp9: false,
+        tiles: None,
+        use_tiles: false,
+        tiles_quality: wlshare_rfb::vp9::QUALITY_MAX,
+        tiles_origin: Instant::now(),
         stream,
         keyframe_owed: false,
         walk,
@@ -532,6 +551,15 @@ struct Session {
     capture: Option<wlshare_rfb::capture::Writer<BufWriter<File>>>,
     /// The client listed the VP9 encoding, which it gets instead of Raw or ZRLE.
     use_vp9: bool,
+    /// The tiles picture's encoder, at the framebuffer's size once an update
+    /// has been sent in it.
+    tiles: Option<TilesEncoder>,
+    /// The client listed the tiles encoding, which it gets instead of Raw or ZRLE.
+    use_tiles: bool,
+    /// The dial the tiles picture's streams are held at, which its list names.
+    tiles_quality: u8,
+    /// What the tiles encoder's time is counted from.
+    tiles_origin: Instant,
     /// What the VP9 stream is to be: the ceiling of its quality, whether the
     /// walk moves it below, and its chroma, as the client's list asks
     /// ([`Vp9Stream`]).
@@ -627,6 +655,7 @@ impl Session {
             self.maybe_update(&mut writer).await?;
             let settle_at = self.settle_at();
             let frame_at = self.frame_at();
+            let tick_at = self.tick_at();
             tokio::select! {
                 read = reader.read_buf(&mut inbuf) => {
                     let n = read.context("reading from the client")?;
@@ -661,6 +690,8 @@ impl Session {
                 () = until(settle_at) => self.settle()?,
                 // The slowed frame's turn: the top of the loop sends it.
                 () = until(frame_at) => {}
+                // The tiles picture's tick: the top of the loop sends what it owes.
+                () = until(tick_at) => {}
                 // Woken to drain the capture at the top of the loop.
                 () = audio_ready(&self.audio) => {}
                 signal = camera_signal(&mut self.camera) => self.send_camera_signal(signal, &mut writer).await?,
@@ -860,8 +891,33 @@ impl Session {
                     self.settle_owed = false;
                 }
                 self.use_vp9 = vp9;
-                if !self.use_vp9 && !self.use_zrle && !has(ENCODING_RAW) {
-                    warn!("client {}: lists neither VP9, ZRLE nor Raw; sending Raw", self.id.0);
+                // Fatal without a quality, or beside VP9: no client sends such a list.
+                let listed = tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
+                if let Some(quality) = listed {
+                    if !self.use_tiles || quality != self.tiles_quality {
+                        info!("client {}: asked for tiles, its moving regions at quality {quality}", self.id.0);
+                    }
+                    if !self.use_tiles && self.config.capture_frames.is_some() {
+                        info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
+                    }
+                    if !self.use_tiles {
+                        // The picture starts over whole as PNG at the next
+                        // update, whether or not the desktop changed.
+                        self.seen = 0;
+                    }
+                    self.tiles_quality = quality;
+                    if let Some(encoder) = &mut self.tiles {
+                        encoder.set_quality(quality);
+                    }
+                } else if self.use_tiles {
+                    // What the client holds may be a stream's lossy picture
+                    // where something moved, and its streams are over.
+                    self.tiles = None;
+                    self.seen = 0;
+                }
+                self.use_tiles = listed.is_some();
+                if !self.use_vp9 && !self.use_tiles && !self.use_zrle && !has(ENCODING_RAW) {
+                    warn!("client {}: lists neither VP9, tiles, ZRLE nor Raw; sending Raw", self.id.0);
                 }
                 let announced_continuous = !self.continuous_supported && has(ENCODING_CONTINUOUS_UPDATES);
                 self.continuous_supported |= has(ENCODING_CONTINUOUS_UPDATES);
@@ -935,11 +991,12 @@ impl Session {
                     false => None,
                 };
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} vp9={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} vp9={} tiles={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
                     self.use_vp9,
+                    self.use_tiles,
                     self.use_zrle,
                     self.continuous_supported,
                     self.fence_supported,
@@ -1325,6 +1382,20 @@ impl Session {
             return Ok(());
         }
 
+        // A framebuffer with nothing in it ends the tiles picture's streams,
+        // whose ends are owed now rather than with the picture that fills it.
+        if self.use_tiles && !self.shared.desks[self.desk].framebuffer.lock().unwrap().painted {
+            if let Some(encoder) = &mut self.tiles {
+                encoder.forget();
+            }
+            if self.tiles.as_ref().is_some_and(TilesEncoder::owed) {
+                let generation = self.seen;
+                return self.send_tiles(writer, generation, answered).await;
+            }
+            answered(self);
+            return Ok(());
+        }
+
         // Under the lock: decide, and take the pixels: read into the VP9
         // stream's planes, or copied out for the other encodings. Encoding
         // happens after.
@@ -1345,6 +1416,28 @@ impl Session {
             let fb = loop {
                 let fb = self.shared.desks[self.desk].framebuffer.lock().unwrap();
                 let (width, height) = (fb.width, fb.height);
+                if self.use_tiles {
+                    // A framebuffer with nothing in it yet — a new size, another
+                    // output — starts the picture over: every stream the client
+                    // holds is owed its end, and the picture is sent again whole
+                    // once there is one. At a new size the encoder is made again
+                    // below and its streams end unannounced, since the client is
+                    // told the size first.
+                    if !fb.painted {
+                        if let Some(encoder) = &mut self.tiles {
+                            encoder.forget();
+                        }
+                        break fb;
+                    }
+                    if self.tiles.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
+                        break fb;
+                    }
+                    drop(fb);
+                    let encoder = TilesEncoder::new(width, height, self.tiles_quality)
+                        .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
+                    self.tiles = Some(encoder);
+                    continue;
+                }
                 if !self.use_vp9 || !fb.painted || self.vp9.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
                     break fb;
                 }
@@ -1371,11 +1464,15 @@ impl Session {
             // reads what did.
             let starting = self.use_vp9 && self.keyframe_owed;
             let settling = self.use_vp9 && self.settle_owed;
+            // The tiles picture owes what its tick looks for whether or not
+            // anything changed.
+            let now = self.tiles_origin.elapsed();
+            let ticking = self.use_tiles && self.tiles.as_ref().and_then(TilesEncoder::tick_at).is_some_and(|at| at <= now);
             let damage = if full || starting {
                 None
             } else {
                 match fb.damage_since(self.seen) {
-                    Some(rects) if rects.is_empty() && !settling => {
+                    Some(rects) if rects.is_empty() && !settling && !ticking => {
                         drop(fb);
                         answered(self);
                         return Ok(());
@@ -1384,7 +1481,19 @@ impl Session {
                 }
             };
             let stride = fb.stride();
-            if self.use_vp9 {
+            if self.use_tiles {
+                // Copied out of the framebuffer into the encoder's own picture,
+                // and compared there with what the client holds; coded once
+                // the lock is let go.
+                let read: Option<Vec<vp9::Rect>> =
+                    damage.as_ref().map(|rects| rects.iter().map(|r| vp9::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
+                let encoder = self.tiles.as_mut().expect("made before the lock was kept");
+                if full {
+                    encoder.forget();
+                }
+                encoder.read(&fb.pixels, stride, read.as_deref(), now).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
+                changed = None;
+            } else if self.use_vp9 {
                 // A VP9 frame is the whole picture, of which the stream reads
                 // the rectangles that changed, straight out of the
                 // framebuffer and into its planes: the lock is held for the
@@ -1456,6 +1565,9 @@ impl Session {
             }
         }
 
+        if self.use_tiles {
+            return self.send_tiles(writer, generation, answered).await;
+        }
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(if self.use_vp9 { 1 } else { pieces.len() as u16 }));
         // Whether the update is a VP9 frame, and if so whether it is a keyframe
@@ -1585,6 +1697,45 @@ impl Session {
             return None;
         }
         self.frame_sent.map(|sent| sent + self.walk.interval()).filter(|at| Instant::now() < *at)
+    }
+
+    /// Encode what the tiles picture owes and send it as one update, with its
+    /// fence, and the framebuffer seen up to `generation`. An encode that owes
+    /// nothing — damage that changed nothing the client holds — sends nothing,
+    /// and the request waits for what will; `answered` is what is done of it then.
+    async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
+        self.out.clear();
+        self.out.extend_from_slice(&msg::update_header(0));
+        let (encoder, out) = (self.tiles.as_mut().expect("made for the read"), &mut self.out);
+        let (width, height) = encoder.size();
+        // Tens of milliseconds for a large desktop that changed all over,
+        // which is the worker's to spend and not the runtime's to wait on.
+        let count = tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
+            .with_context(|| format!("encoding a {width}x{height} tiles picture"))?;
+        self.seen = generation;
+        if count == 0 {
+            answered(self);
+            return Ok(());
+        }
+        self.out[..4].copy_from_slice(&msg::update_header(count));
+        if self.fence_supported {
+            self.fence_seq = self.fence_seq.wrapping_add(1);
+            self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
+            self.fence_outstanding = true;
+        }
+        writer.send(&self.out).await.context("writing an update")?;
+        self.pending = None;
+        Ok(())
+    }
+
+    /// When the tiles picture's tick is owed an update — a stream to end, a
+    /// tile to send exact — or `None` while it owes nothing, or no update may
+    /// go: nothing is wanted, or a fence is outstanding.
+    fn tick_at(&self) -> Option<Instant> {
+        if !self.use_tiles || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
+            return None;
+        }
+        self.tiles.as_ref()?.tick_at().map(|at| self.tiles_origin + at)
     }
 
     /// When the desktop is to be settled at the configured quality: a frame

@@ -23,7 +23,9 @@
 //!   standard pixel encoding. **The VP9 encoding** is a private one for the
 //!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
 //!   quality its owner sets ([`vp9`]), for a desktop
-//!   that moves. Raw is produced for a client whose list names neither. Tight,
+//!   that moves; **the tiles encoding**, another for the gateway, the desktop
+//!   as exact PNG tiles where it is still and a VP9 stream for each region
+//!   that moves, for a link with room to spare ([`tiles`]). Raw is produced for a client whose list names neither. Tight,
 //!   Hextile, RRE, CopyRect and every other lossy encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
 //!   XRGB8888, which is the `B, G, R, X` byte order the gateway forces. A client may
@@ -83,14 +85,15 @@ pub mod outputs;
 pub mod pixel;
 pub mod rsa_aes;
 pub mod scroll;
+pub mod tiles;
 pub mod vp9;
 pub mod zrle;
 
 /// Raw: pixels as they are, in the client's format. RFC 6143 §7.7.1 requires
 /// every server to produce it until asked for something else.
 pub const ENCODING_RAW: i32 = 0;
-/// ZRLE, the encoding this server chooses when the client lists it and not
-/// [`ENCODING_VP9`].
+/// ZRLE, the encoding this server chooses when the client lists it and neither
+/// [`ENCODING_VP9`] nor [`ENCODING_TILES`].
 pub const ENCODING_ZRLE: i32 = 16;
 /// The VP9 encoding, the ASCII bytes `WLSV`: a client that lists it, with a
 /// quality beside it ([`vp9::Vp9Stream`]), is sent every picture as one
@@ -98,6 +101,12 @@ pub const ENCODING_ZRLE: i32 = 16;
 /// It wins over ZRLE wherever it is listed; listed without a quality it is
 /// fatal, since the server has none of its own.
 pub const ENCODING_VP9: i32 = 0x574c_5356;
+/// The tiles encoding, the ASCII bytes `WLST`: a client that lists it, with a
+/// quality beside it ([`tiles::listed`]), is sent the desktop as exact PNG
+/// tiles where it is still and a VP9 stream for each region that moves
+/// ([`tiles`]). It wins over ZRLE wherever it is listed; listed without a
+/// quality, or beside [`ENCODING_VP9`], it is fatal.
+pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.
 pub const ENCODING_DESKTOP_SIZE: i32 = -223;
 /// LastRect pseudo-encoding: a client that lists it accepts an update whose

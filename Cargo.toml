@@ -14,7 +14,7 @@ default-members = ["crates/wlshare-rfb", "crates/wlshare-vp9"]
 resolver = "3"
 
 [workspace.package]
-version = "0.0.76"
+version = "0.0.77"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/andrewtheguy/wlshare"
@@ -37,4 +37,17 @@ panic = "abort"
 opt-level = 3
 
 [profile.dev.package.yuv]
+opt-level = 3
+
+# The PNG coding optimised in a debug build as in release, so that a tile is
+# coded and read back at the speed it is measured at: `png` itself, the
+# `fdeflate` its `Fast` compression and its decoding run on, and the
+# `crc32fast` every chunk is checked with.
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
 opt-level = 3

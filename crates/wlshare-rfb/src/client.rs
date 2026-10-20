@@ -28,8 +28,9 @@ use crate::msg::{
 use crate::pixel::PixelFormat;
 use crate::{
     ENCODING_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW,
-    ENCODING_VP9, ENCODING_ZRLE,
+    ENCODING_TILES, ENCODING_VP9, ENCODING_ZRLE,
 };
+use crate::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START};
 
 // ── Handshake ────────────────────────────────────────────────────────────────
 
@@ -274,6 +275,8 @@ pub enum RectBody {
     /// One VP9 frame without its length word; the rectangle is the whole
     /// framebuffer.
     Vp9(Vec<u8>),
+    /// A rectangle of the tiles encoding ([`crate::tiles`]).
+    Tiles(TileBody),
     /// The framebuffer is now the rectangle's width and height.
     DesktopSize,
     /// The same, with the rectangle's x as the reason and its y as the status;
@@ -287,6 +290,19 @@ pub enum RectBody {
     /// The server speaks the audio extension, which this client listed: an
     /// empty rectangle, and the only way that is ever said.
     Audio,
+}
+
+/// What a rectangle of the tiles encoding is, by its kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TileBody {
+    /// A PNG of the rectangle's pixels, exact.
+    Png(Vec<u8>),
+    /// The first frame of a region's stream on `stream`, a keyframe.
+    Start { stream: u8, frame: Vec<u8> },
+    /// The next frame of the stream on `stream`.
+    Frame { stream: u8, frame: Vec<u8> },
+    /// The stream on `stream` is over.
+    End { stream: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +345,8 @@ pub enum ParseError {
     UnknownType(u8),
     #[error("a rectangle of encoding {0}, which was never asked for")]
     UnknownEncoding(i32),
+    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME and END")]
+    UnknownTileKind(u8),
     #[error("a cursor with alpha whose pixels are in encoding {0}, not Raw")]
     CursorEncoding(i32),
     #[error("a rectangle of {0} bytes is over the {MAX_RECT_BODY}-byte ceiling")]
@@ -467,6 +485,33 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             let len = u32_at(buf, 12) as usize;
             let Some(frame) = take(16, len)? else { return Ok(None) };
             (RectBody::Vp9(frame), 16 + len)
+        }
+        ENCODING_TILES => {
+            let Some(&kind) = buf.get(12) else { return Ok(None) };
+            match kind {
+                KIND_PNG => {
+                    if buf.len() < 17 {
+                        return Ok(None);
+                    }
+                    let len = u32_at(buf, 13) as usize;
+                    let Some(png) = take(17, len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Png(png)), 17 + len)
+                }
+                KIND_START | KIND_FRAME => {
+                    if buf.len() < 18 {
+                        return Ok(None);
+                    }
+                    let (stream, len) = (buf[13], u32_at(buf, 14) as usize);
+                    let Some(frame) = take(18, len)? else { return Ok(None) };
+                    let body = if kind == KIND_START { TileBody::Start { stream, frame } } else { TileBody::Frame { stream, frame } };
+                    (RectBody::Tiles(body), 18 + len)
+                }
+                KIND_END => {
+                    let Some(&stream) = buf.get(13) else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::End { stream }), 14)
+                }
+                other => return Err(ParseError::UnknownTileKind(other)),
+            }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
         ENCODING_EXTENDED_DESKTOP_SIZE => {
@@ -631,7 +676,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(7).to_vec();
+        let mut wire = msg::update_header(11).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -642,6 +687,14 @@ mod tests {
         wire.extend_from_slice(&cursor_rect(&PixelFormat::NATIVE, Some(&image)));
         wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VP9));
         wire.extend_from_slice(&[0, 0, 0, 2, 0x82, 0x49]);
+        wire.extend_from_slice(&msg::rect_header(64, 0, 64, 64, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_PNG, 0, 0, 0, 2, 0x89, 0x50]);
+        wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_START, 2, 0, 0, 0, 1, 0x82]);
+        wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_FRAME, 2, 0, 0, 0, 1, 0x86]);
+        wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_END, 2]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -661,6 +714,10 @@ mod tests {
         // Opaque red, and half-transparent blue divided back out; both in the mask.
         assert_eq!(rects[5].body, RectBody::Cursor { pixels: vec![0, 0, 255, 0, 255, 0, 0, 0], mask: vec![0b1100_0000] });
         assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Vp9(vec![0x82, 0x49]) });
+        assert_eq!(rects[7], Rect { x: 64, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50])) });
+        assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
+        assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));
+        assert_eq!((rects[10].width, &rects[10].body), (320, &RectBody::Tiles(TileBody::End { stream: 2 })));
     }
 
     #[test]
@@ -672,6 +729,10 @@ mod tests {
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_ZRLE));
         wire.extend_from_slice(&u32::MAX.to_be_bytes());
         assert_eq!(parse(&wire), Err(ParseError::RectTooLong(u32::MAX as usize)));
+        let mut wire = msg::update_header(1).to_vec();
+        wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
+        wire.push(4);
+        assert_eq!(parse(&wire), Err(ParseError::UnknownTileKind(4)));
     }
 
     #[tokio::test]

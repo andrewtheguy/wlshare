@@ -140,7 +140,7 @@ pub enum Vp9Error {
 /// the compositor and the session, which are what make the next frame. The
 /// count also bounds the stream's tile columns, and so what a decoder's
 /// threads have to split.
-fn encoder_threads() -> usize {
+pub(crate) fn encoder_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
 }
 

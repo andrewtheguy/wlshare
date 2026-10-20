@@ -41,6 +41,8 @@ sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.4
 # The VP9 encoding's codec: libvpx, set up for a desktop. Its decoder is what
 # the encoding's tests read every frame back with.
 wlshare-vp9 = { path = "../wlshare-vp9" }
+# The tiles encoding's PNGs, pure Rust; `fdeflate` is its fast compression.
+png = "0.18"
 
 [dev-dependencies]
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
@@ -51,3 +53,6 @@ symphonia-core = "0.6"
 # `net`, `time` and `io-std` for `examples/vp9-sink.rs`, the client the
 # capture container runs against the daemon, which types what it reads.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "time"] }
+# `examples/motion-bench.rs`, the tiles encoding measured against the VP9
+# encoding: the process's CPU time around each coder.
+cpu-time = "1"
