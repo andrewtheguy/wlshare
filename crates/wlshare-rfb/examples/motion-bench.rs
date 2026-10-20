@@ -5,8 +5,8 @@
 //! ```text
 //! motion-bench [--threads N] [--quality Q] [--wlsv-chroma 444|420]
 //!              [--region-chroma 420|444] [--wlsv-speed usual|fastest]
-//!              [--region-speed usual|fastest] [--cleanups N] [--csv FILE]
-//!              CAPTURE...
+//!              [--region-speed fastest|usual] [--first-sight png|video]
+//!              [--bands changed|whole] [--cleanups N] [--csv FILE] CAPTURE...
 //! ```
 //!
 //! A capture ending in `.zst` is read through `zstd -dc`, which must then be
@@ -24,20 +24,30 @@
 //! merge would cover more than twice the moving tiles, at most 4 streams;
 //! geometry retuned at most every 500 ms, a region that shrinks keeping its
 //! stream, one that grows rebuilt, one with no motion for a second ended. A
-//! report of damage is cut into 64-row bands, a band no stream touches sent
-//! whole as PNG, and from one a stream splits the runs of its changed tiles
-//! beside it. Every tile a stream carried is owed an exact PNG once it has
-//! been still for 500 ms, sent from a 250 ms tick, `--cleanups` (40) tiles a
-//! tick. A picture that starts over — a size's first frame, a keyframe asked —
-//! is seen first as one stream over the whole desktop, settled the same way.
-//! Where it is wlshare's rather than Motion's:
+//! report of damage is cut into 64-row bands, and from one a stream splits
+//! the runs of its changed tiles beside it are sent as PNG. Every tile a
+//! stream carried is owed an exact PNG once it has been still for 500 ms, sent
+//! from a 250 ms tick, `--cleanups` (40) tiles a tick. Where it is the planned
+//! picture's rather than Motion's, each measured on the 1080p and 4K captures
+//! against `WLSV` at 4:2:0:
 //!
 //! - a region's stream is told the damage inside it, as `WLSV` is, rather than
 //!   coded whole every frame;
-//! - its chroma is `--region-chroma`, 4:2:0 by default, since what a stream
-//!   leaves is settled exact, and so may its speed be, `--region-speed`
-//!   (libvpx's 7, `usual`, by default, or its 9, `fastest`), as `WLSV`'s is
-//!   `--wlsv-speed`;
+//! - its chroma is `--region-chroma`, 4:2:0 by default, and its speed
+//!   `--region-speed`, libvpx's 9 (`fastest`) by default, since what a stream
+//!   leaves is settled exact: speed 9 took the tiles from 0.73–0.98 of
+//!   `WLSV`'s CPU on motion to 0.44–0.72, the picture while it ran within
+//!   half a dB of speed 7's, where `--region-speed usual` is libvpx's 7, as
+//!   `--wlsv-speed` is `WLSV`'s (`usual` by default);
+//! - a picture that starts over — a size's first frame, a keyframe asked — is
+//!   sent as PNG at once, in its bands, where Motion streamed it first and
+//!   sent every tile as PNG after: on a link with room the stream is work for
+//!   nothing, and it took a still desktop's first picture from 1.5–1.7 of
+//!   `WLSV`'s CPU to 0.12–0.13 (`--first-sight video` is Motion's);
+//! - a band no stream touches is sent as the runs of its changed tiles, as a
+//!   band a stream splits is, rather than whole (`--bands whole` is Motion's):
+//!   3–15% fewer bytes where the damage is loose, a terminal's 6–8% more for
+//!   its small damage cut into more PNGs, the CPU the same within 5%;
 //! - a PNG is the gateway's tile coder: a palette, unfiltered, where the
 //!   pixels have at most 256 colours, and RGB with each row's filter chosen
 //!   otherwise, at `Fast`;
@@ -59,7 +69,9 @@
 //!
 //! The output is a Markdown table, a row per capture per coder: its CPU time
 //! all of it, the tiles' ticks and tail included, and the time a frame took
-//! the frames' alone. `--csv` adds
+//! the frames' alone; what the page held while the capture ran, as the PSNR
+//! of the mean squared error over every frame and the share of frames it held
+//! exactly; and where it ended. `--csv` adds
 //! one line per frame: `capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,
 //! tiles_bytes,png_bytes,vp9_bytes,streams,tick_us,tick_bytes`, a tick's
 //! columns what the ticks since the frame before cost.
@@ -79,7 +91,7 @@ use wlshare_vp9::{Decoder, Stream};
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--wlsv-chroma 444|420] [--region-chroma 420|444] [--wlsv-speed usual|fastest] [--region-speed usual|fastest] [--cleanups N] [--csv FILE] CAPTURE...";
+const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--wlsv-chroma 444|420] [--region-chroma 420|444] [--wlsv-speed usual|fastest] [--region-speed fastest|usual] [--first-sight png|video] [--bands changed|whole] [--cleanups N] [--csv FILE] CAPTURE...";
 
 struct Args {
     captures: Vec<PathBuf>,
@@ -89,6 +101,12 @@ struct Args {
     region_chroma: Chroma,
     wlsv_speed: Speed,
     region_speed: Speed,
+    /// A picture that starts over is first seen as a stream, as Motion's was,
+    /// rather than sent as PNG.
+    first_video: bool,
+    /// A band no stream touches is sent whole, as Motion's was, rather than
+    /// as its changed tiles.
+    whole_bands: bool,
     cleanups: usize,
     csv: Option<PathBuf>,
 }
@@ -111,7 +129,7 @@ fn speed(value: &str) -> Result<Speed, String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, wlsv_chroma: Chroma::Yuv444, region_chroma: Chroma::Yuv420, wlsv_speed: Speed::Usual, region_speed: Speed::Usual, cleanups: MAX_CLEANUPS_PER_TICK, csv: None };
+    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, wlsv_chroma: Chroma::Yuv444, region_chroma: Chroma::Yuv420, wlsv_speed: Speed::Usual, region_speed: Speed::Fastest, first_video: false, whole_bands: false, cleanups: MAX_CLEANUPS_PER_TICK, csv: None };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
@@ -121,6 +139,20 @@ fn parse_args() -> Result<Args, String> {
             "--region-chroma" => parsed.region_chroma = chroma(&value()?)?,
             "--wlsv-speed" => parsed.wlsv_speed = speed(&value()?)?,
             "--region-speed" => parsed.region_speed = speed(&value()?)?,
+            "--first-sight" => {
+                parsed.first_video = match value()?.as_str() {
+                    "video" => true,
+                    "png" => false,
+                    other => return Err(format!("{other}: a first sight is video or png")),
+                }
+            }
+            "--bands" => {
+                parsed.whole_bands = match value()?.as_str() {
+                    "whole" => true,
+                    "changed" => false,
+                    other => return Err(format!("{other}: bands are whole or changed")),
+                }
+            }
             "--cleanups" => parsed.cleanups = value()?.parse().ok().filter(|&n| n > 0).ok_or("--cleanups takes a count of at least 1")?,
             "--csv" => parsed.csv = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
@@ -151,8 +183,8 @@ fn main() {
     if let Some(csv) = &mut csv {
         let _ = writeln!(csv, "capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,tiles_bytes,png_bytes,vp9_bytes,streams,tick_us,tick_bytes");
     }
-    println!("| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | ends at | detail |");
-    println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|");
+    println!("| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames exact | ends at | detail |");
+    println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|");
     let mut failed = false;
     for capture in &args.captures {
         if let Err(e) = bench(capture, &args, csv.as_mut()) {
@@ -667,13 +699,15 @@ struct Tiles {
     quality: u8,
     chroma: Chroma,
     speed: Speed,
+    first_video: bool,
+    whole_bands: bool,
     threads: usize,
     serial: u64,
     scratch: Vec<u8>,
 }
 
 impl Tiles {
-    fn new(size: (u16, u16), quality: u8, chroma: Chroma, speed: Speed, threads: usize) -> Self {
+    fn new(size: (u16, u16), quality: u8, chroma: Chroma, speed: Speed, args: &Args) -> Self {
         let stride = usize::from(size.0) * 4;
         let mut tiles = Self {
             size,
@@ -689,7 +723,9 @@ impl Tiles {
             quality,
             chroma,
             speed,
-            threads,
+            first_video: args.first_video,
+            whole_bands: args.whole_bands,
+            threads: args.threads,
             serial: 0,
             scratch: Vec::new(),
         };
@@ -730,7 +766,7 @@ impl Tiles {
 
     /// One captured frame: its damage, and the round at its end.
     fn frame(&mut self, pixels: &[u8], rects: &[Rect], now: Duration, sent: &mut Vec<Sent>) -> Result<(), Error> {
-        if std::mem::take(&mut self.first_owed) {
+        if std::mem::take(&mut self.first_owed) && self.first_video {
             self.first_sight(now)?;
         }
         for &rect in rects {
@@ -766,7 +802,7 @@ impl Tiles {
                 }
             }
             let split = !self.covered.is_empty() && cells.iter().any(|(cell, _)| self.covered.contains(cell));
-            if !split {
+            if !split && self.whole_bands {
                 self.send_png(band, false, sent)?;
                 continue;
             }
@@ -1011,7 +1047,7 @@ impl Page {
 }
 
 /// How many pixels of two `B, G, R, X` pictures differ in B, G or R, and the
-/// PSNR over those three, infinite for none.
+/// mean squared error over those three.
 fn compare(a: &[u8], b: &[u8]) -> (u64, f64) {
     let (mut off, mut squared) = (0u64, 0u64);
     for (pa, pb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
@@ -1023,8 +1059,12 @@ fn compare(a: &[u8], b: &[u8]) -> (u64, f64) {
         }
         off += u64::from(differs);
     }
-    let mse = squared as f64 / (a.len() / 4 * 3) as f64;
-    (off, if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 / mse).log10() })
+    (off, squared as f64 / (a.len() / 4 * 3) as f64)
+}
+
+/// A mean squared error as PSNR, "exact" for none.
+fn db(mse: f64) -> String {
+    if mse == 0.0 { "exact".to_owned() } else { format!("{:.1} dB", 10.0 * (255.0f64 * 255.0 / mse).log10()) }
 }
 
 // ── WLSV ─────────────────────────────────────────────────────────────────────
@@ -1078,9 +1118,20 @@ struct Tally {
     tail_cpu: Duration,
     tail: Duration,
     settled: bool,
+    /// The page against the source after each frame: the squared error
+    /// summed, and the frames it held exactly.
+    mse: f64,
+    exact: u64,
 }
 
 impl Tally {
+    /// What the page held after a frame.
+    fn held(&mut self, page: &[u8], source: &[u8]) {
+        let (off, mse) = compare(page, source);
+        self.mse += mse;
+        self.exact += u64::from(off == 0);
+    }
+
     fn add(&mut self, sent: &Sent) {
         match sent {
             Sent::Png { png, cleanup: false, .. } => self.png += png.len() as u64,
@@ -1126,7 +1177,7 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
             setup = cost;
             run = Some(Run {
                 wlsv: encoder,
-                tiles: Tiles::new(frame.size, quality, args.region_chroma, args.region_speed, args.threads),
+                tiles: Tiles::new(frame.size, quality, args.region_chroma, args.region_speed, args),
                 page: Page::new(frame.size),
                 next_tick: now + CLEANUP_TICK,
             });
@@ -1203,6 +1254,8 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
             run.page.draw(s)?;
         }
         run.page.keep(&run.tiles.live);
+        wlsv.held(&run.wlsv.picture, &run.tiles.mirror);
+        tiles.held(&run.page.canvas, &run.tiles.mirror);
 
         if let Some(csv) = csv.as_deref_mut() {
             writeln!(
@@ -1254,12 +1307,11 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
     tiles.tail = now.saturating_sub(last_at);
 
     let seconds = last_at.saturating_sub(first_at.unwrap_or_default()).as_secs_f64();
-    let (_, wlsv_psnr) = compare(&run.wlsv.picture, &run.tiles.mirror);
-    let (off, tiles_psnr) = compare(&run.page.canvas, &run.tiles.mirror);
-    let db = |psnr: f64| if psnr.is_infinite() { "exact".to_owned() } else { format!("{psnr:.1} dB") };
+    let (_, wlsv_mse) = compare(&run.wlsv.picture, &run.tiles.mirror);
+    let (off, tiles_mse) = compare(&run.page.canvas, &run.tiles.mirror);
     let wlsv_detail = format!("{} keyframes{}", wlsv.keyframes, if wlsv.tail_cpu > Duration::ZERO { format!(", settled at {ceiling} for {:.1} ms", ms(wlsv.tail_cpu)) } else { String::new() });
-    row(&name, &format!("WLSV {}{}", chroma_name(args.wlsv_chroma), speed_name(args.wlsv_speed)), &wlsv, seconds, &db(wlsv_psnr), &wlsv_detail);
-    let ends = if off == 0 { "exact".to_owned() } else { format!("{off} px off, {}", db(tiles_psnr)) };
+    row(&name, &format!("WLSV {}{}", chroma_name(args.wlsv_chroma), speed_name(args.wlsv_speed)), &wlsv, seconds, &db(wlsv_mse), &wlsv_detail);
+    let ends = if off == 0 { "exact".to_owned() } else { format!("{off} px off, {}", db(tiles_mse)) };
     let tiles_detail = format!(
         "PNG {:.2} MB, cleanups {:.2} MB, VP9 {:.2} MB in {} streams, {} keyframes; {} in {:.2} s after, {:.1} ms",
         mb(tiles.png),
@@ -1271,7 +1323,7 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
         tiles.tail.as_secs_f64(),
         ms(tiles.tail_cpu),
     );
-    row(&name, &format!("tiles, regions {}{}", chroma_name(args.region_chroma), speed_name(args.region_speed)), &tiles, seconds, &ends, &tiles_detail);
+    row(&name, &format!("tiles, regions {}{}{}{}", chroma_name(args.region_chroma), speed_name(args.region_speed), if args.first_video { ", first as video" } else { "" }, if args.whole_bands { ", whole bands" } else { "" }), &tiles, seconds, &ends, &tiles_detail);
     Ok(())
 }
 
@@ -1309,5 +1361,7 @@ fn row(name: &str, coder: &str, tally: &Tally, seconds: f64, ends: &str, detail:
     let p95 = per_frame.get((per_frame.len() * 95 / 100).min(per_frame.len().saturating_sub(1))).copied().unwrap_or_default();
     let mean = if tally.frames == 0 { 0.0 } else { ms(per_frame.iter().sum()) / tally.frames as f64 };
     let rate = if seconds > 0.0 { format!("{:.1}", tally.bytes as f64 * 8.0 / seconds / 1e6) } else { "–".to_owned() };
-    println!("| {name} | {coder} | {} | {seconds:.1} | {:.0} | {mean:.2} | {:.2} | {:.2} | {rate} | {ends} | {detail} |", tally.frames, ms(tally.cpu), ms(p95), mb(tally.bytes));
+    let held = if tally.frames == 0 { "–".to_owned() } else { db(tally.mse / tally.frames as f64) };
+    let exact = if tally.frames == 0 { 0.0 } else { tally.exact as f64 * 100.0 / tally.frames as f64 };
+    println!("| {name} | {coder} | {} | {seconds:.1} | {:.0} | {mean:.2} | {:.2} | {:.2} | {rate} | {held} | {exact:.0}% | {ends} | {detail} |", tally.frames, ms(tally.cpu), ms(p95), mb(tally.bytes));
 }

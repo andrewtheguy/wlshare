@@ -20,9 +20,13 @@ time and a picture that ends exact.
   a Mac it was layered over ZRLE, each bound by a protocol the gateway does not
   own. wlshare owns both ends: the compositor's pixels and damage are coded
   once, and the gateway passes what it is sent.
-- **Still is exact.** The desktop in 64×64 tiles from (0,0); a changed tile
-  that is not moving goes as a PNG of its exact pixels, a row's run of them one
-  image, drawn on its own and depending on no other.
+- **Still is exact.** The desktop in 64×64 tiles from (0,0); a tile the damage
+  changed, compared exactly with what the page was sent, that is not moving
+  goes as a PNG of its exact pixels, a row's run of them one image, drawn on
+  its own and depending on no other. A picture that starts over — a new size,
+  a client that holds nothing — goes the same way at once, where Motion
+  streamed it first and sent every tile as PNG after it anyway: on a link with
+  room that stream is work for nothing.
 - **What moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
   components, one under 5 tiles is left to PNG, boxes merge unless the merged
@@ -35,9 +39,8 @@ time and a picture that ends exact.
   4:2:0, VP9 profile 0, whatever the browser decodes: what it loses of a
   colour lasts only while the region moves, since the settle makes it exact,
   and 4:2:0 is half the samples to code and every browser's hardware decoder
-  takes it. A picture that starts over is seen first as one stream over the
-  whole desktop, as Motion found: every tile as PNG ahead of the first pixel
-  was the largest thing ever sent.
+  takes it. For the same reason it is coded at libvpx's speed 9, the least
+  search it has.
 - **It settles to lossless.** Every tile a stream carried is owed an exact PNG
   once it has been still for half a second, sent after the stream's end on the
   ordered path, so a desktop that stops is exact on the page. This is the
@@ -46,7 +49,12 @@ time and a picture that ends exact.
   from a key of its own; the tiles go to the page as the `TILE` records it
   draws already, and the regions as records the page draws with a VP9 decoder
   each, Motion's `REGION` records brought back. The gateway codes nothing.
-- **To be measured first.** The kept captures, replayed through these rules
-  against `WLSV` by `examples/motion-bench.rs` in `wlshare-rfb`: the
-  encoder's CPU time and the bytes, scenario by scenario, and each picture
-  decoded to check where it ends.
+- **Measured.** `examples/motion-bench.rs` in `wlshare-rfb` replays the kept
+  captures through these rules and through `WLSV`, both decoded as a page
+  would. Against `WLSV` at 4:2:0 and speed 7, at 1080p and 4K: typing and a
+  still desktop's first picture take 3% and 12–13% of its CPU; motion takes
+  44–72%, nearly all of that saving speed 9's; the picture while it moves is
+  as good or better (24.6–53.1 dB against 24.5–50.2), every capture ends
+  exact where `WLSV` ends at 23.9–52.7 dB, and the bytes are 1.2–13 times
+  `WLSV`'s: up to 53 Mbit/s, and 95 and 129 for a desktop flooded with change
+  at 1080p and 4K.
