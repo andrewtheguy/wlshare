@@ -51,3 +51,8 @@ symphonia-core = "0.6"
 # `net`, `time` and `io-std` for `examples/vp9-sink.rs`, the client the
 # capture container runs against the daemon, which types what it reads.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "time"] }
+# `examples/motion-bench.rs`, the fast-LAN picture measured against the VP9
+# encoding: the gateway's tile PNGs, coded and read back, and the process's CPU
+# time around each coder.
+png = "0.18"
+cpu-time = "1"
