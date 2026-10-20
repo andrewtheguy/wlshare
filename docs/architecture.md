@@ -18,7 +18,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   builds and tests on any OS. See [The VP9 encoding](#the-vp9-encoding).
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
   and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding's
-  framing over its encoder, the cursor and clipboard encodings, and the
+  framing over its encoder, the tiles encoding, the cursor and clipboard encodings, and the
   density, outputs, audio, camera and microphone extensions and the scroll
   message. It has no platform
   dependency — the audio extension's FLAC encoder, libFLAC under `sound-flac`,
@@ -293,7 +293,8 @@ one `FramebufferUpdate` of merged rectangles, at most 32, ZRLE-encoded on the
 client's own deflate stream, or Raw for a client whose list names neither
 ZRLE nor VP9 — or, for a client that
 lists the VP9 encoding, one rectangle of the whole framebuffer
-([below](#the-vp9-encoding)).
+([below](#the-vp9-encoding)), and for one that lists the tiles encoding
+its PNG tiles and region streams ([below](#the-tiles-encoding)).
 
 With Fence negotiated, every pixel update ends with a fence the client echoes,
 and the next pixel round waits for the echo. Cursor, audio and geometry
@@ -586,6 +587,104 @@ walk reads, and, because the server sends nothing until the echo arrives, a
 frame the browser would only have overwritten unseen is never encoded at all.
 A browser that is not drawing must not be able to stop the desktop, so no echo
 is held past 500 ms — remotex's `FENCE_HOLD_LIMIT`, its paint window's grace.
+
+## The tiles encoding
+
+A second private picture encoding beside `WLSV`, `WLST` (`0x574c5354`), for
+the remotex gateway on a link with room to spare: the desktop as exact PNG
+tiles where it is still, and a VP9 stream of its own for each region that
+moves. It is a choice the gateway makes per target, not a replacement:
+`WLSV`, one stream over the whole desktop walked on the link, stays the
+picture for a slow link, where a lossy stream in fewer bytes is what the link
+bears. This one spends bytes the link has, for less of the encoder's time and
+a picture that ends exact. It is remotex's Motion, which that gateway dropped
+because it sat between a native protocol and the page — on RDP it decoded what
+the host had encoded only to encode it again, on a Mac it was layered over
+ZRLE — and which belongs here, where the compositor's pixels and damage are
+coded once. `crates/wlshare-rfb/src/tiles.rs` is the encoder and its framing.
+
+A client that lists it, with a quality beside it (`WLQ` and the value, as
+VP9's), gets it instead of a standard pixel encoding, wherever in the list it
+is. Listed without a quality it is fatal, and so is a list that names both it
+and `WLSV`: they are two pictures, of which a client wants one. A pixel update
+is then any number of rectangles of the encoding, drawn in order, each a
+rectangle of the desktop whose body begins with a kind:
+
+```text
+u8 kind
+0 PNG     u32 length | u8[length]               a PNG of exactly the rectangle's pixels
+1 START   u8 stream | u32 length | u8[length]   a region stream's first frame
+2 FRAME   u8 stream | u32 length | u8[length]   the stream's next frame
+3 END     u8 stream                             the stream is over
+```
+
+A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
+depending on nothing before it. A START begins a stream on its id over its
+rectangle, a VP9 keyframe of exactly that size; each FRAME on the id is the
+next frame of that stream over the same rectangle; an END says it is over,
+its last picture staying until something draws over it. A PNG over a
+stream's rectangle only ever follows its END, so drawing every rectangle
+where it says, in order, is the picture.
+
+- **Still is exact.** The desktop is in 64×64 tiles from (0,0). The damage
+  since the client's last update is copied out of the framebuffer under the
+  lock into a picture the encoder keeps, and compared there tile by tile with
+  what the client holds, so a compositor redrawing what it shows sends
+  nothing. A tile that changed and that no stream carries goes as PNG, a
+  row's run of them, cut into bands of 64 rows, one image. A picture that
+  starts over — the encoding newly listed, a new size, a non-incremental
+  request — goes the same way at once, whole, where Motion streamed it first
+  and sent every tile as PNG after it anyway: on a link with room that stream
+  is work for nothing. The PNG is the gateway's tile coder: a palette
+  unfiltered where the pixels have at most 256 colours, RGB with each row's
+  filter chosen otherwise, at `png`'s fast compression.
+- **What moves is video.** Motion's rules: a tile is moving when it changed in
+  4 of the last 8 tenths of a second; moving tiles join into 4-connected
+  components, one under 5 tiles is left to PNG, boxes merge unless the merged
+  box would be more than twice the moving tiles, and at most 4 regions stream
+  at once. The regions are laid out again at most every 500 ms: one that
+  shrinks keeps its stream, one that grows is started again at a keyframe, one
+  with no motion for a second ends. A region past 3840×2400 either way up,
+  what a browser's decoder is counted on to take, is left to PNG. Each region
+  is a VP9 encoder over its rectangle alone, told the damage inside it as
+  `WLSV`'s is, so the encoder's time follows the area that moves rather than
+  the desktop. It is 4:2:0, VP9 profile 0, which every browser decodes, its
+  hardware decoders included, and at libvpx's speed 9, the least search it
+  has: what either loses lasts only while the region moves, since the settle
+  makes it exact. Its dial is the one the list names, held there: there is no
+  walk and no settle at the ceiling, since the picture is for a link with
+  room and settles to lossless anyway.
+- **It settles to lossless.** Every tile a stream carried is owed an exact PNG
+  once it has been still for half a second. What is owed is looked for every
+  quarter of a second, 40 tiles at most at a time, each look an update that
+  waits for a request and the fence as any other, so a desktop that stops is
+  exact on the page, and once it is nothing more is sent.
+- **Rounds as any other.** Each update ends with its fence, and one is in
+  flight at a time. A new size ends every stream with no END — the size goes
+  out first, and the picture whole after it — and a non-incremental request
+  ends them with theirs. A list that drops the encoding is answered with the
+  whole framebuffer in the standard encoding it selected.
+
+`examples/motion-bench.rs` in `wlshare-rfb` plays the kept captures through
+this encoder and through `WLSV`, both decoded as a page would, the tiles'
+updates through the client's parser. The rules beyond Motion's were chosen by
+it: told its damage rather than coded whole, a stream's encoder costs what
+moves; at speed 9 motion took 44–72% of `WLSV`'s CPU at 4:2:0 and speed 7,
+against 73–98% at speed 7, the picture while it moved at most 1.3 dB below
+speed 7's and mostly within half a dB; a first picture as PNG rather than a
+stream took 1–15% off the CPU over a capture, and nine tenths off a
+terminal's; a band no stream touches sent as its changed tiles rather than
+whole sent 3–15% fewer bytes where the damage is loose. Against `WLSV` at
+4:2:0 and speed 7, at 1080p and 4K: typing takes 3% of its CPU; motion
+44–72%, nearly all of that saving speed 9's, since `WLSV` at speed 9 takes
+about the tiles' CPU; the picture while it moves is up to 3 dB better and at
+worst 0.6 dB below, a terminal's exact throughout where `WLSV`'s is 53 dB;
+every capture ends exact where `WLSV` ends at 23.9–52.7 dB, and the bytes are
+1.2–13 times `WLSV`'s: up to 53 Mbit/s, and 95 and 129 for a desktop flooded
+with change at 1080p and 4K. The ratios hold from 1280×800 to 4K. Its `check`
+holds the encoder to sending nothing once settled, through 5 s of quiet and
+10 redraws of the pixels the page already has, and to ending exact; the
+`still` captures are for it and no measurement.
 
 ## The density extension
 

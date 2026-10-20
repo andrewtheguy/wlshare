@@ -10,7 +10,8 @@ A VNC server for wlroots-based Wayland compositors, built for the
 [remotex](https://github.com/andrewtheguy/remotex) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
 a client that asks, as remotex does for its browsers, as one VP9 stream at a
-quality that follows the link — injects input through the virtual keyboard and pointer protocols,
+quality that follows the link, or for a link with room to spare as exact PNG
+tiles with a VP9 stream for each region that moves — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
@@ -34,11 +35,13 @@ capturing it, requires wlroots 0.19 or newer.
 
 At the framebuffer layer, any RFB 3.8 client that advertises the standard Cursor
 pseudo-encoding and can draw Raw rectangles can connect. ZRLE is used when
-listed unless the client also asks for wlshare's private VP9 stream. A configured
+listed unless the client also asks for wlshare's private VP9 stream or its
+tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; remotex asks for both,
-and for the VP9 stream, on a `vnc` target with `subtype = "wlshare"`, and reads
+and for the VP9 stream, or with `render_tiles` the tiles, on a `vnc` target
+with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
 that remotex asks for in a session on such a target started with sound: while it
 listens wlshare's own sink is the default, so every
