@@ -34,7 +34,7 @@
 
 use thiserror::Error;
 
-pub use wlshare_vp9::{Chroma, QUALITY_MAX, QUALITY_MIN, Rect};
+pub use wlshare_vp9::{Chroma, QUALITY_MAX, QUALITY_MIN, Rect, Speed};
 
 /// Listed beside [`crate::ENCODING_VP9`] with a quality 1–100 added, names the
 /// ceiling the stream's walk never goes above: the ASCII bytes `WLQ` and the
@@ -209,6 +209,12 @@ impl Vp9Encoder {
     /// taken to the dial is the error of the frame that would be coded at it.
     pub fn set_quality(&mut self, quality: u8) {
         self.stream.set_quality(quality);
+    }
+
+    /// Move libvpx's speed on the running encoder, as [`Self::set_quality`]
+    /// moves the dial: the next frame is searched at it, with no keyframe.
+    pub fn set_speed(&mut self, speed: Speed) {
+        self.stream.set_speed(speed);
     }
 
     /// Read the picture — [`Self::size`] of `B, G, R, X` pixels whose rows

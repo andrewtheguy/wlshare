@@ -337,7 +337,6 @@ impl Encoder {
     }
 
     /// The speed this encoder is coding at.
-    #[cfg(test)]
     pub fn speed(&self) -> Speed {
         self.speed
     }
@@ -345,7 +344,6 @@ impl Encoder {
     /// Move the speed, without a keyframe, as [`Self::set_quality`] moves
     /// the dial: the next frame is searched at the new speed against the
     /// frames before it.
-    #[cfg(test)]
     pub fn set_speed(&mut self, speed: Speed) {
         self.speed = speed;
     }

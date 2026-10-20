@@ -116,16 +116,16 @@ const Q_FINEST: u32 = 8;
 const Q_COARSEST: u32 = 63;
 
 /// How much of its search libvpx spends on a frame. An encoder starts at
-/// [`Speed::Usual`], which is what every stream a session codes is coded at:
-/// the speed is moved only by the tests here, on libvpx's encoder itself.
+/// [`Speed::Usual`] and is moved on the fly ([`Encoder::set_speed`]), without
+/// a keyframe.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Speed {
+pub enum Speed {
     /// libvpx's speed 7. For a picture that is the stream.
     #[default]
     Usual,
     /// libvpx's speed 9: more bytes and a rougher picture for the least time
-    /// in the encoder. Nothing names it but a test.
-    #[cfg_attr(not(test), expect(dead_code))]
+    /// in the encoder. For a picture that only stands in for another a while,
+    /// where the time is worth more than either.
     Fastest,
 }
 
@@ -571,6 +571,19 @@ impl Encoder {
         self.0.set_quality(quality);
     }
 
+    /// The speed this encoder is searching at.
+    pub fn speed(&self) -> Speed {
+        self.0.speed()
+    }
+
+    /// Move the speed, without a keyframe, as [`Self::set_quality`] moves the
+    /// dial: the next frame is searched at the new speed against the frames
+    /// before it. It cannot fail: a libvpx that refuses the speed is the error
+    /// of the frame that was to be coded at it.
+    pub fn set_speed(&mut self, speed: Speed) {
+        self.0.set_speed(speed);
+    }
+
     /// The coarsest dial any block of the picture a decoder now holds was last
     /// coded at: [`Self::quality`] as each frame was encoded, for the blocks
     /// that frame coded. A frame told where its picture changed leaves the
@@ -677,6 +690,16 @@ impl Stream {
     /// Move the dial without a keyframe, as [`Encoder::set_quality`] does.
     pub fn set_quality(&mut self, quality: u8) {
         self.encoder.set_quality(quality);
+    }
+
+    /// The speed this stream is searching at.
+    pub fn speed(&self) -> Speed {
+        self.encoder.speed()
+    }
+
+    /// Move the speed without a keyframe, as [`Encoder::set_speed`] does.
+    pub fn set_speed(&mut self, speed: Speed) {
+        self.encoder.set_speed(speed);
     }
 
     /// The coarsest dial any block of the decoder's picture was last coded at
