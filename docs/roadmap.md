@@ -51,10 +51,12 @@ time and a picture that ends exact.
   each, Motion's `REGION` records brought back. The gateway codes nothing.
 - **Measured.** `examples/motion-bench.rs` in `wlshare-rfb` replays the kept
   captures through these rules and through `WLSV`, both decoded as a page
-  would. Against `WLSV` at 4:2:0 and speed 7, at 1080p and 4K: typing and a
-  still desktop's first picture take 3% and 12–13% of its CPU; motion takes
-  44–72%, nearly all of that saving speed 9's; the picture while it moves is
-  as good or better (24.6–53.1 dB against 24.5–50.2), every capture ends
+  would. Against `WLSV` at 4:2:0 and speed 7, at 1080p and 4K: typing takes
+  3% of its CPU; motion takes 44–72%, nearly all of that saving speed 9's;
+  the picture while it moves is up to 3 dB better and at worst 0.6 dB below,
+  a terminal's exact throughout where `WLSV`'s is 53 dB; every capture ends
   exact where `WLSV` ends at 23.9–52.7 dB, and the bytes are 1.2–13 times
   `WLSV`'s: up to 53 Mbit/s, and 95 and 129 for a desktop flooded with change
-  at 1080p and 4K.
+  at 1080p and 4K. The `still` captures are no measurement: its `check` holds
+  every capture to sending nothing once settled, through 5 s of quiet and 10
+  redraws of the pixels the page already has, and to ending exact.

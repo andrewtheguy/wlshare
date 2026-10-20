@@ -7,6 +7,7 @@
 //!              [--region-chroma 420|444] [--wlsv-speed usual|fastest]
 //!              [--region-speed fastest|usual] [--first-sight png|video]
 //!              [--bands changed|whole] [--cleanups N] [--csv FILE] CAPTURE...
+//! motion-bench check [the tiles' flags] CAPTURE...
 //! ```
 //!
 //! A capture ending in `.zst` is read through `zstd -dc`, which must then be
@@ -29,23 +30,26 @@
 //! stream carried is owed an exact PNG once it has been still for 500 ms, sent
 //! from a 250 ms tick, `--cleanups` (40) tiles a tick. Where it is the planned
 //! picture's rather than Motion's, each measured on the 1080p and 4K captures
-//! against `WLSV` at 4:2:0:
+//! but the `still` ones against `WLSV` at 4:2:0:
 //!
 //! - a region's stream is told the damage inside it, as `WLSV` is, rather than
 //!   coded whole every frame;
 //! - its chroma is `--region-chroma`, 4:2:0 by default, and its speed
 //!   `--region-speed`, libvpx's 9 (`fastest`) by default, since what a stream
 //!   leaves is settled exact: speed 9 took the tiles from 0.73–0.98 of
-//!   `WLSV`'s CPU on motion to 0.44–0.72, the picture while it ran within
-//!   half a dB of speed 7's, where `--region-speed usual` is libvpx's 7, as
+//!   `WLSV`'s CPU on motion to 0.44–0.72, the picture while it ran at most
+//!   1.3 dB below speed 7's and mostly within half a dB, where
+//!   `--region-speed usual` is libvpx's 7, as
 //!   `--wlsv-speed` is `WLSV`'s (`usual` by default);
 //! - a picture that starts over — a size's first frame, a keyframe asked — is
 //!   sent as PNG at once, in its bands, where Motion streamed it first and
 //!   sent every tile as PNG after: on a link with room the stream is work for
-//!   nothing, and it took a still desktop's first picture from 1.5–1.7 of
-//!   `WLSV`'s CPU to 0.12–0.13 (`--first-sight video` is Motion's);
+//!   nothing, and dropping it took 1–15% off the tiles' CPU over a capture,
+//!   and nine tenths off a terminal's, whose first picture is most of what it
+//!   costs (`--first-sight video` is Motion's);
 //! - a band no stream touches is sent as the runs of its changed tiles, as a
-//!   band a stream splits is, rather than whole (`--bands whole` is Motion's):
+//!   band a stream splits is, rather than whole (`--bands whole` is Motion's,
+//!   which `check` fails: a redraw of what the page holds is sent again):
 //!   3–15% fewer bytes where the damage is loose, a terminal's 6–8% more for
 //!   its small damage cut into more PNGs, the CPU the same within 5%;
 //! - a PNG is the gateway's tile coder: a palette, unfiltered, where the
@@ -75,6 +79,15 @@
 //! one line per frame: `capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,
 //! tiles_bytes,png_bytes,vp9_bytes,streams,tick_us,tick_bytes`, a tick's
 //! columns what the ticks since the frame before cost.
+//!
+//! **`check`** holds the tiles to what a picture that stops owes, on any
+//! capture and on the `still` ones above all, which are for this and no
+//! measurement: two whole pictures say nothing of a coder's cost. The capture
+//! is coded and the tick run on until nothing is owed; then 5 s more of the
+//! tick, nothing changing, and 10 redraws of the whole picture with the pixels
+//! it already has, as a compositor repaints what it shows, must send nothing,
+//! and the page must hold the picture exactly. A capture that fails says what
+//! was sent, and the exit is 1.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -91,7 +104,8 @@ use wlshare_vp9::{Decoder, Stream};
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--wlsv-chroma 444|420] [--region-chroma 420|444] [--wlsv-speed usual|fastest] [--region-speed fastest|usual] [--first-sight png|video] [--bands changed|whole] [--cleanups N] [--csv FILE] CAPTURE...";
+const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--wlsv-chroma 444|420] [--region-chroma 420|444] [--wlsv-speed usual|fastest] [--region-speed fastest|usual] [--first-sight png|video] [--bands changed|whole] [--cleanups N] [--csv FILE] CAPTURE...
+       motion-bench check [the tiles' flags] CAPTURE...";
 
 struct Args {
     captures: Vec<PathBuf>,
@@ -109,6 +123,8 @@ struct Args {
     whole_bands: bool,
     cleanups: usize,
     csv: Option<PathBuf>,
+    /// `check` rather than the bench.
+    check: bool,
 }
 
 fn chroma(value: &str) -> Result<Chroma, String> {
@@ -129,7 +145,7 @@ fn speed(value: &str) -> Result<Speed, String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, wlsv_chroma: Chroma::Yuv444, region_chroma: Chroma::Yuv420, wlsv_speed: Speed::Usual, region_speed: Speed::Fastest, first_video: false, whole_bands: false, cleanups: MAX_CLEANUPS_PER_TICK, csv: None };
+    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, wlsv_chroma: Chroma::Yuv444, region_chroma: Chroma::Yuv420, wlsv_speed: Speed::Usual, region_speed: Speed::Fastest, first_video: false, whole_bands: false, cleanups: MAX_CLEANUPS_PER_TICK, csv: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
@@ -156,6 +172,7 @@ fn parse_args() -> Result<Args, String> {
             "--cleanups" => parsed.cleanups = value()?.parse().ok().filter(|&n| n > 0).ok_or("--cleanups takes a count of at least 1")?,
             "--csv" => parsed.csv = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
+            "check" if parsed.captures.is_empty() && !parsed.check => parsed.check = true,
             _ => parsed.captures.push(PathBuf::from(arg)),
         }
     }
@@ -173,6 +190,21 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.check {
+        println!("| capture | settled in | 5 s quiet | 10 redraws | ends at | |");
+        println!("|---|---:|---:|---:|---|---|");
+        let mut failed = false;
+        for capture in &args.captures {
+            match check(capture, &args) {
+                Ok(passed) => failed |= !passed,
+                Err(e) => {
+                    eprintln!("motion-bench: {}: {e}", capture.display());
+                    failed = true;
+                }
+            }
+        }
+        std::process::exit(i32::from(failed));
+    }
     let mut csv = match args.csv.as_deref().map(File::create).transpose() {
         Ok(file) => file.map(BufWriter::new),
         Err(e) => {
@@ -1157,7 +1189,7 @@ struct Run {
 }
 
 fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Result<(), Error> {
-    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned());
+    let name = capture_name(path);
     let mut source = Source::open(path)?;
     let (mut wlsv, mut tiles) = (Tally::default(), Tally::default());
     let mut run: Option<Run> = None;
@@ -1325,6 +1357,121 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
     );
     row(&name, &format!("tiles, regions {}{}{}{}", chroma_name(args.region_chroma), speed_name(args.region_speed), if args.first_video { ", first as video" } else { "" }, if args.whole_bands { ", whole bands" } else { "" }), &tiles, seconds, &ends, &tiles_detail);
     Ok(())
+}
+
+/// A capture's name, without its extensions.
+fn capture_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned())
+}
+
+// ── check ────────────────────────────────────────────────────────────────────
+
+/// How long a settled picture is watched.
+const QUIET: Duration = Duration::from_secs(5);
+/// How many redraws of a settled picture are fed it, and how far apart.
+const REDRAWS: u32 = 10;
+const REDRAW_EVERY: Duration = Duration::from_millis(100);
+
+/// The tiles of one size, the page they draw, and the tick's next turn.
+struct Checked {
+    tiles: Tiles,
+    page: Page,
+    next_tick: Duration,
+}
+
+impl Checked {
+    /// Send `sent` to the page, and count its bytes.
+    fn draw(&mut self, sent: &[Sent]) -> Result<u64, Error> {
+        let mut bytes = 0;
+        for s in sent {
+            bytes += match s {
+                Sent::Png { png, .. } => png.len(),
+                Sent::Unit { frame, .. } => frame.len(),
+            } as u64;
+            self.page.draw(s)?;
+        }
+        self.page.keep(&self.tiles.live);
+        Ok(bytes)
+    }
+
+    /// Every tick due by `now`, and what they sent.
+    fn ticks(&mut self, now: Duration, args: &Args, sent: &mut Vec<Sent>) -> Result<u64, Error> {
+        let mut bytes = 0;
+        while self.next_tick <= now {
+            sent.clear();
+            self.tiles.tick(self.next_tick, args.cleanups, sent)?;
+            bytes += self.draw(sent)?;
+            self.next_tick += CLEANUP_TICK;
+        }
+        Ok(bytes)
+    }
+}
+
+/// Whether the tiles leave a capture's picture be once it is settled: see
+/// the module's `check`.
+fn check(path: &Path, args: &Args) -> Result<bool, Error> {
+    let name = capture_name(path);
+    let mut source = Source::open(path)?;
+    let mut run: Option<Checked> = None;
+    let mut last_at = Duration::ZERO;
+    let (mut sent, mut rects) = (Vec::new(), Vec::new());
+    while let Some(frame) = source.reader.next()? {
+        let now = frame.at;
+        last_at = now;
+        if run.as_ref().is_none_or(|r| r.tiles.size != frame.size) {
+            let quality = args.quality.unwrap_or(frame.quality);
+            run = Some(Checked { tiles: Tiles::new(frame.size, quality, args.region_chroma, args.region_speed, args), page: Page::new(frame.size), next_tick: now + CLEANUP_TICK });
+        }
+        let run = run.as_mut().expect("just made");
+        run.ticks(now, args, &mut sent)?;
+        rects.clear();
+        match frame.changed {
+            Some(changed) => rects.extend(changed.iter().filter_map(|r| Rect::clipped(*r, frame.size))),
+            None => rects.push(Rect::whole(frame.size)),
+        }
+        if frame.keyframe && !run.tiles.first_owed {
+            run.tiles.forget();
+        }
+        run.tiles.set_quality(args.quality.unwrap_or(frame.quality));
+        sent.clear();
+        run.tiles.frame(frame.pixels, &rects, now, &mut sent)?;
+        run.draw(&sent)?;
+    }
+    source.finish()?;
+    let mut run = run.ok_or("the capture holds no frames")?;
+
+    // Settled: the tick on until nothing is owed.
+    let mut now = last_at;
+    while !run.tiles.settled() && now <= last_at + TAIL {
+        now = run.next_tick;
+        run.ticks(now, args, &mut sent)?;
+    }
+    let settled = run.tiles.settled();
+    let settled_in = now.saturating_sub(last_at);
+
+    // Quiet: nothing changes, and nothing may be sent.
+    let quiet = run.ticks(now + QUIET, args, &mut sent)?;
+    now += QUIET;
+
+    // Redrawn: the whole picture again, every pixel as it was.
+    let picture = run.tiles.mirror.clone();
+    let whole = [Rect::whole(run.tiles.size)];
+    let mut redrawn = 0;
+    for _ in 0..REDRAWS {
+        now += REDRAW_EVERY;
+        redrawn += run.ticks(now, args, &mut sent)?;
+        sent.clear();
+        run.tiles.frame(&picture, &whole, now, &mut sent)?;
+        redrawn += run.draw(&sent)?;
+    }
+    redrawn += run.ticks(now + QUIET, args, &mut sent)?;
+
+    let (off, mse) = compare(&run.page.canvas, &run.tiles.mirror);
+    let passed = settled && quiet == 0 && redrawn == 0 && off == 0;
+    let ends = if off == 0 { "exact".to_owned() } else { format!("{off} px off, {}", db(mse)) };
+    let settle = if settled { format!("{:.2} s", settled_in.as_secs_f64()) } else { "never".to_owned() };
+    println!("| {name} | {settle} | {quiet} B | {redrawn} B | {ends} | {} |", if passed { "pass" } else { "**FAIL**" });
+    Ok(passed)
 }
 
 /// Whether a VP9 frame is a keyframe, as its header says.
