@@ -900,6 +900,11 @@ impl Session {
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
                     }
+                    if !self.use_tiles {
+                        // The picture starts over whole as PNG at the next
+                        // update, whether or not the desktop changed.
+                        self.seen = 0;
+                    }
                     self.tiles_quality = quality;
                     if let Some(encoder) = &mut self.tiles {
                         encoder.set_quality(quality);
@@ -1377,6 +1382,20 @@ impl Session {
             return Ok(());
         }
 
+        // A framebuffer with nothing in it ends the tiles picture's streams,
+        // whose ends are owed now rather than with the picture that fills it.
+        if self.use_tiles && !self.shared.desks[self.desk].framebuffer.lock().unwrap().painted {
+            if let Some(encoder) = &mut self.tiles {
+                encoder.forget();
+            }
+            if self.tiles.as_ref().is_some_and(TilesEncoder::owed) {
+                let generation = self.seen;
+                return self.send_tiles(writer, generation, answered).await;
+            }
+            answered(self);
+            return Ok(());
+        }
+
         // Under the lock: decide, and take the pixels: read into the VP9
         // stream's planes, or copied out for the other encodings. Encoding
         // happens after.
@@ -1546,32 +1565,10 @@ impl Session {
             }
         }
 
-        self.out.clear();
         if self.use_tiles {
-            self.out.extend_from_slice(&msg::update_header(0));
-            let (width, height) = size;
-            let (encoder, out) = (self.tiles.as_mut().expect("made for the read"), &mut self.out);
-            // Tens of milliseconds for a large desktop that changed all over,
-            // which is the worker's to spend and not the runtime's to wait on.
-            let count = tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
-                .with_context(|| format!("encoding a {width}x{height} tiles picture"))?;
-            // The damage was seen, and nothing of it differs from what the
-            // client holds; the request waits for what will.
-            self.seen = generation;
-            if count == 0 {
-                answered(self);
-                return Ok(());
-            }
-            self.out[..4].copy_from_slice(&msg::update_header(count));
-            if self.fence_supported {
-                self.fence_seq = self.fence_seq.wrapping_add(1);
-                self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
-                self.fence_outstanding = true;
-            }
-            writer.send(&self.out).await.context("writing an update")?;
-            self.pending = None;
-            return Ok(());
+            return self.send_tiles(writer, generation, answered).await;
         }
+        self.out.clear();
         self.out.extend_from_slice(&msg::update_header(if self.use_vp9 { 1 } else { pieces.len() as u16 }));
         // Whether the update is a VP9 frame, and if so whether it is a keyframe
         // and whether its delivery is a verdict about the link: a delta frame at
@@ -1700,6 +1697,35 @@ impl Session {
             return None;
         }
         self.frame_sent.map(|sent| sent + self.walk.interval()).filter(|at| Instant::now() < *at)
+    }
+
+    /// Encode what the tiles picture owes and send it as one update, with its
+    /// fence, and the framebuffer seen up to `generation`. An encode that owes
+    /// nothing — damage that changed nothing the client holds — sends nothing,
+    /// and the request waits for what will; `answered` is what is done of it then.
+    async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
+        self.out.clear();
+        self.out.extend_from_slice(&msg::update_header(0));
+        let (encoder, out) = (self.tiles.as_mut().expect("made for the read"), &mut self.out);
+        let (width, height) = encoder.size();
+        // Tens of milliseconds for a large desktop that changed all over,
+        // which is the worker's to spend and not the runtime's to wait on.
+        let count = tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
+            .with_context(|| format!("encoding a {width}x{height} tiles picture"))?;
+        self.seen = generation;
+        if count == 0 {
+            answered(self);
+            return Ok(());
+        }
+        self.out[..4].copy_from_slice(&msg::update_header(count));
+        if self.fence_supported {
+            self.fence_seq = self.fence_seq.wrapping_add(1);
+            self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
+            self.fence_outstanding = true;
+        }
+        writer.send(&self.out).await.context("writing an update")?;
+        self.pending = None;
+        Ok(())
     }
 
     /// When the tiles picture's tick is owed an update — a stream to end, a

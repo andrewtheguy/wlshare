@@ -740,9 +740,10 @@ impl TilesEncoder {
         Ok(())
     }
 
-    /// One rectangle of damage: into the picture, the streams it falls on
-    /// told, the churn of the tiles it changed, and the runs of those no stream
-    /// carries owed as PNG, band by band.
+    /// One rectangle of damage: into the picture, the streams told where it
+    /// changed what they carry, the churn of the tiles it changed, and the runs
+    /// of those no stream carries owed as PNG, band by band. A tile it names
+    /// whose pixels are what the client holds is no change to anything.
     fn damage(&mut self, pixels: &[u8], stride: usize, area: Area, now: Duration) {
         let mut changed: HashSet<(u16, u16)> = tiles_of(area).filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part)).map(|(cell, _)| cell).collect();
         for (cell, part) in tiles_of(area) {
@@ -756,24 +757,26 @@ impl TilesEncoder {
         for top in (area.top..=area.bottom).step_by(usize::from(BAND_ROWS)) {
             let band = Area { top, bottom: top.saturating_add(BAND_ROWS - 1).min(area.bottom), ..area };
             blit(&mut self.mirror, self.stride, pixels, stride, band);
-            for live in &mut self.live {
-                if let Some(part) = live.area.intersect(band) {
-                    live.dirty = true;
-                    live.pending.push(part.within(live.area));
-                }
-            }
-            let mut runs: Vec<Area> = Vec::new();
+            // The runs of changed tiles, and of those the ones no stream carries.
+            let (mut changes, mut runs): (Vec<Area>, Vec<Area>) = (Vec::new(), Vec::new());
+            let extend = |runs: &mut Vec<Area>, part: Area| match runs.last_mut() {
+                Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => run.right = part.right,
+                _ => runs.push(part),
+            };
             for (cell, part) in tiles_of(band) {
                 if !changed.contains(&cell) {
                     continue;
                 }
                 self.churn.observe(cell, now);
-                if self.covered.contains(&cell) {
-                    continue;
+                extend(&mut changes, part);
+                if !self.covered.contains(&cell) {
+                    extend(&mut runs, part);
                 }
-                match runs.last_mut() {
-                    Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => run.right = part.right,
-                    _ => runs.push(part),
+            }
+            for live in &mut self.live {
+                for part in changes.iter().filter_map(|change| live.area.intersect(*change)) {
+                    live.dirty = true;
+                    live.pending.push(part.within(live.area));
                 }
             }
             self.pngs.extend(runs);
@@ -809,15 +812,19 @@ impl TilesEncoder {
     }
 
     /// Whether anything is owed that no read will bring: a stream is live, or
-    /// a tile one carried is yet to be sent exact.
+    /// its end is yet to be sent, or a tile one carried is yet to be sent exact.
     pub fn owed(&self) -> bool {
-        !self.live.is_empty() || !self.debts.is_empty()
+        !self.live.is_empty() || !self.ended.is_empty() || !self.debts.is_empty()
     }
 
     /// When an [`Self::encode`] with no read is next owed something — a
     /// stream to end, a tile to send exact — or `None` while the client holds
-    /// the picture exactly and nothing streams.
+    /// the picture exactly and nothing streams. Streams [`Self::forget`] ended
+    /// are owed their ends at once.
     pub fn tick_at(&self) -> Option<Duration> {
+        if !self.ended.is_empty() {
+            return Some(Duration::ZERO);
+        }
         self.owed().then_some(self.next_tick)
     }
 
@@ -1281,6 +1288,26 @@ mod tests {
         assert!(page.decoders.is_empty());
     }
 
+    /// A redraw of what a live stream carries, the pixels the client holds,
+    /// codes no frame of it.
+    #[test]
+    fn a_redraw_inside_a_stream_codes_nothing() {
+        let (w, h) = (512u16, 256u16);
+        let mut pixels = noise(w, h, 5);
+        let mut encoder = TilesEncoder::with_threads(w, h, 60, 2).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        for n in 1..=12u32 {
+            paint(&mut pixels, w, video, 300 + n);
+            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
+        let frames = page.frames;
+        assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(650)), 0, "a redraw of the stream's pixels was sent");
+        assert_eq!(page.frames, frames);
+    }
+
     /// A client that asks for the picture whole is sent every stream's end and
     /// the picture as PNG.
     #[test]
@@ -1297,6 +1324,7 @@ mod tests {
         }
         assert_eq!((page.starts, page.ends), (1, 0));
         encoder.forget();
+        assert_eq!(encoder.tick_at(), Some(Duration::ZERO), "the ends are owed at once, read or no read");
         let pngs = page.pngs;
         step(&mut encoder, &mut page, &pixels, None, ms(1100));
         assert_eq!(page.ends, 1, "the stream ended");
