@@ -644,8 +644,10 @@ where it says, in order, is the picture.
   box would be more than twice the moving tiles, and at most 4 regions stream
   at once. The regions are laid out again at most every 500 ms: one that
   shrinks keeps its stream, one that grows is started again at a keyframe, one
-  with no motion for a second ends. A region past 3840×2400 either way up,
-  what a browser's decoder is counted on to take, is left to PNG. Each region
+  with no motion for a second ends. A region is at most the desktop, which
+  has the ceiling `WLSV`'s whole-desktop stream has: the gateway lists this
+  encoding only for a desktop its browser's decoder takes, as it does `WLSV`,
+  so wlshare holds a region to no ceiling of its own. Each region
   is a VP9 encoder over its rectangle alone, told the damage inside it as
   `WLSV`'s is, so the encoder's time follows the area that moves rather than
   the desktop. It is 4:2:0, VP9 profile 0, which every browser decodes, its

@@ -91,11 +91,6 @@ pub const KIND_END: u8 = 3;
 pub const REGION_CHROMA: Chroma = Chroma::Yuv420;
 /// A region's speed: libvpx's least search, since what it leaves is settled exact.
 pub const REGION_SPEED: Speed = Speed::Fastest;
-/// The longest side a region may have, and the other side's most: what a
-/// browser's VP9 decoder is counted on to take, and the remotex gateway's
-/// ceiling for every stream it passes. A box past it is left to PNG.
-pub const REGION_MAX_LONG: u16 = 3840;
-pub const REGION_MAX_SHORT: u16 = 2400;
 
 /// The quality the client's list names beside [`crate::ENCODING_TILES`], the
 /// VP9 encoding's `WLQ` and the value ([`crate::vp9::ENCODING_VP9_QUALITY_BASE`]),
@@ -190,12 +185,6 @@ impl Area {
     /// This rectangle as a stream takes one, from `origin`'s top-left.
     fn within(self, origin: Self) -> Rect {
         Rect { x: self.left - origin.left, y: self.top - origin.top, width: self.w(), height: self.h() }
-    }
-
-    /// Whether a stream may be made of this rectangle ([`REGION_MAX_LONG`]).
-    fn streamable(self) -> bool {
-        let (long, short) = (self.w().max(self.h()), self.w().min(self.h()));
-        long <= REGION_MAX_LONG && short <= REGION_MAX_SHORT
     }
 }
 
@@ -918,7 +907,7 @@ impl TilesEncoder {
             }
         }
         let size = self.size;
-        let wanted: Vec<Area> = merge(worthy, MAX_STREAMS).into_iter().filter_map(|bbox| bbox.to_area(size)).filter(|area| area.streamable()).collect();
+        let wanted: Vec<Area> = merge(worthy, MAX_STREAMS).into_iter().filter_map(|bbox| bbox.to_area(size)).collect();
         let (mut next, mut old): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live).into_iter().partition(|live| {
             let mut touched = wanted.iter().filter(|area| live.area.intersect(**area).is_some());
             touched.clone().next().is_some() && touched.all(|area| live.area.contains(*area))
@@ -1331,13 +1320,5 @@ mod tests {
         assert_eq!(page.pngs - pngs, 4, "the picture again in its bands");
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed(), "a picture sent whole owes nothing");
-    }
-
-    /// A region past what a decoder is counted on to take is no stream.
-    #[test]
-    fn a_region_past_the_ceiling_is_no_stream() {
-        let area = |w: u16, h: u16| Area { left: 0, top: 0, right: w - 1, bottom: h - 1 };
-        assert!(area(3840, 2400).streamable() && area(2400, 3840).streamable());
-        assert!(!area(3841, 64).streamable() && !area(2401, 2401).streamable());
     }
 }
