@@ -9,7 +9,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # camera's H.264 decoder) — the Wayland protocol is wayland-client's own Rust,
 # with no libwayland; cargo-deb reads the resulting .so
 # dependencies into the package's Depends. libFLAC and libopus, the audio
-# extension's encoders, are static archives the build downloads. libclang-dev is a build-time need
+# extension's encoders, are static archives the build downloads; jemalloc, the
+# allocator, is built from source with build-essential. libclang-dev is a build-time need
 # with nothing to link: pipewire-sys, libspa-sys and ffmpeg-sys-next generate
 # their bindings with bindgen, which loads libclang, and without it a clean
 # build fails with "Unable to find libclang".
@@ -26,6 +27,10 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-too
 WORKDIR /build
 COPY . /build
 
+# jemalloc takes its page size from the build host, and a 4K build refuses to
+# start on the 16K and 64K kernels arm64 boards ship (Raspberry Pi 5). 64K pages
+# run on all three.
+#
 # The package version is the crate's, as cargo-deb writes it (<version>-1, a
 # prerelease's hyphen a tilde, so that 0.0.63~alpha.1 sorts before 0.0.63); the
 # distribution the package was built for is in the file name only, so the
@@ -33,6 +38,7 @@ COPY . /build
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
     arch="$(dpkg --print-architecture)"; \
+    if [ "${arch}" = arm64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi; \
     cargo build --release -p wlshare; \
     [ "$(target/release/wlshare --version)" = "wlshare ${version}" ]; \
     mkdir -p /out; \

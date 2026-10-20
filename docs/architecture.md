@@ -35,7 +35,12 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   the system half of that check; `state.rs` tells whoever connects to the state socket
   whether the desktop is held, and `watch.rs` is `wlshare watch`, the process
   that follows it and runs a command for each; `shared.rs` is what crosses
-  between the compositor thread and the sessions.
+  between the compositor thread and the sessions. Its allocator is jemalloc,
+  linked statically as `malloc` itself, so the C libraries it links allocate
+  through it too: glibc's per-thread arenas keep what each thread frees, and
+  the remotex gateway's footprint grew with every session on them. The arm64
+  build sets jemalloc's page to 64K, which runs on the 4K, 16K and 64K
+  kernels arm64 boards ship.
 
 Its client is the remotex gateway, which every viewer reaches the desktop
 through.

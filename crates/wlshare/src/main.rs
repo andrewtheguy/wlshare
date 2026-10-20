@@ -45,6 +45,15 @@ use wlshare_rfb::rsa_aes::ServerKey;
 use crate::auth::Login;
 use crate::session::{RsaAes, Security};
 
+// jemalloc rather than glibc's malloc, as in the remotex gateway. Sessions
+// encode on tokio's worker threads, start and stop their audio, camera and
+// microphone on its blocking pool, and each of those gets a PipeWire thread of
+// its own for as long as it lasts; glibc gives each allocating thread an arena
+// that keeps what it frees, and the gateway's footprint grew with every
+// session on it.
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Parser, Debug)]
 #[command(name = "wlshare", version, about = "A VNC server for wlroots-based Wayland compositors, with pixel density on the wire")]
 struct Args {
