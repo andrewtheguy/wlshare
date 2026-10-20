@@ -10,8 +10,7 @@
   it, its decoder and the quality walk; nothing about a wire is decided
   there. Everything is built for its target's baseline, with no CPU floor.
   libvpx's decoder is also what `wlshare-rfb`'s VP9 tests read the
-  encoder's frames back with. libvpx's speed (`Speed`) is not public: only
-  the tests move it. A measurement of the encoder is run on an idle machine,
+  encoder's frames back with. A measurement of the encoder is run on an idle machine,
   alone: no build, test, profile or second measurement beside it. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
