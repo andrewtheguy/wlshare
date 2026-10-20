@@ -648,9 +648,10 @@ fn check(path: &Path, args: &Args) -> Result<bool, Error> {
     let settled = tiles.encoder.tick_at().is_none();
     let settled_in = now.saturating_sub(last_at);
 
-    // Quiet: nothing changes, and nothing may be sent.
+    // Quiet: nothing changes, and nothing may be sent, by a tick or by an
+    // encode at the window's end, which a settled encoder owes no tick for.
     now += QUIET;
-    let quiet = tiles.ticks(now)?.1.bytes();
+    let quiet = tiles.ticks(now)?.1.bytes() + tiles.encode(now)?.1.bytes();
 
     // Redrawn: the whole picture again, every pixel as it was.
     let whole = [Rect { x: 0, y: 0, width: size.0, height: size.1 }];

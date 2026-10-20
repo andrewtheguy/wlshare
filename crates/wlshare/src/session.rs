@@ -1399,11 +1399,15 @@ impl Session {
                 let (width, height) = (fb.width, fb.height);
                 if self.use_tiles {
                     // A framebuffer with nothing in it yet — a new size, another
-                    // output — starts the picture over, its streams ended
-                    // unannounced: the client is told any new size first, and is
-                    // sent the picture again whole once there is one.
+                    // output — starts the picture over: every stream the client
+                    // holds is owed its end, and the picture is sent again whole
+                    // once there is one. At a new size the encoder is made again
+                    // below and its streams end unannounced, since the client is
+                    // told the size first.
                     if !fb.painted {
-                        self.tiles = None;
+                        if let Some(encoder) = &mut self.tiles {
+                            encoder.forget();
+                        }
                         break fb;
                     }
                     if self.tiles.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
