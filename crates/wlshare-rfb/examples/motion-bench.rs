@@ -507,9 +507,9 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
         wlsv.frames += 1;
         wlsv.cpu += wlsv_cpu;
         wlsv.per_frame.push(wlsv_cpu);
-        let wlsv_bytes = if made { w.out.len() as u64 - 4 } else { 0 };
+        let wlsv_bytes = if made { w.out.len() as u64 - 5 } else { 0 };
         wlsv.sent.vp9 += wlsv_bytes;
-        if made && wlshare_vp9::frame_header(&w.out[4..]).is_some_and(|header| header.keyframe) {
+        if made && wlshare_vp9::frame_header(&w.out[5..]).is_some_and(|header| header.keyframe) {
             wlsv.keyframes += 1;
         }
         w.check()?;
@@ -554,7 +554,7 @@ fn bench(path: &Path, args: &Args, mut csv: Option<&mut BufWriter<File>>) -> Res
         wlsv.tail_cpu = cpu.elapsed();
         wlsv.cpu += wlsv.tail_cpu;
         if made {
-            wlsv.sent.vp9 += run.wlsv.out.len() as u64 - 4;
+            wlsv.sent.vp9 += run.wlsv.out.len() as u64 - 5;
         }
         run.wlsv.check()?;
     }
