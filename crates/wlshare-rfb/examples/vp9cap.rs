@@ -321,13 +321,14 @@ impl Output {
         self.unit.clear();
         let changed = if starting { None } else { frame.changed };
         self.stream.read(frame.pixels, usize::from(self.size.0) * 4, changed)?;
-        // A rectangle's body: the length word, which an IVF has its own of,
-        // and the frame. libvpx making none of a capture's frame is an error
-        // here, since every frame after it would be one early.
+        // A rectangle's body: the quality byte and the length word, which an
+        // IVF has no place for and its own of, and the frame. libvpx making
+        // none of a capture's frame is an error here, since every frame after
+        // it would be one early.
         if !self.stream.encode(starting || frame.keyframe, &mut self.unit)? {
             return Err("libvpx produced no frame".into());
         }
-        self.unit.drain(..4);
+        self.unit.drain(..5);
         let keyframe = wlshare_vp9::frame_header(&self.unit).is_some_and(|header| header.keyframe);
         let micros = frame.at.as_micros() as u64;
         let ms = (micros - *self.began.get_or_insert(micros)) / 1000;

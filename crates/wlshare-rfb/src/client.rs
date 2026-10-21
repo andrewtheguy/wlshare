@@ -272,9 +272,9 @@ pub enum RectBody {
     Raw(Vec<u8>),
     /// A ZRLE payload without its length word.
     Zrle(Vec<u8>),
-    /// One VP9 frame without its length word; the rectangle is the whole
-    /// framebuffer.
-    Vp9(Vec<u8>),
+    /// One VP9 frame without its length word, and the 1–100 dial it was coded
+    /// at; the rectangle is the whole framebuffer.
+    Vp9 { quality: u8, frame: Vec<u8> },
     /// A rectangle of the tiles encoding ([`crate::tiles`]).
     Tiles(TileBody),
     /// The framebuffer is now the rectangle's width and height.
@@ -479,12 +479,12 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             (RectBody::Zrle(payload), 16 + len)
         }
         ENCODING_VP9 => {
-            if buf.len() < 16 {
+            if buf.len() < 17 {
                 return Ok(None);
             }
-            let len = u32_at(buf, 12) as usize;
-            let Some(frame) = take(16, len)? else { return Ok(None) };
-            (RectBody::Vp9(frame), 16 + len)
+            let (quality, len) = (buf[12], u32_at(buf, 13) as usize);
+            let Some(frame) = take(17, len)? else { return Ok(None) };
+            (RectBody::Vp9 { quality, frame }, 17 + len)
         }
         ENCODING_TILES => {
             let Some(&kind) = buf.get(12) else { return Ok(None) };
@@ -686,7 +686,7 @@ mod tests {
         wire.extend_from_slice(&alpha_cursor_rect(Some(&image)));
         wire.extend_from_slice(&cursor_rect(&PixelFormat::NATIVE, Some(&image)));
         wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VP9));
-        wire.extend_from_slice(&[0, 0, 0, 2, 0x82, 0x49]);
+        wire.extend_from_slice(&[55, 0, 0, 0, 2, 0x82, 0x49]);
         wire.extend_from_slice(&msg::rect_header(64, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_PNG, 0, 0, 0, 2, 0x89, 0x50]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(rects[4].body, RectBody::AlphaCursor(vec![255, 0, 0, 255, 0, 0, 128, 128]));
         // Opaque red, and half-transparent blue divided back out; both in the mask.
         assert_eq!(rects[5].body, RectBody::Cursor { pixels: vec![0, 0, 255, 0, 255, 0, 0, 0], mask: vec![0b1100_0000] });
-        assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Vp9(vec![0x82, 0x49]) });
+        assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Vp9 { quality: 55, frame: vec![0x82, 0x49] } });
         assert_eq!(rects[7], Rect { x: 64, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50])) });
         assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
         assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));

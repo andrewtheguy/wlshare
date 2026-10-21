@@ -43,7 +43,8 @@
 //! that frame's size, and a frame of another size, which a resize brings,
 //! begins another: `FILE.2`, `FILE.3` and so on.
 //! Every second a line
-//! says how many frames and bytes came and how many were keyframes.
+//! says how many frames and bytes came, how many were keyframes, and the
+//! coarsest and mean dial the frames said they were coded at.
 
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -276,6 +277,12 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
     let (mut frames, mut bytes, mut keyframes, mut second) = (0u64, 0u64, 0u64, 0u64);
+    // The dial the frames said they were coded at: the coarsest, and the sum for the mean.
+    let (mut coarsest, mut quality_sum) = (u8::MAX, 0u64);
+    // Both as q0 before a frame has come, rather than the coarsest's starting value.
+    let dials = |frames: u64, coarsest: u8, quality_sum: u64| -> (u8, u64) {
+        quality_sum.checked_div(frames).map_or((0, 0), |mean| (coarsest, mean))
+    };
     while Instant::now() < end || (frames < args.frames && Instant::now() < last) {
         let now = began.elapsed().as_secs_f64();
         if let Some((secs, to)) = resize
@@ -337,9 +344,11 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 ServerMsg::Update(rects) => {
                     for rect in rects {
                         match rect.body {
-                            RectBody::Vp9(frame) => {
+                            RectBody::Vp9 { quality, frame } => {
                                 frames += 1;
                                 bytes += frame.len() as u64;
+                                coarsest = coarsest.min(quality);
+                                quality_sum += u64::from(quality);
                                 if wlshare_vp9::frame_header(&frame).is_some_and(|h| h.keyframe) {
                                     keyframes += 1;
                                 }
@@ -367,12 +376,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("vp9-sink: {second}s {frames} frames {bytes} bytes {keyframes} keyframes");
+            let (coarsest, mean) = dials(frames, coarsest, quality_sum);
+            eprintln!("vp9-sink: {second}s {frames} frames {bytes} bytes {keyframes} keyframes, coarsest q{coarsest} mean q{mean}");
         }
     }
     if let Some(mut ivf) = ivf {
         ivf.file.flush()?;
     }
-    eprintln!("vp9-sink: done, {frames} frames {bytes} bytes {keyframes} keyframes");
+    let (coarsest, mean) = dials(frames, coarsest, quality_sum);
+    eprintln!("vp9-sink: done, {frames} frames {bytes} bytes {keyframes} keyframes, coarsest q{coarsest} mean q{mean}");
     Ok(())
 }

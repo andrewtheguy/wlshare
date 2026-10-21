@@ -329,19 +329,25 @@ that does not list it is unchanged.
 A client that lists it, with a quality beside it (below), gets it instead of a
 standard pixel encoding, wherever in the list it is; listed without one it is
 fatal. Each pixel update is then one rectangle covering the whole
-framebuffer, whose body is a length word and one VP9 frame:
+framebuffer, whose body is the dial the frame was coded at, a length word and
+one VP9 frame:
 
 ```text
+u8 quality   the 1–100 dial the frame was coded at
 u32 length   the frame's bytes
 u8[length]   one VP9 frame
 ```
 
-Successive rectangles are one stream, each frame coded against the ones before
+The quality is the walk's dial as the frame was coded, or the ceiling for a
+settle's frame (both below): the gateway passes the frames on without decoding
+them, so it is the one thing about a frame it cannot read for itself, and
+what it logs at a session's end for judging a slow link by. Successive
+rectangles are one stream, each frame coded against the ones before
 it, so a client decodes them all with one decoder, in order. The coding is
 libvpx's, as `wlshare-vp9` sets it up: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
 asked for, and the colour declared in the bitstream.
-`crates/wlshare-rfb/src/vp9.rs` is the framing over it — the length word and
+`crates/wlshare-rfb/src/vp9.rs` is the framing over it — the quality byte, the length word and
 its ceiling, and the framebuffer's pixels in.
 What a frame holds is fixed:
 
