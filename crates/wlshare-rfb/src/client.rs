@@ -297,8 +297,9 @@ pub enum RectBody {
 pub enum TileBody {
     /// A PNG of the rectangle's pixels, exact.
     Png(Vec<u8>),
-    /// The first frame of a region's stream on `stream`, a keyframe.
-    Start { stream: u8, frame: Vec<u8> },
+    /// The first frame of a region's stream on `stream`, a keyframe, and the
+    /// byte naming its codec ([`crate::tiles::RegionCodec`]).
+    Start { stream: u8, codec: u8, frame: Vec<u8> },
     /// The next frame of the stream on `stream`.
     Frame { stream: u8, frame: Vec<u8> },
     /// The stream on `stream` is over.
@@ -497,14 +498,21 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                     let Some(png) = take(17, len)? else { return Ok(None) };
                     (RectBody::Tiles(TileBody::Png(png)), 17 + len)
                 }
-                KIND_START | KIND_FRAME => {
+                KIND_START => {
+                    if buf.len() < 19 {
+                        return Ok(None);
+                    }
+                    let (stream, codec, len) = (buf[13], buf[14], u32_at(buf, 15) as usize);
+                    let Some(frame) = take(19, len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Start { stream, codec, frame }), 19 + len)
+                }
+                KIND_FRAME => {
                     if buf.len() < 18 {
                         return Ok(None);
                     }
                     let (stream, len) = (buf[13], u32_at(buf, 14) as usize);
                     let Some(frame) = take(18, len)? else { return Ok(None) };
-                    let body = if kind == KIND_START { TileBody::Start { stream, frame } } else { TileBody::Frame { stream, frame } };
-                    (RectBody::Tiles(body), 18 + len)
+                    (RectBody::Tiles(TileBody::Frame { stream, frame }), 18 + len)
                 }
                 KIND_END => {
                     let Some(&stream) = buf.get(13) else { return Ok(None) };
@@ -690,7 +698,7 @@ mod tests {
         wire.extend_from_slice(&msg::rect_header(64, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_PNG, 0, 0, 0, 2, 0x89, 0x50]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
-        wire.extend_from_slice(&[KIND_START, 2, 0, 0, 0, 1, 0x82]);
+        wire.extend_from_slice(&[KIND_START, 2, 1, 0, 0, 0, 1, 0x82]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_FRAME, 2, 0, 0, 0, 1, 0x86]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
@@ -715,7 +723,7 @@ mod tests {
         assert_eq!(rects[5].body, RectBody::Cursor { pixels: vec![0, 0, 255, 0, 255, 0, 0, 0], mask: vec![0b1100_0000] });
         assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Vp9 { quality: 55, frame: vec![0x82, 0x49] } });
         assert_eq!(rects[7], Rect { x: 64, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50])) });
-        assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
+        assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, codec: 1, frame: vec![0x82] }));
         assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));
         assert_eq!((rects[10].width, &rects[10].body), (320, &RectBody::Tiles(TileBody::End { stream: 2 })));
     }

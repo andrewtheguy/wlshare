@@ -11,6 +11,8 @@ description = "The RFB wire wlshare speaks: message parsing and building, RSA-AE
 # because the daemon crate never does off a Wayland session.
 [dependencies]
 thiserror.workspace = true
+# The tiles encoder says when a hardware region coder fails it and VP9 takes over.
+log.workspace = true
 # ZRLE's per-client deflate stream. zlib-rs is the fastest backend and pure Rust.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 # RSA-AES: the async reader and writer the exchange and its frames run over.

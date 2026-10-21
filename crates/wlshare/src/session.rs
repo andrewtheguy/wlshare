@@ -63,7 +63,9 @@
 //!
 //! A client that lists the tiles encoding instead gets each pixel update as
 //! exact PNG tiles where the desktop changed and a frame of a stream of its own
-//! for each region that moves ([`wlshare_rfb::tiles`]). The damage since the
+//! for each region that moves ([`wlshare_rfb::tiles`]): VP9, or, for a client
+//! that lists H.264 beside the tiles on a host with a hardware encoder the daemon
+//! found at startup ([`crate::h264`]), that. The damage since the
 //! client's last update is copied out of the framebuffer under the lock into
 //! the encoder's own picture, and coded on the worker once it is let go, as a
 //! VP9 frame is; a damage that changes nothing the client holds sends nothing.
@@ -240,6 +242,10 @@ pub struct SessionConfig {
     /// at 4:4:4 (`examples/vp9cap.rs`), the chroma every use of one is about,
     /// so a session asked for 4:2:0 writes none while it is.
     pub capture_frames: Option<PathBuf>,
+    /// The host's hardware H.264 encoder, which codes the tiles picture's
+    /// moving regions for a client that takes H.264 ([`crate::h264`]), or
+    /// `None` for VP9 alone.
+    pub hardware: Option<Arc<crate::h264::Hardware>>,
 }
 
 /// The most rectangles one update carries before they collapse into one.
@@ -895,7 +901,8 @@ impl Session {
                 let listed = tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
                 if let Some(quality) = listed {
                     if !self.use_tiles || quality != self.tiles_quality {
-                        info!("client {}: asked for tiles, its moving regions at quality {quality}", self.id.0);
+                        let codec = if self.config.hardware.is_some() { "H.264 by the hardware" } else { "VP9" };
+                        info!("client {}: asked for tiles, its moving regions at quality {quality}, {codec}", self.id.0);
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
@@ -1433,7 +1440,8 @@ impl Session {
                         break fb;
                     }
                     drop(fb);
-                    let encoder = TilesEncoder::new(width, height, self.tiles_quality)
+                    let coder = self.hardware_coder();
+                    let encoder = TilesEncoder::new(width, height, self.tiles_quality, coder)
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
                     self.tiles = Some(encoder);
                     continue;
@@ -1726,6 +1734,21 @@ impl Session {
         writer.send(&self.out).await.context("writing an update")?;
         self.pending = None;
         Ok(())
+    }
+
+    /// The region coder the tiles picture's streams are opened on ahead of
+    /// VP9: the host's hardware H.264 encoder, on a device of this session's
+    /// own, where the host has one; `None` for VP9 alone, a device that
+    /// cannot be opened logged and taken for none.
+    fn hardware_coder(&self) -> Option<Box<dyn tiles::RegionCoder>> {
+        let hardware = self.config.hardware.as_ref()?;
+        match hardware.coder() {
+            Ok(coder) => Some(Box::new(coder)),
+            Err(e) => {
+                warn!("client {}: the hardware H.264 encoder could not be opened; its regions are VP9: {e:#}", self.id.0);
+                None
+            }
+        }
     }
 
     /// When the tiles picture's tick is owed an update — a stream to end, a

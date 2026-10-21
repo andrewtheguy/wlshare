@@ -24,7 +24,7 @@
 //!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
 //!   quality its owner sets ([`vp9`]), for a desktop
 //!   that moves; **the tiles encoding**, another for the gateway, the desktop
-//!   as exact PNG tiles where it is still and a VP9 stream for each region
+//!   as exact PNG tiles where it is still and a video stream for each region
 //!   that moves, for a link with room to spare ([`tiles`]). Raw is produced for a client whose list names neither. Tight,
 //!   Hextile, RRE, CopyRect and every other lossy encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
@@ -103,8 +103,10 @@ pub const ENCODING_ZRLE: i32 = 16;
 pub const ENCODING_VP9: i32 = 0x574c_5356;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it, with a
 /// quality beside it ([`tiles::listed`]), is sent the desktop as exact PNG
-/// tiles where it is still and a VP9 stream for each region that moves
-/// ([`tiles`]). It wins over ZRLE wherever it is listed; listed without a
+/// tiles where it is still and a video stream for each region that moves
+/// ([`tiles`]), VP9 or the host's hardware H.264 as the server chooses, each
+/// stream's START saying which ([`tiles::RegionCodec`]): the client decodes
+/// both. It wins over ZRLE wherever it is listed; listed without a
 /// quality, or beside [`ENCODING_VP9`], it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.
