@@ -4,14 +4,15 @@
 //! encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--quality 1..100] [--vp9] [--seconds N]
+//! tiles-sink ADDR --size WxH [--quality 1..100] [--seconds N]
 //!            [--streams DIR] [--keys]
 //! ```
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
 //! without a `[pam]` or `[password]` table. The list names the tiles encoding
-//! at the quality, and beside it, unless `--vp9`, that H.264 regions are
-//! taken; Fence and ContinuousUpdates so updates flow, ExtendedDesktopSize so
+//! at the quality — the regions' codec is the daemon's choice, VP9 or its
+//! host's hardware H.264, `hardware_h264 = false` in its configuration for
+//! VP9 on a host that has one; Fence and ContinuousUpdates so updates flow, ExtendedDesktopSize so
 //! `--size` can be sent as a SetDesktopSize before the first picture, and
 //! Cursor because the daemon requires it. Every rectangle is parsed by the
 //! client's parser; a PNG is counted, a region's START is counted under the
@@ -35,13 +36,12 @@ use wlshare_rfb::client::{self, RectBody, ServerMsg, TileBody};
 use wlshare_rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
 use wlshare_rfb::tiles::RegionCodec;
 use wlshare_rfb::vp9::ENCODING_VP9_QUALITY_BASE;
-use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_TILES, ENCODING_TILES_H264};
+use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_TILES};
 
 struct Args {
     addr: String,
     size: (u16, u16),
     quality: u8,
-    vp9: bool,
     seconds: u64,
     streams: Option<String>,
     keys: bool,
@@ -86,14 +86,13 @@ fn size(s: &str) -> Result<(u16, u16), String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--quality Q] [--vp9] [--seconds N] [--streams DIR] [--keys]")?;
-    let mut parsed = Args { addr, size: (0, 0), quality: 90, vp9: false, seconds: 10, streams: None, keys: false };
+    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--quality Q] [--seconds N] [--streams DIR] [--keys]")?;
+    let mut parsed = Args { addr, size: (0, 0), quality: 90, seconds: 10, streams: None, keys: false };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
             "--size" => parsed.size = size(&value()?)?,
             "--quality" => parsed.quality = value()?.parse().map_err(|_| "--quality takes 1..100")?,
-            "--vp9" => parsed.vp9 = true,
             "--seconds" => parsed.seconds = value()?.parse().map_err(|_| "--seconds takes a number")?,
             "--streams" => parsed.streams = Some(value()?),
             "--keys" => parsed.keys = true,
@@ -141,10 +140,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let init = client::read_server_init(&mut reader).await?;
     eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
 
-    let mut encodings = vec![ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + i32::from(args.quality), ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR];
-    if !args.vp9 {
-        encodings.insert(2, ENCODING_TILES_H264);
-    }
+    let encodings = [ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + i32::from(args.quality), ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR];
     out.write_all(&client::set_encodings(&encodings)).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {

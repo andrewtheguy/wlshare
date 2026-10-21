@@ -665,13 +665,13 @@ the picture.
   makes it exact. Its dial is the one the list names, held there: there is no
   walk and no settle at the ceiling, since the picture is for a link with
   room and settles to lossless anyway.
-- **Or the host's hardware H.264, for a client that takes it.** A client that
-  lists `WLSA` (`0x574c5341`) beside the encoding decodes H.264 as well, and
-  on a host whose GPU has an H.264 encoder a VA-API driver reaches — found
-  once at startup, `hardware_h264 = true` in the configuration and the
-  default — every region is coded by it instead, which is what this picture
-  is for: the processor pays for the conversion to NV12 and nothing of the
-  search. `crates/wlshare/src/h264.rs` is that encoder, libavcodec's
+- **Or the host's hardware H.264, which wlshare chooses.** A client of this
+  encoding decodes both codecs, and each stream's START says which it is;
+  the client has no say. On a host whose GPU has an H.264 encoder a VA-API
+  driver reaches — found once at startup, `hardware_h264 = true` in the
+  configuration and the default — every region is coded by it instead, which
+  is what this picture is for: the processor pays for the conversion to NV12
+  and nothing of the search. `crates/wlshare/src/h264.rs` is that encoder, libavcodec's
   `h264_vaapi` through the libavcodec already linked for the camera, and the
   `RegionCoder` of `wlshare-rfb`'s tiles module, which opens a stream of it
   for each region ahead of VP9. The coding is pinned as VP9's is: constant
@@ -687,8 +687,7 @@ the picture.
   execution units to the desktop and codes CQP without the HuC firmware — and
   the shader one after it, each on a frame of a small picture, since a driver
   lists more profiles than it opens; the log says what it found, and with
-  nothing found, or the key off, the regions are VP9 and the client is told
-  nothing of it. A coder that refuses a stream or fails one midway is given
+  nothing found, or the key off, the regions are VP9, which their STARTs say. A coder that refuses a stream or fails one midway is given
   up for VP9 for the rest of the session, the failed stream ended with its END
   and its tiles owed exact, so no session ends on the GPU's account. Each
   session opens the device itself, so a VA display is one thread's. The

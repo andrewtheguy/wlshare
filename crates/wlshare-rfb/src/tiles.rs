@@ -29,8 +29,8 @@
 //!   which codec it is ([`RegionCodec`]): a keyframe of exactly the
 //!   rectangle's size, 8-bit 4:2:0, BT.601 at studio swing — VP9 profile 0,
 //!   or an H.264 access unit in Annex B with its parameter sets, from a host
-//!   with a hardware encoder, for a client that listed
-//!   [`crate::ENCODING_TILES_H264`] beside the encoding. Each **FRAME** on
+//!   with a hardware encoder: the server's choice, which a client takes
+//!   either way. Each **FRAME** on
 //!   that id is the next frame of that stream, over the same rectangle, in
 //!   its codec, coded against the frames before it. A decoder draws each
 //!   frame's picture at the rectangle.
@@ -124,8 +124,8 @@ impl RegionCodec {
 pub type RegionError = Box<dyn std::error::Error + Send + Sync>;
 
 /// A coder of region streams the daemon hands a [`TilesEncoder`] in place of
-/// VP9: its host's hardware H.264 encoder, used for a client that listed
-/// [`crate::ENCODING_TILES_H264`]. The encoder opens a stream of it for each
+/// VP9: its host's hardware H.264 encoder, wherever the host has one, since
+/// every client decodes both. The encoder opens a stream of it for each
 /// region, and on the first failure, to open or to code, gives it up for
 /// VP9 for the rest of the session.
 pub trait RegionCoder: Send {
@@ -160,23 +160,14 @@ pub const REGION_CHROMA: Chroma = Chroma::Yuv420;
 /// A region's speed: libvpx's least search, since what it leaves is settled exact.
 pub const REGION_SPEED: Speed = Speed::Fastest;
 
-/// What a client's list asks of the tiles picture, beside [`crate::ENCODING_TILES`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TilesList {
-    /// The VP9 encoding's `WLQ` and the value
-    /// ([`crate::vp9::ENCODING_VP9_QUALITY_BASE`]): the dial every region's
-    /// stream is held at.
-    pub quality: u8,
-    /// The client listed [`crate::ENCODING_TILES_H264`]: its regions may be
-    /// H.264 where the host has a hardware encoder for it.
-    pub h264: bool,
-}
-
-/// What the client's list asks of the tiles picture: `None` where the list
-/// does not name the encoding. The server has no quality of its own, so a list
-/// that names the encoding without one is fatal, and so is one that names the
-/// VP9 encoding beside it: they are two pictures, of which a client wants one.
-pub fn listed(encodings: &[i32]) -> Result<Option<TilesList>, TilesListError> {
+/// The dial the client's list asks the tiles picture's streams held at — the
+/// VP9 encoding's `WLQ` and the value
+/// ([`crate::vp9::ENCODING_VP9_QUALITY_BASE`]) beside [`crate::ENCODING_TILES`] —
+/// or `None` where the list does not name the encoding. The server has no
+/// quality of its own, so a list that names the encoding without one is
+/// fatal, and so is one that names the VP9 encoding beside it: they are two
+/// pictures, of which a client wants one.
+pub fn listed(encodings: &[i32]) -> Result<Option<u8>, TilesListError> {
     if !encodings.contains(&crate::ENCODING_TILES) {
         return Ok(None);
     }
@@ -188,7 +179,7 @@ pub fn listed(encodings: &[i32]) -> Result<Option<TilesList>, TilesListError> {
         .filter_map(|&e| u8::try_from(e.checked_sub(crate::vp9::ENCODING_VP9_QUALITY_BASE)?).ok())
         .find(|q| (QUALITY_MIN..=QUALITY_MAX).contains(q))
         .ok_or(TilesListError::NoQuality)?;
-    Ok(Some(TilesList { quality, h264: encodings.contains(&crate::ENCODING_TILES_H264) }))
+    Ok(Some(quality))
 }
 
 /// Why a list that names the tiles encoding asks for no picture this server
@@ -719,8 +710,8 @@ pub struct TilesEncoder {
 impl TilesEncoder {
     /// An encoder for a `width`×`height` desktop whose streams are at
     /// `quality` (1–100), each a VP9 stream on as many threads as this machine
-    /// gives one, or a stream of `hardware` where one is given
-    /// ([`Self::set_hardware`]). The client holds nothing of it yet.
+    /// gives one, or a stream of `hardware` where one is given, until it
+    /// fails. The client holds nothing of it yet.
     pub fn new(width: u16, height: u16, quality: u8, hardware: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
         Self::with_threads(width, height, quality, crate::vp9::encoder_threads(), hardware)
     }
@@ -754,35 +745,10 @@ impl TilesEncoder {
         Ok(encoder)
     }
 
-    /// The coder new streams are opened on ahead of VP9, or `None` for VP9
-    /// alone: what the client's list asks for now. A stream live on a coder
-    /// taken away ends, its END at the next encode, and what it carried is
-    /// owed exact; one already on VP9 goes on.
-    pub fn set_hardware(&mut self, hardware: Option<Box<dyn RegionCoder>>) {
-        if hardware.is_none() && self.hardware.is_some() {
-            self.drop_hardware_streams();
-        }
-        self.hardware = hardware;
-    }
-
     /// The codec new streams are opened in: the hardware coder's while one is
     /// held, VP9 otherwise.
     pub fn codec(&self) -> RegionCodec {
         self.hardware.as_ref().map_or(RegionCodec::Vp9, |coder| coder.codec())
-    }
-
-    /// Every live stream not on VP9 ends, its END owed at the next encode.
-    fn drop_hardware_streams(&mut self) {
-        let ended: Vec<Live> = self.live.extract_if(.., |live| live.codec != RegionCodec::Vp9).collect();
-        if ended.is_empty() {
-            return;
-        }
-        for live in ended {
-            if live.started {
-                self.ended.push((live.id, live.area));
-            }
-        }
-        self.cover();
     }
 
     /// The desktop size this encoder codes.
@@ -1496,10 +1462,7 @@ mod tests {
         let quality = crate::vp9::ENCODING_VP9_QUALITY_BASE + 70;
         assert_eq!(crate::ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
         assert_eq!(listed(&[crate::ENCODING_ZRLE, quality]), Ok(None));
-        assert_eq!(listed(&[crate::ENCODING_TILES, quality, crate::ENCODING_ZRLE]), Ok(Some(TilesList { quality: 70, h264: false })));
-        assert_eq!(crate::ENCODING_TILES_H264, i32::from_be_bytes(*b"WLSA"));
-        assert_eq!(listed(&[crate::ENCODING_TILES_H264, crate::ENCODING_TILES, quality]), Ok(Some(TilesList { quality: 70, h264: true })));
-        assert_eq!(listed(&[crate::ENCODING_TILES_H264, quality]), Ok(None), "H.264 asks nothing without the tiles");
+        assert_eq!(listed(&[crate::ENCODING_TILES, quality, crate::ENCODING_ZRLE]), Ok(Some(70)));
         assert_eq!((RegionCodec::of(0), RegionCodec::of(1), RegionCodec::of(2)), (Some(RegionCodec::Vp9), Some(RegionCodec::H264), None));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_ZRLE]), Err(TilesListError::NoQuality));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::vp9::ENCODING_VP9_QUALITY_BASE + 101]), Err(TilesListError::NoQuality));
@@ -1709,29 +1672,4 @@ mod tests {
         assert!(page.decoders.is_empty());
     }
 
-    /// A coder taken away ends the streams on it, and new ones are VP9; one
-    /// given ends nothing.
-    #[test]
-    fn a_region_coder_taken_away_ends_its_streams() {
-        let (w, h) = (512u16, 256u16);
-        let mut pixels = noise(w, h, 9);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, None).unwrap();
-        let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
-        play(&mut encoder, &mut page, &mut pixels, w, 1, 12);
-        assert_eq!(page.codecs, [RegionCodec::Vp9]);
-        encoder.set_hardware(Some(Box::new(Fake { refuse: false, fail_after: None, fail_read_after: None, opened: 0 })));
-        assert!(encoder.tick_at() != Some(Duration::ZERO), "a VP9 stream goes on under a coder given");
-        play(&mut encoder, &mut page, &mut pixels, w, 13, 12);
-        assert_eq!((page.starts, page.ends), (1, 0), "the VP9 stream went on");
-        settle(&mut encoder, &mut page, ms(2000));
-        play(&mut encoder, &mut page, &mut pixels, w, 60, 20);
-        assert_eq!(page.codecs, [RegionCodec::Vp9, RegionCodec::H264], "the next region is the coder's");
-        encoder.set_hardware(None);
-        assert_eq!(encoder.tick_at(), Some(Duration::ZERO), "the stream's end is owed at once");
-        step(&mut encoder, &mut page, &pixels, None, ms(4100));
-        assert_eq!(page.ends, 2);
-        settle(&mut encoder, &mut page, ms(4200));
-        assert_eq!(page.off(&pixels), 0);
-    }
 }

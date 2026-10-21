@@ -360,7 +360,6 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         tiles: None,
         use_tiles: false,
         tiles_quality: wlshare_rfb::vp9::QUALITY_MAX,
-        tiles_h264: false,
         tiles_origin: Instant::now(),
         stream,
         keyframe_owed: false,
@@ -565,8 +564,6 @@ struct Session {
     use_tiles: bool,
     /// The dial the tiles picture's streams are held at, which its list names.
     tiles_quality: u8,
-    /// The client's list takes H.264 regions ([`wlshare_rfb::ENCODING_TILES_H264`]).
-    tiles_h264: bool,
     /// What the tiles encoder's time is counted from.
     tiles_origin: Instant,
     /// What the VP9 stream is to be: the ceiling of its quality, whether the
@@ -902,9 +899,9 @@ impl Session {
                 self.use_vp9 = vp9;
                 // Fatal without a quality, or beside VP9: no client sends such a list.
                 let listed = tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
-                if let Some(tiles::TilesList { quality, h264 }) = listed {
-                    if !self.use_tiles || quality != self.tiles_quality || h264 != self.tiles_h264 {
-                        let codec = if h264 && self.config.hardware.is_some() { "H.264 by the hardware" } else { "VP9" };
+                if let Some(quality) = listed {
+                    if !self.use_tiles || quality != self.tiles_quality {
+                        let codec = if self.config.hardware.is_some() { "H.264 by the hardware" } else { "VP9" };
                         info!("client {}: asked for tiles, its moving regions at quality {quality}, {codec}", self.id.0);
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
@@ -918,13 +915,6 @@ impl Session {
                     self.tiles_quality = quality;
                     if let Some(encoder) = &mut self.tiles {
                         encoder.set_quality(quality);
-                    }
-                    if h264 != self.tiles_h264 {
-                        self.tiles_h264 = h264;
-                        let coder = self.hardware_coder();
-                        if let Some(encoder) = &mut self.tiles {
-                            encoder.set_hardware(coder);
-                        }
                     }
                 } else if self.use_tiles {
                     // What the client holds may be a stream's lossy picture
@@ -1748,10 +1738,10 @@ impl Session {
 
     /// The region coder the tiles picture's streams are opened on ahead of
     /// VP9: the host's hardware H.264 encoder, on a device of this session's
-    /// own, where the host has one and the client takes H.264; `None` for VP9
-    /// alone, a device that cannot be opened logged and taken for none.
+    /// own, where the host has one; `None` for VP9 alone, a device that
+    /// cannot be opened logged and taken for none.
     fn hardware_coder(&self) -> Option<Box<dyn tiles::RegionCoder>> {
-        let hardware = self.config.hardware.as_ref().filter(|_| self.tiles_h264)?;
+        let hardware = self.config.hardware.as_ref()?;
         match hardware.coder() {
             Ok(coder) => Some(Box::new(coder)),
             Err(e) => {
