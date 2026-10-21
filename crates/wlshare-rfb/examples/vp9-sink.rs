@@ -279,6 +279,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (mut frames, mut bytes, mut keyframes, mut second) = (0u64, 0u64, 0u64, 0u64);
     // The dial the frames said they were coded at: the coarsest, and the sum for the mean.
     let (mut coarsest, mut quality_sum) = (u8::MAX, 0u64);
+    // Both as q0 before a frame has come, rather than the coarsest's starting value.
+    let dials = |frames: u64, coarsest: u8, quality_sum: u64| -> (u8, u64) {
+        quality_sum.checked_div(frames).map_or((0, 0), |mean| (coarsest, mean))
+    };
     while Instant::now() < end || (frames < args.frames && Instant::now() < last) {
         let now = began.elapsed().as_secs_f64();
         if let Some((secs, to)) = resize
@@ -372,12 +376,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("vp9-sink: {second}s {frames} frames {bytes} bytes {keyframes} keyframes, coarsest q{coarsest} mean q{}", quality_sum.checked_div(frames).unwrap_or(0));
+            let (coarsest, mean) = dials(frames, coarsest, quality_sum);
+            eprintln!("vp9-sink: {second}s {frames} frames {bytes} bytes {keyframes} keyframes, coarsest q{coarsest} mean q{mean}");
         }
     }
     if let Some(mut ivf) = ivf {
         ivf.file.flush()?;
     }
-    eprintln!("vp9-sink: done, {frames} frames {bytes} bytes {keyframes} keyframes, coarsest q{coarsest} mean q{}", quality_sum.checked_div(frames).unwrap_or(0));
+    let (coarsest, mean) = dials(frames, coarsest, quality_sum);
+    eprintln!("vp9-sink: done, {frames} frames {bytes} bytes {keyframes} keyframes, coarsest q{coarsest} mean q{mean}");
     Ok(())
 }
