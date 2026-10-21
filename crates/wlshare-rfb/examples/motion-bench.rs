@@ -422,9 +422,9 @@ impl Wlsv {
 
     /// Decode what the last encode appended, if anything.
     fn check(&mut self) -> Result<(), Error> {
-        if self.out.len() > 4 {
+        if self.out.len() > 5 {
             let (w, _) = self.encoder.size();
-            self.decoder.decode(&self.out[4..])?.write_bgrx(&mut self.picture, usize::from(w) * 4)?;
+            self.decoder.decode(&self.out[5..])?.write_bgrx(&mut self.picture, usize::from(w) * 4)?;
         }
         Ok(())
     }

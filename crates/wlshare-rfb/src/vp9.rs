@@ -3,14 +3,18 @@
 //!
 //! A private encoding, [`crate::ENCODING_VP9`], which only a client that lists
 //! it is ever sent. Its rectangle always covers the whole framebuffer, and its
-//! body is a length word and one VP9 frame:
+//! body is the dial the frame was coded at, a length word and one VP9 frame:
 //!
 //! ```text
+//! u8 quality   the 1–100 dial the frame was coded at
 //! u32 length   the frame's bytes
 //! u8[length]   one VP9 frame (a superframe counts as one)
 //! ```
 //!
-//! The rectangles of successive updates are one stream, each frame coded
+//! The quality is what the walk (below) had the encoder at for this frame, or
+//! the ceiling for a settle's: the one thing a client that passes the frames
+//! on undecoded cannot read from them, and what a session on a slow link is
+//! judged by at its end. The rectangles of successive updates are one stream, each frame coded
 //! against the frames before it, so none of them means anything alone. The
 //! stream begins with a keyframe, and so does every picture a decoder has to be
 //! able to start from: the first after the encoding is listed, the first at a
@@ -29,8 +33,8 @@
 //! not apply to this encoding; what it decodes to is its own business.
 //!
 //! The coding itself is [`wlshare_vp9`]'s, by libvpx as that crate sets it up
-//! for a desktop. What this module owns is the framing — the length word and
-//! its ceiling — and the framebuffer's pixels in.
+//! for a desktop. What this module owns is the framing — the quality byte, the
+//! length word and its ceiling — and the framebuffer's pixels in.
 
 use thiserror::Error;
 
@@ -233,7 +237,7 @@ impl Vp9Encoder {
     }
 
     /// Encode the picture as it was last read and append the rectangle's body
-    /// to `out`: the length word and the frame. `keyframe` makes it one a
+    /// to `out`: the dial, the length word and the frame. `keyframe` makes it one a
     /// decoder can start from; an encoder's first frame is one either way.
     ///
     /// Only the blocks the damage read since the last frame touches are
@@ -247,40 +251,46 @@ impl Vp9Encoder {
     /// frame a client can decode and the pixels are the next frame's to
     /// carry. An error leaves `out` as it was too.
     pub fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Vp9Error> {
-        self.framed(out, |stream, out| stream.encode(keyframe, out))
+        let quality = self.stream.quality();
+        self.framed(out, quality, |stream, out| stream.encode(keyframe, out))
     }
 
     /// Settle the picture at `quality`: encode it as it was last read, whole
     /// and at that quality, and leave the dial where it was. What a desktop
     /// that went quiet while its link had it coarse is sent once: an inter
     /// frame unless `keyframe` asks, which sharpens every block, with the
-    /// frames after it at what the link bears again.
+    /// frames after it at what the link bears again. The body says it was
+    /// coded at `quality`, not at the dial.
     ///
     /// Returns whether a body was appended, as [`Self::encode`] does.
     pub fn settle(&mut self, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Vp9Error> {
-        self.framed(out, |stream, out| stream.settle(quality, keyframe, out))
+        let quality = quality.clamp(QUALITY_MIN, QUALITY_MAX);
+        self.framed(out, quality, |stream, out| stream.settle(quality, keyframe, out))
     }
 
-    /// Append a rectangle's body to `out`: the length word, and the frame
-    /// `encode` appends. Nothing is appended for an encode that produced no
-    /// frame, failed, or made a frame over the ceiling.
-    fn framed(&mut self, out: &mut Vec<u8>, encode: impl FnOnce(&mut wlshare_vp9::Stream, &mut Vec<u8>) -> Result<bool, wlshare_vp9::Error>) -> Result<bool, Vp9Error> {
+    /// Append a rectangle's body to `out`: `quality`, the dial the frame is
+    /// coded at, the length word, and the frame `encode` appends. Nothing is
+    /// appended for an encode that produced no frame, failed, or made a frame
+    /// over the ceiling.
+    fn framed(&mut self, out: &mut Vec<u8>, quality: u8, encode: impl FnOnce(&mut wlshare_vp9::Stream, &mut Vec<u8>) -> Result<bool, wlshare_vp9::Error>) -> Result<bool, Vp9Error> {
+        let body_at = out.len();
+        out.push(quality);
         let length_at = out.len();
         out.extend_from_slice(&[0; 4]);
         match encode(&mut self.stream, out) {
             Ok(_) => {}
             Err(wlshare_vp9::Error::NoFrame) => {
-                out.truncate(length_at);
+                out.truncate(body_at);
                 return Ok(false);
             }
             Err(e) => {
-                out.truncate(length_at);
+                out.truncate(body_at);
                 return Err(e.into());
             }
         }
         let len = out.len() - length_at - 4;
         if len > crate::msg::MAX_RECT_BODY {
-            out.truncate(length_at);
+            out.truncate(body_at);
             return Err(Vp9Error::FrameTooLong(len));
         }
         out[length_at..length_at + 4].copy_from_slice(&(len as u32).to_be_bytes());
@@ -303,7 +313,7 @@ impl Vp9Decoder {
         Ok(Self { decoder: wlshare_vp9::Decoder::new(decoder_threads())? })
     }
 
-    /// Decode a VP9 rectangle payload — the frame, without its length word —
+    /// Decode a VP9 rectangle payload — the frame, without its dial and length word —
     /// of `width`×`height` pixels into `out`, whose first byte is the
     /// rectangle's first pixel and whose rows are `stride` bytes apart, as
     /// `B, G, R, X`.
@@ -319,7 +329,7 @@ impl Vp9Decoder {
 
 /// The encoder read back by the decoder, through the rectangle's framing. The
 /// coding itself is proved in `wlshare-vp9`; what these
-/// hold is the half this module owns — the length word, its ceiling, the pixels in and out — and
+/// hold is the half this module owns — the quality byte, the length word, its ceiling, the pixels in and out — and
 /// that a client's decoder refuses a frame of another size.
 #[cfg(test)]
 mod tests {
@@ -340,20 +350,22 @@ mod tests {
         (pixels, at)
     }
 
-    /// Encode `pixels` and read back the length word, returning the frame.
+    /// Encode `pixels` and read back the dial and the length word, returning the frame.
     fn encode(encoder: &mut Vp9Encoder, pixels: &[u8], keyframe: bool) -> Vec<u8> {
         let (width, _) = encoder.size();
         let mut out = vec![0xEE];
         encoder.read(pixels, usize::from(width) * 4, None).expect("a read");
         assert!(encoder.encode(keyframe, &mut out).expect("an encode"), "a frame");
         assert_eq!(out[0], 0xEE, "appended, not overwritten");
-        let len = u32::from_be_bytes(out[1..5].try_into().unwrap()) as usize;
-        assert_eq!(len, out.len() - 5, "the length word is the frame's");
-        out.split_off(5)
+        assert_eq!(out[1], encoder.quality(), "the body says the dial the frame was coded at");
+        let len = u32::from_be_bytes(out[2..6].try_into().unwrap()) as usize;
+        assert_eq!(len, out.len() - 6, "the length word is the frame's");
+        out.split_off(6)
     }
 
-    /// The settle's rectangle is framed as any other, sharpens the picture a
-    /// coarse dial left without a keyframe, and leaves the dial where it was.
+    /// The settle's rectangle is framed as any other and says the quality it was
+    /// coded at, sharpens the picture a coarse dial left without a keyframe, and
+    /// leaves the dial where it was.
     #[test]
     fn a_settle_sharpens_the_picture_and_leaves_the_dial() {
         let (width, height) = (64, 48);
@@ -369,8 +381,9 @@ mod tests {
 
         let mut out = vec![0xEE];
         assert!(encoder.settle(QUALITY_MAX, false, &mut out).expect("a settle"), "a frame");
-        assert_eq!((out[0], u32::from_be_bytes(out[1..5].try_into().unwrap()) as usize), (0xEE, out.len() - 5), "the length word is the frame's");
-        let frame = out.split_off(5);
+        assert_eq!((out[0], out[1]), (0xEE, QUALITY_MAX), "the body says the settle's quality, not the dial");
+        assert_eq!(u32::from_be_bytes(out[2..6].try_into().unwrap()) as usize, out.len() - 6, "the length word is the frame's");
+        let frame = out.split_off(6);
         assert!(wlshare_vp9::frame_header(&frame).is_some_and(|header| !header.keyframe), "the settle cost a keyframe");
         let settled = error(&frame);
         assert!(settled < coarse / 2, "the settle left the picture at error {settled} of {coarse}");
@@ -475,7 +488,7 @@ mod tests {
             let mut out = Vec::new();
             encoder.read(pixels, stride, changed).expect("a read");
             assert!(encoder.encode(keyframe, &mut out).expect("an encode"), "a frame");
-            out.split_off(4)
+            out.split_off(5)
         };
         let mut encoder = Vp9Encoder::new(width as u16, height as u16, QUALITY_MAX, Chroma::Yuv444).unwrap();
         let mut decoder = Vp9Decoder::new().unwrap();
