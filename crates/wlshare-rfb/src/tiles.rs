@@ -976,8 +976,11 @@ impl TilesEncoder {
             }
             let at = usize::from(live.area.top) * stride + usize::from(live.area.left) * 4;
             let from = out.out.len();
+            // Whether the rectangle was begun, which a failed read never does.
+            let mut headed = false;
             let coded = live.stream.read_bgrx(&self.mirror[at..], stride, Some(&live.pending)).and_then(|()| {
                 live.pending.clear();
+                headed = true;
                 out.header(live.area, if live.started { KIND_FRAME } else { KIND_START });
                 out.out.push(live.id);
                 if !live.started {
@@ -1001,16 +1004,20 @@ impl TilesEncoder {
                     out.count -= 1;
                 }
                 Err(e) if live.codec == RegionCodec::Vp9 => {
-                    out.out.truncate(from);
-                    out.count -= 1;
+                    if headed {
+                        out.out.truncate(from);
+                        out.count -= 1;
+                    }
                     return Err(TilesError::Region(e));
                 }
                 // A hardware coder that fails a stream is given up: the stream
                 // ends, what it carried is owed exact, and the regions are laid
                 // out again at the next round, on VP9.
                 Err(e) => {
-                    out.out.truncate(from);
-                    out.count -= 1;
+                    if headed {
+                        out.out.truncate(from);
+                        out.count -= 1;
+                    }
                     failed = Some((index, e));
                     break;
                 }
@@ -1388,10 +1395,12 @@ mod tests {
 
     /// A region coder standing in for a hardware H.264 one: its frames are the
     /// region's pixels behind a byte that says keyframe or not, and it can be
-    /// told to refuse every stream, or to fail one after so many frames.
+    /// told to refuse every stream, or to fail one after so many frames, at
+    /// its read or at its encode.
     struct Fake {
         refuse: bool,
         fail_after: Option<usize>,
+        fail_read_after: Option<usize>,
         opened: usize,
     }
 
@@ -1407,6 +1416,7 @@ mod tests {
         filled: bool,
         frames: usize,
         fail_after: Option<usize>,
+        fail_read_after: Option<usize>,
     }
 
     impl RegionCoder for Fake {
@@ -1420,7 +1430,7 @@ mod tests {
             }
             self.opened += 1;
             let (w, h) = (usize::from(width), usize::from(height));
-            Ok(Box::new(FakeStream { w, h, picture: vec![0; w * h * 4], filled: false, frames: 0, fail_after: self.fail_after }))
+            Ok(Box::new(FakeStream { w, h, picture: vec![0; w * h * 4], filled: false, frames: 0, fail_after: self.fail_after, fail_read_after: self.fail_read_after }))
         }
     }
 
@@ -1428,6 +1438,9 @@ mod tests {
         fn set_quality(&mut self, _quality: u8) {}
 
         fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError> {
+            if self.fail_read_after.is_some_and(|after| self.frames >= after) {
+                return Err("the upload failed".into());
+            }
             let whole = [Rect { x: 0, y: 0, width: self.w as u16, height: self.h as u16 }];
             let rects = match changed {
                 Some(rects) if self.filled => rects,
@@ -1627,7 +1640,7 @@ mod tests {
     fn a_region_coder_codes_the_streams_in_its_codec() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 6);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: None, opened: 0 }))).unwrap();
+        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: None, fail_read_after: None, opened: 0 }))).unwrap();
         assert_eq!(encoder.codec(), RegionCodec::H264);
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
@@ -1646,7 +1659,7 @@ mod tests {
     fn a_region_coder_that_refuses_is_given_up_for_vp9() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: true, fail_after: None, opened: 0 }))).unwrap();
+        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None, opened: 0 }))).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         play(&mut encoder, &mut page, &mut pixels, w, 1, 20);
@@ -1663,7 +1676,27 @@ mod tests {
     fn a_region_coder_that_fails_midway_ends_its_stream_and_vp9_takes_over() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 8);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: Some(4), opened: 0 }))).unwrap();
+        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: Some(4), fail_read_after: None, opened: 0 }))).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        play(&mut encoder, &mut page, &mut pixels, w, 1, 40);
+        assert_eq!(page.codecs, [RegionCodec::H264, RegionCodec::Vp9], "the H.264 stream, then VP9 over the region");
+        assert_eq!((page.starts, page.ends), (2, 1), "the failed stream ended, the VP9 one is live");
+        assert_eq!(encoder.codec(), RegionCodec::Vp9);
+        settle(&mut encoder, &mut page, ms(3000));
+        assert_eq!(page.ends, 2);
+        assert_eq!(page.off(&pixels), 0);
+        assert!(page.decoders.is_empty());
+    }
+
+    /// A coder that fails a stream at its read, before anything of the frame
+    /// is written, is given up the same way, and the update's rectangle count
+    /// stays what was written.
+    #[test]
+    fn a_region_coder_that_fails_a_read_ends_its_stream_and_vp9_takes_over() {
+        let (w, h) = (512u16, 256u16);
+        let mut pixels = noise(w, h, 10);
+        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: None, fail_read_after: Some(4), opened: 0 }))).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         play(&mut encoder, &mut page, &mut pixels, w, 1, 40);
@@ -1687,7 +1720,7 @@ mod tests {
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         play(&mut encoder, &mut page, &mut pixels, w, 1, 12);
         assert_eq!(page.codecs, [RegionCodec::Vp9]);
-        encoder.set_hardware(Some(Box::new(Fake { refuse: false, fail_after: None, opened: 0 })));
+        encoder.set_hardware(Some(Box::new(Fake { refuse: false, fail_after: None, fail_read_after: None, opened: 0 })));
         assert!(encoder.tick_at() != Some(Duration::ZERO), "a VP9 stream goes on under a coder given");
         play(&mut encoder, &mut page, &mut pixels, w, 13, 12);
         assert_eq!((page.starts, page.ends), (1, 0), "the VP9 stream went on");
