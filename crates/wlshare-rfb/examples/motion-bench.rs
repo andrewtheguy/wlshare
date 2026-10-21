@@ -288,7 +288,10 @@ impl Page {
                         }
                     }
                 }
-                TileBody::Start { stream, frame } => {
+                TileBody::Start { stream, codec, frame } => {
+                    if codec != wlshare_rfb::tiles::RegionCodec::Vp9 as u8 {
+                        return Err(format!("stream {stream} started in codec {codec}, not VP9: the bench measures libvpx's regions").into());
+                    }
                     sent.vp9 += frame.len() as u64;
                     sent.starts += 1;
                     if self.decoders.insert(stream, Decoder::new(2)?).is_some() {
@@ -336,7 +339,7 @@ struct Tiles {
 
 impl Tiles {
     fn new(size: (u16, u16), quality: u8, threads: usize) -> Result<Self, Error> {
-        Ok(Self { encoder: TilesEncoder::with_threads(size.0, size.1, quality, threads)?, page: Page::new(size), out: Vec::new() })
+        Ok(Self { encoder: TilesEncoder::with_threads(size.0, size.1, quality, threads, None)?, page: Page::new(size), out: Vec::new() })
     }
 
     /// Encode what is owed at `now` and draw it: the CPU time of the encode,

@@ -29,7 +29,9 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `cursor.rs`, `outputs.rs`, `input.rs` and
   `clipboard.rs` are the protocols it speaks; `audio.rs`, `camera.rs` and
-  `microphone.rs` are PipeWire's side, and `decode.rs` is the camera's libavcodec decoder;
+  `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
+  and `h264.rs` the host's hardware H.264 encoder through the same libavcodec, for
+  the tiles picture's moving regions;
   `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `state.rs` tells whoever connects to the state socket
@@ -598,8 +600,8 @@ is held past 500 ms — remotex's `FENCE_HOLD_LIMIT`, its paint window's grace.
 
 A second private picture encoding beside `WLSV`, `WLST` (`0x574c5354`), for
 the remotex gateway on a link with room to spare: the desktop as exact PNG
-tiles where it is still, and a VP9 stream of its own for each region that
-moves. It is a choice the gateway makes per target, not a replacement:
+tiles where it is still, and a video stream of its own for each region that
+moves, VP9 or the host's hardware H.264. It is a choice the gateway makes per target, not a replacement:
 `WLSV`, one stream over the whole desktop walked on the link, stays the
 picture for a slow link, where a lossy stream in fewer bytes is what the link
 bears. This one spends bytes the link has, for less of the encoder's time and
@@ -618,19 +620,20 @@ rectangle of the desktop whose body begins with a kind:
 
 ```text
 u8 kind
-0 PNG     u32 length | u8[length]               a PNG of exactly the rectangle's pixels
-1 START   u8 stream | u32 length | u8[length]   a region stream's first frame
-2 FRAME   u8 stream | u32 length | u8[length]   the stream's next frame
-3 END     u8 stream                             the stream is over
+0 PNG     u32 length | u8[length]                          a PNG of exactly the rectangle's pixels
+1 START   u8 stream | u8 codec | u32 length | u8[length]   a region stream's first frame
+2 FRAME   u8 stream | u32 length | u8[length]              the stream's next frame
+3 END     u8 stream                                        the stream is over
 ```
 
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
 depending on nothing before it. A START begins a stream on its id over its
-rectangle, a VP9 keyframe of exactly that size; each FRAME on the id is the
-next frame of that stream over the same rectangle; an END says it is over,
-its last picture staying until something draws over it. A PNG over a
-stream's rectangle only ever follows its END, so drawing every rectangle
-where it says, in order, is the picture.
+rectangle, a keyframe of exactly that size in the codec its byte names — 0
+VP9, 1 H.264; each FRAME on the id is the next frame of that stream over the
+same rectangle, in that codec; an END says it is over, its last picture
+staying until something draws over it. A PNG over a stream's rectangle only
+ever follows its END, so drawing every rectangle where it says, in order, is
+the picture.
 
 - **Still is exact.** The desktop is in 64×64 tiles from (0,0). The damage
   since the client's last update is copied out of the framebuffer under the
@@ -654,14 +657,51 @@ where it says, in order, is the picture.
   has the ceiling `WLSV`'s whole-desktop stream has: the gateway lists this
   encoding only for a desktop its browser's decoder takes, as it does `WLSV`,
   so wlshare holds a region to no ceiling of its own. Each region
-  is a VP9 encoder over its rectangle alone, told the damage inside it as
+  is an encoder over its rectangle alone, told the damage inside it as
   `WLSV`'s is, so the encoder's time follows the area that moves rather than
-  the desktop. It is 4:2:0, VP9 profile 0, which every browser decodes, its
-  hardware decoders included, and at libvpx's speed 9, the least search it
-  has: what either loses lasts only while the region moves, since the settle
+  the desktop. It is 4:2:0, which every browser decodes, its hardware decoders
+  included: VP9 profile 0 at libvpx's speed 9, the least search it has, and
+  what either loses lasts only while the region moves, since the settle
   makes it exact. Its dial is the one the list names, held there: there is no
   walk and no settle at the ceiling, since the picture is for a link with
   room and settles to lossless anyway.
+- **Or the host's hardware H.264, for a client that takes it.** A client that
+  lists `WLSA` (`0x574c5341`) beside the encoding decodes H.264 as well, and
+  on a host whose GPU has an H.264 encoder a VA-API driver reaches — found
+  once at startup, `hardware_h264 = true` in the configuration and the
+  default — every region is coded by it instead, which is what this picture
+  is for: the processor pays for the conversion to NV12 and nothing of the
+  search. `crates/wlshare/src/h264.rs` is that encoder, libavcodec's
+  `h264_vaapi` through the libavcodec already linked for the camera, and the
+  `RegionCoder` of `wlshare-rfb`'s tiles module, which opens a stream of it
+  for each region ahead of VP9. The coding is pinned as VP9's is: constant
+  quantizer, the dial mapped onto QP 40 down to 16, no bitrate, nothing
+  dropped, High profile, CABAC, no B-frames, one frame in and one out, BT.601
+  at studio swing in the stream's VUI; each frame one Annex B access unit,
+  the parameter sets ahead of every IDR, and an IDR at the stream's START
+  and again after the dial moves, since a VA-API quantizer is its encoder's
+  for life. The gateway announces the stream from that parameter set, `avc1.`
+  and its profile and level, and the browser's decoder takes it in hardware
+  where it has one. At startup the daemon tries each render node, the
+  low-power encoder first — Intel's fixed-function block, which leaves the
+  execution units to the desktop and codes CQP without the HuC firmware — and
+  the shader one after it, each on a frame of a small picture, since a driver
+  lists more profiles than it opens; the log says what it found, and with
+  nothing found, or the key off, the regions are VP9 and the client is told
+  nothing of it. A coder that refuses a stream or fails one midway is given
+  up for VP9 for the rest of the session, the failed stream ended with its END
+  and its tiles owed exact, so no session ends on the GPU's account. Each
+  session opens the device itself, so a VA display is one thread's. The
+  whole-desktop `WLSV` stream is VP9 whatever the list says: the walk's
+  quantizer moves every frame, which a hardware encoder's does not.
+  Measured 2026-10-21 on an Intel UHD 630's low-power encoder, in a
+  container with two cores and a flooded 1280×800 terminal, 20 s at quality
+  90: the H.264 regions sent 598 frames for 6 s of the daemon's CPU where VP9
+  sent 176 for 17 s, both read back whole by FFmpeg's own decoders
+  (`examples/tiles-sink.rs` in `wlshare-rfb` is the client that was run, and
+  keeps each stream for that). The daemon's unit test codes frames on the
+  hardware and decodes them with libavcodec's software decoder, and passes
+  with a word on a machine with no encoder.
 - **It settles to lossless.** Every tile a stream carried is owed an exact PNG
   once it has been still for half a second. What is owed is looked for every
   quarter of a second, 40 tiles at most at a time, each look an update that

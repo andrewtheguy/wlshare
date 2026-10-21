@@ -24,7 +24,7 @@
 //!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
 //!   quality its owner sets ([`vp9`]), for a desktop
 //!   that moves; **the tiles encoding**, another for the gateway, the desktop
-//!   as exact PNG tiles where it is still and a VP9 stream for each region
+//!   as exact PNG tiles where it is still and a video stream for each region
 //!   that moves, for a link with room to spare ([`tiles`]). Raw is produced for a client whose list names neither. Tight,
 //!   Hextile, RRE, CopyRect and every other lossy encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
@@ -103,10 +103,17 @@ pub const ENCODING_ZRLE: i32 = 16;
 pub const ENCODING_VP9: i32 = 0x574c_5356;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it, with a
 /// quality beside it ([`tiles::listed`]), is sent the desktop as exact PNG
-/// tiles where it is still and a VP9 stream for each region that moves
+/// tiles where it is still and a video stream for each region that moves
 /// ([`tiles`]). It wins over ZRLE wherever it is listed; listed without a
 /// quality, or beside [`ENCODING_VP9`], it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
+/// Listed beside [`ENCODING_TILES`], says the client decodes H.264 as well as
+/// VP9: the ASCII bytes `WLSA`. A server whose host has a hardware H.264
+/// encoder then codes the tiles' moving regions with it, each stream's START
+/// saying which codec it is ([`tiles::RegionCodec`]); without it, and on a
+/// host with no such encoder, every region is VP9. It asks nothing of the
+/// VP9 encoding, whose stream is VP9 whatever the list says.
+pub const ENCODING_TILES_H264: i32 = 0x574c_5341;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.
 pub const ENCODING_DESKTOP_SIZE: i32 = -223;
 /// LastRect pseudo-encoding: a client that lists it accepts an update whose

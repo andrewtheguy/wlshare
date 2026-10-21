@@ -69,6 +69,12 @@ pub struct Config {
     /// leaves.
     #[serde(default)]
     pub microphone: bool,
+    /// Whether the tiles picture's moving regions are coded by the host's
+    /// hardware H.264 encoder, through VA-API, for a client that takes H.264;
+    /// on by default, and nothing where the host has no such encoder, which
+    /// the daemon finds out at startup. Off, every region is VP9 by libvpx.
+    #[serde(default = "default_true")]
+    pub hardware_h264: bool,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
     pub name: String,

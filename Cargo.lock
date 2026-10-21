@@ -1792,6 +1792,7 @@ dependencies = [
  "wlshare-rfb",
  "wlshare-vp9",
  "xkbcommon",
+ "yuv",
 ]
 
 [[package]]
@@ -1802,6 +1803,7 @@ dependencies = [
  "cpu-time",
  "eax",
  "flate2",
+ "log",
  "pkcs8",
  "png",
  "rand",

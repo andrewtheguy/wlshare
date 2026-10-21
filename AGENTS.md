@@ -31,7 +31,12 @@
   to build or to run, and `ffmpeg` on the path to run the protocol crate's Opus
   tests, which decode with it.
 - Every protocol byte comes from `wlshare-rfb`; the daemon writes none itself.
-  Every encoder gets an independent decoder in its tests.
+  Every encoder gets an independent decoder in its tests. The daemon's
+  hardware H.264 encoder (`h264.rs`, libavcodec's `h264_vaapi`) is tested
+  against libavcodec's software decoder where the machine has a VA-API
+  encoder, and its test passes with a word where it has none; testdesktop2
+  (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
+  it is run for real.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland
   session it shares; packages are built only in Docker, by
   `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the
