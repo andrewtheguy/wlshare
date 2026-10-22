@@ -118,19 +118,19 @@ fn main() -> anyhow::Result<()> {
         info!("capturing what every VP9 stream is handed into {}", dir.display());
     }
     let security = security(&config, &path)?;
-    let hardware = if config.hardware_h264 {
-        h264::Hardware::probe().map(Arc::new)
-    } else {
-        info!("hardware_h264 is off; the tiles' regions are VP9");
-        None
-    };
+    // libavcodec's own log, on stderr, at warnings: what it says at its
+    // default level is an encoder's summary as it closes, libx264's ten lines
+    // for every region's stream.
+    // SAFETY: a store of the level, before any thread uses libavcodec.
+    unsafe { ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_WARNING) };
+    let h264 = h264::Encoder::find(config.hardware_h264).map(Arc::new);
 
     // The compositor thread comes up first and hands back what it learned about
     // the output, so ServerInit can name a size before the first frame.
     let (compositor, shared) = compositor::start(&config)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let result = runtime.block_on(serve(config, args.capture_frames, security, hardware, shared.clone(), compositor));
+    let result = runtime.block_on(serve(config, args.capture_frames, security, h264, shared.clone(), compositor));
     if let Err(e) = &result {
         error!("{e:#}");
     }
@@ -309,7 +309,7 @@ async fn serve(
     config: config::Config,
     capture_frames: Option<PathBuf>,
     security: Security,
-    hardware: Option<Arc<h264::Hardware>>,
+    h264: Option<Arc<h264::Encoder>>,
     shared: Arc<shared::Shared>,
     mut compositor: compositor::Handle,
 ) -> anyhow::Result<()> {
@@ -342,7 +342,7 @@ async fn serve(
         output: config.output.clone(),
         output_wait: std::time::Duration::from_secs(config.output_wait_secs),
         capture_frames,
-        hardware,
+        h264,
     });
     loop {
         tokio::select! {

@@ -31,8 +31,8 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   `clipboard.rs` are the protocols it speaks, and `sway.rs` is sway's IPC, which
   makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
   `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
-  and `h264.rs` the host's hardware H.264 encoder through the same libavcodec, for
-  the tiles picture's moving regions;
+  and `h264.rs` the H.264 encoder through the same libavcodec, the host's
+  hardware or libx264, for the tiles picture's moving regions;
   `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `state.rs` tells whoever connects to the state socket
@@ -602,7 +602,7 @@ is held past 500 ms — remotex's `FENCE_HOLD_LIMIT`, its paint window's grace.
 A second private picture encoding beside `WLSV`, `WLST` (`0x574c5354`), for
 the remotex gateway on a link with room to spare: the desktop as exact PNG
 tiles where it is still, and a video stream of its own for each region that
-moves, VP9 or the host's hardware H.264. It is a choice the gateway makes per target, not a replacement:
+moves, H.264 — the host's hardware, or libx264 — or VP9 where neither codes. It is a choice the gateway makes per target, not a replacement:
 `WLSV`, one stream over the whole desktop walked on the link, stays the
 picture for a slow link, where a lossy stream in fewer bytes is what the link
 bears. This one spends bytes the link has, for less of the encoder's time and
@@ -661,36 +661,46 @@ the picture.
   is an encoder over its rectangle alone, told the damage inside it as
   `WLSV`'s is, so the encoder's time follows the area that moves rather than
   the desktop. It is 4:2:0, which every browser decodes, its hardware decoders
-  included: VP9 profile 0 at libvpx's speed 9, the least search it has, and
-  what either loses lasts only while the region moves, since the settle
-  makes it exact. Its dial is the one the list names, held there: there is no
+  included: H.264, below, or VP9 profile 0 at libvpx's speed 9, the least
+  search it has, where no H.264 encoder codes; what either loses lasts only
+  while the region moves, since the settle makes it exact. Its dial is the one the list names, held there: there is no
   walk and no settle at the ceiling, since the picture is for a link with
   room and settles to lossless anyway.
-- **Or the host's hardware H.264, which wlshare chooses.** A client of this
-  encoding decodes both codecs, and each stream's START says which it is;
-  the client has no say. On a host whose GPU has an H.264 encoder a VA-API
-  driver reaches — found once at startup, `hardware_h264 = true` in the
-  configuration and the default — every region is coded by it instead, which
-  is what this picture is for: the processor pays for the conversion to NV12
-  and nothing of the search. `crates/wlshare/src/h264.rs` is that encoder, libavcodec's
-  `h264_vaapi` through the libavcodec already linked for the camera, and the
-  `RegionCoder` of `wlshare-rfb`'s tiles module, which opens a stream of it
-  for each region ahead of VP9. The coding is pinned as VP9's is: constant
-  quantizer, the dial mapped onto QP 40 down to 16, no bitrate, nothing
-  dropped, High profile, CABAC, no B-frames, one frame in and one out, BT.601
-  at studio swing in the stream's VUI; each frame one Annex B access unit,
-  the parameter sets ahead of every IDR, and an IDR at the stream's START
-  and again after the dial moves, since a VA-API quantizer is its encoder's
-  for life. The gateway announces the stream from that parameter set, `avc1.`
-  and its profile and level, and the browser's decoder takes it in hardware
-  where it has one. At startup the daemon tries each render node, the
-  low-power encoder first — Intel's fixed-function block, which leaves the
-  execution units to the desktop and codes CQP without the HuC firmware — and
-  the shader one after it, each on a frame of a small picture, since a driver
-  lists more profiles than it opens; the log says what it found, and with
-  nothing found, or the key off, the regions are VP9, which their STARTs say. A coder that refuses a stream or fails one midway is given
-  up for VP9 for the rest of the session, the failed stream ended with its END
-  and its tiles owed exact, so no session ends on the GPU's account. Each
+- **H.264, which wlshare chooses: the host's hardware, or libx264.** A client
+  of this encoding decodes both codecs, and each stream's START says which it
+  is; the client has no say. Every region is H.264 where an encoder codes it,
+  found once at startup. On a host whose GPU has an H.264 encoder a VA-API
+  driver reaches — looked for with `hardware_h264 = true` in the
+  configuration, the default — it is that one, which is what this picture is
+  for: the processor pays for the conversion to NV12 and nothing of the
+  search. On a host with none, or with the key off, it is libx264 at its
+  `ultrafast` preset, which costs the processor about a third of VP9's time a
+  frame for about twice its bytes, on a link that has them (measured below).
+  `crates/wlshare/src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
+  `libx264` through the libavcodec already linked for the camera — Debian's,
+  which links libx264 itself — and the `RegionCoder` of `wlshare-rfb`'s tiles
+  module, which opens a stream of it for each region ahead of VP9. The coding
+  is pinned as VP9's is: constant quantizer, the dial mapped onto QP 40 down
+  to 16, no bitrate, nothing dropped, no B-frames, one frame in and one out,
+  BT.601 at studio swing in the stream's VUI; each frame one Annex B access
+  unit, the parameter sets ahead of every IDR, and an IDR at the stream's
+  START and again after the dial moves, since a VA-API quantizer is its
+  encoder's for life, and libx264's encoder is made again the same way. The
+  hardware's is High profile with CABAC; libx264's is Constrained Baseline,
+  which `ultrafast` comes to, tuned `zerolatency` — no lookahead, the
+  picture sliced among the VP9 regions' count of threads — with no scene
+  cut, and with its version SEI ahead of a stream's first IDR, which a
+  decoder passes over. The gateway announces the stream from that parameter
+  set, `avc1.` and its profile and level, and the browser's decoder takes it
+  in hardware where it has one. At startup the daemon tries each render node,
+  the low-power encoder first — Intel's fixed-function block, which leaves
+  the execution units to the desktop and codes CQP without the HuC firmware —
+  and the shader one after it, then libx264, each on a frame of a small
+  picture, since a driver lists more profiles than it opens; the log says
+  what it found, and with nothing found the regions are VP9, which their
+  STARTs say. A coder that refuses a stream or fails one midway is given up
+  for VP9 for the rest of the session, the failed stream ended with its END
+  and its tiles owed exact, so no session ends on the encoder's account. Each
   session opens the device itself, so a VA display is one thread's. The
   whole-desktop `WLSV` stream is VP9 whatever the list says: the walk's
   quantizer moves every frame, which a hardware encoder's does not.
@@ -699,9 +709,17 @@ the picture.
   90: the H.264 regions sent 598 frames for 6 s of the daemon's CPU where VP9
   sent 176 for 17 s, both read back whole by FFmpeg's own decoders
   (`examples/tiles-sink.rs` in `wlshare-rfb` is the client that was run, and
-  keeps each stream for that). The daemon's unit test codes frames on the
-  hardware and decodes them with libavcodec's software decoder, and passes
-  with a word on a machine with no encoder.
+  keeps each stream for that). Measured 2026-10-22 on a six-core machine
+  with no GPU, under headless labwc, the same flooded terminal at 1280×800
+  and quality 90, 20 s, every encoder on four threads: libx264 `ultrafast`
+  sent 590 frames for 15–17 s of the daemon's CPU where VP9 sent 395 for
+  33 s, about 27 ms of the processor a frame against 83, at about 1.8 times
+  VP9's bytes a frame, 100–135 Mbit/s against 37; libx264's `superfast` and
+  `veryfast`, with CABAC and more search, cost 42 s for about 535 frames, no
+  less than VP9, which is why the preset is `ultrafast`. The daemon's unit
+  tests code frames on libx264, on every machine, and on the hardware, and
+  decode them with libavcodec's software decoder; the hardware's passes with
+  a word on a machine with no encoder.
 - **It settles to lossless.** Every tile a stream carried is owed an exact PNG
   once it has been still for half a second. What is owed is looked for every
   quarter of a second, 40 tiles at most at a time, each look an update that

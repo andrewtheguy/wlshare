@@ -1,44 +1,55 @@
-//! H.264 for the tiles picture's moving regions, by the host's hardware
-//! encoder: VA-API through the system's libavcodec, the one already linked
-//! for the camera's decoder, as its `h264_vaapi` encoder.
+//! H.264 for the tiles picture's moving regions, through the system's
+//! libavcodec, the one already linked for the camera's decoder: the host's
+//! hardware encoder by VA-API, as its `h264_vaapi` encoder, where the host has
+//! one, and libx264 at its fastest preset where it has none.
 //!
 //! A region of the tiles picture is a stream over its rectangle alone
 //! ([`wlshare_rfb::tiles`]), VP9 by libvpx unless the daemon hands the encoder
-//! a [`RegionCoder`] and the client takes H.264. This is that coder, for a
-//! host whose GPU has an H.264 encoder a VA-API driver reaches — Intel's iHD,
-//! AMD's Mesa — so a region that moves costs the processor its conversion to
-//! NV12 and nothing of the search, which is what the tiles picture is for: the
-//! least of the encoder's time on a link with room.
+//! a [`RegionCoder`]. This is that coder. On a host whose GPU has an H.264
+//! encoder a VA-API driver reaches — Intel's iHD, AMD's Mesa — a region that
+//! moves costs the processor its conversion to NV12 and nothing of the
+//! search, which is what the tiles picture is for: the least of the encoder's
+//! time on a link with room. On a host with none, libx264's `ultrafast`
+//! codes it in about a third of the processor's time a frame that VP9 at
+//! libvpx's fastest speed takes, for about twice the bytes, which a link with
+//! room has.
 //!
 //! **What a stream is.** Constant quantizer, pinned to the dial the client's
 //! list names as the VP9 regions' is, with no bitrate and nothing dropped: the
-//! 1–100 dial maps onto QP 40 down to 16, finest last. High profile, CABAC,
-//! no B-frames, one frame in and one out (`async_depth` 1), so a frame is on
-//! the wire the moment it is coded. BT.601 at studio swing, said in the
-//! stream's VUI, as the VP9 regions say it in their keyframe. Each frame is
-//! one Annex B access unit, the parameter sets ahead of every IDR, and the
-//! first frame of a stream is one; so is the first after the dial moves,
-//! since a VA-API quantizer is the encoder's for its life and a new one is a
-//! new encoder. No SEI, no AUD.
+//! 1–100 dial maps onto QP 40 down to 16, finest last. No B-frames, one frame
+//! in and one out, so a frame is on the wire the moment it is coded: the
+//! hardware's at High profile with CABAC and `async_depth` 1, libx264's at
+//! Constrained Baseline, the profile `ultrafast` comes to, with its
+//! `zerolatency` tuning, no scene cut, and the VP9 regions' threads, as
+//! slices. BT.601 at studio swing, said in the stream's VUI, as the VP9
+//! regions say it in their keyframe. Each frame is one Annex B access unit,
+//! the parameter sets ahead of every IDR, and the first frame of a stream is
+//! one; so is the first after the dial moves, since a VA-API quantizer is the
+//! encoder's for its life and a new one is a new encoder, which libx264's is
+//! too, the dial being held for a region's life anyway. No AUD; no SEI from
+//! the hardware, and from libx264 the one naming its version and options,
+//! ahead of a stream's first IDR, which a decoder passes over.
 //!
-//! **Which encoder.** The daemon looks once, at startup ([`Hardware::probe`]):
-//! each render node in turn, the low-power encoder first — Intel's
-//! fixed-function block, which leaves the execution units to the desktop —
-//! and the shader one after it, each tried on a frame of a small picture,
-//! since a driver lists more profiles than it will open. What works is what
-//! every session uses; with nothing working the regions are VP9 and the log
-//! says why. The low-power block codes CQP without the HuC firmware, which
-//! only bitrate control needs.
+//! **Which encoder.** The daemon looks once, at startup ([`Encoder::find`]):
+//! with `hardware_h264` on, each render node in turn, the low-power encoder
+//! first — Intel's fixed-function block, which leaves the execution units to
+//! the desktop — and the shader one after it, each tried on a frame of a
+//! small picture, since a driver lists more profiles than it will open; with
+//! none working, or the key off, libx264, tried the same way. What works is
+//! what every session uses; with nothing working the regions are VP9 and the
+//! log says why. The low-power block codes CQP without the HuC firmware,
+//! which only bitrate control needs.
 //!
 //! **Failure is the tiles encoder's to absorb.** A coder that refuses a
 //! stream or fails one midway is given up for VP9 for the rest of the
 //! session ([`wlshare_rfb::tiles::TilesEncoder`]); nothing here ends a
-//! session. Each session opens the device itself ([`Hardware::coder`]), so a
+//! session. Each session opens the device itself ([`Encoder::coder`]), so a
 //! VA display is one thread's and the sessions share nothing of it.
 //!
 //! Tested against libavcodec's own H.264 decoder ([`crate::decode`]), which
-//! shares nothing with the GPU: a test that finds no encoder says so and
-//! passes, since the machines that build this seldom have one.
+//! shares nothing with either encoder: libx264's on every machine, the
+//! hardware's where there is one, its test saying so and passing where there
+//! is not, since the machines that build this seldom have one.
 
 use std::ffi::{CStr, CString, c_char};
 use std::ptr;
@@ -49,13 +60,26 @@ use log::{debug, info};
 use wlshare_rfb::tiles::{RegionCodec, RegionCoder, RegionError, RegionStream};
 use wlshare_rfb::vp9::Rect;
 
-/// The hardware encoder the probe found, which every session's coder opens.
+/// The H.264 encoder the startup found, which every session's coder opens.
 #[derive(Debug)]
-pub struct Hardware {
-    /// The render node, `/dev/dri/renderD128` or a sibling.
-    device: CString,
-    /// Whether the low-power encoder is the one that works.
-    low_power: bool,
+pub enum Encoder {
+    /// The host's GPU, through VA-API.
+    Vaapi {
+        /// The render node, `/dev/dri/renderD128` or a sibling.
+        device: CString,
+        /// Whether the low-power encoder is the one that works.
+        low_power: bool,
+    },
+    /// libx264, on the processor.
+    X264,
+}
+
+/// Which encoder a coder and its streams are: [`Encoder`] less the device's
+/// path, which the coder holds open instead.
+#[derive(Clone, Copy, Debug)]
+enum Backend {
+    Vaapi { low_power: bool },
+    X264,
 }
 
 /// The picture the probe codes one frame of, small enough for any encoder.
@@ -64,45 +88,75 @@ const PROBE_SIZE: (u16, u16) = (64, 64);
 /// Where render nodes are.
 const DRI: &str = "/dev/dri";
 
-impl Hardware {
+/// libx264's preset: its least search, the least of the processor's time.
+const X264_PRESET: &str = "ultrafast";
+
+impl Encoder {
+    /// The encoder the tiles' regions are coded by: the hardware's where
+    /// `hardware` asks for it and [`Self::vaapi`] finds one, libx264
+    /// otherwise, each tried on a frame first. `None`, logged, with neither
+    /// working: the regions are VP9.
+    pub fn find(hardware: bool) -> Option<Self> {
+        if hardware {
+            if let Some(encoder) = Self::vaapi() {
+                return Some(encoder);
+            }
+        } else {
+            info!("hardware_h264 is off: the hardware H.264 encoder is not looked for");
+        }
+        match Self::X264.try_frame() {
+            Ok(()) => {
+                info!("software H.264 for the tiles' regions: libx264 at {X264_PRESET}");
+                Some(Self::X264)
+            }
+            Err(e) => {
+                info!("no H.264 encoder: libx264 codes nothing here ({e:#}); the tiles' regions are VP9");
+                None
+            }
+        }
+    }
+
     /// Look for a working VA-API H.264 encoder: each render node in turn, the
     /// low-power encoder ahead of the shader one, each opened on
     /// [`PROBE_SIZE`] and asked for a frame. `None` with nothing working, the
     /// reasons logged.
-    pub fn probe() -> Option<Self> {
+    fn vaapi() -> Option<Self> {
         let mut nodes: Vec<std::path::PathBuf> = match std::fs::read_dir(DRI) {
             Ok(entries) => entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD"))).collect(),
             Err(e) => {
-                info!("no hardware H.264 encoder: {DRI} cannot be read ({e}); the tiles' regions are VP9");
+                info!("no hardware H.264 encoder: {DRI} cannot be read ({e})");
                 return None;
             }
         };
         nodes.sort();
         if nodes.is_empty() {
-            info!("no hardware H.264 encoder: no render node under {DRI}; the tiles' regions are VP9");
+            info!("no hardware H.264 encoder: no render node under {DRI}");
             return None;
         }
         for node in nodes {
             let device = CString::new(node.to_string_lossy().into_owned()).expect("a path has no NUL");
             for low_power in [true, false] {
-                let hardware = Self { device: device.clone(), low_power };
-                match hardware.try_frame() {
+                let encoder = Self::Vaapi { device: device.clone(), low_power };
+                match encoder.try_frame() {
                     Ok(()) => {
-                        info!("hardware H.264 for the tiles' regions: {} through VA-API, its {} encoder", node.display(), hardware.kind());
-                        return Some(hardware);
+                        info!("hardware H.264 for the tiles' regions: {} through VA-API, its {} encoder", node.display(), kind(low_power));
+                        return Some(encoder);
                     }
-                    Err(e) => debug!("the {} encoder on {}: {e:#}", hardware.kind(), node.display()),
+                    Err(e) => debug!("the {} encoder on {}: {e:#}", kind(low_power), node.display()),
                 }
             }
             info!("{}: VA-API opens no H.264 encoder there (run with RUST_LOG=debug for each attempt)", node.display());
         }
-        info!("no hardware H.264 encoder; the tiles' regions are VP9");
+        info!("no hardware H.264 encoder");
         None
     }
 
-    /// Which encoder: the fixed-function block or the shader one.
-    fn kind(&self) -> &'static str {
-        if self.low_power { "low-power" } else { "shader" }
+    /// What codes the regions, for the log: `H.264 by …`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Vaapi { .. } => "the hardware",
+            Self::X264 => "libx264",
+        }
     }
 
     /// Open a coder and code one grey frame of a small picture with it.
@@ -118,25 +172,36 @@ impl Hardware {
         Ok(())
     }
 
-    /// A coder for one session: its own VA display on the device.
+    /// A coder for one session: for the hardware, its own VA display on the
+    /// device.
     pub fn coder(&self) -> anyhow::Result<Coder> {
+        let (path, low_power) = match self {
+            Self::Vaapi { device, low_power } => (device, *low_power),
+            Self::X264 => return Ok(Coder { device: ptr::null_mut(), backend: Backend::X264 }),
+        };
         let mut device = ptr::null_mut();
         // SAFETY: the path is a NUL-terminated string and the reference is
         // checked before use; what libavutil allocates is freed by `Drop`.
         unsafe {
-            check(ff::av_hwdevice_ctx_create(&mut device, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, self.device.as_ptr(), ptr::null_mut(), 0), "opening the VA-API device")
-                .with_context(|| format!("VA-API on {}", self.device.to_string_lossy()))?;
+            check(ff::av_hwdevice_ctx_create(&mut device, ff::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI, path.as_ptr(), ptr::null_mut(), 0), "opening the VA-API device")
+                .with_context(|| format!("VA-API on {}", path.to_string_lossy()))?;
         }
         anyhow::ensure!(!device.is_null(), "libavutil opened no device");
-        Ok(Coder { device, low_power: self.low_power })
+        Ok(Coder { device, backend: Backend::Vaapi { low_power } })
     }
 }
 
-/// One session's H.264 coder: a VA display, which each of its streams takes
-/// an encoder on.
+/// Which VA-API encoder: the fixed-function block or the shader one.
+fn kind(low_power: bool) -> &'static str {
+    if low_power { "low-power" } else { "shader" }
+}
+
+/// One session's H.264 coder: for the hardware, a VA display, which each of
+/// its streams takes an encoder on; for libx264, nothing until a stream.
 pub struct Coder {
+    /// The VA display; null for libx264.
     device: *mut ff::AVBufferRef,
-    low_power: bool,
+    backend: Backend,
 }
 
 // SAFETY: the device reference is this value's alone, and it and every stream
@@ -165,17 +230,20 @@ impl Coder {
             filled: false,
             quality,
             coded_at: quality,
-            low_power: self.low_power,
+            backend: self.backend,
             pts: 0,
         };
         // SAFETY: each allocation is checked, and a failure part way through
         // frees what came before it through `Drop`.
         unsafe {
-            stream.device = ff::av_buffer_ref(self.device);
-            stream.hw_frame = ff::av_frame_alloc();
+            if let Backend::Vaapi { .. } = self.backend {
+                stream.device = ff::av_buffer_ref(self.device);
+                stream.hw_frame = ff::av_frame_alloc();
+                anyhow::ensure!(!stream.device.is_null() && !stream.hw_frame.is_null(), "libavcodec could not allocate a stream");
+            }
             stream.sw_frame = ff::av_frame_alloc();
             stream.packet = ff::av_packet_alloc();
-            anyhow::ensure!(!stream.device.is_null() && !stream.hw_frame.is_null() && !stream.sw_frame.is_null() && !stream.packet.is_null(), "libavcodec could not allocate a stream");
+            anyhow::ensure!(!stream.sw_frame.is_null() && !stream.packet.is_null(), "libavcodec could not allocate a stream");
             let sw = &mut *stream.sw_frame;
             sw.format = ff::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
             sw.width = i32::from(width);
@@ -207,12 +275,15 @@ impl RegionCoder for Coder {
     }
 }
 
-/// One region's stream: an encoder on the VA display, the NV12 picture in
-/// front of it, and the frame and packet it reuses.
+/// One region's stream: an encoder, the NV12 picture in front of it, and the
+/// frames and packet it reuses — for the hardware, its encoder on the VA
+/// display and the surface the picture is uploaded to.
 pub struct Stream {
+    /// The VA display and its surfaces; null for libx264.
     device: *mut ff::AVBufferRef,
     frames: *mut ff::AVBufferRef,
     context: *mut ff::AVCodecContext,
+    /// The surface a frame is uploaded to; null for libx264.
     hw_frame: *mut ff::AVFrame,
     /// Points into `y` and `uv`, which it does not own.
     sw_frame: *mut ff::AVFrame,
@@ -227,7 +298,7 @@ pub struct Stream {
     quality: u8,
     /// The dial the open encoder was made for.
     coded_at: u8,
-    low_power: bool,
+    backend: Backend,
     pts: i64,
 }
 
@@ -246,62 +317,81 @@ fn qp(quality: u8) -> i32 {
 const FPS: i32 = 60;
 
 impl Stream {
-    /// Open the encoder at the current dial: the frames context on the device
-    /// at the region's size and the codec context over it.
+    /// Open the encoder at the current dial: for the hardware, the frames
+    /// context on the device at the region's size and the codec context over
+    /// it; for libx264, the codec context over the planes.
     unsafe fn open(&mut self) -> anyhow::Result<()> {
         // SAFETY: the caller holds the stream's pointers; each allocation is
         // checked, and `close` frees what this made.
         unsafe {
             self.close();
-            self.frames = ff::av_hwframe_ctx_alloc(self.device);
-            anyhow::ensure!(!self.frames.is_null(), "libavutil could not allocate a frames context");
-            let frames = &mut *((*self.frames).data as *mut ff::AVHWFramesContext);
-            frames.format = ff::AVPixelFormat::AV_PIX_FMT_VAAPI;
-            frames.sw_format = ff::AVPixelFormat::AV_PIX_FMT_NV12;
-            frames.width = i32::from(self.size.0);
-            frames.height = i32::from(self.size.1);
-            frames.initial_pool_size = 4;
-            check(ff::av_hwframe_ctx_init(self.frames), "making VA-API surfaces")?;
-
-            let name = c"h264_vaapi";
+            let qp = qp(self.quality).to_string();
+            let (name, pix_fmt, options) = match self.backend {
+                Backend::Vaapi { low_power } => {
+                    self.frames = ff::av_hwframe_ctx_alloc(self.device);
+                    anyhow::ensure!(!self.frames.is_null(), "libavutil could not allocate a frames context");
+                    let frames = &mut *((*self.frames).data as *mut ff::AVHWFramesContext);
+                    frames.format = ff::AVPixelFormat::AV_PIX_FMT_VAAPI;
+                    frames.sw_format = ff::AVPixelFormat::AV_PIX_FMT_NV12;
+                    frames.width = i32::from(self.size.0);
+                    frames.height = i32::from(self.size.1);
+                    frames.initial_pool_size = 4;
+                    check(ff::av_hwframe_ctx_init(self.frames), "making VA-API surfaces")?;
+                    let options = vec![
+                        ("rc_mode", "CQP"),
+                        ("qp", qp.as_str()),
+                        ("low_power", if low_power { "1" } else { "0" }),
+                        ("profile", "high"),
+                        ("coder", "cabac"),
+                        ("async_depth", "1"),
+                        ("idr_interval", "0"),
+                        ("sei", "0"),
+                        ("aud", "0"),
+                    ];
+                    (c"h264_vaapi", ff::AVPixelFormat::AV_PIX_FMT_VAAPI, options)
+                }
+                // `zerolatency` takes the lookahead and the frame threads away,
+                // which would each hold frames back, and slices the picture
+                // among the threads instead; a forced I picture is an IDR.
+                Backend::X264 => (
+                    c"libx264",
+                    ff::AVPixelFormat::AV_PIX_FMT_NV12,
+                    vec![("preset", X264_PRESET), ("tune", "zerolatency"), ("qp", qp.as_str()), ("forced-idr", "1"), ("x264-params", "scenecut=0")],
+                ),
+            };
             let codec = ff::avcodec_find_encoder_by_name(name.as_ptr());
-            anyhow::ensure!(!codec.is_null(), "this libavcodec has no h264_vaapi encoder");
+            anyhow::ensure!(!codec.is_null(), "this libavcodec has no {} encoder", name.to_string_lossy());
             self.context = ff::avcodec_alloc_context3(codec);
             anyhow::ensure!(!self.context.is_null(), "libavcodec could not allocate an encoder");
             let ctx = &mut *self.context;
             ctx.width = i32::from(self.size.0);
             ctx.height = i32::from(self.size.1);
-            ctx.pix_fmt = ff::AVPixelFormat::AV_PIX_FMT_VAAPI;
+            ctx.pix_fmt = pix_fmt;
             ctx.time_base = ff::AVRational { num: 1, den: FPS };
             ctx.framerate = ff::AVRational { num: FPS, den: 1 };
-            // Keyframes only where asked: the stream's first, and one after the dial moves.
-            ctx.gop_size = i32::MAX;
+            // Keyframes only where asked: the stream's first, and one after the
+            // dial moves. 2^30 is libx264's infinite interval.
+            ctx.gop_size = 1 << 30;
             ctx.max_b_frames = 0;
             ctx.colorspace = ff::AVColorSpace::AVCOL_SPC_SMPTE170M;
             ctx.color_primaries = ff::AVColorPrimaries::AVCOL_PRI_SMPTE170M;
             ctx.color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_SMPTE170M;
             ctx.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
-            ctx.hw_frames_ctx = ff::av_buffer_ref(self.frames);
-            anyhow::ensure!(!ctx.hw_frames_ctx.is_null(), "libavutil could not share the frames context");
-            let mut options = ptr::null_mut();
-            let qp = qp(self.quality).to_string();
-            for (key, value) in [
-                ("rc_mode", "CQP"),
-                ("qp", qp.as_str()),
-                ("low_power", if self.low_power { "1" } else { "0" }),
-                ("profile", "high"),
-                ("coder", "cabac"),
-                ("async_depth", "1"),
-                ("idr_interval", "0"),
-                ("sei", "0"),
-                ("aud", "0"),
-            ] {
-                let (key, value) = (CString::new(key).unwrap(), CString::new(value).unwrap());
-                ff::av_dict_set(&mut options, key.as_ptr(), value.as_ptr(), 0);
+            match self.backend {
+                Backend::Vaapi { .. } => {
+                    ctx.hw_frames_ctx = ff::av_buffer_ref(self.frames);
+                    anyhow::ensure!(!ctx.hw_frames_ctx.is_null(), "libavutil could not share the frames context");
+                }
+                Backend::X264 => ctx.thread_count = wlshare_rfb::vp9::encoder_threads() as i32,
             }
-            let opened = ff::avcodec_open2(self.context, codec, &mut options);
-            ff::av_dict_free(&mut options);
-            check(opened, "opening the h264_vaapi encoder")?;
+            let mut dict = ptr::null_mut();
+            for (key, value) in options {
+                let (key, value) = (CString::new(key).unwrap(), CString::new(value).unwrap());
+                ff::av_dict_set(&mut dict, key.as_ptr(), value.as_ptr(), 0);
+            }
+            let opened = ff::avcodec_open2(self.context, codec, &mut dict);
+            ff::av_dict_free(&mut dict);
+            check(opened, &format!("opening the {} encoder", name.to_string_lossy()))?;
             self.coded_at = self.quality;
             Ok(())
         }
@@ -345,26 +435,35 @@ impl Stream {
 
     fn frame(&mut self, keyframe: bool, out: &mut Vec<u8>) -> anyhow::Result<bool> {
         anyhow::ensure!(self.filled, "a stream was asked for a frame before any picture was read into it");
-        // SAFETY: the pointers are this stream's; the surface is taken from the
-        // pool, filled from the planes the software frame points into, coded
-        // and given back, and the packet's bytes are read within its size.
+        // SAFETY: the pointers are this stream's; for the hardware the surface
+        // is taken from the pool, filled from the planes the software frame
+        // points into, coded and given back; libavcodec copies the software
+        // frame, which owns no buffer, for libx264; and the packet's bytes are
+        // read within its size.
         unsafe {
             if self.coded_at != self.quality {
                 self.open().context("reopening the encoder at the new dial")?;
             }
-            check(ff::av_hwframe_get_buffer(self.frames, self.hw_frame, 0), "taking a VA-API surface")?;
-            let uploaded = ff::av_hwframe_transfer_data(self.hw_frame, self.sw_frame, 0);
-            if uploaded < 0 {
-                ff::av_frame_unref(self.hw_frame);
-                check(uploaded, "uploading the picture to the surface")?;
-            }
-            let frame = &mut *self.hw_frame;
-            frame.pts = self.pts;
-            frame.pict_type = if keyframe { ff::AVPictureType::AV_PICTURE_TYPE_I } else { ff::AVPictureType::AV_PICTURE_TYPE_NONE };
+            let frame = match self.backend {
+                Backend::Vaapi { .. } => {
+                    check(ff::av_hwframe_get_buffer(self.frames, self.hw_frame, 0), "taking a VA-API surface")?;
+                    let uploaded = ff::av_hwframe_transfer_data(self.hw_frame, self.sw_frame, 0);
+                    if uploaded < 0 {
+                        ff::av_frame_unref(self.hw_frame);
+                        check(uploaded, "uploading the picture to the surface")?;
+                    }
+                    self.hw_frame
+                }
+                Backend::X264 => self.sw_frame,
+            };
+            (*frame).pts = self.pts;
             // The first picture of an encoder is an IDR whatever is asked.
+            (*frame).pict_type = if keyframe { ff::AVPictureType::AV_PICTURE_TYPE_I } else { ff::AVPictureType::AV_PICTURE_TYPE_NONE };
             self.pts += 1;
-            let sent = ff::avcodec_send_frame(self.context, self.hw_frame);
-            ff::av_frame_unref(self.hw_frame);
+            let sent = ff::avcodec_send_frame(self.context, frame);
+            if let Backend::Vaapi { .. } = self.backend {
+                ff::av_frame_unref(self.hw_frame);
+            }
             check(sent, "encoding a frame")?;
             let mut coded = false;
             loop {
@@ -506,19 +605,13 @@ mod tests {
         }
     }
 
-    /// Frames coded by the hardware decode with libavcodec's software decoder
-    /// to the picture they were coded from: the first an IDR with its
-    /// parameter sets, the next a P frame of the damage alone, and the first
-    /// after the dial moves an IDR again. Passes with a word where this
-    /// machine has no encoder.
-    #[test]
-    fn frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
-        let Some(hardware) = Hardware::probe() else {
-            eprintln!("no VA-API H.264 encoder on this machine; the hardware coder is not exercised");
-            return;
-        };
+    /// Frames `encoder` codes decode with libavcodec's software decoder to
+    /// the picture they were coded from: the first an IDR with its parameter
+    /// sets, the next a P frame of the damage alone, the first after the dial
+    /// moves an IDR again, and a keyframe asked for one.
+    fn frames_decode_to_the_picture(encoder: &Encoder) {
         let (w, h) = (96usize, 70usize);
-        let mut coder = hardware.coder().unwrap();
+        let mut coder = encoder.coder().unwrap();
         let mut stream = coder.open(w as u16, h as u16, 100).unwrap();
         let mut pixels = picture(w, h);
         let mut decoder = crate::decode::Decoder::new().unwrap();
@@ -548,12 +641,56 @@ mod tests {
         stream.read_bgrx(&pixels, w * 4, Some(&[])).unwrap();
         unit.clear();
         assert!(stream.encode(false, &mut unit).unwrap());
-        assert!(nal_types(&unit).contains(&5), "an IDR after the dial moved");
+        let types = nal_types(&unit);
+        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets after the dial moved: {types:?}");
         decodes_to(&mut decoder, &unit, &pixels, w, h, 12);
 
-        // A keyframe asked for is one.
+        // A keyframe asked for is one, with its parameter sets.
         unit.clear();
         assert!(stream.encode(true, &mut unit).unwrap());
-        assert!(nal_types(&unit).contains(&5), "an IDR where one was asked");
+        let types = nal_types(&unit);
+        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets where one was asked: {types:?}");
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 12);
+    }
+
+    /// The hardware's frames decode to the picture. Passes with a word where
+    /// this machine has no encoder.
+    #[test]
+    fn hardware_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
+        let Some(encoder) = Encoder::vaapi() else {
+            eprintln!("no VA-API H.264 encoder on this machine; the hardware coder is not exercised");
+            return;
+        };
+        frames_decode_to_the_picture(&encoder);
+    }
+
+    /// libx264's frames decode to the picture, on every machine: it is what a
+    /// host without a GPU codes its regions with.
+    #[test]
+    fn libx264_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
+        Encoder::X264.try_frame().expect("libx264 through this libavcodec");
+        frames_decode_to_the_picture(&Encoder::X264);
+    }
+
+    /// libx264's stream is Constrained Baseline, the profile `ultrafast`
+    /// comes to and every browser's decoder takes, with no B-frames to hold
+    /// a picture back: each frame in is one frame out.
+    #[test]
+    fn libx264_codes_constrained_baseline_one_frame_in_one_out() {
+        let (w, h) = (64usize, 48usize);
+        let mut coder = Encoder::X264.coder().unwrap();
+        let mut stream = coder.open(w as u16, h as u16, 90).unwrap();
+        let pixels = picture(w, h);
+        stream.read_bgrx(&pixels, w * 4, None).unwrap();
+        let mut unit = Vec::new();
+        assert!(stream.encode(false, &mut unit).unwrap());
+        let sps = unit.windows(4).position(|s| s[..3] == [0, 0, 1] && s[3] & 0x1f == 7).expect("an SPS");
+        let (profile, constraints) = (unit[sps + 4], unit[sps + 5]);
+        assert_eq!(profile, 66, "Baseline");
+        assert_ne!(constraints & 0x40, 0, "constraint_set1: Constrained Baseline");
+        for _ in 0..5 {
+            unit.clear();
+            assert!(stream.encode(false, &mut unit).unwrap(), "every frame in is a frame out");
+        }
     }
 }
