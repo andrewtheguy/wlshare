@@ -47,10 +47,11 @@ pipewire = { version = "0.10", features = ["v0_3_49"] }
 # The client's camera arrives as H.264, decoded by the system's libavcodec,
 # linked dynamically; avcodec alone, since nothing here demuxes or scales. The
 # same libavcodec's h264_vaapi is the hardware encoder of the tiles picture's
-# moving regions (h264.rs), its VA-API device and surfaces libavutil's.
+# moving regions (h264.rs), its VA-API device and surfaces libavutil's, and its
+# libx264 their encoder on a host with no GPU: Debian's libavcodec links it.
 ffmpeg-sys-next = { version = "7.1", default-features = false, features = ["avcodec"] }
-# The conversion from the framebuffer's pixels to the NV12 the hardware
-# encoder takes, as wlshare-vp9 converts to its planes: pure Rust, AVX2 or
+# The conversion from the framebuffer's pixels to the NV12 the H.264
+# encoders take, as wlshare-vp9 converts to its planes: pure Rust, AVX2 or
 # NEON chosen at run time.
 yuv = { version = "0.8", features = ["professional_mode"] }
 # The [password] table's hash: Argon2id and the PHC string it is stored as.
@@ -86,7 +87,7 @@ priority = "optional"
 # applications to play through, so wireplumber and pipewire-pulse come with it.
 depends = "$auto, libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
 # The VA-API drivers the hardware H.264 encoder of the tiles' regions reaches the
-# GPU through: Intel's and Mesa's. Without one the regions are VP9 on the CPU.
+# GPU through: Intel's and Mesa's. Without one the regions are libx264's, on the CPU.
 recommends = "va-driver-all"
 # The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
 # edits survive an upgrade.

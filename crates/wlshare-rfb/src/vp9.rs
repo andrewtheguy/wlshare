@@ -143,8 +143,9 @@ pub enum Vp9Error {
 /// across threads by rows and tile columns; the two cores kept back are for
 /// the compositor and the session, which are what make the next frame. The
 /// count also bounds the stream's tile columns, and so what a decoder's
-/// threads have to split.
-pub(crate) fn encoder_threads() -> usize {
+/// threads have to split. The daemon's software H.264 encoder takes the same
+/// count, so a region costs the machine's cores alike in either codec.
+pub fn encoder_threads() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
 }
 

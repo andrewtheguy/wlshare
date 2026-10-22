@@ -26,14 +26,15 @@
 //!   a palette of it, and the picture there until a later rectangle draws
 //!   over it. It depends on nothing before it.
 //! - A **START** begins a stream on `stream`, over its rectangle, and says
-//!   which codec it is ([`RegionCodec`]): a keyframe of exactly the
-//!   rectangle's size, 8-bit 4:2:0, BT.601 at studio swing — VP9 profile 0,
-//!   or an H.264 access unit in Annex B with its parameter sets, from a host
-//!   with a hardware encoder: the server's choice, which a client takes
-//!   either way. Each **FRAME** on
-//!   that id is the next frame of that stream, over the same rectangle, in
-//!   its codec, coded against the frames before it. A decoder draws each
-//!   frame's picture at the rectangle.
+//!   which codec it is ([`RegionCodec`]): a keyframe, 8-bit 4:2:0, BT.601 at
+//!   studio swing — VP9 profile 0 of exactly the rectangle's size, or an
+//!   H.264 access unit in Annex B with its parameter sets, by the host's
+//!   hardware encoder or by libx264, of the rectangle's size rounded up to
+//!   even sides: the server's choice, which a client takes either way. Each
+//!   **FRAME** on that id is the next frame of that stream, over the same
+//!   rectangle, in its codec, coded against the frames before it. A decoder
+//!   draws each frame's picture at the rectangle, a picture larger than it
+//!   cut to the rectangle from its top-left.
 //! - An **END** says the stream on `stream` is over: its last picture stays
 //!   until something draws over it, and no frame follows on the id until a
 //!   START begins another. The rectangle is the stream's.
@@ -60,9 +61,10 @@
 //! client's list names, held there: what a stream loses of a picture lasts
 //! only while the region moves, since it settles exact. The encoder is libvpx
 //! at speed 9, the least search it has, or, where the daemon hands this
-//! encoder a [`RegionCoder`] — its host's hardware H.264 encoder — and the
-//! client takes H.264, that: a region then costs the processor its conversion
-//! alone. A hardware coder that refuses a stream, or fails one midway, is
+//! encoder a [`RegionCoder`] — its host's H.264 encoder, the hardware's or
+//! else libx264 at its fastest preset — that: on the hardware a region costs
+//! the processor its conversion alone, and libx264 codes one in less of it
+//! than libvpx. A coder that refuses a stream, or fails one midway, is
 //! given up for the session, the failed stream ended, and VP9 codes every
 //! region from there: the picture goes on either way.
 //!
@@ -100,11 +102,12 @@ pub const KIND_END: u8 = 3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum RegionCodec {
-    /// VP9 profile 0, by libvpx: every region's codec unless the host has a
-    /// hardware H.264 encoder and the client takes H.264.
+    /// VP9 profile 0, by libvpx: every region's codec unless the daemon
+    /// hands the encoder an H.264 coder.
     Vp9 = 0,
     /// H.264, each frame one Annex B access unit, the parameter sets ahead of
-    /// each keyframe's slices.
+    /// each keyframe's slices, the picture the region's size rounded up to
+    /// even sides.
     H264 = 1,
 }
 
@@ -119,13 +122,13 @@ impl RegionCodec {
     }
 }
 
-/// Why a region coder could not open or code a stream: a hardware encoder's
-/// reason, in its own words.
+/// Why a region coder could not open or code a stream: its encoder's reason,
+/// in its own words.
 pub type RegionError = Box<dyn std::error::Error + Send + Sync>;
 
 /// A coder of region streams the daemon hands a [`TilesEncoder`] in place of
-/// VP9: its host's hardware H.264 encoder, wherever the host has one, since
-/// every client decodes both. The encoder opens a stream of it for each
+/// VP9: its host's H.264 encoder, the hardware's where the host has one and
+/// libx264 otherwise, since every client decodes both. The encoder opens a stream of it for each
 /// region, and on the first failure, to open or to code, gives it up for
 /// VP9 for the rest of the session.
 pub trait RegionCoder: Send {
@@ -703,21 +706,21 @@ pub struct TilesEncoder {
     threads: usize,
     /// The coder every new stream is opened on ahead of VP9, while one is
     /// held and has not failed.
-    hardware: Option<Box<dyn RegionCoder>>,
+    coder: Option<Box<dyn RegionCoder>>,
     scratch: Vec<u8>,
 }
 
 impl TilesEncoder {
     /// An encoder for a `width`×`height` desktop whose streams are at
     /// `quality` (1–100), each a VP9 stream on as many threads as this machine
-    /// gives one, or a stream of `hardware` where one is given, until it
+    /// gives one, or a stream of `coder` where one is given, until it
     /// fails. The client holds nothing of it yet.
-    pub fn new(width: u16, height: u16, quality: u8, hardware: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
-        Self::with_threads(width, height, quality, crate::vp9::encoder_threads(), hardware)
+    pub fn new(width: u16, height: u16, quality: u8, coder: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
+        Self::with_threads(width, height, quality, crate::vp9::encoder_threads(), coder)
     }
 
     /// [`Self::new`] with each VP9 stream on `threads` threads.
-    pub fn with_threads(width: u16, height: u16, quality: u8, threads: usize, hardware: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
+    pub fn with_threads(width: u16, height: u16, quality: u8, threads: usize, coder: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
         if width == 0 || height == 0 {
             return Err(wlshare_vp9::Error::Empty(width, height).into());
         }
@@ -738,17 +741,17 @@ impl TilesEncoder {
             next_tick: Duration::ZERO,
             quality,
             threads,
-            hardware,
+            coder,
             scratch: Vec::new(),
         };
         encoder.forget();
         Ok(encoder)
     }
 
-    /// The codec new streams are opened in: the hardware coder's while one is
+    /// The codec new streams are opened in: the region coder's while one is
     /// held, VP9 otherwise.
     pub fn codec(&self) -> RegionCodec {
-        self.hardware.as_ref().map_or(RegionCodec::Vp9, |coder| coder.codec())
+        self.coder.as_ref().map_or(RegionCodec::Vp9, |coder| coder.codec())
     }
 
     /// The desktop size this encoder codes.
@@ -976,7 +979,7 @@ impl TilesEncoder {
                     }
                     return Err(TilesError::Region(e));
                 }
-                // A hardware coder that fails a stream is given up: the stream
+                // A region coder that fails a stream is given up: the stream
                 // ends, what it carried is owed exact, and the regions are laid
                 // out again at the next round, on VP9.
                 Err(e) => {
@@ -995,7 +998,7 @@ impl TilesEncoder {
             if live.started {
                 out.end(live.id, live.area);
             }
-            self.hardware = None;
+            self.coder = None;
             self.retuned_at = None;
             self.cover();
         }
@@ -1062,22 +1065,22 @@ impl TilesEncoder {
         Ok(())
     }
 
-    /// A stream over `area`, every tile of it owed from now: on the hardware
+    /// A stream over `area`, every tile of it owed from now: on the region
     /// coder while one is held, which is given up for VP9 the first time it
     /// refuses a stream.
     fn build(&mut self, id: u8, area: Area, now: Duration) -> Result<Live, TilesError> {
         let (w, h) = (area.w(), area.h());
-        let hardware = self.hardware.as_mut().and_then(|coder| match coder.open(w, h, self.quality) {
+        let opened = self.coder.as_mut().and_then(|coder| match coder.open(w, h, self.quality) {
             Ok(stream) => Some((coder.codec(), stream)),
             Err(e) => {
                 warn!("the {:?} region coder refused a {w}x{h} stream; its regions are VP9 from here: {e}", coder.codec());
                 None
             }
         });
-        if hardware.is_none() {
-            self.hardware = None;
+        if opened.is_none() {
+            self.coder = None;
         }
-        let (codec, stream): (RegionCodec, Box<dyn RegionStream>) = match hardware {
+        let (codec, stream): (RegionCodec, Box<dyn RegionStream>) = match opened {
             Some(opened) => opened,
             None => {
                 let mut stream = wlshare_vp9::Stream::new(w, h, self.quality, REGION_CHROMA, self.threads)?;
@@ -1359,7 +1362,7 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    /// A region coder standing in for a hardware H.264 one: its frames are the
+    /// A region coder standing in for an H.264 one: its frames are the
     /// region's pixels behind a byte that says keyframe or not, and it can be
     /// told to refuse every stream, or to fail one after so many frames, at
     /// its read or at its encode.
