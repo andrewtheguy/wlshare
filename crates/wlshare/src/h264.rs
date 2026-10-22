@@ -22,9 +22,12 @@
 //! Constrained Baseline, the profile `ultrafast` comes to, with its
 //! `zerolatency` tuning, no scene cut, and the VP9 regions' threads, as
 //! slices. BT.601 at studio swing, said in the stream's VUI, as the VP9
-//! regions say it in their keyframe. Each frame is one Annex B access unit,
-//! the parameter sets ahead of every IDR, and the first frame of a stream is
-//! one; so is the first after the dial moves, since a VA-API quantizer is the
+//! regions say it in their keyframe. The picture coded is the region's
+//! rounded up to even sides, which libx264 requires and 4:2:0 cannot crop
+//! below: a region of an odd width or height is coded a pixel larger, its last
+//! row again below it and black to its right, and the gateway clips it to the
+//! region. Each frame is one Annex B access unit, the parameter sets ahead of
+//! every IDR, and the first frame of a stream is one; so is the first after the dial moves, since a VA-API quantizer is the
 //! encoder's for its life and a new one is a new encoder, which libx264's is
 //! too, the dial being held for a region's life anyway. No AUD; no SEI from
 //! the hardware, and from libx264 the one naming its version and options,
@@ -213,8 +216,9 @@ impl Coder {
     fn stream(&mut self, width: u16, height: u16, quality: u8) -> anyhow::Result<Stream> {
         anyhow::ensure!(width > 0 && height > 0, "a {width}x{height} region has no pixels");
         let (w, h) = (usize::from(width), usize::from(height));
-        // Strides a multiple of 64, and a row to spare, so a conversion into a
-        // rectangle at the bottom edge has a whole row's stride to read.
+        // Strides a multiple of 64, which leaves an odd region's coded picture
+        // its extra column, and the coded picture's rows and one to spare, so
+        // the bottom row pair's planes are a whole stride past its left edge.
         let stride = w.next_multiple_of(64);
         let mut stream = Stream {
             device: ptr::null_mut(),
@@ -224,8 +228,10 @@ impl Coder {
             sw_frame: ptr::null_mut(),
             packet: ptr::null_mut(),
             size: (width, height),
+            coded: (w.next_multiple_of(2) as i32, h.next_multiple_of(2) as i32),
             stride,
-            y: vec![16; stride * (h + 1)],
+            pair: Vec::new(),
+            y: vec![16; stride * (h.next_multiple_of(2) + 1)],
             uv: vec![128; stride * (h.div_ceil(2) + 1)],
             filled: false,
             quality,
@@ -246,8 +252,8 @@ impl Coder {
             anyhow::ensure!(!stream.sw_frame.is_null() && !stream.packet.is_null(), "libavcodec could not allocate a stream");
             let sw = &mut *stream.sw_frame;
             sw.format = ff::AVPixelFormat::AV_PIX_FMT_NV12 as i32;
-            sw.width = i32::from(width);
-            sw.height = i32::from(height);
+            sw.width = stream.coded.0;
+            sw.height = stream.coded.1;
             sw.data[0] = stream.y.as_mut_ptr();
             sw.data[1] = stream.uv.as_mut_ptr();
             sw.linesize[0] = stride as i32;
@@ -289,7 +295,11 @@ pub struct Stream {
     sw_frame: *mut ff::AVFrame,
     packet: *mut ff::AVPacket,
     size: (u16, u16),
+    /// The size coded: `size` rounded up to even sides.
+    coded: (i32, i32),
     stride: usize,
+    /// The bottom row pair of a conversion, copied: `B, G, R, X`.
+    pair: Vec<u8>,
     y: Vec<u8>,
     uv: Vec<u8>,
     /// The planes hold a picture: one was read whole.
@@ -333,8 +343,8 @@ impl Stream {
                     let frames = &mut *((*self.frames).data as *mut ff::AVHWFramesContext);
                     frames.format = ff::AVPixelFormat::AV_PIX_FMT_VAAPI;
                     frames.sw_format = ff::AVPixelFormat::AV_PIX_FMT_NV12;
-                    frames.width = i32::from(self.size.0);
-                    frames.height = i32::from(self.size.1);
+                    frames.width = self.coded.0;
+                    frames.height = self.coded.1;
                     frames.initial_pool_size = 4;
                     check(ff::av_hwframe_ctx_init(self.frames), "making VA-API surfaces")?;
                     let options = vec![
@@ -364,8 +374,8 @@ impl Stream {
             self.context = ff::avcodec_alloc_context3(codec);
             anyhow::ensure!(!self.context.is_null(), "libavcodec could not allocate an encoder");
             let ctx = &mut *self.context;
-            ctx.width = i32::from(self.size.0);
-            ctx.height = i32::from(self.size.1);
+            ctx.width = self.coded.0;
+            ctx.height = self.coded.1;
             ctx.pix_fmt = pix_fmt;
             ctx.time_base = ff::AVRational { num: 1, den: FPS };
             ctx.framerate = ff::AVRational { num: FPS, den: 1 };
@@ -408,29 +418,38 @@ impl Stream {
 
     /// Convert `rect` of `pixels` into the NV12 planes: `B, G, R, X` rows
     /// `stride` apart, the rectangle widened to whole 2×2 blocks within the
-    /// picture.
+    /// picture, and on to the coded picture's even height at the bottom.
+    ///
+    /// The converter takes its rows a pair at a time, each pair a whole
+    /// stride of every plane long, and an odd height's last row as the end of
+    /// each plane's slice; so every pair but the last is converted where it
+    /// lies, with slices of exactly its pairs, and the last from a copy of its
+    /// two rows — the picture's last row twice where its height is odd, so
+    /// the row's chroma is its own.
     fn convert(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> anyhow::Result<()> {
-        use yuv::{BufferStoreMut, YuvBiPlanarImageMut, YuvConversionMode, YuvRange, YuvStandardMatrix};
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         let (left, top) = (usize::from(rect.x) & !1, usize::from(rect.y) & !1);
         let right = (usize::from(rect.x) + usize::from(rect.width)).next_multiple_of(2).min(w);
-        let bottom = (usize::from(rect.y) + usize::from(rect.height)).next_multiple_of(2).min(h);
+        let bottom = (usize::from(rect.y) + usize::from(rect.height)).next_multiple_of(2).min(h.next_multiple_of(2));
         if left >= right || top >= bottom {
             return Ok(());
         }
-        let (rw, rh) = (right - left, bottom - top);
+        let rw = right - left;
         anyhow::ensure!(stride >= w * 4 && pixels.len() >= (h - 1) * stride + w * 4, "a {w}x{h} picture at a stride of {stride} does not fit in {} bytes", pixels.len());
-        let plane_stride = self.stride;
-        let mut image = YuvBiPlanarImageMut {
-            y_plane: BufferStoreMut::Borrowed(&mut self.y[top * plane_stride + left..]),
-            y_stride: plane_stride as u32,
-            uv_plane: BufferStoreMut::Borrowed(&mut self.uv[(top / 2) * plane_stride + left..]),
-            uv_stride: plane_stride as u32,
-            width: rw as u32,
-            height: rh as u32,
-        };
-        yuv::bgra_to_yuv_nv12(&mut image, &pixels[top * stride + left * 4..], stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Professional)
-            .map_err(|e| anyhow::anyhow!("converting a {rw}x{rh} rectangle to NV12: {e}"))
+        let ps = self.stride;
+        let last = bottom - 2;
+        if last > top {
+            let rgba = &pixels[top * stride + left * 4..last * stride + left * 4];
+            nv12(&mut self.y[top * ps + left..last * ps + left], &mut self.uv[top / 2 * ps + left..last / 2 * ps + left], ps, rgba, stride, rw, last - top)?;
+        }
+        let mut pair = std::mem::take(&mut self.pair);
+        pair.clear();
+        for row in [last, (last + 1).min(h - 1)] {
+            pair.extend_from_slice(&pixels[row * stride + left * 4..row * stride + right * 4]);
+        }
+        let converted = nv12(&mut self.y[last * ps + left..bottom * ps + left], &mut self.uv[last / 2 * ps + left..bottom / 2 * ps + left], ps, &pair, rw * 4, rw, 2);
+        self.pair = pair;
+        converted
     }
 
     fn frame(&mut self, keyframe: bool, out: &mut Vec<u8>) -> anyhow::Result<bool> {
@@ -523,6 +542,23 @@ impl Drop for Stream {
     }
 }
 
+/// Convert `height` rows of `width` pixels, `B, G, R, X` rows `rgba_stride`
+/// apart, into NV12 planes `stride` apart: BT.601 at studio swing. `height` is
+/// even, and each slice is exactly its rows.
+fn nv12(y: &mut [u8], uv: &mut [u8], stride: usize, rgba: &[u8], rgba_stride: usize, width: usize, height: usize) -> anyhow::Result<()> {
+    use yuv::{BufferStoreMut, YuvBiPlanarImageMut, YuvConversionMode, YuvRange, YuvStandardMatrix};
+    let mut image = YuvBiPlanarImageMut {
+        y_plane: BufferStoreMut::Borrowed(y),
+        y_stride: stride as u32,
+        uv_plane: BufferStoreMut::Borrowed(uv),
+        uv_stride: stride as u32,
+        width: width as u32,
+        height: height as u32,
+    };
+    yuv::bgra_to_yuv_nv12(&mut image, rgba, rgba_stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Professional)
+        .map_err(|e| anyhow::anyhow!("converting a {width}x{height} rectangle to NV12: {e}"))
+}
+
 /// The NAL unit types of an Annex B access unit, in order.
 pub fn nal_types(unit: &[u8]) -> Vec<u8> {
     let mut types = Vec::new();
@@ -590,16 +626,17 @@ mod tests {
     }
 
     /// Decode `unit` with libavcodec's software decoder and compare its luma
-    /// with `pixels`'s grey, within `tolerance` levels after studio swing.
+    /// with `pixels`'s grey, within `tolerance` levels after studio swing: a
+    /// picture of the region's size rounded up to even sides.
     fn decodes_to(decoder: &mut crate::decode::Decoder, unit: &[u8], pixels: &[u8], w: usize, h: usize, tolerance: u8) {
         let mut out = Vec::new();
         let decoded = decoder.decode(unit, &mut out).unwrap().expect("a picture for every unit");
-        assert_eq!((decoded.width, decoded.height), (w, h));
+        assert_eq!((decoded.width, decoded.height), (w.next_multiple_of(2), h.next_multiple_of(2)));
         for y in 0..h {
             for x in 0..w {
                 let grey = pixels[(y * w + x) * 4];
                 let expected = 16.0 + f64::from(grey) * 219.0 / 255.0;
-                let got = f64::from(out[y * w + x]);
+                let got = f64::from(out[y * decoded.width + x]);
                 assert!((got - expected).abs() <= f64::from(tolerance), "luma at {x},{y}: {got}, not {expected:.1}");
             }
         }
@@ -608,9 +645,10 @@ mod tests {
     /// Frames `encoder` codes decode with libavcodec's software decoder to
     /// the picture they were coded from: the first an IDR with its parameter
     /// sets, the next a P frame of the damage alone, the first after the dial
-    /// moves an IDR again, and a keyframe asked for one.
-    fn frames_decode_to_the_picture(encoder: &Encoder) {
-        let (w, h) = (96usize, 70usize);
+    /// moves an IDR again, and a keyframe asked for one. Within a few levels
+    /// of the picture, and `slack` more: the hardware's pixels are not held
+    /// to libx264's, only to a rectangle's being coded where it changed.
+    fn frames_decode_to_the_picture(encoder: &Encoder, (w, h): (usize, usize), slack: u8) {
         let mut coder = encoder.coder().unwrap();
         let mut stream = coder.open(w as u16, h as u16, 100).unwrap();
         let mut pixels = picture(w, h);
@@ -621,7 +659,7 @@ mod tests {
         assert!(stream.encode(false, &mut unit).unwrap(), "a frame of the first picture");
         let types = nal_types(&unit);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "the first frame carries SPS, PPS and an IDR: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
 
         // A rectangle changes, and the frame after it is a P frame.
         for y in 20..40 {
@@ -634,7 +672,19 @@ mod tests {
         assert!(stream.encode(false, &mut unit).unwrap());
         let types = nal_types(&unit);
         assert!(types.contains(&1) && !types.contains(&5), "a P frame: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
+
+        // A rectangle along the bottom edge, away from the left one, changes:
+        // its last rows are the picture's, with nothing after them.
+        for y in h - 3..h {
+            for x in 41..w {
+                pixels[(y * w + x) * 4..][..3].copy_from_slice(&[180, 180, 180]);
+            }
+        }
+        stream.read_bgrx(&pixels, w * 4, Some(&[Rect { x: 41, y: (h - 3) as u16, width: (w - 41) as u16, height: 3 }])).unwrap();
+        unit.clear();
+        assert!(stream.encode(false, &mut unit).unwrap());
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
 
         // The dial moves: the encoder is made again and the next frame is an IDR.
         stream.set_quality(60);
@@ -643,25 +693,26 @@ mod tests {
         assert!(stream.encode(false, &mut unit).unwrap());
         let types = nal_types(&unit);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets after the dial moved: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 12);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 12 + slack);
 
         // A keyframe asked for is one, with its parameter sets.
         unit.clear();
         assert!(stream.encode(true, &mut unit).unwrap());
         let types = nal_types(&unit);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets where one was asked: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 12);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 12 + slack);
     }
 
-    /// The hardware's frames decode to the picture. Passes with a word where
-    /// this machine has no encoder.
+    /// The hardware's frames decode to the picture, near enough. Passes with a
+    /// word where this machine has no encoder.
     #[test]
     fn hardware_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
         let Some(encoder) = Encoder::vaapi() else {
             eprintln!("no VA-API H.264 encoder on this machine; the hardware coder is not exercised");
             return;
         };
-        frames_decode_to_the_picture(&encoder);
+        frames_decode_to_the_picture(&encoder, (96, 70), 18);
+        frames_decode_to_the_picture(&encoder, (95, 69), 18);
     }
 
     /// libx264's frames decode to the picture, on every machine: it is what a
@@ -669,7 +720,15 @@ mod tests {
     #[test]
     fn libx264_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
         Encoder::X264.try_frame().expect("libx264 through this libavcodec");
-        frames_decode_to_the_picture(&Encoder::X264);
+        frames_decode_to_the_picture(&Encoder::X264, (96, 70), 0);
+    }
+
+    /// A region of odd sides, as one clipped to the edge of an odd desktop
+    /// is, is coded by libx264 a pixel larger rather than refused, and the
+    /// region's own pixels decode to the picture.
+    #[test]
+    fn libx264_codes_a_region_of_odd_sides() {
+        frames_decode_to_the_picture(&Encoder::X264, (95, 69), 0);
     }
 
     /// libx264's stream is Constrained Baseline, the profile `ultrafast`

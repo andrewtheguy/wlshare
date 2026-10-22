@@ -682,7 +682,10 @@ the picture.
   module, which opens a stream of it for each region ahead of VP9. The coding
   is pinned as VP9's is: constant quantizer, the dial mapped onto QP 40 down
   to 16, no bitrate, nothing dropped, no B-frames, one frame in and one out,
-  BT.601 at studio swing in the stream's VUI; each frame one Annex B access
+  BT.601 at studio swing in the stream's VUI; the picture the region's
+  rounded up to even sides, which libx264 requires, so a region of an odd
+  side, as one at the edge of an odd desktop is, is coded a pixel larger, its
+  last row again below it and black to its right, which the gateway clips; each frame one Annex B access
   unit, the parameter sets ahead of every IDR, and an IDR at the stream's
   START and again after the dial moves, since a VA-API quantizer is its
   encoder's for life, and libx264's encoder is made again the same way. The

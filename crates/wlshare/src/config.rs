@@ -71,8 +71,10 @@ pub struct Config {
     pub microphone: bool,
     /// Whether the tiles picture's moving regions are coded by the host's
     /// hardware H.264 encoder, through VA-API, where the daemon finds one at
-    /// startup; on by default. Off, or with none found, they are libx264's,
-    /// and VP9 by libvpx only where libavcodec has no libx264.
+    /// startup; on by default. Off, or with none found, they are libx264's.
+    /// They are VP9 by libvpx where libavcodec has no libx264, and for the
+    /// rest of a session whose coder cannot be opened, or refuses or fails a
+    /// stream.
     #[serde(default = "default_true")]
     pub hardware_h264: bool,
     /// The desktop name in ServerInit.
