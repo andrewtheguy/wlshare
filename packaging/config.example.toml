@@ -37,6 +37,12 @@ listen = "127.0.0.1:5900"
 # a disabled one -- is not an error: another is shared meanwhile, and the
 # desktop moves to this one when it appears.
 # output = "HEADLESS-1"
+#
+# A client may ask for one or two virtual displays, as an RDP client asks a
+# Windows host for its monitors. On sway the daemon makes and unplugs
+# HEADLESS-* outputs through sway's IPC, found in SWAYSOCK, until there are
+# that many; nothing here sets it, and on another compositor the outputs are
+# what it has. See docs/architecture.md, "Virtual displays".
 
 # Seconds a client taking the desktop is kept waiting, before it is told the
 # desktop's size, while the compositor has no `output`. For a headless output

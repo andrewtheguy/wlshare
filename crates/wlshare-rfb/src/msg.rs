@@ -12,7 +12,7 @@ use crate::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
 use crate::camera::{CameraFormat, CameraParseError, ClientCamera, MSG_CAMERA};
 use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY};
 use crate::microphone::{ClientMicrophone, MSG_MICROPHONE, MicrophoneParseError};
-use crate::outputs::{MSG_OUTPUTS, SELECT_OUTPUT_LEN};
+use crate::outputs::{ClientOutputs, MSG_OUTPUTS, OutputsParseError};
 use crate::pixel::PixelFormat;
 use crate::scroll::{MSG_SCROLL, SCROLL_LEN};
 
@@ -102,6 +102,9 @@ pub enum ClientMsg {
     /// The outputs extension's request: share the output with this id, as the
     /// last list named it ([`crate::outputs`]).
     SelectOutput { id: u32 },
+    /// The outputs extension's other request: have this many virtual displays
+    /// ([`crate::outputs`]).
+    VirtualDisplays { count: u32 },
     /// The scroll message: scroll by this distance in the output's logical
     /// pixels, positive rightward and downward, where the pointer is
     /// ([`crate::scroll`]).
@@ -142,6 +145,8 @@ pub enum ParseError {
     FencePayloadTooLong(usize),
     #[error("QEMU message: {0}")]
     Audio(#[from] AudioParseError),
+    #[error("outputs message: {0}")]
+    Outputs(#[from] OutputsParseError),
     #[error("camera message: {0}")]
     Camera(#[from] CameraParseError),
     #[error("microphone message: {0}")]
@@ -265,10 +270,11 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             need!(CLIENT_DENSITY_LEN);
             (ClientMsg::ClientDensity { width: u16_at(buf, 2), height: u16_at(buf, 4), fixed: u32_at(buf, 6) }, CLIENT_DENSITY_LEN)
         }
-        MSG_OUTPUTS => {
-            need!(SELECT_OUTPUT_LEN);
-            (ClientMsg::SelectOutput { id: u32_at(buf, 4) }, SELECT_OUTPUT_LEN)
-        }
+        MSG_OUTPUTS => match crate::outputs::parse_client(buf)? {
+            None => return Ok(None),
+            Some((ClientOutputs::Select { id }, n)) => (ClientMsg::SelectOutput { id }, n),
+            Some((ClientOutputs::VirtualDisplays { count }, n)) => (ClientMsg::VirtualDisplays { count }, n),
+        },
         MSG_SCROLL => {
             need!(SCROLL_LEN);
             (ClientMsg::Scroll { dx: i16_at(buf, 2), dy: i16_at(buf, 4) }, SCROLL_LEN)
@@ -463,6 +469,10 @@ mod tests {
         assert_eq!(parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0]).unwrap(), None, "a short ClientDensity asks for more");
         let (m, n) = parse(&[0xE1, 0, 0, 0, 0, 0, 0, 7]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::SelectOutput { id: 7 });
+        assert_eq!(n, 8);
+        let (m, n) = parse(&[0xE1, 1, 0, 0, 0, 0, 0, 2]).unwrap().unwrap();
+        assert_eq!(m, ClientMsg::VirtualDisplays { count: 2 });
+        assert_eq!(parse(&[0xE1, 9, 0, 0, 0, 0, 0, 2]), Err(ParseError::Outputs(OutputsParseError::UnknownOperation(9))));
         assert_eq!(n, 8);
         assert_eq!(parse(&[0xE1, 0, 0, 0, 0, 0, 0]).unwrap(), None, "a short SelectOutput asks for more");
         let (m, n) = parse(&[0xE5, 0, 0xFF, 0xE0, 0x01, 0x00, 0xFF]).unwrap().unwrap();

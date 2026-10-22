@@ -79,14 +79,31 @@ pub struct ModeInfo {
     pub refresh: i32,
 }
 
-/// What a configuration was for, so its outcome can be reported.
+/// What a configuration was for, so its outcome can be reported — and what it
+/// asked, so one the compositor cancelled can be asked again.
+///
+/// A configuration is made against the layout the compositor last announced,
+/// by serial, and one applied after the layout changed — an output added or
+/// taken away, which a client's virtual displays do ([`crate::sway`]), or
+/// configured by someone else — is `cancelled` rather than applied. The
+/// request still stands, so it is made once more against the new layout, once:
+/// `retry` marks that one, and a second cancellation is a refusal.
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigKind {
     /// A SetDesktopSize: the mode alone.
-    Resize { client: ClientId },
+    Resize { client: ClientId, width: u16, height: u16, retry: bool },
     /// A density declaration: the mode and the scale together, whichever differ.
     /// `id` tells its events from a declaration's before it.
-    Declare { id: u64 },
+    Declare { id: u64, client: ClientId, width: u16, height: u16, scale: f64, retry: bool },
+}
+
+impl ConfigKind {
+    /// Whether this configuration is already the one asked again.
+    fn retried(&self) -> bool {
+        match self {
+            ConfigKind::Resize { retry, .. } | ConfigKind::Declare { retry, .. } => *retry,
+        }
+    }
 }
 
 /// A `wl_display.sync` after declaration `id`'s configuration succeeded: when it
@@ -294,7 +311,7 @@ impl Outputs {
             .map_or(0, |m| m.refresh);
 
         let config = manager.create_configuration(self.serial, qh, kind);
-        if let ConfigKind::Declare { id } = kind {
+        if let ConfigKind::Declare { id, .. } = kind {
             self.declaring = Some((id, desk));
         }
         for head in &self.heads {
@@ -354,6 +371,9 @@ impl Dispatch<WlOutput, ()> for Compositor {
                     state.adopt_output();
                 }
                 state.outputs_changed();
+                // A made output is here: the next step towards the client's
+                // virtual displays, if there is one.
+                state.reconcile_virtual_displays();
             }
             _ => {}
         }
@@ -465,7 +485,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
         match event {
             zwlr_output_configuration_v1::Event::Succeeded => {
                 debug!("output configuration succeeded ({kind:?})");
-                if let ConfigKind::Declare { id } = *kind {
+                if let ConfigKind::Declare { id, .. } = *kind {
                     // `succeeded` says nothing about whether a head changed: the
                     // changes and their `done` follow when there are any. Sway, the
                     // measured compositor, sends them first when it commits on the
@@ -476,17 +496,41 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                     }
                 }
             }
+            zwlr_output_configuration_v1::Event::Cancelled if !kind.retried() => {
+                // The layout changed under it: the `done` with the new serial
+                // is already read, so the same request is made again against it.
+                info!("the compositor cancelled an output configuration whose layout changed under it; asking again ({kind:?})");
+                match *kind {
+                    ConfigKind::Resize { client, width, height, .. } => {
+                        if let Some(desk) = state.desk_of(client) {
+                            state.desks[desk].pending_resize = None;
+                            state.resize(desk, client, width, height, true);
+                        }
+                    }
+                    ConfigKind::Declare { id, client, width, height, scale, .. } => {
+                        if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == id) {
+                            state.desks[desk].pending_resize = None;
+                            if state.desks[desk].client == Some(client) {
+                                state.declare(desk, client, width, height, scale, true);
+                            }
+                            // A newer declaration waiting follows the one asked
+                            // again, or runs now when there is none to follow.
+                            state.declaration_settled();
+                        }
+                    }
+                }
+            }
             zwlr_output_configuration_v1::Event::Failed | zwlr_output_configuration_v1::Event::Cancelled => {
                 warn!("the compositor refused an output configuration ({kind:?})");
-                match kind {
-                    ConfigKind::Resize { client } => {
-                        if let Some(desk) = state.desk_of(*client) {
+                match *kind {
+                    ConfigKind::Resize { client, .. } => {
+                        if let Some(desk) = state.desk_of(client) {
                             state.desks[desk].pending_resize = None;
                         }
-                        state.shared().emit(Event::ResizeRefused { client: *client, status: wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
+                        state.shared().emit(Event::ResizeRefused { client, status: wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
                     }
-                    ConfigKind::Declare { id } => {
-                        if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| declaring == id) {
+                    ConfigKind::Declare { id, .. } => {
+                        if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == id) {
                             state.desks[desk].pending_resize = None;
                             state.answer_geometry(desk, None);
                             state.declaration_settled();

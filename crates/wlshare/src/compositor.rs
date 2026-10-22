@@ -34,6 +34,7 @@ use crate::framebuffer::Framebuffer;
 use crate::input::Input;
 use crate::framebuffer::ResizeOrigin;
 use crate::outputs::{ConfigKind, OutputInfo, Outputs};
+use crate::sway::{self, Step, Sway, VirtualDisplays};
 use crate::shared::{BESIDE, ClientId, Command, Displays, Event, FIRST, Geometry, Shared};
 
 /// What the compositor thread keeps for one desk: who is on it, and what
@@ -63,6 +64,10 @@ pub struct Compositor {
     keyboards: Option<ZwpVirtualKeyboardManagerV1>,
     pointers: Option<ZwlrVirtualPointerManagerV1>,
     pub outputs: Outputs,
+    /// sway's IPC, where the compositor is sway: what makes and unplugs headless
+    /// outputs for a client's virtual displays.
+    sway: Option<Sway>,
+    virtual_displays: VirtualDisplays,
     pub screencopy: Option<ZwlrScreencopyManagerV1>,
     pub capture_sources: Option<ExtOutputImageCaptureSourceManagerV1>,
     pub image_copy: Option<ExtImageCopyCaptureManagerV1>,
@@ -207,6 +212,8 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
         keyboards,
         pointers,
         outputs: Outputs::default(),
+        sway: Sway::from_env(),
+        virtual_displays: VirtualDisplays::default(),
         screencopy,
         capture_sources,
         image_copy,
@@ -264,7 +271,8 @@ impl Compositor {
         anyhow::ensure!(width > 0 && height > 0, "the shared output has no mode");
         let geometry = Geometry { width, height, scale: self.outputs.scale(FIRST) };
         let displays = Displays { active: [self.outputs.active_id(FIRST), 0], entries: self.outputs.entries() };
-        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, displays, commands));
+        let most_virtual_displays = if self.sway.is_some() { sway::MOST } else { 0 };
+        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, displays, commands, most_virtual_displays));
         self.shared = Some(shared);
 
         if let (Some(seat), Some(keyboards), Some(pointers)) = (&self.seat, &self.keyboards, &self.pointers) {
@@ -351,6 +359,9 @@ impl Compositor {
                     // A display beside the client that held it was that client's.
                     self.end_beside();
                 }
+                // And so were its virtual displays: the outputs stand as they
+                // are until this client says.
+                self.virtual_displays.wanted = None;
                 self.shared().set_holder(Some(id));
                 self.start_capture(FIRST);
             }
@@ -362,6 +373,7 @@ impl Compositor {
                     Some(FIRST) => {
                         self.end_beside();
                         self.desks[FIRST].client = None;
+                        self.virtual_displays.wanted = None;
                         self.shared().set_holder(None);
                         self.let_go(FIRST, id);
                         self.stop_capture(FIRST);
@@ -397,18 +409,29 @@ impl Compositor {
             }
             Command::Resize { client, width, height } => {
                 if let Some(desk) = self.desk_of(client) {
-                    self.resize(desk, client, width, height);
+                    self.resize(desk, client, width, height, false);
                 }
             }
             Command::Declare { client, width, height, scale } => {
                 if let Some(desk) = self.desk_of(client) {
-                    self.declare(desk, client, width, height, scale);
+                    self.declare(desk, client, width, height, scale, false);
                 }
             }
             // Which output is where is the choice of the client on the desktop:
             // a display beside is answered with the list as it is.
             Command::SelectOutput { client, id } => match self.desk_of(client) {
                 Some(FIRST) => self.select_output(client, id),
+                Some(_) => self.answer_outputs(),
+                None => {}
+            },
+            // How many outputs there are is the same client's to say, and the
+            // request is answered with the list as it is: what it brings about
+            // arrives as the outputs come and go.
+            Command::VirtualDisplays { client, count } => match self.desk_of(client) {
+                Some(FIRST) => {
+                    self.want_virtual_displays(client, count);
+                    self.answer_outputs();
+                }
                 Some(_) => self.answer_outputs(),
                 None => {}
             },
@@ -420,6 +443,51 @@ impl Compositor {
                     self.clipboard.set(&self.qh.clone(), text);
                 }
             }
+        }
+    }
+
+    /// The client on the desktop wants `count` virtual displays: that many
+    /// headless outputs, which the compositor is asked to make or unplug one
+    /// at a time, where it is sway ([`crate::sway`]). Elsewhere the outputs
+    /// are what they are, and the list every request is answered with says so
+    /// in its first byte.
+    fn want_virtual_displays(&mut self, client: ClientId, count: u32) {
+        if self.sway.is_none() {
+            info!("client {}: asks for {count} virtual displays; the compositor's outputs are what they are", client.0);
+            return;
+        }
+        if count == 0 || count > u32::from(sway::MOST) {
+            warn!("client {}: asks for {count} virtual displays; one to {} can be had, and the outputs stay as they are", client.0, sway::MOST);
+            return;
+        }
+        self.virtual_displays.wanted = Some(count);
+        self.reconcile_virtual_displays();
+    }
+
+    /// Take the one step there is towards the virtual displays the client
+    /// asked for, if any: run on the request, and on every output's arrival
+    /// and departure, since each step is followed by one of those.
+    pub fn reconcile_virtual_displays(&mut self) {
+        let headless: Vec<String> = self.outputs.outputs.iter().filter(|o| o.is_headless()).filter_map(|o| o.name.clone()).collect();
+        let shared = self.outputs.selected[FIRST].as_deref();
+        let preferred = self.outputs.wanted.as_deref();
+        let step = self.virtual_displays.next(&headless, shared, preferred);
+        let Some(sway) = &self.sway else { return };
+        let wanted = self.virtual_displays.wanted.unwrap_or(0);
+        let result = match step {
+            Step::Settled => return,
+            Step::Create => {
+                info!("asking sway for a headless output: the client wants {wanted} virtual displays and there are {}", headless.len());
+                sway.create_output().map(|()| self.virtual_displays.creating(headless.clone()))
+            }
+            Step::Unplug(name) => {
+                info!("asking sway to unplug {name}: the client wants {wanted} virtual displays and there are {}", headless.len());
+                sway.unplug(&name).map(|()| self.virtual_displays.unplugging(name))
+            }
+        };
+        if let Err(e) = result {
+            warn!("{e:#}; the outputs stay as they are");
+            self.virtual_displays.wanted = None;
         }
     }
 
@@ -492,7 +560,10 @@ impl Compositor {
         self.outputs_changed();
     }
 
-    fn resize(&mut self, desk: usize, client: ClientId, width: u16, height: u16) {
+    /// A client's SetDesktopSize. `retry` marks the configuration as the one
+    /// made again after the compositor cancelled the first
+    /// ([`ConfigKind`]).
+    pub fn resize(&mut self, desk: usize, client: ClientId, width: u16, height: u16, retry: bool) {
         let refuse = |this: &Self, status: u16| this.shared().emit(Event::ResizeRefused { client, status });
         if !self.resize_allowed {
             info!("client {} asked for {width}x{height}: resizing is disabled", client.0);
@@ -504,7 +575,7 @@ impl Compositor {
         info!("client {} asks for a {width}x{height} desktop", client.0);
         self.desks[desk].pending_resize = Some((client, width, height));
         let qh = self.qh.clone();
-        if !self.outputs.configure(&qh, desk, Some((width, height)), None, ConfigKind::Resize { client }) {
+        if !self.outputs.configure(&qh, desk, Some((width, height)), None, ConfigKind::Resize { client, width, height, retry }) {
             self.desks[desk].pending_resize = None;
             refuse(self, wlshare_rfb::msg::EDS_STATUS_PROHIBITED);
         }
@@ -638,8 +709,10 @@ impl Compositor {
     /// One declaration's configuration is out at a time, so each settles on its
     /// own and is answered once. One arriving meanwhile waits for that one to
     /// settle; a newer one from the same desk replaces it, and the one replaced
-    /// is answered with the output as it is.
-    fn declare(&mut self, desk: usize, client: ClientId, width: u16, height: u16, scale: f64) {
+    /// is answered with the output as it is. `retry` marks the configuration as
+    /// the one made again after the compositor cancelled the first
+    /// ([`ConfigKind`]).
+    pub fn declare(&mut self, desk: usize, client: ClientId, width: u16, height: u16, scale: f64, retry: bool) {
         if self.outputs.declaring.is_some() {
             debug!("client {}: a declaration waits for the one before it to settle", client.0);
             if let Some((waiting, ..)) = self.desks[desk].queued_declaration.replace((client, width, height, scale)) {
@@ -667,7 +740,7 @@ impl Compositor {
         let qh = self.qh.clone();
         let id = self.outputs.next_declaration;
         self.outputs.next_declaration += 1;
-        if !self.outputs.configure(&qh, desk, new_size, new_scale, ConfigKind::Declare { id }) {
+        if !self.outputs.configure(&qh, desk, new_size, new_scale, ConfigKind::Declare { id, client, width, height, scale, retry }) {
             self.desks[desk].pending_resize = None;
             self.answer_geometry(desk, Some(client));
         }
@@ -683,7 +756,7 @@ impl Compositor {
             if let Some((client, width, height, scale)) = self.desks[desk].queued_declaration.take()
                 && self.desks[desk].client == Some(client)
             {
-                self.declare(desk, client, width, height, scale);
+                self.declare(desk, client, width, height, scale, false);
             }
         }
     }
@@ -705,11 +778,13 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if desks.is_empty() { "" } else { "; it is a shared one" });
                     removed.output.release();
                     if desks.is_empty() {
-                        return state.outputs_changed();
+                        state.outputs_changed();
                     }
                     for desk in desks {
                         state.output_gone(desk);
                     }
+                    // An unplug's output is gone: the next step, if there is one.
+                    state.reconcile_virtual_displays();
                 }
             }
             _ => {}

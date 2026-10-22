@@ -59,6 +59,9 @@ pub enum Command {
     Declare { client: ClientId, width: u16, height: u16, scale: f64 },
     /// SelectOutput: the client wants the output with this id shared.
     SelectOutput { client: ClientId, id: u32 },
+    /// VirtualDisplays: the client wants this many headless outputs, which the
+    /// compositor is asked to make or unplug where it can ([`crate::sway`]).
+    VirtualDisplays { client: ClientId, count: u32 },
     /// Text for the compositor's clipboard.
     SetClipboard { client: ClientId, text: String },
 }
@@ -172,6 +175,9 @@ pub struct Shared {
     pub desks: [Desk; 2],
     pub seats: watch::Sender<Seats>,
     pub displays: Mutex<Displays>,
+    /// The most virtual displays a client may ask for, which every output list
+    /// says: [`crate::sway::MOST`] with sway's IPC to make them, 0 without.
+    pub most_virtual_displays: u8,
     /// The compositor's clipboard as text, empty while it holds none — from the
     /// desktop's selection, or from the client that set it last.
     clipboard: Mutex<Arc<str>>,
@@ -181,7 +187,13 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(framebuffer: Framebuffer, geometry: Geometry, displays: Displays, commands: calloop::channel::Sender<Command>) -> Self {
+    pub fn new(
+        framebuffer: Framebuffer,
+        geometry: Geometry,
+        displays: Displays,
+        commands: calloop::channel::Sender<Command>,
+        most_virtual_displays: u8,
+    ) -> Self {
         let (seats, _) = watch::channel(Seats::default());
         let (events, _) = broadcast::channel(64);
         // The second desk holds nothing until a connection joins beside: it
@@ -191,6 +203,7 @@ impl Shared {
             desks: [Desk::new(framebuffer, geometry), beside],
             seats,
             displays: Mutex::new(displays),
+            most_virtual_displays,
             clipboard: Mutex::new(Arc::from("")),
             events,
             commands,
