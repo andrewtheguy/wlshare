@@ -1136,6 +1136,14 @@ impl Session {
                 info!("client {}: asks for output {id}", self.id.0);
                 self.shared.command(Command::SelectOutput { client: self.id, id });
             }
+            ClientMsg::VirtualDisplays { count } => {
+                if !self.outputs {
+                    debug!("client {}: a virtual displays request without the extension; ignored", self.id.0);
+                    return Ok(());
+                }
+                info!("client {}: asks for {count} virtual display{}", self.id.0, if count == 1 { "" } else { "s" });
+                self.shared.command(Command::VirtualDisplays { client: self.id, count });
+            }
             ClientMsg::AudioEnable => {
                 if !self.audio_supported {
                     warn!("client {}: enables audio without the extension; ignored", self.id.0);
@@ -1325,7 +1333,7 @@ impl Session {
         let displays = self.shared.displays();
         let active = displays.active[self.desk];
         debug!("client {}: listing {} outputs, sharing id {active}", self.id.0, displays.entries.len());
-        writer.send(&output_list(active, &displays.entries)).await?;
+        writer.send(&output_list(active, self.shared.most_virtual_displays, &displays.entries)).await?;
         Ok(())
     }
 
@@ -1898,7 +1906,7 @@ mod output_tests {
     fn shared() -> Arc<Shared> {
         let (commands, _rx) = calloop::channel::channel();
         let displays = Displays { active: [7, 0], entries: vec![entry(7, "Virtual-1")] };
-        Arc::new(Shared::new(Framebuffer::new(1, 1), Geometry { width: 1, height: 1, scale: 1.0 }, displays, commands))
+        Arc::new(Shared::new(Framebuffer::new(1, 1), Geometry { width: 1, height: 1, scale: 1.0 }, displays, commands, 0))
     }
 
     /// What the compositor thread does when the configured output appears.

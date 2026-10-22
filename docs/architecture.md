@@ -28,7 +28,8 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   and run the RSA-AES exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `cursor.rs`, `outputs.rs`, `input.rs` and
-  `clipboard.rs` are the protocols it speaks; `audio.rs`, `camera.rs` and
+  `clipboard.rs` are the protocols it speaks, and `sway.rs` is sway's IPC, which
+  makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
   `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
   and `h264.rs` the host's hardware H.264 encoder through the same libavcodec, for
   the tiles picture's moving regions;
@@ -772,7 +773,11 @@ Both messages have one layout:
   reported as it is if no head change arrived. One declaration's configuration
   is out at a time, and its events are told from any other's, so each is
   answered once: one arriving meanwhile waits for it to settle, and a newer one
-  replaces it, the replaced one answered with the output as it is. A new size
+  replaces it, the replaced one answered with the output as it is. A
+  configuration the compositor *cancels* because the layout changed under it —
+  an output added or taken away, which a client's virtual displays do — is made
+  once more against the new layout, once; a second cancellation is a refusal.
+  A new size
   reaches the client as
   an ExtendedDesktopSize rectangle whose reason is this client, as a
   SetDesktopSize's does.
@@ -789,7 +794,8 @@ describes screens *inside* one framebuffer — so this is a second private
 extension in the shape of the first: one pseudo-encoding, `0x574c534f` (`WLSO`),
 and one message type, `0xE1`, in both directions.
 
-- **OutputList**, server → client: type, padding, a count, the shared output's
+- **OutputList**, server → client: type, the most virtual displays the server
+  makes on request ([Virtual displays](#virtual-displays)), a count, the shared output's
   id, then an entry per output — id, width and height in pixels, scale as 16.16
   fixed point, a flags byte whose bit 0 says the output is headless, and a
   length-prefixed UTF-8 name. Sent as the answer to *every* `SetEncodings` that
@@ -804,7 +810,7 @@ and one message type, `0xE1`, in both directions.
 | Offset | Type | Field |
 |---|---|---|
 | 0 | U8 | message type, `0xE1` |
-| 1 | U8 | padding |
+| 1 | U8 | virtual displays: the most the server makes, 0 for none |
 | 2 | U16 | count |
 | 4 | U32 | the shared output's id |
 
@@ -820,18 +826,33 @@ and one message type, `0xE1`, in both directions.
 | 13 | U8 | name length |
 | 14 | U8[] | name, UTF-8 |
 
-- **SelectOutput**, client → server, eight bytes: type, three bytes of padding,
-  the id of the output to share. Ignored from a client that did not list the
-  pseudo-encoding, honoured only from the client on the desktop, and
-  **answered with an OutputList** either way, a display beside included: a request naming an output the compositor no longer has, or the one
+- **SelectOutput**, client → server, eight bytes: type, an operation byte of
+  0, two bytes of padding, the id of the output to share. Ignored from a client
+  that did not list the pseudo-encoding, honoured only from the client on the
+  desktop, and **answered with an OutputList** either way, a display beside
+  included: a request naming an output the compositor no longer has, or the one
   already shared, is answered with the list as it is. So a client's menu follows
   what is on the canvas rather than what was clicked.
 
 | Offset | Type | Field |
 |---|---|---|
 | 0 | U8 | message type, `0xE1` |
-| 1 | U8[3] | padding |
+| 1 | U8 | operation, 0 |
+| 2 | U8[2] | padding |
 | 4 | U32 | id |
+
+- **VirtualDisplays**, client → server, eight bytes in the same layout with an
+  operation byte of 1 and a count in place of the id: have this many virtual
+  displays ([Virtual displays](#virtual-displays)). Heard under SelectOutput's
+  rules and answered with the list as it is; what it brings about arrives as
+  the outputs come and go, a list each.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | U8 | message type, `0xE1` |
+| 1 | U8 | operation, 1 |
+| 2 | U8[2] | padding |
+| 4 | U32 | count |
 
 A switch stops the capture, takes the new size into the framebuffer blank,
 points the virtual pointer at the new output — `zwlr_virtual_pointer` takes its
@@ -857,6 +878,46 @@ same sequence a client's own switch runs, so the client is told the new geometry
 and sent the new output's pixels. With no output left the capture stops and the
 list goes out empty, the last geometry and the last picture standing until an
 output appears; the first one to arrive is adopted the same way.
+
+### Virtual displays
+
+An RDP client's monitor layout and a Mac's display configuration tell the host
+how many displays the session has, and the host makes them. `VirtualDisplays` is
+that request: the client on the desktop says how many virtual displays it wants
+— one or two, one per desk, since an output is shown on one desk and there are
+two — and the daemon has the compositor make headless outputs, or unplug them,
+until there are that many. The client on the desktop alone is heard; a display
+beside's request, like its `SelectOutput`, is answered with the list as it is.
+
+Only sway can be asked. No Wayland protocol a client binds makes an output, and
+sway's IPC does: `create_output` makes a headless output and `output NAME
+unplug` destroys one, a startup one included. The daemon finds the socket in
+`SWAYSOCK`, which sway sets for everything it starts and the session's user
+manager carries to its units, and checks at startup that it answers as sway;
+there is nothing to configure. Every OutputList says in its second byte the most
+virtual displays the daemon makes — two with sway, none without — so a client
+knows before it asks, and a request the daemon cannot act on, or one for a count
+it does not make, is answered with the list as it is and changes nothing. On
+labwc or another compositor the outputs are the ones the compositor has.
+
+One step at a time. The request is answered with the list as it stands, and what
+it brings about arrives as the outputs do: a `create_output` is sent, its output
+appears and is listed, and only then is the next sent; an unplug likewise waits
+for its output to go. Each arrival and departure is a list of its own, so a
+client asking for two on a session with one sees the second output in the list
+that follows and, in the remotex gateway, opens its tab. The count is of
+headless outputs, whoever made them: a session started with two
+(`WLR_HEADLESS_OUTPUTS=2`) and asked for one loses one, as a Windows host with
+two monitors asked for one does. The output the desktop is on is never
+unplugged; of the rest the latest made goes first — the highest number, since
+wlroots counts up for the life of the compositor, so an output made after one
+was unplugged is a new one under a new name, never the old one back — and the
+configured `output` last. A refusal from sway is logged and ends the request.
+
+The request is the client's. It is let go when the client leaves or is taken
+over, and the outputs stand as they are until the next client says, so windows
+stay where they were across a reconnect, as on a Windows host. A headed
+session's watcher can unplug what is left in its *free* command.
 
 ### A display beside
 
@@ -1250,7 +1311,9 @@ naming other than one screen, or no pixels, *invalid layout*. A request for the
 current size is answered OK at once; one for an output that cannot be
 reconfigured — only a headless output, one named `HEADLESS-*`, ever is, and
 only through wlr-output-management — is answered *prohibited*; a size the
-compositor rejects is answered *invalid layout*; a request the compositor
+compositor rejects is answered *invalid layout*, one it cancels because the
+layout changed under it is made once more against the new layout, as a
+declaration's is; a request the compositor
 accepts is answered when the frame at that size arrives, with an
 ExtendedDesktopSize rectangle naming this client as the reason.
 

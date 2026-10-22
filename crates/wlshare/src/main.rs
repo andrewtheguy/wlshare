@@ -33,6 +33,7 @@ mod pam;
 mod session;
 mod shared;
 mod state;
+mod sway;
 mod watch;
 
 use std::path::PathBuf;

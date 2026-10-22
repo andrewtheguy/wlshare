@@ -205,7 +205,7 @@ mod tests {
 
     fn shared() -> Arc<Shared> {
         let (commands, _rx) = calloop::channel::channel();
-        Arc::new(Shared::new(Framebuffer::new(1, 1), Geometry { width: 1, height: 1, scale: 1.0 }, Displays::default(), commands))
+        Arc::new(Shared::new(Framebuffer::new(1, 1), Geometry { width: 1, height: 1, scale: 1.0 }, Displays::default(), commands, 0))
     }
 
     /// A directory of this test's own: the tests run at once.

@@ -20,6 +20,19 @@
 //!   list as it is, so the client's menu ends up agreeing with what is on the
 //!   canvas rather than with what was clicked. A request is never left without
 //!   an answer.
+//! - The client may send a `VirtualDisplays`
+//!   ([`crate::msg::ClientMsg::VirtualDisplays`]) saying how many virtual
+//!   displays it wants, as an RDP client's monitor layout and a Mac's display
+//!   configuration do. A server whose compositor can make outputs — sway,
+//!   through its IPC — adds headless outputs and takes them away until there
+//!   are that many, each arrival and departure a list of its own; the request
+//!   itself is answered with the list as it is. The list's `virtual displays`
+//!   byte says the most the server makes, and 0 that it makes none: the
+//!   request is then answered and changes nothing.
+//!
+//! The two client messages share one eight-byte layout: the type, an operation
+//! byte ([`OP_SELECT_OUTPUT`], [`OP_VIRTUAL_DISPLAYS`]), two bytes of padding
+//! and one U32, the id or the count.
 //!
 //! The size and scale of each entry are what a capture of that output would
 //! produce, so a client can label the choice before making it. Scales are the
@@ -30,8 +43,76 @@ use crate::density::to_fixed;
 /// The message type, used by both directions; outside every registered type.
 pub const MSG_OUTPUTS: u8 = 0xE1;
 
-/// The bytes of a `SelectOutput`, type included.
-pub const SELECT_OUTPUT_LEN: usize = 8;
+/// The bytes of a client's message, type included: type, operation, two bytes
+/// of padding, and one U32.
+pub const CLIENT_OUTPUTS_LEN: usize = 8;
+
+/// The operation byte of a `SelectOutput`: share the output with the id that
+/// follows.
+pub const OP_SELECT_OUTPUT: u8 = 0;
+
+/// The operation byte of a `VirtualDisplays`: have as many virtual displays as
+/// the count that follows.
+pub const OP_VIRTUAL_DISPLAYS: u8 = 1;
+
+/// What a client asked in an outputs message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientOutputs {
+    /// Share the output with this id.
+    Select { id: u32 },
+    /// Have this many virtual displays.
+    VirtualDisplays { count: u32 },
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum OutputsParseError {
+    #[error("outputs operation {0} is not select or virtual displays")]
+    UnknownOperation(u8),
+}
+
+/// Parse the client message at the front of `buf`, whose first byte is
+/// [`MSG_OUTPUTS`]. `Ok(None)` means more bytes are needed.
+pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientOutputs, usize)>, OutputsParseError> {
+    if buf.len() < CLIENT_OUTPUTS_LEN {
+        return Ok(None);
+    }
+    let value = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    let msg = match buf[1] {
+        OP_SELECT_OUTPUT => ClientOutputs::Select { id: value },
+        OP_VIRTUAL_DISPLAYS => ClientOutputs::VirtualDisplays { count: value },
+        other => return Err(OutputsParseError::UnknownOperation(other)),
+    };
+    Ok(Some((msg, CLIENT_OUTPUTS_LEN)))
+}
+
+/// Client → server `SelectOutput`: share the output with this id.
+///
+/// | Offset | Type | Field |
+/// |---|---|---|
+/// | 0 | U8 | `0xE1` |
+/// | 1 | U8 | [`OP_SELECT_OUTPUT`] |
+/// | 2 | U8[2] | padding |
+/// | 4 | U32 | id |
+pub fn select_output(id: u32) -> [u8; CLIENT_OUTPUTS_LEN] {
+    client_message(OP_SELECT_OUTPUT, id)
+}
+
+/// Client → server `VirtualDisplays`: have this many virtual displays.
+///
+/// | Offset | Type | Field |
+/// |---|---|---|
+/// | 0 | U8 | `0xE1` |
+/// | 1 | U8 | [`OP_VIRTUAL_DISPLAYS`] |
+/// | 2 | U8[2] | padding |
+/// | 4 | U32 | count |
+pub fn virtual_displays(count: u32) -> [u8; CLIENT_OUTPUTS_LEN] {
+    client_message(OP_VIRTUAL_DISPLAYS, count)
+}
+
+fn client_message(op: u8, value: u32) -> [u8; CLIENT_OUTPUTS_LEN] {
+    let [a, b, c, d] = value.to_be_bytes();
+    [MSG_OUTPUTS, op, 0, 0, a, b, c, d]
+}
 
 /// An entry's flags, bit 0: the output is one the compositor made rather than a
 /// monitor somebody is sitting at. Only these are ever resized or rescaled, so a
@@ -57,12 +138,14 @@ pub struct OutputEntry {
     pub headless: bool,
 }
 
-/// Server → client `OutputList`: every output, and which one is shared.
+/// Server → client `OutputList`: every output, which one is shared, and the
+/// most virtual displays the server makes on request — 0 for one that makes
+/// none.
 ///
 /// | Offset | Type | Field |
 /// |---|---|---|
 /// | 0 | U8 | `0xE1` |
-/// | 1 | U8 | padding |
+/// | 1 | U8 | virtual displays: the most the server makes |
 /// | 2 | U16 | count |
 /// | 4 | U32 | the shared output's id |
 ///
@@ -80,9 +163,9 @@ pub struct OutputEntry {
 ///
 /// A name over [`MAX_NAME`] bytes is cut at a character boundary, and a list
 /// longer than `u16::MAX` is cut to it; neither is reachable from a compositor.
-pub fn output_list(active: u32, outputs: &[OutputEntry]) -> Vec<u8> {
+pub fn output_list(active: u32, virtual_displays: u8, outputs: &[OutputEntry]) -> Vec<u8> {
     let outputs = &outputs[..outputs.len().min(usize::from(u16::MAX))];
-    let mut msg = vec![MSG_OUTPUTS, 0];
+    let mut msg = vec![MSG_OUTPUTS, virtual_displays];
     msg.extend_from_slice(&(outputs.len() as u16).to_be_bytes());
     msg.extend_from_slice(&active.to_be_bytes());
     for output in outputs {
@@ -115,10 +198,11 @@ fn clipped(name: &str) -> &str {
 mod tests {
     use super::*;
 
-    /// A decoder written from the documented layout, not from [`output_list`].
-    fn decode(bytes: &[u8]) -> (u32, Vec<OutputEntry>) {
+    /// A decoder written from the documented layout, not from [`output_list`]:
+    /// the most virtual displays, the shared id, and the entries.
+    fn decode(bytes: &[u8]) -> (u8, u32, Vec<OutputEntry>) {
         assert_eq!(bytes[0], 0xE1);
-        assert_eq!(bytes[1], 0, "the padding byte is zero");
+        let most = bytes[1];
         let count = u16::from_be_bytes([bytes[2], bytes[3]]);
         let active = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let mut at = 8;
@@ -137,7 +221,7 @@ mod tests {
             at += 14 + name_len;
         }
         assert_eq!(at, bytes.len(), "the message is exactly its entries");
-        (active, outputs)
+        (most, active, outputs)
     }
 
     fn entry(id: u32, name: &str, width: u16, height: u16, scale: f64, headless: bool) -> OutputEntry {
@@ -150,24 +234,25 @@ mod tests {
             entry(3, "DP-2", 3840, 2160, 1.5, false),
             entry(7, "HEADLESS-1", 1728, 1117, 2.0, true),
         ];
-        let (active, decoded) = decode(&output_list(7, &outputs));
+        let (most, active, decoded) = decode(&output_list(7, 2, &outputs));
+        assert_eq!(most, 2);
         assert_eq!(active, 7);
         assert_eq!(decoded, outputs);
     }
 
     #[test]
     fn an_empty_list_is_a_header_alone() {
-        let bytes = output_list(0, &[]);
+        let bytes = output_list(0, 0, &[]);
         assert_eq!(bytes, [0xE1, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(decode(&bytes), (0, Vec::new()));
+        assert_eq!(decode(&bytes), (0, 0, Vec::new()));
     }
 
     #[test]
     fn a_list_has_the_documented_layout() {
         assert_eq!(
-            output_list(1, &[entry(1, "DP-2", 1920, 1080, 1.0, false)]),
+            output_list(1, 2, &[entry(1, "DP-2", 1920, 1080, 1.0, false)]),
             [
-                0xE1, 0, 0x00, 0x01, // one entry
+                0xE1, 2, 0x00, 0x01, // up to two virtual displays; one entry
                 0x00, 0x00, 0x00, 0x01, // active: id 1
                 0x00, 0x00, 0x00, 0x01, // id
                 0x07, 0x80, // 1920
@@ -182,8 +267,19 @@ mod tests {
     #[test]
     fn a_long_name_is_cut_at_a_character_boundary() {
         let outputs = vec![entry(1, &"é".repeat(200), 800, 600, 1.0, false)];
-        let (_, decoded) = decode(&output_list(1, &outputs));
+        let (_, _, decoded) = decode(&output_list(1, 0, &outputs));
         // 255 bytes is 127 two-byte characters and half of one, which is not sent.
         assert_eq!(decoded[0].name, "é".repeat(127));
+    }
+
+    /// Both client messages, read back by a decoder written from the layout.
+    #[test]
+    fn a_client_message_is_its_operation_and_one_u32() {
+        assert_eq!(select_output(7), [0xE1, 0, 0, 0, 0, 0, 0, 7]);
+        assert_eq!(virtual_displays(2), [0xE1, 1, 0, 0, 0, 0, 0, 2]);
+        assert_eq!(parse_client(&select_output(u32::MAX)), Ok(Some((ClientOutputs::Select { id: u32::MAX }, 8))));
+        assert_eq!(parse_client(&virtual_displays(1)), Ok(Some((ClientOutputs::VirtualDisplays { count: 1 }, 8))));
+        assert_eq!(parse_client(&[0xE1, 1, 0, 0, 0, 0, 0]), Ok(None), "a short message asks for more");
+        assert_eq!(parse_client(&[0xE1, 2, 0, 0, 0, 0, 0, 1]), Err(OutputsParseError::UnknownOperation(2)));
     }
 }

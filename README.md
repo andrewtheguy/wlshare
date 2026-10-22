@@ -174,6 +174,16 @@ example configuration shows the two `swaymsg` lines, and
 [`docs/architecture.md`](docs/architecture.md#the-state-socket) says when each
 runs.
 
+A client may ask for the number of virtual displays it wants, as an RDP client
+asks a Windows host for its monitors and a Mac's viewer asks for its virtual
+displays: one or two. On sway the daemon makes and unplugs headless outputs
+through sway's IPC, found in `SWAYSOCK`, until there are that many, with
+nothing to configure: a session started with one headless output is given a
+second when the remotex gateway's target asks for two (`virtual_displays = 2`).
+On any other compositor the outputs are what the compositor has, and the list
+says so
+([`docs/architecture.md`](docs/architecture.md#virtual-displays)).
+
 A custom keyboard layout — for a modifier remap the session's only keyboard has
 to carry — goes under `[xkb]`, with `XKB_CONFIG_EXTRA_PATH` in the unit's
 environment naming the directory that holds it. Each key must keep its keysym:
