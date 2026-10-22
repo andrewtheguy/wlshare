@@ -629,8 +629,9 @@ u8 kind
 
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
 depending on nothing before it. A START begins a stream on its id over its
-rectangle, a keyframe of exactly that size in the codec its byte names — 0
-VP9, 1 H.264; each FRAME on the id is the next frame of that stream over the
+rectangle, a keyframe in the codec its byte names — 0 VP9, of exactly that
+size, 1 H.264, of that size rounded up to even sides, a picture a client cuts
+to the rectangle from its top-left; each FRAME on the id is the next frame of that stream over the
 same rectangle, in that codec; an END says it is over, its last picture
 staying until something draws over it. A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
@@ -682,7 +683,7 @@ the picture.
   module, which opens a stream of it for each region ahead of VP9. The coding
   is pinned as VP9's is: constant quantizer, the dial mapped onto QP 40 down
   to 16, no bitrate, nothing dropped, no B-frames, one frame in and one out,
-  BT.601 at studio swing in the stream's VUI; the picture the region's
+  BT.601 at studio swing in the stream's VUI; the picture the region's size
   rounded up to even sides, which libx264 requires, so a region of an odd
   side, as one at the edge of an odd desktop is, is coded a pixel larger, its
   last row again below it and black to its right, which the gateway clips; each frame one Annex B access
