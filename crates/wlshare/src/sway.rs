@@ -148,8 +148,10 @@ pub struct VirtualDisplays {
     /// when it leaves or is superseded: the outputs then stand as they are
     /// until the next client says.
     pub wanted: Option<u32>,
-    /// A `create_output` sent, with how many headless outputs there were.
-    creating: Option<usize>,
+    /// A `create_output` sent, with the headless outputs there were by name:
+    /// it has landed when one not among them is here, however many there are,
+    /// since another may go meanwhile.
+    creating: Option<Vec<String>>,
     /// An unplug sent, by the output's name.
     unplugging: Option<String>,
 }
@@ -171,7 +173,7 @@ impl VirtualDisplays {
     /// while a step is in flight, and otherwise the step [`step`] names.
     /// `shared` and `preferred` are as `step` takes them.
     pub fn next(&mut self, headless: &[String], shared: Option<&str>, preferred: Option<&str>) -> Step {
-        if self.creating.is_some_and(|before| headless.len() > before) {
+        if self.creating.as_ref().is_some_and(|before| headless.iter().any(|name| !before.contains(name))) {
             self.creating = None;
         }
         if self.unplugging.as_ref().is_some_and(|name| !headless.contains(name)) {
@@ -184,8 +186,8 @@ impl VirtualDisplays {
         step(wanted, headless, shared, preferred)
     }
 
-    /// A `create_output` went out.
-    pub fn creating(&mut self, headless: usize) {
+    /// A `create_output` went out, with the headless outputs there were.
+    pub fn creating(&mut self, headless: Vec<String>) {
         self.creating = Some(headless);
     }
 
@@ -262,7 +264,7 @@ mod tests {
         assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled, "nothing asked");
         v.wanted = Some(2);
         assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Create);
-        v.creating(1);
+        v.creating(names(&["HEADLESS-1"]));
         assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled, "the output is still to appear");
         assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-2"]), Some("HEADLESS-1"), None), Step::Settled, "and now there are two");
         v.wanted = Some(1);
@@ -272,10 +274,21 @@ mod tests {
         assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled, "gone, and one is what was asked");
         // A client leaving clears the request; a step in flight settles on its own.
         v.wanted = None;
-        v.creating(1);
+        v.creating(names(&["HEADLESS-1"]));
         assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-3"]), Some("HEADLESS-1"), None), Step::Settled);
         v.wanted = Some(2);
         assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-3"]), Some("HEADLESS-1"), None), Step::Settled, "the earlier step has landed");
+    }
+
+    /// An output going while the made one arrives leaves the count as it was:
+    /// the step has landed all the same, and the next is taken.
+    #[test]
+    fn a_made_output_has_landed_whatever_went_meanwhile() {
+        let mut v = VirtualDisplays { wanted: Some(2), ..VirtualDisplays::default() };
+        assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Create);
+        v.creating(names(&["HEADLESS-1"]));
+        // HEADLESS-1 was unplugged by hand as HEADLESS-2 arrived: still one short.
+        assert_eq!(v.next(&names(&["HEADLESS-2"]), Some("HEADLESS-2"), None), Step::Create);
     }
 
     /// A sway written from the i3-ipc layout answers each request on a socket

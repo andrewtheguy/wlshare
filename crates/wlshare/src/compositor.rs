@@ -478,7 +478,7 @@ impl Compositor {
             Step::Settled => return,
             Step::Create => {
                 info!("asking sway for a headless output: the client wants {wanted} virtual displays and there are {}", headless.len());
-                sway.create_output().map(|()| self.virtual_displays.creating(headless.len()))
+                sway.create_output().map(|()| self.virtual_displays.creating(headless.clone()))
             }
             Step::Unplug(name) => {
                 info!("asking sway to unplug {name}: the client wants {wanted} virtual displays and there are {}", headless.len());
