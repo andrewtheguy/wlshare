@@ -40,8 +40,8 @@ tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; zDesk asks for both,
-and for the VP9 stream, or with `render_tiles` the tiles, on a `vnc` target
-with `subtype = "wlshare"`, and reads
+and for the VP9 stream, or with the picker's *Tiles with motion* the tiles, on a
+`vnc` target with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
 that zDesk asks for in a session on such a target started with sound: while it
 listens wlshare's own sink is the default, so every
@@ -52,7 +52,8 @@ to a sink of the host's stays there and is heard on the host. A client
 that does not list it hears nothing.
 Audio, the camera and the microphone are each off until the configuration sets
 `audio = true`, `camera = true` or `microphone = true`. A client that lists the camera extension —
-zDesk does, for a target with `camera = true` — can lend the desktop its camera:
+zDesk does, for a session started with the picker's Camera tick — can lend the
+desktop its camera:
 the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
 source, "wlshare remote camera", which applications reaching cameras through
 PipeWire can open, and the client is asked for frames only while one has it open.
