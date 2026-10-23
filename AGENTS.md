@@ -24,8 +24,7 @@
   system's libavcodec linked dynamically.
   The audio extension's FLAC coding is not here: it is the `sound-flac`
   repository, shared with the zDesk gateway and pinned by its release tag,
-  with libFLAC linked from a prebuilt static archive:
-  nothing is needed to build or to run.
+  its own encoder in plain Rust: nothing is needed to build or to run.
   Its Opus coding is the `sound-opus` repository, shared and pinned the same
   way, with libopus linked from a prebuilt static archive too: nothing is needed
   to build or to run, and `ffmpeg` on the path to run the protocol crate's Opus

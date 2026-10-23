@@ -30,11 +30,11 @@ aes = "0.9"
 eax = "0.6"
 sha1 = "0.11"
 sha2 = "0.11"
-# The audio extension's FLAC frames: the one place libFLAC is spoken to, for
-# this workspace and for the zDesk gateway, each pinned to its release tag. It
-# links libFLAC from a prebuilt static archive its sys crate downloads, so no C
-# is compiled and nothing is looked for at run time.
-sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.4" }
+# The audio extension's FLAC frames: the one place a desktop's sound is made
+# FLAC, for this workspace and for the zDesk gateway, each pinned to its
+# release tag. Its own encoder in plain Rust, encode only, so no C is compiled
+# and nothing is downloaded or looked for at run time.
+sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.5" }
 # The audio extension's Opus packets, for a client that asks for them in place
 # of FLAC: the one place a desktop's sound is coded as Opus, for this workspace
 # and for the zDesk gateway, each pinned to its release tag. libopus is linked
