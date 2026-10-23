@@ -44,7 +44,7 @@ use wlshare_rfb::microphone::MicrophoneFormat;
 use crate::shared::ClientId;
 
 /// What the node offers and every start names: mono at Opus's own rate, which is
-/// what a browser's speech encoder decodes to, so the remotex gateway resamples
+/// what a browser's speech encoder decodes to, so the zdesk gateway resamples
 /// nothing.
 pub const FORMAT: MicrophoneFormat = MicrophoneFormat { channels: 1, frequency: 48_000 };
 /// How long PipeWire may take to take the node before a plug is refused.

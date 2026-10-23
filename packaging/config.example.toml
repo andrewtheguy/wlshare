@@ -17,7 +17,7 @@ listen = "127.0.0.1:5900"
 # them under the service below (/etc/pam.d/wlshare, installed with the package).
 # Every byte after the key exchange is encrypted. The server's RSA key is
 # generated on first start and kept in rsa_key_file; its fingerprint is logged
-# at startup, and a remotex gateway logs the one it saw, for comparing.
+# at startup, and a zdesk gateway logs the one it saw, for comparing.
 # [pam]
 # service = "wlshare"
 # rsa_key_file = "/home/me/.config/wlshare/rsa_key.pem"   # default: beside this file
@@ -66,7 +66,7 @@ max_fps = 60
 handshake_timeout_secs = 120
 
 # Whether a client may hear the desktop; off by default. While a client that asks for wlshare's
-# audio extension (the remotex gateway, in a session started with sound) has it
+# audio extension (the zdesk gateway, in a session started with sound) has it
 # enabled, wlshare adds a PipeWire sink of its own, "wlshare remote audio", and
 # makes it the default: every stream that follows the default plays there and is
 # silent on the host, and one an application pinned to a sink of the host's is
@@ -77,7 +77,7 @@ handshake_timeout_secs = 120
 audio = false
 
 # Whether a client may lend the desktop its camera; off by default. A client that asks for the
-# camera extension (the remotex gateway, for a target with camera = true) plugs
+# camera extension (the zdesk gateway, for a target with camera = true) plugs
 # its browser's camera and sends H.264, which becomes a PipeWire video source
 # named "wlshare remote camera" -- one that applications reaching cameras through
 # PipeWire (a browser's camera portal, OBS, GStreamer) can open. It sends frames
@@ -90,7 +90,7 @@ camera = false
 # any other. The client sends 16-bit PCM only while one of them is recording.
 microphone = false
 
-# Whether the tiles picture's moving regions -- the picture a remotex session
+# Whether the tiles picture's moving regions -- the picture a zdesk session
 # started with "Tiles with motion" is sent -- are coded by the host's hardware
 # H.264 encoder, through VA-API; on by default. wlshare looks for one at
 # startup, the low-power encoder first (Intel's fixed-function block, which

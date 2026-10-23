@@ -1,5 +1,5 @@
 //! wlshare: a VNC server for wlroots-based Wayland compositors that tells the
-//! remotex gateway what pixel density its framebuffer is drawn at.
+//! zdesk gateway what pixel density its framebuffer is drawn at.
 //!
 //! Two halves. One thread owns the Wayland connection and everything on it —
 //! capture, outputs, input, clipboard — and runs a calloop that also polls a
@@ -47,7 +47,7 @@ use wlshare_rfb::rsa_aes::ServerKey;
 use crate::auth::Login;
 use crate::session::{RsaAes, Security};
 
-// jemalloc rather than glibc's malloc, as in the remotex gateway. Sessions
+// jemalloc rather than glibc's malloc, as in the zdesk gateway. Sessions
 // encode on tokio's worker threads, start and stop their audio, camera and
 // microphone on its blocking pool, and each of those gets a PipeWire thread of
 // its own for as long as it lasts; glibc gives each allocating thread an arena

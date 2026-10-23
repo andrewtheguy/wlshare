@@ -5,7 +5,7 @@
 //! the tests run it against and the one `examples/vp9-sink.rs` logs in with.
 //!
 //! The types are RealVNC's, documented in the community `rfbproto` and spoken
-//! on the open side by TigerVNC, neatvnc and the remotex gateway, whose client
+//! on the open side by TigerVNC, neatvnc and the zdesk gateway, whose client
 //! this server was written against. RSA-AES carries either a username and a
 //! password, so they can be checked against the system's accounts, or a
 //! password alone ([`Subtype`]), and every byte after the key exchange is
@@ -60,7 +60,7 @@
 //!
 //! The server's key is the one thing a client can pin. It is generated once and
 //! kept in a file, so its fingerprint — RealVNC's eight dashed SHA-1 bytes,
-//! which this module logs at startup and the remotex gateway logs on every
+//! which this module logs at startup and the zdesk gateway logs on every
 //! connection — is stable and an operator can compare the two. Against an
 //! active middle-man the pinning is the client's to do; against a passive one
 //! the session is encrypted.

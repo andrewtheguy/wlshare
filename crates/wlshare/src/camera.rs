@@ -50,7 +50,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// sends; a thread further behind than that is showing a picture already late.
 const QUEUE_DEPTH: usize = 8;
 /// The most pixels a plugged camera may have: H.264 level 5.2's largest frame,
-/// 36 864 macroblocks (4096x2304), the highest level the remotex gateway's
+/// 36 864 macroblocks (4096x2304), the highest level the zdesk gateway's
 /// browser encoder names. The extension's `u16` fields reach 65535x65535, whose
 /// I420 pictures are gigabytes each and do not fit a PipeWire buffer size at all.
 const MAX_PIXELS: usize = 36_864 * 16 * 16;
