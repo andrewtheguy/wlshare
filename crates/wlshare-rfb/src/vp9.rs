@@ -25,7 +25,7 @@
 //! decoder does not guess. Its chroma is **4:4:4** (profile 1) — a colour
 //! sample per pixel, since the loss 4:2:0 costs a desktop is its text's colour
 //! and not its edges — unless the client's list asks for **4:2:0** (profile 0,
-//! [`ENCODING_VP9_SUBSAMPLED`]), which the remotex gateway does for a browser
+//! [`ENCODING_VP9_SUBSAMPLED`]), which the zdesk gateway does for a browser
 //! whose own decoder takes no profile 1. The quantizer is pinned by a 1–100 quality
 //! dial, which only the encoder's owner moves ([`Vp9Encoder::set_quality`]): no
 //! bitrate, no adaptive quantization, no dropped frames, so every frame is sent
@@ -63,7 +63,7 @@ pub const ENCODING_VP9_SUBSAMPLED: i32 = 0x574c_5353;
 /// rather than a message because a server that is not wlshare ignores an
 /// encoding it does not know, where a message it does not know ends the
 /// connection; and they ride the very list that names the encoding, so the first
-/// frame is already what was asked for. The remotex gateway lists them from the
+/// frame is already what was asked for. The zdesk gateway lists them from the
 /// target's own keys, so that those keys mean on a passed stream what they mean
 /// on one the gateway codes itself. A list that names VP9 without a quality
 /// is fatal ([`Vp9ListError::NoQuality`]): the server has no quality of its

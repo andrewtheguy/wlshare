@@ -1,6 +1,6 @@
 //! A client that takes the daemon's tiles picture and keeps its region
 //! streams: what a daemon on a host with a hardware H.264 encoder is checked
-//! against without the remotex gateway, the way `vp9-sink` checks the VP9
+//! against without the zdesk gateway, the way `vp9-sink` checks the VP9
 //! encoding.
 //!
 //! ```text

@@ -142,7 +142,7 @@ pub enum Speed {
 /// column in order. A 1440×900 desktop re-encoded with two columns cost 8% more
 /// bytes and vp9-wasm decoded it 10% faster on four threads; a busy Mac screen
 /// of that size cost 0.1% more and decoded 21% faster. Four from 2048 and not
-/// 2880 were measured on the remotex gateway's Mac captures at 2048×1536 and
+/// 2880 were measured on the zdesk gateway's Mac captures at 2048×1536 and
 /// 2560×1600, at quality 90 on four threads, on the 300 quietest frames of each
 /// and the 300 busiest: four columns cost 0.1% more bytes than two on the quiet
 /// frames and 1.4% and 1.0% on the busy, under 0.1 dB, libvpx's encoder coded
@@ -176,7 +176,7 @@ fn tile_columns_log2(width: u16, threads: usize) -> u32 {
 /// encoder takes it, 7 to 9 at the fine end of the dial, a light filter that
 /// still visits every block edge of every frame, and it is a quarter to two
 /// fifths of what vp9-wasm spends on a frame. Measured on vp9-wasm 0.0.5 with
-/// what the remotex gateway wrote of one four-pane desktop at eight sizes,
+/// what the zdesk gateway wrote of one four-pane desktop at eight sizes,
 /// 1280×800 to 3840×2160, each coded both ways at quality 90: without the
 /// filter one thread decodes in 29% to 41% fewer cycles, and the stream is 3%
 /// to 6% larger and 0.6 to 1.4 dB of luma further from its source, since every

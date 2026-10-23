@@ -4,12 +4,12 @@
 > key, a private RFB extension's wire format or a feature, with nothing that
 > reads the old form. Check
 > [`packaging/config.example.toml`](packaging/config.example.toml) against your
-> config when you upgrade, and upgrade the remotex gateway along with it.
+> config when you upgrade, and upgrade the zdesk gateway along with it.
 
 A VNC server for wlroots-based Wayland compositors, built for the
-[remotex](https://github.com/andrewtheguy/remotex) gateway. It captures one
+[zdesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
-a client that asks, as remotex does for its browsers, as one VP9 stream at a
+a client that asks, as zdesk does for its browsers, as one VP9 stream at a
 quality that follows the link, or for a link with room to spare as exact PNG
 tiles with a video stream for each region that moves, H.264 by the host's hardware or libx264 — or VP9 where neither codes — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
@@ -39,11 +39,11 @@ listed unless the client also asks for wlshare's private VP9 stream or its
 tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
-are asked for by the client and stay silent otherwise; remotex asks for both,
+are asked for by the client and stay silent otherwise; zdesk asks for both,
 and for the VP9 stream, or with `render_tiles` the tiles, on a `vnc` target
 with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
-that remotex asks for in a session on such a target started with sound: while it
+that zdesk asks for in a session on such a target started with sound: while it
 listens wlshare's own sink is the default, so every
 stream that follows the default plays there rather than on the host's speakers,
 and that sink's monitor is sent encoded as lossless FLAC, or as Opus at the
@@ -52,7 +52,7 @@ to a sink of the host's stays there and is heard on the host. A client
 that does not list it hears nothing.
 Audio, the camera and the microphone are each off until the configuration sets
 `audio = true`, `camera = true` or `microphone = true`. A client that lists the camera extension —
-remotex does, for a target with `camera = true` — can lend the desktop its camera:
+zdesk does, for a target with `camera = true` — can lend the desktop its camera:
 the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
 source, "wlshare remote camera", which applications reaching cameras through
 PipeWire can open, and the client is asked for frames only while one has it open.
@@ -137,7 +137,7 @@ setting.
 Who may connect is one setting, and there are three answers. Nothing set: anyone
 who reaches the port is in, and the session is in the clear, so `listen` stays on
 loopback or behind a VPN or an SSH tunnel. `[pam]`: RSA-AES, RealVNC's security
-type that TigerVNC and remotex speak — the client sends the username and
+type that TigerVNC and zdesk speak — the client sends the username and
 password of the account wlshare runs as, PAM checks them under the service
 `wlshare` (the package installs `/etc/pam.d/wlshare`), and everything after the
 key exchange is encrypted. No other account is accepted, since the desktop
@@ -179,7 +179,7 @@ asks a Windows host for its monitors and a Mac's viewer asks for its virtual
 displays: one or two. On sway the daemon makes and unplugs headless outputs
 through sway's IPC, found in `SWAYSOCK`, until there are that many, with
 nothing to configure: a session started with one headless output is given a
-second when the remotex gateway's target asks for two (`virtual_displays = 2`).
+second when the zdesk gateway's target asks for two (`virtual_displays = 2`).
 On any other compositor the outputs are what the compositor has, and the list
 says so
 ([`docs/architecture.md`](docs/architecture.md#virtual-displays)).
@@ -201,7 +201,7 @@ Wayland protocol is spoken in Rust, with no libwayland — and only runs under a
 wlroots-based Wayland compositor. The FLAC coding is
 [sound-flac](https://github.com/andrewtheguy/sound-flac) and the Opus coding
 [sound-opus](https://github.com/andrewtheguy/sound-opus), both shared with
-the remotex gateway, each pinned by its release tag. Nothing asks of the
+the zdesk gateway, each pinned by its release tag. Nothing asks of the
 processor more than its target's baseline. A bare `cargo test` covers the
 first two; build the daemon with
 `cargo build --release -p wlshare` on a Linux host with

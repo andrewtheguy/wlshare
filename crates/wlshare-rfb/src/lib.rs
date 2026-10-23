@@ -19,7 +19,7 @@
 //! RFB 3.8 as RFC 6143 has it, with these choices:
 //!
 //! - **Raw or ZRLE, and VP9 for a client that lists it.** ZRLE is the standard's
-//!   best lossless encoding, and the remotex gateway lists it as its first
+//!   best lossless encoding, and the zdesk gateway lists it as its first
 //!   standard pixel encoding. **The VP9 encoding** is a private one for the
 //!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
 //!   quality its owner sets ([`vp9`]), for a desktop
