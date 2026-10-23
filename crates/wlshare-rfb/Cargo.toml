@@ -34,7 +34,7 @@ sha2 = "0.11"
 # FLAC, for this workspace and for the zDesk gateway, each pinned to its
 # release tag. Its own encoder in plain Rust, encode only, so no C is compiled
 # and nothing is downloaded or looked for at run time.
-sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.5" }
+sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.6" }
 # The audio extension's Opus packets, for a client that asks for them in place
 # of FLAC: the one place a desktop's sound is coded as Opus, for this workspace
 # and for the zDesk gateway, each pinned to its release tag. libopus is linked
