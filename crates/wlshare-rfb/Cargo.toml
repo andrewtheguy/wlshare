@@ -49,7 +49,7 @@ png = "0.18"
 
 [dev-dependencies]
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
-# which shares nothing with libFLAC: pure Rust, and only the FLAC bundle of it
+# which shares nothing with `sound-flac`'s encoder; only the FLAC bundle of it
 # — `symphonia-core` for the decoder trait and the packet it takes.
 symphonia-bundle-flac = "0.6"
 symphonia-core = "0.6"

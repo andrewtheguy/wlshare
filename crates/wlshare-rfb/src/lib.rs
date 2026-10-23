@@ -9,9 +9,9 @@
 //! The crate has no OS APIs; its current prebuilt libvpx archives cover macOS
 //! arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC. The daemon is
 //! buildable only where libxkbcommon, libpam, libpipewire and libavcodec are.
-//! The audio extension's FLAC encoder is libFLAC and its Opus encoder libopus,
-//! each from a prebuilt static archive, as libvpx is under `wlshare-vp9`, so the
-//! crate builds and runs with none of them installed.
+//! The audio extension's FLAC encoder is `sound-flac`'s own, in plain Rust,
+//! and its Opus encoder libopus from a prebuilt static archive, as libvpx is
+//! under `wlshare-vp9`, so the crate builds and runs with no library installed.
 //! Tests here use an independent decoder for
 //! every encoder, so the two halves cannot share a misunderstanding.
 //!

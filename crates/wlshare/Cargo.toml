@@ -58,8 +58,8 @@ yuv = { version = "0.8", features = ["professional_mode"] }
 argon2 = "0.6"
 # The global allocator (src/main.rs), as the zDesk gateway's: glibc's per-thread
 # arenas keep what a thread frees. Unprefixed, so jemalloc is `malloc` itself and
-# not only Rust's allocator: libvpx, libopus and libFLAC, and the linked
-# libpipewire and libavcodec, allocate through it too.
+# not only Rust's allocator: libvpx and libopus, and the linked libpipewire
+# and libavcodec, allocate through it too.
 tikv-jemallocator = "0.7"
 tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
 
@@ -76,8 +76,9 @@ section = "net"
 priority = "optional"
 # libpipewire, libpam and libavcodec/libavutil (the camera's H.264 decoder) are
 # linked, so $auto names them from the binary.
-# libxkbcommon too. libFLAC and libopus, the audio extension's encoders, and
-# jemalloc, the allocator, are linked statically and need nothing.
+# libxkbcommon too. libopus, the audio extension's Opus encoder, and jemalloc,
+# the allocator, are linked statically and need nothing; its FLAC encoder is
+# plain Rust.
 # wlroots is the compositor's, not linked here: 0.19 is the first whose headless
 # backend keeps the cursor out of a screencopy without overlay_cursor.
 # libpipewire is only the client library: the speaker, the camera and the

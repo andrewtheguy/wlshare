@@ -331,7 +331,7 @@ pub enum AudioEncodeError {
     /// the stream, a rate or a block of it.
     #[error(transparent)]
     Opus(#[from] sound_opus::Error),
-    /// libFLAC refused the stream or a block of it.
+    /// The FLAC encoder refused the stream or a block of it.
     #[error(transparent)]
     Flac(#[from] sound_flac::Error),
     /// The client enabled Opus without ever setting its rate: the stream has
@@ -395,7 +395,7 @@ pub struct FlacEncoder {
     codec: Encoder,
     /// Samples not yet a whole frame's worth, as the capture gave them.
     pending: Pending,
-    /// One block as libFLAC takes it, a signed integer to a sample, reused.
+    /// One block as the encoder takes it, a signed integer to a sample, reused.
     samples: Vec<i32>,
 }
 
@@ -720,7 +720,7 @@ mod tests {
     }
 
     /// Decode a run of frame messages with [`FlacDecoder`] — symphonia's
-    /// decoder, which shares nothing with libFLAC — checking each message's
+    /// decoder, which shares nothing with `sound-flac` — checking each message's
     /// framing on the way.
     fn decode(format: AudioFormat, messages: &[Vec<u8>]) -> Vec<u8> {
         let mut decoder = FlacDecoder::new(format).unwrap();
