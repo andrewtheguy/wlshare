@@ -4,8 +4,8 @@
 #
 # `default-members` deliberately omits the daemon: it needs libxkbcommon, libpam,
 # libpipewire and libavcodec and only runs against a Wayland compositor, so a bare
-# `cargo test` on a development machine of any OS exercises the protocol crate
-# and the VP9 coding and nothing else, the Opus tests with the ffmpeg that
+# `cargo test` on a target covered by libvpx-prebuilt exercises the protocol
+# crate and the VP9 coding and nothing else, the Opus tests with the ffmpeg that
 # machine has installed.
 # Build the daemon explicitly with `-p wlshare`.
 [workspace]

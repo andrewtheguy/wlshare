@@ -192,19 +192,19 @@ the server resolves the client's keysyms through the same keymap it uploads.
 
 ## Building
 
-The workspace has three crates: `wlshare-rfb`, the protocol, which tests
-wherever `ffmpeg` is installed — the decoder its Opus tests read their packets
-back with — `wlshare-vp9`, the VP9 coding under it, which is libvpx from a
-prebuilt static archive, for macOS arm64, Linux x86_64 and aarch64 and
-Windows x86_64, and builds and tests wherever that archive is, and `wlshare`,
-the daemon, which needs libxkbcommon, libpam, libpipewire and libavcodec — the
-Wayland protocol is spoken in Rust, with no libwayland — and only runs under a
-wlroots-based Wayland compositor. The FLAC coding is
+The workspace has three crates: `wlshare`, the daemon, `wlshare-rfb`, the
+protocol, and `wlshare-vp9`, the VP9 coding under it. The last two have no OS
+APIs and build and test on the targets covered by the prebuilt libvpx archives:
+macOS arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC. The protocol crate's Opus tests
+additionally need `ffmpeg`, the independent decoder that reads their packets
+back. The daemon needs libxkbcommon, libpam, libpipewire and
+libavcodec — the Wayland protocol is spoken in Rust, with no libwayland — and
+only runs under a wlroots-based Wayland compositor. The FLAC coding is
 [sound-flac](https://github.com/andrewtheguy/sound-flac) and the Opus coding
 [sound-opus](https://github.com/andrewtheguy/sound-opus), both shared with
 the zDesk gateway, each pinned by its release tag. Nothing asks of the
-processor more than its target's baseline. A bare `cargo test` covers the
-first two; build the daemon with
+processor more than its target's baseline. A bare `cargo test` covers
+`wlshare-rfb` and `wlshare-vp9`, not the daemon; build it with
 `cargo build --release -p wlshare` on a Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
 `libavcodec-dev`, `libclang-dev` and `pkg-config`. libclang links nothing:

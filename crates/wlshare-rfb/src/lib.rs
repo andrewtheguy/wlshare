@@ -6,11 +6,12 @@
 //! The daemon crate turns compositor events into calls on this crate and copies
 //! the results to sockets; it writes no protocol byte of its own.
 //!
-//! The crate is platform-independent so that all of it is unit-tested on any
-//! machine, the daemon being buildable only where libxkbcommon, libpam,
-//! libpipewire and libavcodec are. The audio extension's FLAC encoder is libFLAC and its Opus encoder
-//! libopus, each from a prebuilt static archive, as libvpx is under
-//! `wlshare-vp9`, so the crate builds and runs with none of them installed.
+//! The crate has no OS APIs; its current prebuilt libvpx archives cover macOS
+//! arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC. The daemon is
+//! buildable only where libxkbcommon, libpam, libpipewire and libavcodec are.
+//! The audio extension's FLAC encoder is libFLAC and its Opus encoder libopus,
+//! each from a prebuilt static archive, as libvpx is under `wlshare-vp9`, so the
+//! crate builds and runs with none of them installed.
 //! Tests here use an independent decoder for
 //! every encoder, so the two halves cannot share a misunderstanding.
 //!
@@ -104,9 +105,10 @@ pub const ENCODING_VP9: i32 = 0x574c_5356;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it, with a
 /// quality beside it ([`tiles::listed`]), is sent the desktop as exact PNG
 /// tiles where it is still and a video stream for each region that moves
-/// ([`tiles`]), VP9 or the host's hardware H.264 as the server chooses, each
-/// stream's START saying which ([`tiles::RegionCodec`]): the client decodes
-/// both. It wins over ZRLE wherever it is listed; listed without a
+/// ([`tiles`]), H.264 through the host's hardware or libx264, or VP9 where
+/// H.264 is unavailable or has failed, each stream's START saying which
+/// ([`tiles::RegionCodec`]): the client decodes both. It wins over ZRLE
+/// wherever it is listed; listed without a
 /// quality, or beside [`ENCODING_VP9`], it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.

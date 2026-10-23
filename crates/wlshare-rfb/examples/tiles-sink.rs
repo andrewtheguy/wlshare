@@ -1,7 +1,6 @@
 //! A client that takes the daemon's tiles picture and keeps its region
-//! streams: what a daemon on a host with a hardware H.264 encoder is checked
-//! against without the zDesk gateway, the way `vp9-sink` checks the VP9
-//! encoding.
+//! streams: what the tiles encoding is checked against without the zDesk
+//! gateway, the way `vp9-sink` checks the VP9 encoding.
 //!
 //! ```text
 //! tiles-sink ADDR --size WxH [--quality 1..100] [--seconds N]
@@ -10,9 +9,10 @@
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
 //! without a `[pam]` or `[password]` table. The list names the tiles encoding
-//! at the quality — the regions' codec is the daemon's choice, VP9 or its
-//! host's hardware H.264, `hardware_h264 = false` in its configuration for
-//! VP9 on a host that has one; Fence and ContinuousUpdates so updates flow, ExtendedDesktopSize so
+//! at the quality — the regions' codec is the daemon's choice: H.264 through
+//! the host's hardware or libx264, or VP9 if H.264 is unavailable or fails.
+//! `hardware_h264 = false` skips the hardware probe and uses libx264; Fence and
+//! ContinuousUpdates so updates flow, ExtendedDesktopSize so
 //! `--size` can be sent as a SetDesktopSize before the first picture, and
 //! Cursor because the daemon requires it. Every rectangle is parsed by the
 //! client's parser; a PNG is counted, a region's START is counted under the
