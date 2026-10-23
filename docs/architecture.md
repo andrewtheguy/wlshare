@@ -15,7 +15,9 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - `crates/wlshare-vp9` is the VP9 encoder: libvpx pinned to a quality dial,
   8-bit 4:4:4 or 4:2:0, with the planes in front of it, its decoder, and the
   quality walk. It decides nothing about the wire, and like the protocol crate
-  builds and tests on any OS. See [The VP9 encoding](#the-vp9-encoding).
+  has no OS APIs. Its current prebuilt archives cover macOS arm64, Linux x86_64
+  and aarch64, and Windows x86_64 MSVC. See
+  [The VP9 encoding](#the-vp9-encoding).
 - `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
   and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding's
   framing over its encoder, the tiles encoding, the cursor and clipboard encodings, and the
@@ -480,8 +482,8 @@ listed, Raw otherwise — since the client is holding a lossy picture.
 
 libvpx is in the daemon as `wlshare-vp9` links it, from `libvpx-prebuilt`'s
 static archive, and it is the decoder the VP9 encoding's tests read every
-frame back with (`wlshare_vp9::Decoder`). An encode libvpx
-makes no frame of sends nothing: the damage stays unseen and the keyframe
+frame back with (`wlshare_vp9::Decoder`). If libvpx makes no frame, nothing is
+sent: the damage stays unseen and the keyframe
 owed, for the frame the next change brings.
 
 ### Capturing what the encoder is handed

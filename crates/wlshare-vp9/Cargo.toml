@@ -9,8 +9,9 @@ repository.workspace = true
 description = "VP9 for a desktop picture, as wlshare codes it: 8-bit 4:4:4 or 4:2:0 pinned to a 1–100 quality dial, coded by libvpx, BT.601 planes in front of it, the decoder, what a frame says about itself, and the walk of the dial a link will bear"
 
 # The one place libvpx is spoken to. Platform-independent and dependency-light
-# on purpose, as the protocol crate is: it builds and unit-tests on any OS, and
-# nothing about a wire is decided here.
+# on purpose, as the protocol crate is: it builds and unit-tests on the targets
+# covered by the prebuilt archives below, and nothing about a wire is decided
+# here.
 [dependencies]
 thiserror.workspace = true
 log.workspace = true

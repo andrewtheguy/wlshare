@@ -7,11 +7,12 @@ repository.workspace = true
 description = "The RFB wire wlshare speaks: message parsing and building, RSA-AES, the ZRLE encoder, the VP9 encoding, the FLAC and Opus audio and the private extensions"
 
 # Platform-independent and dependency-light on purpose: this crate is where the
-# bytes on the wire are decided, and it must build and unit-test on any OS,
-# because the daemon crate never does off a Wayland session.
+# bytes on the wire are decided. Its libvpx dependency currently supplies
+# archives for macOS arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC;
+# the daemon crate runs only in a Wayland session.
 [dependencies]
 thiserror.workspace = true
-# The tiles encoder says when a hardware region coder fails it and VP9 takes over.
+# The tiles encoder says when an H.264 region coder fails it and VP9 takes over.
 log.workspace = true
 # ZRLE's per-client deflate stream. zlib-rs is the fastest backend and pure Rust.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

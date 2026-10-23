@@ -4,7 +4,7 @@
 //!
 //! Not the wire: no client is ever sent this. It is here because the daemon
 //! writes it and the tools that play it back read it (`examples/vp9cap.rs`),
-//! and this crate is the one both build against, on any machine. The format
+//! and this crate is the one both build against. The format
 //! is this module's alone and owes nothing to the codec: a capture is the
 //! pixels in front of an encoder, whichever encoder that is.
 //!
