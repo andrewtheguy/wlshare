@@ -41,11 +41,11 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   between the compositor thread and the sessions. Its allocator is jemalloc,
   linked statically as `malloc` itself, so the C libraries it links allocate
   through it too: glibc's per-thread arenas keep what each thread frees, and
-  the zdesk gateway's footprint grew with every session on them. The arm64
+  the zDesk gateway's footprint grew with every session on them. The arm64
   build sets jemalloc's page to 64K, which runs on the 4K, 16K and 64K
   kernels arm64 boards ship.
 
-Its client is the zdesk gateway, which every viewer reaches the desktop
+Its client is the zDesk gateway, which every viewer reaches the desktop
 through.
 
 ## One session at a time
@@ -303,10 +303,10 @@ With Fence negotiated, every pixel update ends with a fence the client echoes,
 and the next pixel round waits for the echo. Cursor, audio and geometry
 announcements sent with a request precede any pixels for it and have no fences
 of their own. One pixel round is in flight at a time, so a slow link is never
-flooded and frames coalesce in the framebuffer meanwhile. zdesk negotiates
+flooded and frames coalesce in the framebuffer meanwhile. zDesk negotiates
 both ContinuousUpdates and Fence.
 
-What the echo means is the client's to decide, and zdesk holds it while the
+What the echo means is the client's to decide, and zDesk holds it while the
 picture is the VP9 stream until the browser has taken the frame, rather than
 answering the moment it arrives ([below](#the-clients-paint)).
 
@@ -320,11 +320,11 @@ update too, and waits for a request like any other.
 
 ## The VP9 encoding
 
-A private encoding, `WLSV` (`0x574c5356`), for the zdesk gateway: the whole
+A private encoding, `WLSV` (`0x574c5356`), for the zDesk gateway: the whole
 desktop as one VP9 stream, for a client that
 would rather have a picture that moves than one that is exact. While the
-framebuffer is within its video ceiling, zdesk lists it for every browser on a
-target with `subtype = "wlshare"` and passes each frame to the browser as it came, since it is the stream zdesk would
+framebuffer is within its video ceiling, zDesk lists it for every browser on a
+target with `subtype = "wlshare"` and passes each frame to the browser as it came, since it is the stream zDesk would
 otherwise encode from ZRLE's pixels — at the target's own dial and the
 browser's chroma, which it names beside the encoding, below. A client
 that does not list it is unchanged.
@@ -365,7 +365,7 @@ What a frame holds is fixed:
   declared in the keyframe header, so a decoder converts back with the same
   matrix. The client's pixel format does not apply.
 - **A quantizer and a frame rate that follow the link.** The 1–100 dial maps
-  onto VP9's 8–63, finest last, as zdesk's dial does; rate control is pinned
+  onto VP9's 8–63, finest last, as zDesk's dial does; rate control is pinned
   to wherever the dial is, with no bitrate, no adaptive quantization and no
   dropped frames. A session starts at the ceiling the client's list names
   (`WLQ`, below), which it never goes above, and
@@ -376,7 +376,7 @@ What a frame holds is fixed:
   off to the frame rate, and the settle below sharpens a quiet desktop back at
   the ceiling.
   A frame's queueing is its fence's round trip — answered once the client has
-  the frame, which for zdesk means once the browser has taken it
+  the frame, which for zDesk means once the browser has taken it
   ([below](#the-clients-paint)) — less the shortest of the last
   minute's, so distance does not read as queueing; a keyframe counts towards
   that floor but is no verdict. Without Fence — and for a held dial, fence or
@@ -547,7 +547,7 @@ fifty frames: every frame of it is the whole picture new, the slowest there
 is to code, and a large desktop gets a few of them a second. A scenario that
 fails, or whose sink does, leaves no capture and fails the run, so a file
 named for a scenario is never something else. `scripts/capture-frames.sh` builds and runs it, against the workspace's own
-encoder and nothing else. The zdesk gateway is not instrumented for
+encoder and nothing else. The zDesk gateway is not instrumented for
 this: its Mac in Standard mode and its Windows over RDP hand it exact pixels
 of the same kind of desktop, so a wlshare capture at their sizes stands for
 them.
@@ -589,24 +589,24 @@ a healthy client: the server would keep coding at the dial, and the person
 would watch a picture that lags while every measurement said the link was
 clear.
 
-So zdesk holds each echo for what the browser's link makes of the frames
+So zDesk holds each echo for what the browser's link makes of the frames
 before it, measured by the `paintAck` the browser sends after its painter
 draws. The path a frame takes to the screen is then inside the round trip the
 walk reads, and, because the server sends nothing until the echo arrives, a
 frame the browser would only have overwritten unseen is never encoded at all.
 A browser that is not drawing must not be able to stop the desktop, so no echo
-is held past 500 ms — zdesk's `FENCE_HOLD_LIMIT`, its paint window's grace.
+is held past 500 ms — zDesk's `FENCE_HOLD_LIMIT`, its paint window's grace.
 
 ## The tiles encoding
 
 A second private picture encoding beside `WLSV`, `WLST` (`0x574c5354`), for
-the zdesk gateway on a link with room to spare: the desktop as exact PNG
+the zDesk gateway on a link with room to spare: the desktop as exact PNG
 tiles where it is still, and a video stream of its own for each region that
 moves, H.264 — the host's hardware, or libx264 — or VP9 where neither codes. It is a choice the gateway makes per target, not a replacement:
 `WLSV`, one stream over the whole desktop walked on the link, stays the
 picture for a slow link, where a lossy stream in fewer bytes is what the link
 bears. This one spends bytes the link has, for less of the encoder's time and
-a picture that ends exact. It is zdesk's Motion, which that gateway dropped
+a picture that ends exact. It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
@@ -927,7 +927,7 @@ it brings about arrives as the outputs do: a `create_output` is sent, its output
 appears and is listed, and only then is the next sent; an unplug likewise waits
 for its output to go. Each arrival and departure is a list of its own, so a
 client asking for two on a session with one sees the second output in the list
-that follows and, in the zdesk gateway, opens its tab. The count is of
+that follows and, in the zDesk gateway, opens its tab. The count is of
 headless outputs, whoever made them: a session started with two
 (`WLR_HEADLESS_OUTPUTS=2`) and asked for one loses one, as a Windows host with
 two monitors asked for one does. The output the desktop is on is never
@@ -980,7 +980,7 @@ later connection's display beside had already ended: it takes nobody's place.
 And so is one that connected before the client now on the desktop did: it was
 opened beside whoever was there before.
 There is one beside, so two outputs at once is
-the most a client is shown. The zdesk gateway opens it for the second
+the most a client is shown. The zDesk gateway opens it for the second
 display's browser tab on *All Displays*, and lists on it the pixel encodings,
 the cursor, the size and the density and nothing else.
 
@@ -992,14 +992,14 @@ that monitor's mode belongs to the person sitting at it.
 The choice outlives the client that made it: the next connection opens on the
 output the last one asked for, not on the configured default, until the
 configured output next appears or the daemon restarts. Measured on a two-monitor sway session in
-[zdesk's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/zdesk/blob/main/docs/wlshare-outputs.md),
+[zDesk's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/zdesk/blob/main/docs/wlshare-outputs.md),
 which is where the gateway's half of this lives.
 
 ## The audio extension
 
 The desktop's sound, as FLAC or as Opus, on the connection the pixels use. It
 is private — pseudo-encoding `0x574c5346` (`WLSF`) and server message type
-`0xE4` — and its client is the zdesk gateway. Which codec is the client's to
+`0xE4` — and its client is the zDesk gateway. Which codec is the client's to
 ask for, as the format is, and nothing here configures it: FLAC, unless the
 client lists `0x574c4f50` (`WLOP`) beside the encoding. The client's messages and the stream's
 begin and end are borrowed from the QEMU Audio extension `rfbproto` registers,
@@ -1095,7 +1095,7 @@ bytes before compression.
 
 The encoder is libFLAC, the reference one, spoken to in one place:
 [sound-flac](https://github.com/andrewtheguy/sound-flac), a repository of
-its own that this workspace and the zdesk gateway, whose decoder it also is,
+its own that this workspace and the zDesk gateway, whose decoder it also is,
 each pin by release tag. It links FLAC 1.5 from a prebuilt static archive
 ([libflac-prebuilt](https://github.com/andrewtheguy/libflac-prebuilt)), so no C
 is compiled, nothing is loaded at run time and the package depends on no
@@ -1118,7 +1118,7 @@ A packet decodes from the ones before it and the wire numbers none, so a client
 could not tell one was missing: wlshare drops no packet it coded, and a client
 that fell behind loses sound that was never coded instead.
 
-It is the choice of a client whose own listener takes Opus: the zdesk gateway
+It is the choice of a client whose own listener takes Opus: the zDesk gateway
 hands each packet to the browser as it came, where it would otherwise decode
 the FLAC and code Opus itself, and sends the rate the walk of the browser's
 link arrives at as a set-bitrate: sound-opus's `walk`, the one rate walk
@@ -1291,7 +1291,7 @@ bytes, and what the operation carries; integers are big-endian.
   recording, or the last one stopped. The client sends samples between the two
   and nothing outside them. The format is the server's, as a host's is over RDP:
   samples are always signed 16-bit little-endian, and the start names the channel
-  count and rate. wlshare names mono at 48 kHz, which is what the zdesk
+  count and rate. wlshare names mono at 48 kHz, which is what the zDesk
   gateway's Opus decodes to, so nothing between the browser and the node
   resamples. There is no keyframe: a lost sample is a moment of silence.
 
@@ -1352,7 +1352,7 @@ like any key — and none of them is forwarded, since a Wayland client repeats
 by itself and Sway takes each press for a key of its own, filling its table of
 32 pressed keys until the next key matches no binding and its release never
 reaches the application. A character keysym names a
-character the client has already cased — zdesk never forwards Caps Lock and
+character the client has already cased — zDesk never forwards Caps Lock and
 sends `A` or `a` as the browser resolved it — so before each press the server
 checks what the keycode would produce under the current modifiers, and presses
 Shift or lets a held Shift go around the key when the keycode alone would type
@@ -1416,7 +1416,7 @@ open and in the clear, so the listen address is a loopback or VPN address by
 design.
 
 RSA-AES is RealVNC's type as `rfbproto` documents it and TigerVNC, neatvnc and
-the zdesk gateway speak it: the server's RSA key and a fresh client key are
+the zDesk gateway speak it: the server's RSA key and a fresh client key are
 exchanged in the clear, each side seals a random to the other's key, the two
 randoms derive one AES-EAX key per direction, and from there every byte in both
 directions travels in frames of `u16 len || ciphertext || tag` under a counter
@@ -1431,7 +1431,7 @@ byte.
 
 The server's key is long-lived — generated once into `rsa_key_file`, logged as
 RealVNC's eight-byte fingerprint at startup — because it is the one thing a
-client can pin; zdesk logs the fingerprint it saw on every connection.
+client can pin; zDesk logs the fingerprint it saw on every connection.
 
 What checks the credentials is `auth.rs`, one of two things. `[pam]` sends them
 to PAM (`pam.rs`): `pam_authenticate` and `pam_acct_mgmt` under the configured

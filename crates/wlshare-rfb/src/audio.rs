@@ -2,7 +2,7 @@
 //! RFB connection it already has, as FLAC or as Opus, whichever the client
 //! asked for.
 //!
-//! The extension is private, and its client is the zdesk gateway:
+//! The extension is private, and its client is the zDesk gateway:
 //!
 //! - The client lists the pseudo-encoding [`crate::ENCODING_AUDIO`] (`WLSF`) in
 //!   `SetEncodings`. The server announces support with an empty
@@ -48,7 +48,7 @@
 //! little-endian on both sides of the codec.
 //!
 //! Opus is the lossy choice, for a client whose own listener takes Opus: the
-//! zdesk gateway hands each packet to the browser as it came, where it would
+//! zDesk gateway hands each packet to the browser as it came, where it would
 //! otherwise decode the FLAC and code Opus itself. A packet is twenty
 //! milliseconds too, at the one frame size the whole stream keeps, and decodes
 //! from the packets before it as any Opus stream does, and nothing on the
@@ -444,7 +444,7 @@ impl FlacEncoder {
 /// twenty milliseconds, as [`FlacEncoder`]'s are and with the same message
 /// around it.
 ///
-/// The packets are `sound-opus`'s, which the zdesk gateway codes the sound
+/// The packets are `sound-opus`'s, which the zDesk gateway codes the sound
 /// of a desktop it encodes itself with, so a passed stream and one made there
 /// are the same. No header goes with them: a client builds `OpusHead` from the
 /// format it set and [`OPUS_PRE_SKIP`].

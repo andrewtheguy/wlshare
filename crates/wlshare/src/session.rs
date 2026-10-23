@@ -47,7 +47,7 @@
 //! told it is blocking, and the fence keeps it to one frame in flight as it does
 //! a standard pixel update. Its quality starts at the configured one and follows
 //! the link through wlshare-vp9's quality walk: each frame's fence, answered
-//! once the client has the frame — zdesk answers once the browser has taken
+//! once the client has the frame — zDesk answers once the browser has taken
 //! it, so the walk reads the whole path to the screen — is how long that frame
 //! took, and a client without Fence is measured by how long writing the frame
 //! blocked. The dial moves on the running encoder, so a move costs no keyframe.

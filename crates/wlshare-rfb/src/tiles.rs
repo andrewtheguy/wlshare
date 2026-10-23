@@ -6,7 +6,7 @@
 //! rather than in place of it: the VP9 encoding, one stream over the whole
 //! desktop walked on the link, is the picture for a link that is short of
 //! bytes, and this one spends bytes the link has for less of the encoder's
-//! time and a picture that ends exact. Its rules are the zdesk gateway's
+//! time and a picture that ends exact. Its rules are the zDesk gateway's
 //! Motion's, brought here because only here are the compositor's pixels and
 //! damage coded once.
 //!
@@ -596,7 +596,7 @@ fn palette(rgb: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 
 /// Packed RGB as a PNG appended to `out`: a palette unfiltered where the pixels
 /// have at most 256 colours, RGB with each row's filter chosen otherwise, at
-/// `png`'s fast compression. What the zdesk gateway codes its own tiles as.
+/// `png`'s fast compression. What the zDesk gateway codes its own tiles as.
 fn encode_png(w: u16, h: u16, rgb: &[u8], out: &mut Vec<u8>) -> Result<(), png::EncodingError> {
     let mut encoder = png::Encoder::new(out, u32::from(w), u32::from(h));
     encoder.set_depth(png::BitDepth::Eight);

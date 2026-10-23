@@ -4,7 +4,7 @@
 
 - Three crates: `wlshare-rfb` (protocol) and `wlshare-vp9` (the VP9 coding),
   platform-independent and tested by a bare `cargo test`, and `wlshare` (the
-  daemon, Linux + wlroots-based Wayland only). Its one client is the zdesk
+  daemon, Linux + wlroots-based Wayland only). Its one client is the zDesk
   gateway; there is no native client. `wlshare-vp9` is libvpx alone, from a
   prebuilt static archive, set up for a desktop, with the planes in front of
   it, its decoder and the quality walk; nothing about a wire is decided
@@ -23,7 +23,7 @@
   `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder, the
   system's libavcodec linked dynamically.
   The audio extension's FLAC coding is not here: it is the `sound-flac`
-  repository, shared with the zdesk gateway and pinned by its release tag,
+  repository, shared with the zDesk gateway and pinned by its release tag,
   with libFLAC linked from a prebuilt static archive:
   nothing is needed to build or to run.
   Its Opus coding is the `sound-opus` repository, shared and pinned the same

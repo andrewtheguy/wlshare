@@ -2,7 +2,7 @@
 //! capture container (`docker/capture/`) connects to the daemon with, so that
 //! a session runs — the stream is coded, the walk hears its fences, and a
 //! daemon started with `--capture-frames` writes what the encoder was handed —
-//! without the zdesk gateway.
+//! without the zDesk gateway.
 //!
 //! ```text
 //! vp9-sink ADDR --size WxH [--quality 1..100] [--held] [--seconds N]
