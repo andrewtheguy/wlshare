@@ -23,9 +23,9 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   framing over its encoder, the tiles encoding, the cursor and clipboard encodings, and the
   density, outputs, audio, camera and microphone extensions and the scroll
   message. It has no platform
-  dependency — the audio extension's FLAC encoder, libFLAC under `sound-flac`,
-  and its Opus encoder, libopus under `sound-opus`, are prebuilt static
-  archives — and its tests decode every encoder's output with an
+  dependency — the audio extension's FLAC encoder is `sound-flac`'s own, in
+  plain Rust, and its Opus encoder, libopus under `sound-opus`, a prebuilt
+  static archive — and its tests decode every encoder's output with an
   independent decoder, read every server message back with a client's parser,
   and run the RSA-AES exchange against a client written from the specification.
 - `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
@@ -1095,19 +1095,18 @@ a silent desktop a few bytes a frame. A frame length past 64 KiB is fatal to a
 client: the largest block there is, 20 ms of 16-bit stereo at 96 kHz, is 7680
 bytes before compression.
 
-The encoder is libFLAC, the reference one, spoken to in one place:
+The encoder is spoken to in one place:
 [sound-flac](https://github.com/andrewtheguy/sound-flac), a repository of
-its own that this workspace and the zDesk gateway, whose decoder it also is,
-each pin by release tag. It links FLAC 1.5 from a prebuilt static archive
-([libflac-prebuilt](https://github.com/andrewtheguy/libflac-prebuilt)), so no C
-is compiled, nothing is loaded at run time and the package depends on no
-libFLAC. libFLAC encodes a stream and holds each block back until it has a sample
-of the next, to know whether the block is the stream's last; sound heard as it
-is made cannot wait twenty milliseconds for that, so each frame is a stream of
-its own, one block long, started and finished around it, which is why every
-frame is numbered zero. The marker and metadata such a stream opens with are
-dropped. `wlshare-rfb`'s tests read every frame back with symphonia's decoder,
-which shares nothing with libFLAC.
+its own that this workspace and the zDesk gateway, for the FLAC it codes of an
+RDP host's sound, each pin by release tag. The encoder is that crate's own, in
+plain Rust, tuned for sound heard as it is made: no C is compiled, nothing is
+downloaded or loaded at run time and the package depends on no FLAC library.
+It makes one frame of every block the moment the block is whole, with nothing
+of the blocks before it, so a frame lost on the way costs its own samples and
+nothing after, which is why every frame is numbered zero. No marker or stream
+header is sent: a client builds the header from the format it set.
+`wlshare-rfb`'s tests read every frame back with symphonia's decoder, which
+shares nothing with it.
 
 As Opus, every packet is twenty milliseconds too, `frequency / 50` frames, and
 the frequency must be one Opus codes at — 8, 12, 16, 24 or 48 kHz — or the
@@ -1125,7 +1124,7 @@ hands each packet to the browser as it came, where it would otherwise decode
 the FLAC and code Opus itself, and sends the rate the walk of the browser's
 link arrives at as a set-bitrate: sound-opus's `walk`, the one rate walk
 there is, which the gateway runs for the sound it codes itself and for this. The encoder is libopus, spoken to in one
-place as libFLAC is: [sound-opus](https://github.com/andrewtheguy/sound-opus),
+place as the FLAC encoder is: [sound-opus](https://github.com/andrewtheguy/sound-opus),
 which this workspace and the gateway, for the sound it codes itself, each pin
 by release tag, so a packet made here and one made there are the same stream —
 music-tuned, constrained variable rate around the bitrate, at full effort, with
