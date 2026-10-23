@@ -77,7 +77,7 @@ handshake_timeout_secs = 120
 audio = false
 
 # Whether a client may lend the desktop its camera; off by default. A client that asks for the
-# camera extension (the zDesk gateway, for a target with camera = true) plugs
+# camera extension (the zDesk gateway, for a session started with Camera ticked) plugs
 # its browser's camera and sends H.264, which becomes a PipeWire video source
 # named "wlshare remote camera" -- one that applications reaching cameras through
 # PipeWire (a browser's camera portal, OBS, GStreamer) can open. It sends frames
