@@ -190,8 +190,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Some(csv) = &mut csv {
-        let _ = writeln!(csv, "capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,tiles_bytes,png_bytes,h264_bytes,streams,tick_us,tick_bytes");
+    if let Some(csv) = &mut csv
+        && let Err(e) = writeln!(csv, "capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,tiles_bytes,png_bytes,h264_bytes,streams,tick_us,tick_bytes")
+    {
+        eprintln!("motion-bench: the CSV: {e}");
+        std::process::exit(1);
     }
     println!("| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames exact | ends at | detail |");
     println!("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|");
@@ -202,8 +205,11 @@ fn main() {
             failed = true;
         }
     }
-    if let Some(csv) = &mut csv {
-        let _ = csv.flush();
+    if let Some(csv) = &mut csv
+        && let Err(e) = csv.flush()
+    {
+        eprintln!("motion-bench: the CSV: {e}");
+        failed = true;
     }
     if failed {
         std::process::exit(1);
