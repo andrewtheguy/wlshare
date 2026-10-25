@@ -202,7 +202,8 @@ The framebuffer keeps a log of `(generation, rect)`. A session asks for the
 damage after the generation it last sent and gets the merged union; a session
 behind the log, or one that has seen nothing yet, gets the whole framebuffer.
 Sessions take the pixels they need under the lock — copied out for Raw and
-ZRLE, converted straight into the stream's planes for VP9 — and encode after
+ZRLE, into the encoder's own picture for tiles, converted straight into the
+stream's planes for VP9 — and encode after
 releasing it, so encoding a slow client's update never holds up a capture.
 
 ### The cursor
@@ -295,8 +296,8 @@ wanted, and retries rather than serving a frozen picture.
 A client gets a pixel update when it has asked (`FramebufferUpdateRequest`, or
 once for all with continuous updates) and there is damage. Each pixel update is
 one `FramebufferUpdate` of merged rectangles, at most 32, ZRLE-encoded on the
-client's own deflate stream, or Raw for a client whose list names neither
-ZRLE nor VP9 — or, for a client that
+client's own deflate stream, or Raw for a client whose list names none of
+ZRLE, VP9 and tiles — or, for a client that
 lists the VP9 encoding, one rectangle of the whole framebuffer
 ([below](#the-vp9-encoding)), and for one that lists the tiles encoding
 its PNG tiles and region streams ([below](#the-tiles-encoding)).
@@ -366,8 +367,8 @@ What a frame holds is fixed:
 - **BT.601 at studio swing**, converted from the framebuffer's `B, G, R, X` and
   declared in the keyframe header, so a decoder converts back with the same
   matrix. The client's pixel format does not apply.
-- **A quantizer and a frame rate that follow the link.** The 1–100 dial maps
-  onto VP9's 8–63, finest last, as zDesk's dial does; rate control is pinned
+- **A quantizer and a frame rate that follow the link.** The 1–100 dial,
+  finest last, maps onto VP9's quantizer 63 down to 8, as zDesk's dial does; rate control is pinned
   to wherever the dial is, with no bitrate, no adaptive quantization and no
   dropped frames. A session starts at the ceiling the client's list names
   (`WLQ`, below), which it never goes above, and
@@ -705,8 +706,10 @@ the picture.
   picture, since a driver lists more profiles than it opens; the log says
   what it found, and with nothing found the regions are VP9, which their
   STARTs say. A coder that refuses a stream or fails one midway is given up
-  for VP9 for the rest of the session, the failed stream ended with its END
-  and its tiles owed exact, so no session ends on the encoder's account. Each
+  for VP9 for as long as the tiles picture lasts — a new desktop size makes
+  the picture again, with a coder opened afresh — the failed stream ended
+  with its END and its tiles owed exact, so no session ends on the encoder's
+  account. Each
   session opens the device itself, so a VA display is one thread's. The
   whole-desktop `WLSV` stream is VP9 whatever the list says: the walk's
   quantizer moves every frame, which a hardware encoder's does not.
@@ -776,7 +779,8 @@ Both messages have one layout:
 - **OutputScale**, server → client, ten bytes: type, padding, width and height
   in pixels, scale. Sent as the answer to *every* `SetEncodings` that lists the
   pseudo-encoding — the only way support is announced — and whenever the shared
-  output's scale or mode changes or another output becomes the shared one, before
+  output's size or scale changes, another output becoming the shared one
+  included, before
   the frame at the new size is captured, so the report precedes the resize
   rectangle.
 - **ClientDensity**, client → server, ten bytes in OutputScale's layout: type,
@@ -790,11 +794,11 @@ Both messages have one layout:
   and scale through wlr-output-management in one configuration, asking only for
   what differs, under the same rules as a resize — a headless output and
   `resize = true` — and **answers every declaration** with an OutputScale: after
-  the compositor's head change, or at once with the output as it is when the
+  the compositor's head scale change, or at once with the output as it is when the
   declaration matches, is refused, or cannot be applied. A configuration the
   compositor accepts without changing the scale is answered too: `succeeded` is
   followed by one `wl_display.sync` round trip, after which the output is
-  reported as it is if no head change arrived. One declaration's configuration
+  reported as it is if no scale change arrived. One declaration's configuration
   is out at a time, and its events are told from any other's, so each is
   answered once: one arriving meanwhile waits for it to settle, and a newer one
   replaces it, the replaced one answered with the output as it is. A
@@ -1090,8 +1094,8 @@ signed one of the same width with silence on zero; the client flips it back.
 Decoded samples are interleaved and little-endian, and bit for bit what the
 capture produced.
 
-FLAC is lossless, while music and speech cost about two-thirds of their 1.5 Mbit/s PCM rate or less and
-a silent desktop a few bytes a frame. A frame length past 64 KiB is fatal to a
+FLAC is lossless, while music costs about half of its 1.5 Mbit/s PCM rate,
+speech under a third and a silent desktop a few bytes a frame. A frame length past 64 KiB is fatal to a
 client: the largest block there is, 20 ms of 16-bit stereo at 96 kHz, is 7680
 bytes before compression.
 
@@ -1451,8 +1455,8 @@ bare reason "authentication failed"; the actual reason is logged.
 
 ## Deliberately absent
 
-Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the VP9
-one: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
+Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the
+private ones, VP9 and the tiles' region streams: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
 lossless choice. A VP9 quality above the ceiling the stream was asked for
 however much room the link has, the VP9 encoding for any client that does not
 list it.

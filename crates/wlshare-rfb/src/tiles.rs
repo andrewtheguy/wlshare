@@ -65,7 +65,7 @@
 //! else libx264 at its fastest preset — that: on the hardware a region costs
 //! the processor its conversion alone, and libx264 codes one in less of it
 //! than libvpx. A coder that refuses a stream, or fails one midway, is
-//! given up for the session, the failed stream ended, and VP9 codes every
+//! given up for this picture, the failed stream ended, and VP9 codes every
 //! region from there: the picture goes on either way.
 //!
 //! **It settles exact.** Every tile a stream carried is owed a PNG once it has
@@ -130,7 +130,7 @@ pub type RegionError = Box<dyn std::error::Error + Send + Sync>;
 /// VP9: its host's H.264 encoder, the hardware's where the host has one and
 /// libx264 otherwise, since every client decodes both. The encoder opens a stream of it for each
 /// region, and on the first failure, to open or to code, gives it up for
-/// VP9 for the rest of the session.
+/// VP9 for as long as this encoder lasts.
 pub trait RegionCoder: Send {
     /// The codec its streams are coded as.
     fn codec(&self) -> RegionCodec;

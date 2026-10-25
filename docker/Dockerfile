@@ -6,10 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # The daemon links libxkbcommon, libpam, libpipewire and libavcodec (the
-# camera's H.264 decoder) — the Wayland protocol is wayland-client's own Rust,
+# camera's H.264 decoder and the tiles' H.264 encoder) — the Wayland protocol is wayland-client's own Rust,
 # with no libwayland; cargo-deb reads the resulting .so
-# dependencies into the package's Depends. libFLAC and libopus, the audio
-# extension's encoders, are static archives the build downloads; jemalloc, the
+# dependencies into the package's Depends. libopus, the audio extension's
+# Opus encoder, is a static archive the build downloads, its FLAC encoder
+# plain Rust; jemalloc, the
 # allocator, is built from source with build-essential. libclang-dev is a build-time need
 # with nothing to link: pipewire-sys, libspa-sys and ffmpeg-sys-next generate
 # their bindings with bindgen, which loads libclang, and without it a clean

@@ -20,8 +20,8 @@
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
-  `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder, the
-  system's libavcodec linked dynamically.
+  `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder and the tiles'
+  H.264 encoder (`h264.rs`), the system's libavcodec linked dynamically.
   The audio extension's FLAC coding is not here: it is the `sound-flac`
   repository, shared with the zDesk gateway and pinned by its release tag,
   its own encoder in plain Rust: nothing is needed to build or to run.

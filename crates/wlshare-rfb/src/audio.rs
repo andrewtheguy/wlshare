@@ -27,8 +27,8 @@
 //!   private operation beside QEMU's three.
 //!
 //! FLAC is lossless: the client decodes exactly the samples the capture
-//! produced, while music and speech take about two-thirds of their PCM rate or
-//! less, and silence a few bytes a frame. The FLAC stream header (`STREAMINFO`)
+//! produced, while music takes about half of its PCM rate, speech under a
+//! third, and silence a few bytes a frame. The FLAC stream header (`STREAMINFO`)
 //! is never sent, because everything in it is already agreed — the format is
 //! the one the client set, and every frame carries [`AudioFormat::block_frames`]
 //! frames of it, twenty milliseconds, so a client builds the header itself.

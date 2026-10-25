@@ -44,8 +44,8 @@
 //! which only bitrate control needs.
 //!
 //! **Failure is the tiles encoder's to absorb.** A coder that refuses a
-//! stream or fails one midway is given up for VP9 for the rest of the
-//! session ([`wlshare_rfb::tiles::TilesEncoder`]); nothing here ends a
+//! stream or fails one midway is given up for VP9 until the session makes
+//! its tiles picture again ([`wlshare_rfb::tiles::TilesEncoder`]); nothing here ends a
 //! session. Each session opens the device itself ([`Encoder::coder`]), so a
 //! VA display is one thread's and the sessions share nothing of it.
 //!
