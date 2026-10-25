@@ -24,6 +24,9 @@ under it chose, at the output's pixel density — and sends it through the RFB
 Cursor pseudo-encodings, with its alpha to a client that lists Cursor With
 Alpha. The client moves it without waiting for a framebuffer update.
 
+See it in zDesk's demo:
+[Mac -> Linux (wlshare on Sway) at Retina/HiDPI density with audio](https://github.com/andrewtheguy/zdesk#mac---linux-wlshare-on-sway-at-retinahidpi-density-with-audio).
+
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
 `wlr-screencopy` version 2 or later is required, and so is `ext-image-copy-capture`
