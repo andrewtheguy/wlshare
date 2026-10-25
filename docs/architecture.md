@@ -1,5 +1,7 @@
 # Architecture
 
+English | [简体中文](architecture.zh-CN.md) | [繁體中文](architecture.zh-TW.md)
+
 wlshare connects to a wlroots-based Wayland compositor through its public
 protocols. It is one process with two halves and one shared framebuffer between them.
 
