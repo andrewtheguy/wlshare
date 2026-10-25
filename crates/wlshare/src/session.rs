@@ -65,7 +65,8 @@
 //! exact PNG tiles where the desktop changed and a frame of a stream of its own
 //! for each region that moves ([`wlshare_rfb::tiles`]): H.264 by the encoder
 //! the daemon found at startup ([`crate::h264`]), the host's hardware or
-//! libx264, or VP9 where neither codes. The damage since the
+//! libx264, on a coder the session opens for each tiles picture it makes; a
+//! coder that cannot be opened, or fails a stream, ends the session. The damage since the
 //! client's last update is copied out of the framebuffer under the lock into
 //! the encoder's own picture, and coded on the worker once it is let go, as a
 //! VP9 frame is; a damage that changes nothing the client holds sends nothing.
@@ -243,9 +244,8 @@ pub struct SessionConfig {
     /// so a session asked for 4:2:0 writes none while it is.
     pub capture_frames: Option<PathBuf>,
     /// The H.264 encoder that codes the tiles picture's moving regions
-    /// ([`crate::h264`]), the host's hardware or libx264, or `None` for VP9
-    /// alone.
-    pub h264: Option<Arc<crate::h264::Encoder>>,
+    /// ([`crate::h264`]), the host's hardware or libx264.
+    pub h264: Arc<crate::h264::Encoder>,
 }
 
 /// The most rectangles one update carries before they collapse into one.
@@ -901,8 +901,7 @@ impl Session {
                 let listed = tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
                 if let Some(quality) = listed {
                     if !self.use_tiles || quality != self.tiles_quality {
-                        let codec = self.config.h264.as_ref().map_or_else(|| "VP9".to_owned(), |encoder| format!("H.264 by {}", encoder.name()));
-                        info!("client {}: asked for tiles, its moving regions at quality {quality}, {codec}", self.id.0);
+                        info!("client {}: asked for tiles, its moving regions at quality {quality}, H.264 by {}", self.id.0, self.config.h264.name());
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
@@ -1448,8 +1447,8 @@ impl Session {
                         break fb;
                     }
                     drop(fb);
-                    let coder = self.h264_coder();
-                    let encoder = TilesEncoder::new(width, height, self.tiles_quality, coder)
+                    let coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
+                    let encoder = TilesEncoder::new(width, height, self.tiles_quality, Box::new(coder))
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
                     self.tiles = Some(encoder);
                     continue;
@@ -1742,21 +1741,6 @@ impl Session {
         writer.send(&self.out).await.context("writing an update")?;
         self.pending = None;
         Ok(())
-    }
-
-    /// The region coder the tiles picture's streams are opened on ahead of
-    /// VP9: the H.264 encoder the daemon found, for the hardware on a device
-    /// of this session's own; `None` for VP9 alone, a device that cannot be
-    /// opened logged and taken for none.
-    fn h264_coder(&self) -> Option<Box<dyn tiles::RegionCoder>> {
-        let encoder = self.config.h264.as_ref()?;
-        match encoder.coder() {
-            Ok(coder) => Some(Box::new(coder)),
-            Err(e) => {
-                warn!("client {}: the H.264 encoder ({}) could not be opened; its regions are VP9: {e:#}", self.id.0, encoder.name());
-                None
-            }
-        }
     }
 
     /// When the tiles picture's tick is owed an update — a stream to end, a

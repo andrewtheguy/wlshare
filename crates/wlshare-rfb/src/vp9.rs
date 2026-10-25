@@ -138,7 +138,7 @@ pub enum Vp9Error {
 }
 
 /// How many threads the encoder gets: the machine less two cores, at most
-/// [`MAX_ENCODER_THREADS`]. An encode is a burst of milliseconds a frame that
+/// `MAX_ENCODER_THREADS` (8). An encode is a burst of milliseconds a frame that
 /// the person at the other end is waiting on, and the encoder splits it
 /// across threads by rows and tile columns; the two cores kept back are for
 /// the compositor and the session, which are what make the next frame. The

@@ -105,11 +105,9 @@ pub const ENCODING_VP9: i32 = 0x574c_5356;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it, with a
 /// quality beside it ([`tiles::listed`]), is sent the desktop as exact PNG
 /// tiles where it is still and a video stream for each region that moves
-/// ([`tiles`]), H.264 through the host's hardware or libx264, or VP9 where
-/// H.264 is unavailable or has failed, each stream's START saying which
-/// ([`tiles::RegionCodec`]): the client decodes both. It wins over ZRLE
-/// wherever it is listed; listed without a
-/// quality, or beside [`ENCODING_VP9`], it is fatal.
+/// ([`tiles`]), H.264 through the host's hardware or libx264. It wins over
+/// ZRLE wherever it is listed; listed without a quality, or beside
+/// [`ENCODING_VP9`], it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.
 pub const ENCODING_DESKTOP_SIZE: i32 = -223;

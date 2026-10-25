@@ -65,6 +65,13 @@ tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_support
 
 # `cargo deb -p wlshare` (scripts/build-debs.sh runs it in Docker per architecture;
 # the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).
+[dev-dependencies]
+# `examples/motion-bench.rs`, the tiles encoding measured against the VP9
+# encoding: the process's CPU time around each coder, and the page's reader of
+# the tiles' PNGs.
+cpu-time = "1"
+png = "0.18"
+
 [package.metadata.deb]
 name = "wlshare"
 maintainer = "Andrew Chen <hello@andrewtheguy.com>"

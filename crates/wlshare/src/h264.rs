@@ -4,25 +4,23 @@
 //! one, and libx264 at its fastest preset where it has none.
 //!
 //! A region of the tiles picture is a stream over its rectangle alone
-//! ([`wlshare_rfb::tiles`]), VP9 by libvpx unless the daemon hands the encoder
-//! a [`RegionCoder`]. This is that coder. On a host whose GPU has an H.264
-//! encoder a VA-API driver reaches — Intel's iHD, AMD's Mesa — a region that
-//! moves costs the processor its conversion to NV12 and nothing of the
-//! search, which is what the tiles picture is for: the least of the encoder's
-//! time on a link with room. On a host with none, libx264's `ultrafast`
-//! codes it in about a third of the processor's time a frame that VP9 at
-//! libvpx's fastest speed takes, for about twice the bytes, which a link with
-//! room has.
+//! ([`wlshare_rfb::tiles`]), coded by the [`RegionCoder`] the daemon hands
+//! the encoder. This is that coder. On a host whose GPU has an H.264 encoder
+//! a VA-API driver reaches — Intel's iHD, AMD's Mesa — a region that moves
+//! costs the processor its conversion to NV12 and nothing of the search,
+//! which is what the tiles picture is for: the least of the encoder's time on
+//! a link with room. On a host with none, libx264's `ultrafast` codes it in
+//! about a third of the processor's time a frame that VP9 at libvpx's fastest
+//! speed takes, for about twice the bytes, which a link with room has.
 //!
 //! **What a stream is.** Constant quantizer, pinned to the dial the client's
-//! list names as the VP9 regions' is, with no bitrate and nothing dropped: the
+//! list names, with no bitrate and nothing dropped: the
 //! 1–100 dial maps onto QP 40 down to 16, finest last. No B-frames, one frame
 //! in and one out, so a frame is on the wire the moment it is coded: the
 //! hardware's at High profile with CABAC and `async_depth` 1, libx264's at
 //! Constrained Baseline, the profile `ultrafast` comes to, with its
-//! `zerolatency` tuning, no scene cut, and the VP9 regions' threads, as
-//! slices. BT.601 at studio swing, said in the stream's VUI, as the VP9
-//! regions say it in their keyframe. The picture coded is the region's
+//! `zerolatency` tuning, no scene cut, and the VP9 encoder's threads, as
+//! slices. BT.601 at studio swing, said in the stream's VUI. The picture coded is the region's
 //! rounded up to even sides, which libx264 requires and 4:2:0 cannot crop
 //! below: a region of an odd width or height is coded a pixel larger, its last
 //! row again below it and black to its right, and the gateway clips it to the
@@ -39,15 +37,16 @@
 //! the desktop — and the shader one after it, each tried on a frame of a
 //! small picture, since a driver lists more profiles than it will open; with
 //! none working, or the key off, libx264, tried the same way. What works is
-//! what every session uses; with nothing working the regions are VP9 and the
-//! log says why. The low-power block codes CQP without the HuC firmware,
-//! which only bitrate control needs.
+//! what every session uses; with nothing working the daemon does not start,
+//! since a region has no other codec. The low-power block codes CQP without
+//! the HuC firmware, which only bitrate control needs.
 //!
-//! **Failure is the tiles encoder's to absorb.** A coder that refuses a
-//! stream or fails one midway is given up for VP9 until the session makes
-//! its tiles picture again ([`wlshare_rfb::tiles::TilesEncoder`]); nothing here ends a
-//! session. Each session opens the device itself ([`Encoder::coder`]), so a
-//! VA display is one thread's and the sessions share nothing of it.
+//! **Failure ends the session.** A coder that cannot be opened, refuses a
+//! stream or fails one midway fails the tiles picture's encode
+//! ([`wlshare_rfb::tiles::TilesEncoder`]), and with it the session that
+//! asked for the picture. Each session opens the device itself
+//! ([`Encoder::coder`]), so a VA display is one thread's and the sessions
+//! share nothing of it.
 //!
 //! Tested against libavcodec's own H.264 decoder ([`crate::decode`]), which
 //! shares nothing with either encoder: libx264's on every machine, the
@@ -60,7 +59,7 @@ use std::ptr;
 use anyhow::Context as _;
 use ffmpeg_sys_next as ff;
 use log::{debug, info};
-use wlshare_rfb::tiles::{RegionCodec, RegionCoder, RegionError, RegionStream};
+use wlshare_rfb::tiles::{RegionCoder, RegionError, RegionStream};
 use wlshare_rfb::vp9::Rect;
 
 /// The H.264 encoder the startup found, which every session's coder opens.
@@ -97,26 +96,18 @@ const X264_PRESET: &str = "ultrafast";
 impl Encoder {
     /// The encoder the tiles' regions are coded by: the hardware's where
     /// `hardware` asks for it and [`Self::vaapi`] finds one, libx264
-    /// otherwise, each tried on a frame first. `None`, logged, with neither
-    /// working: the regions are VP9.
-    pub fn find(hardware: bool) -> Option<Self> {
+    /// otherwise, each tried on a frame first. An error with neither working.
+    pub fn find(hardware: bool) -> anyhow::Result<Self> {
         if hardware {
             if let Some(encoder) = Self::vaapi() {
-                return Some(encoder);
+                return Ok(encoder);
             }
         } else {
             info!("hardware_h264 is off: the hardware H.264 encoder is not looked for");
         }
-        match Self::X264.try_frame() {
-            Ok(()) => {
-                info!("software H.264 for the tiles' regions: libx264 at {X264_PRESET}");
-                Some(Self::X264)
-            }
-            Err(e) => {
-                info!("no H.264 encoder: libx264 codes nothing here ({e:#}); the tiles' regions are VP9");
-                None
-            }
-        }
+        Self::X264.try_frame().context("no H.264 encoder for the tiles' regions: libx264 codes nothing here")?;
+        info!("software H.264 for the tiles' regions: libx264 at {X264_PRESET}");
+        Ok(Self::X264)
     }
 
     /// Look for a working VA-API H.264 encoder: each render node in turn, the
@@ -272,10 +263,6 @@ impl Drop for Coder {
 }
 
 impl RegionCoder for Coder {
-    fn codec(&self) -> RegionCodec {
-        RegionCodec::H264
-    }
-
     fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn RegionStream>, RegionError> {
         Ok(Box::new(self.stream(width, height, quality).map_err(|e| format!("{e:#}"))?))
     }

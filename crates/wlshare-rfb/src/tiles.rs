@@ -17,7 +17,7 @@
 //! ```text
 //! u8 kind
 //! 0 PNG     u32 length | u8[length]  a PNG of exactly the rectangle's pixels
-//! 1 START   u8 stream | u8 codec | u32 length | u8[length]  a region's first frame
+//! 1 START   u8 stream | u32 length | u8[length]  a region's first frame
 //! 2 FRAME   u8 stream | u32 length | u8[length]  a region's next frame
 //! 3 END     u8 stream                            the region's stream is over
 //! ```
@@ -25,16 +25,13 @@
 //! - A **PNG** is the desktop's pixels in the rectangle exactly, 8-bit RGB or
 //!   a palette of it, and the picture there until a later rectangle draws
 //!   over it. It depends on nothing before it.
-//! - A **START** begins a stream on `stream`, over its rectangle, and says
-//!   which codec it is ([`RegionCodec`]): a keyframe, 8-bit 4:2:0, BT.601 at
-//!   studio swing — VP9 profile 0 of exactly the rectangle's size, or an
-//!   H.264 access unit in Annex B with its parameter sets, by the host's
-//!   hardware encoder or by libx264, of the rectangle's size rounded up to
-//!   even sides: the server's choice, which a client takes either way. Each
+//! - A **START** begins a stream on `stream`, over its rectangle: an H.264
+//!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
+//!   4:2:0, BT.601 at studio swing, by the host's hardware encoder or by
+//!   libx264, of the rectangle's size rounded up to even sides. Each
 //!   **FRAME** on that id is the next frame of that stream, over the same
-//!   rectangle, in its codec, coded against the frames before it. A decoder
-//!   draws each frame's picture at the rectangle, a picture larger than it
-//!   cut to the rectangle from its top-left.
+//!   rectangle, coded against the frames before it. A decoder draws each
+//!   frame's picture at the rectangle, cut to it from its top-left.
 //! - An **END** says the stream on `stream` is over: its last picture stays
 //!   until something draws over it, and no frame follows on the id until a
 //!   START begins another. The rectangle is the stream's.
@@ -59,14 +56,11 @@
 //! told the damage inside it as the VP9 encoding's whole-desktop stream is, so
 //! the encoder's time follows the area that moves. It is 4:2:0 at the dial the
 //! client's list names, held there: what a stream loses of a picture lasts
-//! only while the region moves, since it settles exact. The encoder is libvpx
-//! at speed 9, the least search it has, or, where the daemon hands this
-//! encoder a [`RegionCoder`] — its host's H.264 encoder, the hardware's or
-//! else libx264 at its fastest preset — that: on the hardware a region costs
-//! the processor its conversion alone, and libx264 codes one in less of it
-//! than libvpx. A coder that refuses a stream, or fails one midway, is
-//! given up for this picture, the failed stream ended, and VP9 codes every
-//! region from there: the picture goes on either way.
+//! only while the region moves, since it settles exact. The encoder is the
+//! [`RegionCoder`] the daemon hands this one, its host's H.264 encoder: the
+//! hardware's, where a region costs the processor its conversion alone, or
+//! else libx264 at its fastest preset. A coder that refuses a stream, or
+//! fails one midway, fails the encode: a region has no other codec.
 //!
 //! **It settles exact.** Every tile a stream carried is owed a PNG once it has
 //! been still for half a second, looked for every quarter of a second
@@ -76,18 +70,17 @@
 //! — goes as PNG at once, in bands of 64 rows; from then on a band is sent as
 //! the runs of its changed tiles along each row.
 //!
-//! The measurements these rules were chosen by are `examples/motion-bench.rs`,
-//! which plays the kept captures through this encoder and through the VP9
-//! encoding's.
+//! The measurements these rules were chosen by are the daemon crate's
+//! `examples/motion-bench.rs`, which plays the kept captures through this
+//! encoder, on the daemon's H.264, and through the VP9 encoding's.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::time::Duration;
 
-use log::warn;
 use thiserror::Error;
 
-use crate::vp9::{Chroma, QUALITY_MAX, QUALITY_MIN, Rect, Speed};
+use crate::vp9::{QUALITY_MAX, QUALITY_MIN, Rect};
 
 /// A PNG of the rectangle's pixels.
 pub const KIND_PNG: u8 = 0;
@@ -98,42 +91,17 @@ pub const KIND_FRAME: u8 = 2;
 /// A region's stream is over.
 pub const KIND_END: u8 = 3;
 
-/// What a region's stream is coded as, the byte its START carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum RegionCodec {
-    /// VP9 profile 0, by libvpx: every region's codec unless the daemon
-    /// hands the encoder an H.264 coder.
-    Vp9 = 0,
-    /// H.264, each frame one Annex B access unit, the parameter sets ahead of
-    /// each keyframe's slices, the picture the region's size rounded up to
-    /// even sides.
-    H264 = 1,
-}
-
-impl RegionCodec {
-    /// The codec a START's byte names, or `None` for a byte that is neither.
-    pub fn of(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(Self::Vp9),
-            1 => Some(Self::H264),
-            _ => None,
-        }
-    }
-}
-
 /// Why a region coder could not open or code a stream: its encoder's reason,
 /// in its own words.
 pub type RegionError = Box<dyn std::error::Error + Send + Sync>;
 
-/// A coder of region streams the daemon hands a [`TilesEncoder`] in place of
-/// VP9: its host's H.264 encoder, the hardware's where the host has one and
-/// libx264 otherwise, since every client decodes both. The encoder opens a stream of it for each
-/// region, and on the first failure, to open or to code, gives it up for
-/// VP9 for as long as this encoder lasts.
+/// The coder of region streams the daemon hands a [`TilesEncoder`]: its
+/// host's H.264 encoder, the hardware's where the host has one and libx264
+/// otherwise, each frame one Annex B access unit, the parameter sets ahead of
+/// each keyframe's slices, the picture the region's size rounded up to even
+/// sides. The encoder opens a stream of it for each region, and a failure to
+/// open or to code is its encode's.
 pub trait RegionCoder: Send {
-    /// The codec its streams are coded as.
-    fn codec(&self) -> RegionCodec;
     /// A stream over a `width`×`height` region at `quality`, the 1–100 dial,
     /// which codes nothing until read into.
     fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn RegionStream>, RegionError>;
@@ -156,12 +124,6 @@ pub trait RegionStream: Send {
     /// owed to the next frame.
     fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError>;
 }
-
-/// A region's chroma: profile 0, which every browser's decoder takes, its
-/// hardware one included, at half the samples of 4:4:4 to code.
-pub const REGION_CHROMA: Chroma = Chroma::Yuv420;
-/// A region's speed: libvpx's least search, since what it leaves is settled exact.
-pub const REGION_SPEED: Speed = Speed::Fastest;
 
 /// The dial the client's list asks the tiles picture's streams held at — the
 /// VP9 encoding's `WLQ` and the value
@@ -198,9 +160,9 @@ pub enum TilesListError {
 /// Why a picture could not be read or encoded.
 #[derive(Debug, Error)]
 pub enum TilesError {
-    #[error(transparent)]
-    Codec(#[from] wlshare_vp9::Error),
-    /// A VP9 region stream refused its pixels or its frame.
+    #[error("a {0}x{1} desktop has no pixels")]
+    Empty(u16, u16),
+    /// The region coder refused a stream, or a stream its pixels or its frame.
     #[error("coding a region: {0}")]
     Region(RegionError),
     #[error(transparent)]
@@ -629,7 +591,6 @@ struct Live {
     id: u8,
     area: Area,
     cells: Vec<(u16, u16)>,
-    codec: RegionCodec,
     stream: Box<dyn RegionStream>,
     /// The damage inside the region since its last frame, from its top-left.
     pending: Vec<Rect>,
@@ -703,26 +664,17 @@ pub struct TilesEncoder {
     read: bool,
     next_tick: Duration,
     quality: u8,
-    threads: usize,
-    /// The coder every new stream is opened on ahead of VP9, while one is
-    /// held and has not failed.
-    coder: Option<Box<dyn RegionCoder>>,
+    /// The coder every stream is opened on.
+    coder: Box<dyn RegionCoder>,
     scratch: Vec<u8>,
 }
 
 impl TilesEncoder {
-    /// An encoder for a `width`×`height` desktop whose streams are at
-    /// `quality` (1–100), each a VP9 stream on as many threads as this machine
-    /// gives one, or a stream of `coder` where one is given, until it
-    /// fails. The client holds nothing of it yet.
-    pub fn new(width: u16, height: u16, quality: u8, coder: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
-        Self::with_threads(width, height, quality, crate::vp9::encoder_threads(), coder)
-    }
-
-    /// [`Self::new`] with each VP9 stream on `threads` threads.
-    pub fn with_threads(width: u16, height: u16, quality: u8, threads: usize, coder: Option<Box<dyn RegionCoder>>) -> Result<Self, TilesError> {
+    /// An encoder for a `width`×`height` desktop whose streams are `coder`'s,
+    /// at `quality` (1–100). The client holds nothing of it yet.
+    pub fn new(width: u16, height: u16, quality: u8, coder: Box<dyn RegionCoder>) -> Result<Self, TilesError> {
         if width == 0 || height == 0 {
-            return Err(wlshare_vp9::Error::Empty(width, height).into());
+            return Err(TilesError::Empty(width, height));
         }
         let stride = usize::from(width) * 4;
         let mut encoder = Self {
@@ -740,18 +692,11 @@ impl TilesEncoder {
             read: false,
             next_tick: Duration::ZERO,
             quality,
-            threads,
             coder,
             scratch: Vec::new(),
         };
         encoder.forget();
         Ok(encoder)
-    }
-
-    /// The codec new streams are opened in: the region coder's while one is
-    /// held, VP9 otherwise.
-    pub fn codec(&self) -> RegionCodec {
-        self.coder.as_ref().map_or(RegionCodec::Vp9, |coder| coder.codec())
     }
 
     /// The desktop size this encoder codes.
@@ -937,8 +882,7 @@ impl TilesEncoder {
         let moving = self.churn.moving(now);
         self.retune(&moving, now, out)?;
         let stride = self.stride;
-        let mut failed: Option<(usize, RegionError)> = None;
-        for (index, live) in self.live.iter_mut().enumerate() {
+        for live in &mut self.live {
             live.carried = false;
             if !live.dirty {
                 continue;
@@ -952,9 +896,6 @@ impl TilesEncoder {
                 headed = true;
                 out.header(live.area, if live.started { KIND_FRAME } else { KIND_START });
                 out.out.push(live.id);
-                if !live.started {
-                    out.out.push(live.codec as u8);
-                }
                 let length_at = out.out.len();
                 out.out.extend_from_slice(&[0; 4]);
                 Ok((live.stream.encode(!live.started, out.out)?, length_at))
@@ -972,35 +913,14 @@ impl TilesEncoder {
                     out.out.truncate(from);
                     out.count -= 1;
                 }
-                Err(e) if live.codec == RegionCodec::Vp9 => {
+                Err(e) => {
                     if headed {
                         out.out.truncate(from);
                         out.count -= 1;
                     }
                     return Err(TilesError::Region(e));
                 }
-                // A region coder that fails a stream is given up: the stream
-                // ends, what it carried is owed exact, and the regions are laid
-                // out again at the next round, on VP9.
-                Err(e) => {
-                    if headed {
-                        out.out.truncate(from);
-                        out.count -= 1;
-                    }
-                    failed = Some((index, e));
-                    break;
-                }
             }
-        }
-        if let Some((index, e)) = failed {
-            let live = self.live.remove(index);
-            warn!("the {:?} region coder failed a {}x{} stream; its regions are VP9 from here: {e}", live.codec, live.area.w(), live.area.h());
-            if live.started {
-                out.end(live.id, live.area);
-            }
-            self.coder = None;
-            self.retuned_at = None;
-            self.cover();
         }
         for live in &self.live {
             if live.carried {
@@ -1065,34 +985,14 @@ impl TilesEncoder {
         Ok(())
     }
 
-    /// A stream over `area`, every tile of it owed from now: on the region
-    /// coder while one is held, which is given up for VP9 the first time it
-    /// refuses a stream.
+    /// A stream of the region coder over `area`, every tile of it owed from now.
     fn build(&mut self, id: u8, area: Area, now: Duration) -> Result<Live, TilesError> {
-        let (w, h) = (area.w(), area.h());
-        let opened = self.coder.as_mut().and_then(|coder| match coder.open(w, h, self.quality) {
-            Ok(stream) => Some((coder.codec(), stream)),
-            Err(e) => {
-                warn!("the {:?} region coder refused a {w}x{h} stream; its regions are VP9 from here: {e}", coder.codec());
-                None
-            }
-        });
-        if opened.is_none() {
-            self.coder = None;
-        }
-        let (codec, stream): (RegionCodec, Box<dyn RegionStream>) = match opened {
-            Some(opened) => opened,
-            None => {
-                let mut stream = wlshare_vp9::Stream::new(w, h, self.quality, REGION_CHROMA, self.threads)?;
-                stream.set_speed(REGION_SPEED);
-                (RegionCodec::Vp9, Box::new(Vp9Region(stream)))
-            }
-        };
+        let stream = self.coder.open(area.w(), area.h(), self.quality).map_err(TilesError::Region)?;
         let cells: Vec<(u16, u16)> = tiles_of(area).map(|(cell, _)| cell).collect();
         for cell in &cells {
             self.debts.insert(*cell, now);
         }
-        Ok(Live { id, area, cells, codec, stream, pending: Vec::new(), dirty: true, started: false, carried: false, moving_at: now })
+        Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, carried: false, moving_at: now })
     }
 
     /// The streams whose motion stopped ended, and up to
@@ -1129,31 +1029,11 @@ impl TilesEncoder {
     }
 }
 
-/// A region's VP9 stream as a [`RegionStream`]: libvpx's, at 4:2:0 and speed 9.
-struct Vp9Region(wlshare_vp9::Stream);
-
-impl RegionStream for Vp9Region {
-    fn set_quality(&mut self, quality: u8) {
-        self.0.set_quality(quality);
-    }
-
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError> {
-        Ok(self.0.read_bgrx(pixels, stride, changed)?)
-    }
-
-    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError> {
-        match self.0.encode(keyframe, out) {
-            Ok(_) => Ok(true),
-            Err(wlshare_vp9::Error::NoFrame) => Ok(false),
-            Err(e) => Err(e.into()),
-        }
-    }
-}
-
 /// The encoder read back as a client would: every rectangle parsed by the
 /// client's parser, each PNG by a reader written here from the PNG
 /// specification over `flate2`'s inflate, which shares nothing with the `png`
-/// crate's, and each region by libvpx's decoder.
+/// crate's, and each region by reading back the frames of a coder standing in
+/// for the daemon's H.264 one, whose own tests decode it with libavcodec.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,22 +1104,14 @@ mod tests {
     /// A rectangle as the parser reads one: x, y, width, height.
     type Place = (u16, u16, u16, u16);
 
-    /// A stream's decoder: libvpx's for VP9, and for the fake H.264 coder of
-    /// these tests ([`Fake`]) nothing, since its frames are the pixels.
-    enum Region {
-        Vp9(wlshare_vp9::Decoder),
-        Fake,
-    }
-
     /// What a client draws of the rectangles, and what it was sent.
     struct Page {
         w: usize,
         canvas: Vec<u8>,
-        decoders: HashMap<u8, (Region, Place)>,
+        /// The live streams' rectangles.
+        streams: HashMap<u8, Place>,
         pngs: usize,
         starts: usize,
-        /// The codec of each START, in order.
-        codecs: Vec<RegionCodec>,
         frames: usize,
         ends: usize,
         bytes: usize,
@@ -1247,7 +1119,7 @@ mod tests {
 
     impl Page {
         fn new(w: u16, h: u16) -> Self {
-            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], decoders: HashMap::new(), pngs: 0, starts: 0, codecs: Vec::new(), frames: 0, ends: 0, bytes: 0 }
+            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), pngs: 0, starts: 0, frames: 0, ends: 0, bytes: 0 }
         }
 
         /// One update of `count` rectangles, as the encoder appended them.
@@ -1273,59 +1145,34 @@ mod tests {
                             }
                         }
                     }
-                    TileBody::Start { stream, codec, frame } => {
+                    TileBody::Start { stream, frame } => {
                         self.starts += 1;
-                        let codec = RegionCodec::of(codec).expect("a codec of the tiles");
-                        self.codecs.push(codec);
-                        assert!(!self.decoders.contains_key(&stream), "stream {stream} started while live");
-                        let decoder = match codec {
-                            RegionCodec::Vp9 => {
-                                let header = wlshare_vp9::frame_header(&frame).expect("a VP9 frame");
-                                assert!(header.keyframe && header.profile == 0, "a stream starts at a 4:2:0 keyframe");
-                                Region::Vp9(wlshare_vp9::Decoder::new(1).unwrap())
-                            }
-                            RegionCodec::H264 => {
-                                assert_eq!(frame[0], Fake::KEYFRAME, "a fake stream starts at its keyframe");
-                                Region::Fake
-                            }
-                        };
-                        self.decoders.insert(stream, (decoder, (x, y, w, h)));
+                        assert!(!self.streams.contains_key(&stream), "stream {stream} started while live");
+                        assert_eq!(frame[0], Fake::KEYFRAME, "a stream starts at its keyframe");
+                        self.streams.insert(stream, (x, y, w, h));
                         self.region(stream, &frame);
                     }
                     TileBody::Frame { stream, frame } => {
                         self.frames += 1;
-                        assert_eq!(self.decoders.get(&stream).map(|d| d.1), Some((x, y, w, h)), "a frame of a stream live over its rectangle");
-                        match self.decoders[&stream].0 {
-                            Region::Vp9(_) => assert!(!wlshare_vp9::frame_header(&frame).expect("a VP9 frame").keyframe, "a keyframe after the start"),
-                            Region::Fake => assert_eq!(frame[0], Fake::FRAME, "a fake keyframe after the start"),
-                        }
+                        assert_eq!(self.streams.get(&stream), Some(&(x, y, w, h)), "a frame of a stream live over its rectangle");
+                        assert_eq!(frame[0], Fake::FRAME, "a keyframe after the start");
                         self.region(stream, &frame);
                     }
                     TileBody::End { stream } => {
                         self.ends += 1;
-                        assert_eq!(self.decoders.remove(&stream).map(|d| d.1), Some((x, y, w, h)), "the end of a stream live over its rectangle");
+                        assert_eq!(self.streams.remove(&stream), Some((x, y, w, h)), "the end of a stream live over its rectangle");
                     }
                 }
             }
         }
 
         fn region(&mut self, stream: u8, frame: &[u8]) {
-            let (decoder, (x, y, w, h)) = self.decoders.get_mut(&stream).unwrap();
-            let mut bgrx = vec![0; usize::from(*w) * usize::from(*h) * 4];
-            match decoder {
-                Region::Vp9(decoder) => {
-                    let decoded = decoder.decode(frame).unwrap();
-                    assert_eq!(decoded.size(), (u32::from(*w), u32::from(*h)));
-                    decoded.write_bgrx(&mut bgrx, usize::from(*w) * 4).unwrap();
-                }
-                Region::Fake => {
-                    assert_eq!(frame.len(), 1 + bgrx.len(), "a fake frame is the region's pixels");
-                    bgrx.copy_from_slice(&frame[1..]);
-                }
-            }
-            for row in 0..usize::from(*h) {
-                let at = ((usize::from(*y) + row) * self.w + usize::from(*x)) * 4;
-                self.canvas[at..at + usize::from(*w) * 4].copy_from_slice(&bgrx[row * usize::from(*w) * 4..][..usize::from(*w) * 4]);
+            let (x, y, w, h) = self.streams[&stream];
+            let line = usize::from(w) * 4;
+            assert_eq!(frame.len(), 1 + line * usize::from(h), "a fake frame is the region's pixels");
+            for (row, pixels) in frame[1..].chunks_exact(line).enumerate() {
+                let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+                self.canvas[at..at + line].copy_from_slice(pixels);
             }
         }
 
@@ -1362,20 +1209,24 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    /// A region coder standing in for an H.264 one: its frames are the
-    /// region's pixels behind a byte that says keyframe or not, and it can be
-    /// told to refuse every stream, or to fail one after so many frames, at
+    /// A region coder standing in for the daemon's H.264 one: its frames are
+    /// the region's pixels, each sample's lowest bit dropped, so a stream's
+    /// picture is not exact, behind a byte that says keyframe or not. It can
+    /// be told to refuse every stream, or to fail one after so many frames, at
     /// its read or at its encode.
     struct Fake {
         refuse: bool,
         fail_after: Option<usize>,
         fail_read_after: Option<usize>,
-        opened: usize,
     }
 
     impl Fake {
         const KEYFRAME: u8 = 0xC0;
         const FRAME: u8 = 0xDE;
+
+        fn coder() -> Box<dyn RegionCoder> {
+            Box::new(Self { refuse: false, fail_after: None, fail_read_after: None })
+        }
     }
 
     struct FakeStream {
@@ -1389,15 +1240,10 @@ mod tests {
     }
 
     impl RegionCoder for Fake {
-        fn codec(&self) -> RegionCodec {
-            RegionCodec::H264
-        }
-
         fn open(&mut self, width: u16, height: u16, _quality: u8) -> Result<Box<dyn RegionStream>, RegionError> {
             if self.refuse {
                 return Err("the device is gone".into());
             }
-            self.opened += 1;
             let (w, h) = (usize::from(width), usize::from(height));
             Ok(Box::new(FakeStream { w, h, picture: vec![0; w * h * 4], filled: false, frames: 0, fail_after: self.fail_after, fail_read_after: self.fail_read_after }))
         }
@@ -1430,7 +1276,7 @@ mod tests {
                 return Err("the encoder hung".into());
             }
             out.push(if keyframe || self.frames == 0 { Fake::KEYFRAME } else { Fake::FRAME });
-            out.extend_from_slice(&self.picture);
+            out.extend(self.picture.iter().map(|sample| sample & !1));
             self.frames += 1;
             Ok(true)
         }
@@ -1466,7 +1312,6 @@ mod tests {
         assert_eq!(crate::ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
         assert_eq!(listed(&[crate::ENCODING_ZRLE, quality]), Ok(None));
         assert_eq!(listed(&[crate::ENCODING_TILES, quality, crate::ENCODING_ZRLE]), Ok(Some(70)));
-        assert_eq!((RegionCodec::of(0), RegionCodec::of(1), RegionCodec::of(2)), (Some(RegionCodec::Vp9), Some(RegionCodec::H264), None));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_ZRLE]), Err(TilesListError::NoQuality));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::vp9::ENCODING_VP9_QUALITY_BASE + 101]), Err(TilesListError::NoQuality));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_VP9, quality]), Err(TilesListError::Both));
@@ -1482,7 +1327,7 @@ mod tests {
         for row in 0..usize::from(h) {
             pixels[row * usize::from(w) * 4..][..400].copy_from_slice(&[10, 20, 30, 0].repeat(100));
         }
-        let mut encoder = TilesEncoder::with_threads(w, h, 80, 1, None).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, 80, Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let count = step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 5, y: 5, width: 1, height: 1 }]), ms(0));
         assert_eq!((count, page.pngs), (3, 3), "the whole picture in three bands, whatever the read was told");
@@ -1496,7 +1341,7 @@ mod tests {
     fn only_tiles_that_changed_are_sent() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 2);
-        let mut encoder = TilesEncoder::with_threads(w, h, 80, 1, None).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, 80, Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let whole = [Rect { x: 0, y: 0, width: w, height: h }];
@@ -1524,7 +1369,7 @@ mod tests {
     fn what_moves_streams_and_settles_exact() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 3);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 2, None).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let pngs = page.pngs;
@@ -1538,11 +1383,11 @@ mod tests {
         assert!(page.frames > 20, "{} frames of it", page.frames);
         assert!(page.pngs - pngs <= 16, "{} PNGs while it moved", page.pngs - pngs);
         assert!(encoder.owed() && encoder.tick_at().is_some(), "a live stream owes its end");
-        assert!(page.off(&pixels) > 0, "a 4:2:0 picture of noise is not exact");
+        assert!(page.off(&pixels) > 0, "a stream's picture is not exact");
         settle(&mut encoder, &mut page, ms(2000));
         assert_eq!(page.ends, 1, "the stream ended");
         assert_eq!(page.off(&pixels), 0, "the picture settled exact");
-        assert!(page.decoders.is_empty());
+        assert!(page.streams.is_empty());
     }
 
     /// A redraw of what a live stream carries, the pixels the client holds,
@@ -1551,7 +1396,7 @@ mod tests {
     fn a_redraw_inside_a_stream_codes_nothing() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 5);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 2, None).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -1571,7 +1416,7 @@ mod tests {
     fn a_picture_forgotten_ends_its_streams_and_starts_over() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 4);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 2, None).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -1590,89 +1435,51 @@ mod tests {
         assert!(!encoder.owed(), "a picture sent whole owes nothing");
     }
 
-    /// Play a video in the corner for `frames` frames of 50 ms from `from`.
-    fn play(encoder: &mut TilesEncoder, page: &mut Page, pixels: &mut [u8], w: u16, from: u32, frames: u32) {
+    /// Play a video in the corner for `frames` frames of 50 ms from `from`,
+    /// until an encode fails, and return its error.
+    fn play_to_failure(encoder: &mut TilesEncoder, page: &mut Page, pixels: &mut [u8], w: u16, frames: u32) -> Option<TilesError> {
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
-        for n in from..from + frames {
+        let stride = usize::from(w) * 4;
+        for n in 1..=frames {
             paint(pixels, w, video, 500 + n);
-            step(encoder, page, pixels, Some(&[video]), ms(u64::from(n) * 50));
+            let now = ms(u64::from(n) * 50);
+            encoder.read(pixels, stride, Some(&[video]), now).unwrap();
+            let mut out = Vec::new();
+            match encoder.encode(now, &mut out) {
+                Ok(count) => page.draw(count, &out),
+                Err(e) => return Some(e),
+            }
         }
+        None
     }
 
-    /// With a region coder held, a region streams in its codec, said in its
-    /// START, and the stream is told its damage as a VP9 one is; the picture
-    /// settles exact after it as any other.
+    /// A coder that refuses a stream fails the encode that would start it:
+    /// a region has no other codec.
     #[test]
-    fn a_region_coder_codes_the_streams_in_its_codec() {
-        let (w, h) = (512u16, 256u16);
-        let mut pixels = noise(w, h, 6);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: None, fail_read_after: None, opened: 0 }))).unwrap();
-        assert_eq!(encoder.codec(), RegionCodec::H264);
-        let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
-        play(&mut encoder, &mut page, &mut pixels, w, 1, 20);
-        assert_eq!((page.starts, page.ends, page.codecs.as_slice()), (1, 0, &[RegionCodec::H264][..]), "one H.264 stream, live");
-        assert!(page.frames > 10, "{} frames of it", page.frames);
-        assert_eq!(page.off(&pixels), 0, "the fake's frames are the pixels, so the page is exact while it moves");
-        settle(&mut encoder, &mut page, ms(2000));
-        assert_eq!(page.ends, 1);
-        assert_eq!(page.off(&pixels), 0);
-    }
-
-    /// A coder that refuses a stream is given up: the region streams as VP9
-    /// instead, from a START that says so, and the coder is not asked again.
-    #[test]
-    fn a_region_coder_that_refuses_is_given_up_for_vp9() {
+    fn a_region_coder_that_refuses_fails_the_encode() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None, opened: 0 }))).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, 60, Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None })).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        play(&mut encoder, &mut page, &mut pixels, w, 1, 20);
-        assert_eq!((page.starts, page.codecs.as_slice()), (1, &[RegionCodec::Vp9][..]), "the stream is VP9");
-        assert_eq!(encoder.codec(), RegionCodec::Vp9, "the coder was given up");
-        settle(&mut encoder, &mut page, ms(2000));
-        assert_eq!(page.off(&pixels), 0);
+        let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 20);
+        assert!(matches!(failed, Some(TilesError::Region(_))), "{failed:?}");
+        assert_eq!(page.starts, 0, "no stream started");
     }
 
-    /// A coder that fails a stream midway ends that stream, with its END, and
-    /// the region it carried comes back as a VP9 stream; the page is exact in
-    /// the end.
+    /// A stream that fails midway, at its encode or at its read, fails the
+    /// encode it was coded in.
     #[test]
-    fn a_region_coder_that_fails_midway_ends_its_stream_and_vp9_takes_over() {
+    fn a_region_stream_that_fails_fails_the_encode() {
         let (w, h) = (512u16, 256u16);
-        let mut pixels = noise(w, h, 8);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: Some(4), fail_read_after: None, opened: 0 }))).unwrap();
-        let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
-        play(&mut encoder, &mut page, &mut pixels, w, 1, 40);
-        assert_eq!(page.codecs, [RegionCodec::H264, RegionCodec::Vp9], "the H.264 stream, then VP9 over the region");
-        assert_eq!((page.starts, page.ends), (2, 1), "the failed stream ended, the VP9 one is live");
-        assert_eq!(encoder.codec(), RegionCodec::Vp9);
-        settle(&mut encoder, &mut page, ms(3000));
-        assert_eq!(page.ends, 2);
-        assert_eq!(page.off(&pixels), 0);
-        assert!(page.decoders.is_empty());
+        for (seed, fake) in [(8, Fake { refuse: false, fail_after: Some(4), fail_read_after: None }), (10, Fake { refuse: false, fail_after: None, fail_read_after: Some(4) })] {
+            let mut pixels = noise(w, h, seed);
+            let mut encoder = TilesEncoder::new(w, h, 60, Box::new(fake)).unwrap();
+            let mut page = Page::new(w, h);
+            step(&mut encoder, &mut page, &pixels, None, ms(0));
+            let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 40);
+            assert!(matches!(failed, Some(TilesError::Region(_))), "{failed:?}");
+            assert_eq!((page.starts, page.frames, page.ends), (1, 3, 0), "the stream's four frames, then the failure");
+        }
     }
-
-    /// A coder that fails a stream at its read, before anything of the frame
-    /// is written, is given up the same way, and the update's rectangle count
-    /// stays what was written.
-    #[test]
-    fn a_region_coder_that_fails_a_read_ends_its_stream_and_vp9_takes_over() {
-        let (w, h) = (512u16, 256u16);
-        let mut pixels = noise(w, h, 10);
-        let mut encoder = TilesEncoder::with_threads(w, h, 60, 1, Some(Box::new(Fake { refuse: false, fail_after: None, fail_read_after: Some(4), opened: 0 }))).unwrap();
-        let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
-        play(&mut encoder, &mut page, &mut pixels, w, 1, 40);
-        assert_eq!(page.codecs, [RegionCodec::H264, RegionCodec::Vp9], "the H.264 stream, then VP9 over the region");
-        assert_eq!((page.starts, page.ends), (2, 1), "the failed stream ended, the VP9 one is live");
-        assert_eq!(encoder.codec(), RegionCodec::Vp9);
-        settle(&mut encoder, &mut page, ms(3000));
-        assert_eq!(page.ends, 2);
-        assert_eq!(page.off(&pixels), 0);
-        assert!(page.decoders.is_empty());
-    }
-
 }
