@@ -1,5 +1,7 @@
 # wlshare
 
+English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
+
 > **No backward compatibility.** A release may change or remove a configuration
 > key, a private RFB extension's wire format or a feature, with nothing that
 > reads the old form. Check
