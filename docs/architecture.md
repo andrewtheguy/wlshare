@@ -735,12 +735,13 @@ the picture.
   ends them with theirs. A list that drops the encoding is answered with the
   whole framebuffer in the standard encoding it selected.
 
-`examples/motion-bench.rs` in `wlshare-rfb` plays the kept captures through
-this encoder and through `WLSV`, both decoded as a page would, the tiles'
-updates through the client's parser. That crate has no H.264 encoder, so the
-bench's regions are a stand-in of its own, VP9 by libvpx at 4:2:0 and speed
-9, the regions' codec when these were measured: it measures the rules, and a
-region's cost as libvpx's, not as the daemon's H.264. The rules beyond Motion's were chosen by
+`examples/motion-bench.rs` in the daemon's crate plays the kept captures
+through this encoder and through `WLSV`, both decoded as a page would, the
+tiles' updates through the client's parser and each region by libavcodec's
+software H.264 decoder. Its regions are the daemon's own H.264 — `h264.rs`,
+found as the daemon finds it, or libx264 with `--libx264` — so it runs where
+the daemon builds. The figures below were measured when the regions were VP9
+by libvpx at speed 9, before they were H.264. The rules beyond Motion's were chosen by
 it: told its damage rather than coded whole, a stream's encoder costs what
 moves; at speed 9 motion took 44–72% of `WLSV`'s CPU at 4:2:0 and speed 7,
 against 73–98% at speed 7, the picture while it moved at most 1.3 dB below

@@ -70,9 +70,9 @@
 //! — goes as PNG at once, in bands of 64 rows; from then on a band is sent as
 //! the runs of its changed tiles along each row.
 //!
-//! The measurements these rules were chosen by are `examples/motion-bench.rs`,
-//! which plays the kept captures through this encoder and through the VP9
-//! encoding's.
+//! The measurements these rules were chosen by are the daemon crate's
+//! `examples/motion-bench.rs`, which plays the kept captures through this
+//! encoder, on the daemon's H.264, and through the VP9 encoding's.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};

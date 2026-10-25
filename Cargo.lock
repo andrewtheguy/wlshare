@@ -1785,12 +1785,14 @@ dependencies = [
  "calloop",
  "calloop-wayland-source",
  "clap",
+ "cpu-time",
  "env_logger",
  "ffmpeg-sys-next",
  "libc",
  "log",
  "memmap2",
  "pipewire",
+ "png",
  "rustix",
  "serde",
  "serde_json",
@@ -1814,7 +1816,6 @@ name = "wlshare-rfb"
 version = "0.0.87"
 dependencies = [
  "aes",
- "cpu-time",
  "eax",
  "flate2",
  "log",
