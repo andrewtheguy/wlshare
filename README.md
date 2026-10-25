@@ -27,7 +27,7 @@ Cursor pseudo-encodings, with its alpha to a client that lists Cursor With
 Alpha. The client moves it without waiting for a framebuffer update.
 
 See it in zDesk's demo:
-[Mac -> Linux (wlshare on Sway) at Retina/HiDPI density with audio](https://github.com/andrewtheguy/zdesk#mac---linux-wlshare-on-sway-at-retinahidpi-density-with-audio).
+[Mac -> Linux (wlshare on Sway) at Retina/HiDPI density with audio](https://andrewtheguy.github.io/zdesk/#mac-to-linux).
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
