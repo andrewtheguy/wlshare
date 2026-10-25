@@ -11,7 +11,7 @@ A VNC server for wlroots-based Wayland compositors, built for the
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
 a client that asks, as zDesk does for its browsers, as one VP9 stream at a
 quality that follows the link, or for a link with room to spare as exact PNG
-tiles with a video stream for each region that moves, H.264 by the host's hardware or libx264 — or VP9 where neither codes — injects input through the virtual keyboard and pointer protocols,
+tiles with a video stream for each region that moves, H.264 by the host's hardware or libx264 — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is

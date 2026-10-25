@@ -91,7 +91,7 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientOutputs, usize)>, Output
 /// |---|---|---|
 /// | 0 | U8 | `0xE1` |
 /// | 1 | U8 | [`OP_SELECT_OUTPUT`] |
-/// | 2 | U8[2] | padding |
+/// | 2 | U8\[2\] | padding |
 /// | 4 | U32 | id |
 pub fn select_output(id: u32) -> [u8; CLIENT_OUTPUTS_LEN] {
     client_message(OP_SELECT_OUTPUT, id)
@@ -103,7 +103,7 @@ pub fn select_output(id: u32) -> [u8; CLIENT_OUTPUTS_LEN] {
 /// |---|---|---|
 /// | 0 | U8 | `0xE1` |
 /// | 1 | U8 | [`OP_VIRTUAL_DISPLAYS`] |
-/// | 2 | U8[2] | padding |
+/// | 2 | U8\[2\] | padding |
 /// | 4 | U32 | count |
 pub fn virtual_displays(count: u32) -> [u8; CLIENT_OUTPUTS_LEN] {
     client_message(OP_VIRTUAL_DISPLAYS, count)

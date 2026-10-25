@@ -9,17 +9,17 @@
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
 //! without a `[pam]` or `[password]` table. The list names the tiles encoding
-//! at the quality — the regions' codec is the daemon's choice: H.264 through
-//! the host's hardware or libx264, or VP9 if H.264 is unavailable or fails.
-//! `hardware_h264 = false` skips the hardware probe and uses libx264; Fence and
+//! at the quality — the regions are H.264, through the host's hardware or
+//! libx264, the daemon's choice; `hardware_h264 = false` skips the hardware
+//! probe and uses libx264 — and Fence and
 //! ContinuousUpdates so updates flow, ExtendedDesktopSize so
 //! `--size` can be sent as a SetDesktopSize before the first picture, and
 //! Cursor because the daemon requires it. Every rectangle is parsed by the
-//! client's parser; a PNG is counted, a region's START is counted under the
-//! codec it says, and with `--streams` each region's stream is written to
-//! `DIR/stream-<n>-<codec>-<WxH>.<h264|ivf>` as it came — Annex B access
-//! units one after another, or an IVF — for a decoder that is not this
-//! repository's to read back and count. With `--keys` the sink types what
+//! client's parser; a PNG and a region's START are counted, and with
+//! `--streams` each region's stream is written to
+//! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
+//! another, for a decoder that is not this repository's to read back and
+//! count. With `--keys` the sink types what
 //! `vp9-sink` does: every line of its standard input a keysym in
 //! hexadecimal, pressed and let go, or `@X,Y,BUTTONS`, a pointer event, so
 //! that something moves on the desktop. Every second a line says what came,
@@ -34,7 +34,6 @@ use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, Buf
 use tokio::net::TcpStream;
 use wlshare_rfb::client::{self, RectBody, ServerMsg, TileBody};
 use wlshare_rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
-use wlshare_rfb::tiles::RegionCodec;
 use wlshare_rfb::vp9::ENCODING_VP9_QUALITY_BASE;
 use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_TILES};
 
@@ -47,11 +46,10 @@ struct Args {
     keys: bool,
 }
 
-/// One region stream as it came: its codec, rectangle, frames and bytes,
-/// and the file it is written to.
+/// One region stream as it came: its rectangle, frames and bytes, and the
+/// file it is written to.
 struct Stream {
     n: usize,
-    codec: RegionCodec,
     rect: (u16, u16, u16, u16),
     frames: u64,
     bytes: u64,
@@ -63,20 +61,6 @@ fn pointer(line: &str) -> Option<(u16, u16, u8)> {
     let mut fields = line.strip_prefix('@')?.split(',');
     let at = (fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?);
     fields.next().is_none().then_some(at)
-}
-
-/// An IVF's header for a VP9 stream of this size, the frame count left at
-/// zero: ffmpeg reads to the end regardless.
-fn ivf_header(width: u16, height: u16) -> [u8; 32] {
-    let mut header = [0u8; 32];
-    header[..4].copy_from_slice(b"DKIF");
-    header[6..8].copy_from_slice(&32u16.to_le_bytes());
-    header[8..12].copy_from_slice(b"VP90");
-    header[12..14].copy_from_slice(&width.to_le_bytes());
-    header[14..16].copy_from_slice(&height.to_le_bytes());
-    header[16..20].copy_from_slice(&30u32.to_le_bytes());
-    header[20..24].copy_from_slice(&1u32.to_le_bytes());
-    header
 }
 
 fn size(s: &str) -> Result<(u16, u16), String> {
@@ -157,8 +141,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut pngs, mut png_bytes, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-    let mut starts: HashMap<RegionCodec, u64> = HashMap::new();
+    let (mut pngs, mut png_bytes, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -205,28 +188,17 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 pngs += 1;
                                 png_bytes += png.len() as u64;
                             }
-                            RectBody::Tiles(TileBody::Start { stream, codec, frame }) => {
-                                let codec = RegionCodec::of(codec).ok_or_else(|| format!("stream {stream} started in codec {codec}, which is none of the tiles'"))?;
+                            RectBody::Tiles(TileBody::Start { stream, frame }) => {
                                 if live.contains_key(&stream) {
                                     return Err(format!("stream {stream} started while live").into());
                                 }
-                                *starts.entry(codec).or_default() += 1;
+                                starts += 1;
                                 n += 1;
                                 let file = match &args.streams {
-                                    Some(dir) => {
-                                        let (name, codec_name) = match codec {
-                                            RegionCodec::Vp9 => ("ivf", "vp9"),
-                                            RegionCodec::H264 => ("h264", "h264"),
-                                        };
-                                        let mut file = File::create(format!("{dir}/stream-{n:03}-{codec_name}-{}x{}.{name}", rect.width, rect.height))?;
-                                        if codec == RegionCodec::Vp9 {
-                                            file.write_all(&ivf_header(rect.width, rect.height))?;
-                                        }
-                                        Some(file)
-                                    }
+                                    Some(dir) => Some(File::create(format!("{dir}/stream-{n:03}-{}x{}.h264", rect.width, rect.height))?),
                                     None => None,
                                 };
-                                let mut opened = Stream { n, codec, rect: place, frames: 0, bytes: 0, file };
+                                let mut opened = Stream { n, rect: place, frames: 0, bytes: 0, file };
                                 write_frame(&mut opened, &frame)?;
                                 frames += 1;
                                 frame_bytes += frame.len() as u64;
@@ -278,10 +250,9 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             file.flush()?;
         }
         let (x, y, w, h) = stream.rect;
-        eprintln!("tiles-sink: stream {} {:?} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.codec, stream.frames, stream.bytes);
+        eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
     }
-    let codecs: Vec<String> = starts.iter().map(|(codec, count)| format!("{count} {codec:?}")).collect();
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, streams started: {}, {frames} frames {frame_bytes} bytes, {ends} ends", if codecs.is_empty() { "none".to_owned() } else { codecs.join(", ") });
+    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
     Ok(())
 }
 
@@ -290,16 +261,7 @@ fn write_frame(stream: &mut Stream, frame: &[u8]) -> std::io::Result<()> {
     stream.frames += 1;
     stream.bytes += frame.len() as u64;
     if let Some(file) = &mut stream.file {
-        match stream.codec {
-            RegionCodec::H264 => file.write_all(frame)?,
-            RegionCodec::Vp9 => {
-                let mut header = [0u8; 12];
-                header[..4].copy_from_slice(&(frame.len() as u32).to_le_bytes());
-                header[4..12].copy_from_slice(&(stream.frames - 1).to_le_bytes());
-                file.write_all(&header)?;
-                file.write_all(frame)?;
-            }
-        }
+        file.write_all(frame)?;
     }
     Ok(())
 }

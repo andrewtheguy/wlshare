@@ -22,7 +22,12 @@
 //! being a picture the client asks for whole ([`TilesEncoder::forget`]), and
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
-//! changing. Its dial is the capture's unless `--quality` names one.
+//! changing. Its dial is the capture's unless `--quality` names one. A
+//! session's regions are H.264, which this crate has no encoder of, so the
+//! bench's are a stand-in coder of its own, VP9 by libvpx at 4:2:0 and its
+//! fastest speed: it measures the rules — which tiles stream, which go as
+//! PNG, what a picture that stops owes — and a region's cost as libvpx's,
+//! not the daemon's H.264.
 //!
 //! **Cost** is the process's CPU time over each coder's own work, both coders
 //! in one pass over the capture: reading it, `zstd`, and the decoders that
@@ -33,7 +38,7 @@
 //!
 //! **Checked**: both pictures are decoded as a page would — `WLSV` by libvpx;
 //! the tiles' update parsed by the client's parser, a PNG by the `png` crate
-//! and each region by a libvpx decoder of its own — and compared with the
+//! and each region of the stand-in by a libvpx decoder of its own — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
 //!
@@ -66,7 +71,7 @@ use cpu_time::ProcessTime;
 use wlshare_rfb::capture::Reader;
 use wlshare_rfb::client::{self, RectBody, ServerMsg, TileBody};
 use wlshare_rfb::msg;
-use wlshare_rfb::tiles::TilesEncoder;
+use wlshare_rfb::tiles::{RegionCoder, RegionError, RegionStream, TilesEncoder};
 use wlshare_rfb::vp9::{Chroma, Rect, Speed, Vp9Encoder};
 use wlshare_vp9::Decoder;
 
@@ -288,10 +293,7 @@ impl Page {
                         }
                     }
                 }
-                TileBody::Start { stream, codec, frame } => {
-                    if codec != wlshare_rfb::tiles::RegionCodec::Vp9 as u8 {
-                        return Err(format!("stream {stream} started in codec {codec}, not VP9: the bench measures libvpx's regions").into());
-                    }
+                TileBody::Start { stream, frame } => {
                     sent.vp9 += frame.len() as u64;
                     sent.starts += 1;
                     if self.decoders.insert(stream, Decoder::new(2)?).is_some() {
@@ -329,6 +331,41 @@ impl Page {
     }
 }
 
+/// The bench's stand-in for the daemon's H.264 region coder: a VP9 stream
+/// over each region, by libvpx at 4:2:0 and its fastest speed, on `threads`.
+struct Vp9Coder {
+    threads: usize,
+}
+
+impl RegionCoder for Vp9Coder {
+    fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn RegionStream>, RegionError> {
+        let mut stream = wlshare_vp9::Stream::new(width, height, quality, Chroma::Yuv420, self.threads)?;
+        stream.set_speed(Speed::Fastest);
+        Ok(Box::new(Vp9Region(stream)))
+    }
+}
+
+/// One region's stream of the stand-in.
+struct Vp9Region(wlshare_vp9::Stream);
+
+impl RegionStream for Vp9Region {
+    fn set_quality(&mut self, quality: u8) {
+        self.0.set_quality(quality);
+    }
+
+    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError> {
+        Ok(self.0.read_bgrx(pixels, stride, changed)?)
+    }
+
+    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError> {
+        match self.0.encode(keyframe, out) {
+            Ok(_) => Ok(true),
+            Err(wlshare_vp9::Error::NoFrame) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
 /// The tiles of one size: the encoder, the page it draws, and the update it
 /// appends to.
 struct Tiles {
@@ -339,7 +376,7 @@ struct Tiles {
 
 impl Tiles {
     fn new(size: (u16, u16), quality: u8, threads: usize) -> Result<Self, Error> {
-        Ok(Self { encoder: TilesEncoder::with_threads(size.0, size.1, quality, threads, None)?, page: Page::new(size), out: Vec::new() })
+        Ok(Self { encoder: TilesEncoder::new(size.0, size.1, quality, Box::new(Vp9Coder { threads }))?, page: Page::new(size), out: Vec::new() })
     }
 
     /// Encode what is owed at `now` and draw it: the CPU time of the encode,

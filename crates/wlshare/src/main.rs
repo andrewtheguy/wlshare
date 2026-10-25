@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     // for every region's stream.
     // SAFETY: a store of the level, before any thread uses libavcodec.
     unsafe { ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_WARNING) };
-    let h264 = h264::Encoder::find(config.hardware_h264).map(Arc::new);
+    let h264 = Arc::new(h264::Encoder::find(config.hardware_h264)?);
 
     // The compositor thread comes up first and hands back what it learned about
     // the output, so ServerInit can name a size before the first frame.
@@ -309,7 +309,7 @@ async fn serve(
     config: config::Config,
     capture_frames: Option<PathBuf>,
     security: Security,
-    h264: Option<Arc<h264::Encoder>>,
+    h264: Arc<h264::Encoder>,
     shared: Arc<shared::Shared>,
     mut compositor: compositor::Handle,
 ) -> anyhow::Result<()> {
