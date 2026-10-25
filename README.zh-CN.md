@@ -7,7 +7,7 @@
 一个面向基于 wlroots 的 Wayland 合成器的 VNC 服务器，为 [zDesk](https://github.com/andrewtheguy/zdesk/blob/main/README.zh-CN.md) 网关而构建。它通过 wlr-screencopy 捕获一个输出，以 RFB 3.8 的 Raw 或 ZRLE 提供；或者，对于提出请求的客户端（zDesk 就为它的浏览器这样请求），以一路质量随链路变化的 VP9 流提供；在链路带宽充裕时，则以精确的 PNG 图块提供，并为每个运动区域提供一路视频流，即由主机硬件或 libx264 编码的 H.264。它通过虚拟键盘和虚拟指针协议注入输入，通过 wlr-data-control 共享剪贴板，把桌面来自 PipeWire 的声音经同一连接传输；它还会告诉客户端帧缓冲是以什么像素密度绘制的，而这是标准 RFB 做不到的，因此 `scale 2` 的输出会以 2x 清晰显示，客户端自己的密度也会成为输出的密度。有多个显示器的桌面会把列表发给客户端，由客户端选择共享哪一个；该客户端的第二个连接会在旁边显示另一个输出，从而同时看到两个。合成器的指针不包含在捕获的帧中，因此 wlshare 自行捕获光标图像（即指针下方的应用所选择的任何形状，按输出的像素密度），并通过 RFB 的 Cursor 伪编码发送；对于列出 Cursor With Alpha 的客户端，还会带上透明度。客户端移动光标时无需等待帧缓冲更新。
 
 在 zDesk 的演示中观看：
-[Mac -> Linux（Sway 上的 wlshare），Retina/HiDPI 密度并带声音](https://andrewtheguy.github.io/zdesk/index.zh-CN.html#mac-to-linux)。
+[Mac -> Linux（Sway 上的 wlshare），Retina/HiDPI 密度并带声音](https://zdesk.dev/index.zh-CN.html#mac-to-linux)。
 
 在这组协议范围内，它与具体合成器无关：任何提供所需协议的基于 wlroots 的合成器都是同一类对端。需要 `wlr-screencopy` 版本 2 或更高，以及带输出捕获源的 `ext-image-copy-capture`，光标图像就来自后者。调整输出尺寸和缩放还需要 `wlr-output-management`；合成器提供虚拟键盘、虚拟指针和 `wlr-data-control` 协议时，输入和剪贴板会使用它们。在无头输出上让光标保持独立并捕获它，需要 wlroots 0.19 或更新版本。
 
