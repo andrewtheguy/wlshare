@@ -117,7 +117,8 @@ const CLEAR_FRAMES: u32 = 4;
 /// second's wait had put the step after. A third of a second, or 20 ms of
 /// queue, cost a drag at 2 Mbit/s 6–7% of its latency. A write that did not
 /// block is no evidence of this: it says nothing of the queue past the
-/// socket, and a walk that is not lag-aware climbs at the pace it did.
+/// socket, and a walk that hears only writes, or is not lag-aware, climbs at
+/// the pace it did.
 const LAG_IDLE: Duration = Duration::from_millis(15);
 /// See [`LAG_IDLE`].
 const CLIMB_SPAN: Duration = Duration::from_millis(500);
@@ -258,8 +259,9 @@ pub struct QualityWalk {
     /// for a frame the link was behind on.
     verdicts: u8,
     /// The clear frames since the link was last behind: when the first came,
-    /// how many, and the most queueing among them.
-    clear: Option<(Instant, u32, Duration)>,
+    /// how many, and the most queueing measured among them, `None` once one
+    /// came with none measured, a write heard without a fence or a lag.
+    clear: Option<(Instant, u32, Option<Duration>)>,
     /// When the dial last moved, for [`ADJUST_COOLDOWN`]. `None` before it
     /// ever has, so the first verdict does not wait out a cooldown that never
     /// ran.
@@ -411,7 +413,7 @@ impl QualityWalk {
         if fenced && self.lag_aware {
             return None;
         }
-        self.observe(blocked, Duration::ZERO, now)
+        self.hear(blocked, None, now)
     }
 
     /// A delta frame's verdict: how long queueing it `blocked`, and how far
@@ -419,7 +421,14 @@ impl QualityWalk {
     /// is not lag-aware reads the first alone. Returns where the walk stands if
     /// the dial moved.
     pub fn observe(&mut self, blocked: Duration, lag: Duration, now: Instant) -> Option<Pace> {
-        let lag = if self.lag_aware { lag } else { Duration::ZERO };
+        self.hear(blocked, Some(lag), now)
+    }
+
+    /// A delta frame's verdict, its `lag` `None` where nothing measured it.
+    fn hear(&mut self, blocked: Duration, lag: Option<Duration>, now: Instant) -> Option<Pace> {
+        let lag = lag.filter(|_| self.lag_aware);
+        let queued = lag.map(|lag| lag.max(blocked));
+        let lag = lag.unwrap_or_default();
         if self.held_until.is_some_and(|until| now < until) {
             return None;
         }
@@ -430,19 +439,18 @@ impl QualityWalk {
         if behind {
             self.clear = None;
         } else if lag <= LAG_CLEAR {
-            self.clear = Some(self.clear.map_or((now, 1, lag), |(since, count, most)| (since, count + 1, most.max(lag))));
+            self.clear = Some(self.clear.map_or((now, 1, queued), |(since, count, most)| (since, count + 1, most.zip(queued).map(|(most, queued)| most.max(queued)))));
         } else if let Some((_, _, most)) = &mut self.clear {
             // Between the two thresholds a frame neither counts nor ends the
             // run: not evidence of room, not evidence against it either. It
             // is queue, though, which the run then shows.
-            *most = lag;
+            *most = most.map(|_| lag);
         }
         // A step up the link took, with nothing queued since, is followed by
         // the next sooner.
-        let climbing = self.lag_aware
-            && self.climbed_at.is_some()
+        let climbing = self.climbed_at.is_some()
             && self.climbed_at == self.changed_at
-            && self.clear.is_some_and(|(.., most)| most <= LAG_IDLE);
+            && self.clear.is_some_and(|(.., most)| most.is_some_and(|most| most <= LAG_IDLE));
         let span = if climbing { CLIMB_SPAN } else { CLEAR_SPAN };
         // Walking back a step up the link refused does not wait out the full
         // cooldown: the refusal is in the next few frames, and every one is queue.
@@ -975,7 +983,7 @@ mod tests {
 
     /// After a step up the link took, the next comes [`CLIMB_SPAN`] on while
     /// nothing is queued, and a [`CLEAR_SPAN`] on while a little is, after a
-    /// settle, or on a walk that is not lag-aware.
+    /// settle, or on a walk that hears only writes.
     #[test]
     fn a_link_with_nothing_queued_is_climbed_sooner() {
         let idle = |walk: &mut QualityWalk, count: u32, mut at: Instant| {
@@ -1019,6 +1027,21 @@ mod tests {
         let (moved, at) = clear_pushes(&mut pressed, CLEAR_RUN, start);
         assert_eq!(moved.map(|pace| pace.quality), Some(83));
         assert_eq!(clear_pushes(&mut pressed, 17, at).0, None, "a walk that is not lag-aware was climbed sooner");
+        // Nor does it on a lag-aware walk whose client answers no fence.
+        let mut unfenced = QualityWalk::new(90, CAPTURE, true);
+        unfenced.written(BEHIND_BLOCK, false, start);
+        unfenced.written(BEHIND_BLOCK, false, start);
+        let mut at = start;
+        let mut moved = None;
+        for _ in 0..CLEAR_RUN {
+            at += 33 * MS;
+            moved = unfenced.written(Duration::ZERO, false, at).or(moved);
+        }
+        assert_eq!(moved.map(|pace| pace.quality), Some(83));
+        for _ in 0..17 {
+            at += 33 * MS;
+            assert_eq!(unfenced.written(Duration::ZERO, false, at), None, "writes without a fence were climbed sooner");
+        }
     }
 
     #[test]

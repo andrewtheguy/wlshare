@@ -215,7 +215,10 @@ fn main() -> Result<(), Error> {
                         }
                         Ok((Duration::from_secs_f64(from), rate * 1e6 / 8.0))
                     })
-                    .collect::<Result<_, Error>>()?
+                    .collect::<Result<_, Error>>()?;
+                if rates.windows(2).any(|pair| pair[1].0 < pair[0].0) {
+                    return Err("--link steps go in order of their times".into());
+                }
             }
             "--rtt" => rtt = millis(&arg, value()?)?,
             "--hop" => hop = millis(&arg, value()?)?,
