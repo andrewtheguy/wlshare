@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! vp9cap info CAPTURE
+//! vp9cap times CAPTURE
 //! vp9cap shape STREAM.ivf
 //! vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
 //! vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest]
@@ -21,6 +22,11 @@
 //! `info` says what a capture holds: for each run of frames at one size, how
 //! many there are, how many were whole pictures, how much of the picture the
 //! rest said changed, and how long the run lasted.
+//!
+//! `times` lists every frame, `frame,ms,width,height,whole,keyframe,changed`:
+//! when the session handed it over, counted from the capture's first, and the
+//! pixels it said changed, so that a part of a scripted session found by its
+//! time can be cut with `trim --from FRAME --frames N`.
 //!
 //! `shape` says what `sample` names a stream for, of any IVF: its size, its
 //! tile columns and whether it is loop filtered, as its first frame has them.
@@ -85,6 +91,7 @@ struct Args {
 }
 
 const USAGE: &str = "usage: vp9cap info CAPTURE
+       vp9cap times CAPTURE
        vp9cap shape STREAM.ivf
        vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
        vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N]
@@ -110,7 +117,7 @@ fn parse_args() -> Result<(String, Args), String> {
         }
     }
     match command.as_str() {
-        "info" | "shape" => {}
+        "info" | "times" | "shape" => {}
         "streams" | "sample" => {
             if parsed.dir.as_os_str().is_empty() || parsed.name.is_empty() {
                 return Err("--dir and --name are needed".into());
@@ -148,6 +155,7 @@ fn main() {
     };
     let done = match command.as_str() {
         "info" => info(&args),
+        "times" => times(&args),
         "shape" => shape(&args),
         "streams" => streams(&args),
         "trim" => trim(&args),
@@ -261,6 +269,17 @@ fn info(args: &Args) -> Result<(), Error> {
             seconds,
             partial.len(),
         );
+    }
+    Ok(())
+}
+
+fn times(args: &Args) -> Result<(), Error> {
+    let seen = scan(&args.capture)?;
+    let start = seen.first().map_or(0, |f| f.micros);
+    println!("frame,ms,width,height,whole,keyframe,changed");
+    for (index, f) in seen.iter().enumerate() {
+        let (width, height) = f.size;
+        println!("{index},{:.1},{width},{height},{},{},{}", (f.micros - start) as f64 / 1e3, u8::from(f.whole), u8::from(f.keyframe), f.changed);
     }
     Ok(())
 }

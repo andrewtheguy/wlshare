@@ -25,9 +25,14 @@
 #          browser   a long page scrolled by wheel and by key
 #          drag      a floating terminal dragged across the desktop
 #          video     a video playing full screen, with a keyframe asked midway
+#          window    the video playing in a window over a page, the rest still,
+#                    with a keyframe asked midway
 #          walk      the video while the client reads late, so the dial walks
 #                    down and back up, then paused, so the desktop settles on
 #                    a frame of it
+#   mixed  mixed     minutes at the desk, quiet and busy in turn, the video
+#                    in a window and full screen among them; not in `all`,
+#                    and its own length, MIXED_LENGTH (300 by default)
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
@@ -51,7 +56,7 @@ RAW="$OUT/raw"
 ADDR=127.0.0.1:5900
 SCENARIOS_DIR=/opt/capture/scenarios
 QUIET="terminal still uncover"
-BUSY="flood browser drag video walk"
+BUSY="flood browser drag video window walk"
 
 export CAPTURE_MATERIAL=/tmp/capture-material
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" "$RAW"
@@ -79,8 +84,8 @@ expand() {
 	echo "$out" | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '
 }
 SCENARIOS=$(expand "$SCENARIOS")
-if [[ " $SCENARIOS " == *" video "* || " $SCENARIOS " == *" walk "* ]] && [[ ! -s "${CAPTURE_VIDEO:-}" ]]; then
-	log "the video and the walk play CAPTURE_VIDEO, and it is '${CAPTURE_VIDEO:-}'"
+if [[ " $SCENARIOS " == *" video "* || " $SCENARIOS " == *" walk "* || " $SCENARIOS " == *" window "* || " $SCENARIOS " == *" mixed "* ]] && [[ ! -s "${CAPTURE_VIDEO:-}" ]]; then
+	log "the video, the window, the walk and the mixed play CAPTURE_VIDEO, and it is '${CAPTURE_VIDEO:-}'"
 	exit 1
 fi
 
@@ -240,6 +245,11 @@ scenario_video() {
 	finish video
 }
 
+scenario_window() {
+	play window --keyframe 10
+	finish window
+}
+
 scenario_walk() {
 	# The sink reads late for six seconds, a step down the dial a second,
 	# then promptly, for the steps back up; the video pauses seven seconds
@@ -249,6 +259,12 @@ scenario_walk() {
 	# ceiling first and there was no settle. Best with LENGTH at 20 or more.
 	PAUSE_BEFORE=7 play video --slow 4:6:200
 	finish walk
+}
+
+scenario_mixed() {
+	# Minutes long, so the session and the script get a length of their own.
+	LENGTH=${MIXED_LENGTH:-300} play mixed
+	finish mixed
 }
 
 # ── The run ──────────────────────────────────────────────────────────────────
@@ -295,6 +311,7 @@ rmdir "$RAW" 2>/dev/null || true
 	echo "- browser: a long page in Chromium scrolled by wheel, by key, and back"
 	echo "- drag: a floating terminal dragged around the desktop"
 	echo "- video: \`$(basename "${CAPTURE_VIDEO:-none}")\` playing full screen from its start, cropped to fill it, with a keyframe asked at 10 s"
+	echo "- window: the video playing in a floating 16:9 window 55% of the desktop's width, centred over the page, from its start, the rest of the desktop still, with a keyframe asked at 10 s"
 	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the dial walks down and back up, then paused 7 s before the end, partway back up, so the desktop settles on a frame of the video"
 	echo
 	echo "$(sway --version), $(wlshare --version)"
