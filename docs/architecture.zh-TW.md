@@ -380,7 +380,7 @@ FLAC 是無損的，而音樂約佔其 1.5 Mbit/s PCM 速率的一半，語音�
 
 2026-09-14 在 PipeWire 1.4.2 的 sway 工作階段上測量：一個用戶端以 15/1 插入 640x480 並傳送 libx264 Constrained Baseline，一個 PipeWire 消費端連結到 `wlshare-camera-1` 並提供 YUY2、I420、NV12 和 BGRx。消費端協商出 15/1 下的 I420 640x480 並進入 *streaming*，wlshare 傳送了開始，消費端取得了完整的畫面——460800 位元組，跨距（stride）640——直到它離開，wlshare 傳送了停止。
 
-應用程式透過 PipeWire 找到該節點，瀏覽器則透過 xdg-desktop-portal 的 Camera 介面找到它，該介面交給瀏覽器一個只顯示角色為 `Camera` 的節點的 PipeWire 遠端（remote）。只有當某個後端實作了 Access（用來詢問使用者）時，portal 才匯出該介面；`xdg-desktop-portal-wlr` 沒有實作，`xdg-desktop-portal-gtk` 實作了。portal 在啟動時尋找它的後端，因此安裝後端之後，必須重新啟動正在執行的 portal。Chrome 也只有在啟用了 `chrome://flags/#enable-webrtc-pipewire-camera` 時才透過 PipeWire 存取攝影機；沒有這個旗標，或者沒有 portal 的 Camera 介面，它就只查看 `/dev/video*`，列不出任何攝影機。2026-09-13 在 xdg-desktop-portal 1.20.3 的 labwc 工作階段上用 Chrome 153 檢查：只安裝了 `xdg-desktop-portal-wlr` 時，portal 沒有匯出 `org.freedesktop.portal.Camera`；加上 `xdg-desktop-portal-gtk` 並重新啟動 portal 後，它匯出了。
+應用程式透過 PipeWire 找到該節點，瀏覽器則透過 xdg-desktop-portal 的 Camera 介面找到它，該介面交給瀏覽器一個只顯示角色為 `Camera` 的節點的 PipeWire 遠端（remote）。只有當某個後端實作了 Access（用來詢問使用者）時，portal 才匯出該介面；`xdg-desktop-portal-wlr` 沒有實作，`xdg-desktop-portal-gtk` 實作了。portal 在啟動時尋找它的後端，因此安裝後端之後，必須重新啟動正在執行的 portal。套件為此建議安裝（Recommends）`xdg-desktop-portal` 和 `xdg-desktop-portal-gtk`，而不是相依於它們：常駐程式兩者都不使用，自行開啟 PipeWire 的應用程式也不需要 portal。Chrome 也只有在啟用了 `chrome://flags/#enable-webrtc-pipewire-camera` 時才透過 PipeWire 存取攝影機；沒有這個旗標，或者沒有 portal 的 Camera 介面，它就只查看 `/dev/video*`，列不出任何攝影機。2026-09-13 在 xdg-desktop-portal 1.20.3 的 labwc 工作階段上用 Chrome 153 檢查：只安裝了 `xdg-desktop-portal-wlr` 時，portal 沒有匯出 `org.freedesktop.portal.Camera`；加上 `xdg-desktop-portal-gtk` 並重新啟動 portal 後，它匯出了。
 
 每個列出該虛擬編碼的用戶端都會收到這項宣告：沒有任何設定能關閉攝影機。
 

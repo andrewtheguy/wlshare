@@ -84,6 +84,9 @@ handshake_timeout_secs = 120
 # becomes a PipeWire video source named "wlshare remote camera" -- one that
 # applications reaching cameras through PipeWire (a browser's camera portal,
 # OBS, GStreamer) can open. It sends frames only while one of them has it open.
+# A browser reaches it through xdg-desktop-portal with xdg-desktop-portal-gtk,
+# which the package recommends; Chrome also needs
+# chrome://flags/#enable-webrtc-pipewire-camera.
 # One that asks for the microphone extension plugs its microphone, which becomes
 # a PipeWire audio source named "wlshare remote microphone" that applications
 # record from like any other. The client sends 16-bit PCM only while one of

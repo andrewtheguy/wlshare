@@ -136,7 +136,12 @@ priority = "optional"
 depends = "$auto, libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
 # The VA-API drivers the hardware H.264 encoder of the tiles' regions reaches the
 # GPU through: Intel's and Mesa's. Without one the regions are libx264's, on the CPU.
-recommends = "va-driver-all"
+# And the portal a browser reaches the client's camera through: xdg-desktop-portal's
+# Camera interface, which it exports only beside a backend that implements Access,
+# xdg-desktop-portal-gtk (xdg-desktop-portal-wlr does not). Recommends rather than
+# Depends: the daemon uses neither, the applications on the desktop do, and an
+# application that opens PipeWire itself needs no portal.
+recommends = "va-driver-all, xdg-desktop-portal, xdg-desktop-portal-gtk"
 # The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
 # edits survive an upgrade.
 conf-files = ["/etc/pam.d/wlshare"]

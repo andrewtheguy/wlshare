@@ -64,11 +64,13 @@ desktop its camera:
 the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
 source, "wlshare remote camera", which applications reaching cameras through
 PipeWire can open, and the client is asked for frames only while one has it open.
-Chrome is one only with `chrome://flags/#enable-webrtc-pipewire-camera` enabled
-and an `xdg-desktop-portal` backend that implements Access, such as
-`xdg-desktop-portal-gtk` — `xdg-desktop-portal-wlr` alone does not, and without
-one the portal offers no Camera interface; otherwise Chrome looks only at
-`/dev/video*` and lists no camera. A
+A browser is one through `xdg-desktop-portal`'s Camera interface, which the
+portal offers only beside a backend that implements Access, such as
+`xdg-desktop-portal-gtk` — `xdg-desktop-portal-wlr` alone does not. The package
+recommends both, so an install that takes its Recommends has the interface.
+Chrome also needs `chrome://flags/#enable-webrtc-pipewire-camera` enabled;
+without the flag or the portal it looks only at `/dev/video*` and lists no
+camera. A
 client that lists the microphone extension can lend the desktop its microphone
 the same way: a PipeWire audio source, "wlshare remote microphone", fed with the
 16-bit PCM the client sends while an application records from it.
