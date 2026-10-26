@@ -49,7 +49,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use wlshare_proto::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START};
+use wlshare_proto::tiles::TileHeader;
 
 use crate::rfb::vp9::Rect;
 
@@ -538,28 +538,32 @@ struct Out<'a> {
 }
 
 impl Out<'_> {
-    fn header(&mut self, area: Area, kind: u8) {
+    /// Begin a rectangle over `area` with `header`, its length yet to be
+    /// filled in, and return where the header is.
+    fn header(&mut self, area: Area, header: TileHeader) -> usize {
         self.out.extend_from_slice(&crate::rfb::msg::rect_header(area.left, area.top, area.w(), area.h(), wlshare_proto::ENCODING_TILES));
-        self.out.push(kind);
+        let at = self.out.len();
+        self.out.extend_from_slice(&header.to_bytes());
         self.count += 1;
+        at
     }
 
-    /// Fill the length word at `at` with what follows it, or take back the
-    /// rectangle begun at `from` if it is past the ceiling.
-    fn length(&mut self, from: usize, at: usize) -> Result<(), TilesError> {
-        let len = self.out.len() - at - 4;
+    /// Fill in the length of `header`, begun at `at`, as what follows it, or
+    /// take back the rectangle begun at `from` if it is past the ceiling.
+    fn length(&mut self, from: usize, at: usize, header: TileHeader) -> Result<(), TilesError> {
+        let bytes = header.to_bytes().len();
+        let len = self.out.len() - at - bytes;
         if len > wlshare_proto::MAX_BODY {
             self.out.truncate(from);
             self.count -= 1;
             return Err(TilesError::TooLong(len));
         }
-        self.out[at..at + 4].copy_from_slice(&(len as u32).to_be_bytes());
+        self.out[at..at + bytes].copy_from_slice(&header.with_len(len).to_bytes());
         Ok(())
     }
 
     fn end(&mut self, id: u8, area: Area) {
-        self.header(area, KIND_END);
-        self.out.push(id);
+        self.header(area, TileHeader::End { stream: id });
     }
 }
 
@@ -791,15 +795,14 @@ impl TilesEncoder {
     fn png(&mut self, area: Area, out: &mut Out) -> Result<(), TilesError> {
         crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let from = out.out.len();
-        out.header(area, KIND_PNG);
-        let at = out.out.len();
-        out.out.extend_from_slice(&[0; 4]);
+        let header = TileHeader::Png { len: 0 };
+        let at = out.header(area, header);
         if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, out.out) {
             out.out.truncate(from);
             out.count -= 1;
             return Err(e.into());
         }
-        out.length(from, at)?;
+        out.length(from, at, header)?;
         for (cell, _) in tiles_of(area) {
             if area.contains(self.cell_area(cell)) {
                 self.debts.remove(&cell);
@@ -823,18 +826,16 @@ impl TilesEncoder {
             let from = out.out.len();
             // Whether the rectangle was begun, which a failed read never does.
             let mut headed = false;
+            let header = if live.started { TileHeader::Frame { stream: live.id, len: 0 } } else { TileHeader::Start { stream: live.id, len: 0 } };
             let coded = live.stream.read_bgrx(&self.mirror[at..], stride, Some(&live.pending)).and_then(|()| {
                 live.pending.clear();
                 headed = true;
-                out.header(live.area, if live.started { KIND_FRAME } else { KIND_START });
-                out.out.push(live.id);
-                let length_at = out.out.len();
-                out.out.extend_from_slice(&[0; 4]);
-                Ok((live.stream.encode(!live.started, out.out)?, length_at))
+                let header_at = out.header(live.area, header);
+                Ok((live.stream.encode(!live.started, out.out)?, header_at))
             });
             match coded {
-                Ok((true, length_at)) => {
-                    out.length(from, length_at)?;
+                Ok((true, header_at)) => {
+                    out.length(from, header_at, header)?;
                     live.dirty = false;
                     live.started = true;
                     live.carried = true;
@@ -1239,14 +1240,15 @@ mod tests {
     }
 
     /// A first picture goes whole as PNG, a band at a time, exact; a palette
-    /// where it has few colours and RGB where it has many, both read back.
+    /// where a band has few colours and RGB where it has many, both read back.
     #[test]
     fn a_first_picture_is_sent_exact_in_bands() {
         let (w, h) = (200u16, 150u16);
         let mut pixels = noise(w, h, 1);
-        // A flat left half, which a palette holds.
-        for row in 0..usize::from(h) {
-            pixels[row * usize::from(w) * 4..][..400].copy_from_slice(&[10, 20, 30, 0].repeat(100));
+        // The last band, rows 128–149, one flat colour, which a palette holds;
+        // the two above it noise, which none does.
+        for row in 128..usize::from(h) {
+            pixels[row * usize::from(w) * 4..][..usize::from(w) * 4].copy_from_slice(&[10, 20, 30, 0].repeat(usize::from(w)));
         }
         let mut encoder = TilesEncoder::new(w, h, 80, Fake::coder()).unwrap();
         let mut page = Page::new(w, h);

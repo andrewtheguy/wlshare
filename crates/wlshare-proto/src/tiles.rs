@@ -117,6 +117,18 @@ impl TileHeader {
         }
     }
 
+    /// The same header naming a body of `len` bytes; an END names none. What
+    /// a server that writes the body before it knows its length fills its
+    /// header in again with, [`Self::to_bytes`] being as long either way.
+    pub fn with_len(self, len: usize) -> Self {
+        match self {
+            Self::Png { .. } => Self::Png { len },
+            Self::Start { stream, .. } => Self::Start { stream, len },
+            Self::Frame { stream, .. } => Self::Frame { stream, len },
+            Self::End { stream } => Self::End { stream },
+        }
+    }
+
     /// The header's bytes. The length of a body is the server's to keep to
     /// [`crate::MAX_BODY`].
     pub fn to_bytes(self) -> Vec<u8> {
@@ -182,6 +194,17 @@ mod tests {
             assert_eq!(TileHeader::parse(&[&bytes[..], &[0xFF]].concat()), Ok(Some((header, bytes.len()))));
             assert_eq!(TileHeader::parse(&bytes[..bytes.len() - 1]), Ok(None), "a partial header asks for more");
         }
+    }
+
+    #[test]
+    fn a_length_filled_in_keeps_the_header_its_size() {
+        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }] {
+            let filled = header.with_len(9);
+            assert_eq!(filled.to_bytes().len(), header.to_bytes().len());
+            assert_eq!(filled.to_bytes()[0], header.to_bytes()[0], "the kind is kept");
+        }
+        assert_eq!(TileHeader::Frame { stream: 2, len: 0 }.with_len(9), TileHeader::Frame { stream: 2, len: 9 });
+        assert_eq!(TileHeader::End { stream: 2 }.with_len(9), TileHeader::End { stream: 2 });
     }
 
     #[test]
