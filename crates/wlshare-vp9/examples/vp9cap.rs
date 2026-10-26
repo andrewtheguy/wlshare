@@ -8,7 +8,7 @@
 //! ```text
 //! vp9cap info CAPTURE
 //! vp9cap times CAPTURE
-//! vp9cap frames CAPTURE [--size WxH] [--fps N]
+//! vp9cap frames CAPTURE [--from FRAME] [--fps N]
 //! vp9cap shape STREAM.ivf
 //! vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
 //! vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest]
@@ -29,10 +29,10 @@
 //! pixels it said changed, so that a part of a scripted session found by its
 //! time can be cut with `trim --from FRAME --frames N`.
 //!
-//! `frames` writes the capture's first run of `--size`, or without it its
-//! longest run of a size (a second pass), to standard output as
+//! `frames` writes the run of a size that starts at frame `--from`, or
+//! without it the capture's longest (a second pass), to standard output as
 //! raw `B, G, R, X` pictures, rows tight, at a constant `--fps` (30 by
-//! default): at each tick the picture as the latest frame at or before it
+//! default, 1000 at most): at each tick the picture as the latest frame at or before it
 //! left it, so the session's own timing survives, pauses and all. Its size,
 //! `WxH`, and the rate go to standard error first, for the encoder it is
 //! piped into: `ffmpeg -f rawvideo -pix_fmt bgr0 -s WxH -r N -i -`. Nothing
@@ -100,12 +100,13 @@ struct Args {
     from: u64,
     out: PathBuf,
     fps: u32,
-    size: Option<(u16, u16)>,
+    /// `--from` was given, 0 among what it may be.
+    from_given: bool,
 }
 
 const USAGE: &str = "usage: vp9cap info CAPTURE
        vp9cap times CAPTURE
-       vp9cap frames CAPTURE [--size WxH] [--fps N]
+       vp9cap frames CAPTURE [--from FRAME] [--fps N]
        vp9cap shape STREAM.ivf
        vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
        vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N]
@@ -115,7 +116,7 @@ fn parse_args() -> Result<(String, Args), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or("a command")?;
     let capture = PathBuf::from(args.next().ok_or("a capture to read")?);
-    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, from: 0, out: PathBuf::new(), fps: 30, size: None };
+    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, from: 0, out: PathBuf::new(), fps: 30, from_given: false };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -125,14 +126,12 @@ fn parse_args() -> Result<(String, Args), String> {
             "--least" => parsed.least = value()?.parse().map_err(|_| "--least takes a count")?,
             "--busiest" => parsed.busiest = true,
             "--threads" => parsed.threads = value()?.parse().map_err(|_| "--threads takes a count")?,
-            "--from" => parsed.from = value()?.parse().map_err(|_| "--from takes a frame")?,
-            "--out" => parsed.out = PathBuf::from(value()?),
-            "--size" => {
-                let v = value()?;
-                let (w, h) = v.split_once('x').ok_or("--size takes WxH")?;
-                parsed.size = Some((w.parse().map_err(|_| "--size takes WxH")?, h.parse().map_err(|_| "--size takes WxH")?));
+            "--from" => {
+                parsed.from = value()?.parse().map_err(|_| "--from takes a frame")?;
+                parsed.from_given = true;
             }
-            "--fps" => parsed.fps = value()?.parse().ok().filter(|&fps| fps > 0).ok_or("--fps takes a rate above 0")?,
+            "--out" => parsed.out = PathBuf::from(value()?),
+            "--fps" => parsed.fps = value()?.parse().ok().filter(|fps| (1..=1000).contains(fps)).ok_or("--fps takes a rate from 1 to 1000")?,
             other => return Err(format!("{other}: not a flag")),
         }
     }
@@ -159,11 +158,14 @@ fn parse_args() -> Result<(String, Args), String> {
         }
         other => return Err(format!("{other}: not a command")),
     }
-    if command != "frames" && (parsed.fps != 30 || parsed.size.is_some()) {
-        return Err("--fps and --size are frames'".into());
+    if command != "frames" && parsed.fps != 30 {
+        return Err("--fps is frames'".into());
     }
-    if command != "trim" && (parsed.from > 0 || !parsed.out.as_os_str().is_empty()) {
-        return Err("--from and --out are trim's".into());
+    if !matches!(command.as_str(), "trim" | "frames") && parsed.from_given {
+        return Err("--from is trim's and frames'".into());
+    }
+    if command != "trim" && !parsed.out.as_os_str().is_empty() {
+        return Err("--out is trim's".into());
     }
     Ok((command, parsed))
 }
@@ -309,33 +311,35 @@ fn times(args: &Args) -> Result<(), Error> {
 }
 
 fn frames(args: &Args) -> Result<(), Error> {
-    let size = match args.size {
-        Some(size) => size,
-        None => {
+    // The run's first frame: `--from`, or the longest run's (a pass of its own).
+    let first = match args.from_given {
+        true => args.from,
+        false => {
             let seen = scan(&args.capture)?;
-            let run = runs(&seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?;
-            seen[run.start].size
+            runs(&seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?.start as u64
         }
     };
-    eprintln!("{}x{} {} fps", size.0, size.1, args.fps);
     let tick = Duration::from_secs(1) / args.fps;
     let mut out = BufWriter::with_capacity(1 << 22, std::io::stdout().lock());
     let mut source = Source::open(&args.capture)?;
     // The frame waiting for the next to say when it ends, and the tick due.
     let mut held: Option<(Duration, Vec<u8>)> = None;
     let mut next: Option<Duration> = None;
-    let mut run_seen = false;
+    let mut size = None;
     while let Some(frame) = source.reader.next()? {
-        if frame.size != size {
-            // The first run of the size, and no other.
-            if run_seen {
-                break;
-            }
+        if frame.index < first {
             continue;
         }
-        run_seen = true;
-        if let Some((_, pixels)) = &held {
-            let due = next.get_or_insert(held.as_ref().map_or(frame.at, |(at, _)| *at));
+        // The run is the frames from the first at its size, until another.
+        if *size.get_or_insert_with(|| {
+            eprintln!("{}x{} {} fps", frame.size.0, frame.size.1, args.fps);
+            frame.size
+        }) != frame.size
+        {
+            break;
+        }
+        if let Some((at, pixels)) = &held {
+            let due = next.get_or_insert(*at);
             while *due < frame.at {
                 out.write_all(pixels)?;
                 *due += tick;
@@ -350,7 +354,7 @@ fn frames(args: &Args) -> Result<(), Error> {
             None => held = Some((frame.at, frame.pixels.to_vec())),
         }
     }
-    let (_, pixels) = held.ok_or_else(|| format!("the capture holds no frame of {}x{}", size.0, size.1))?;
+    let (_, pixels) = held.ok_or_else(|| format!("the capture has no frame {first}"))?;
     // The last frame lasts a tick.
     out.write_all(&pixels)?;
     out.flush()?;

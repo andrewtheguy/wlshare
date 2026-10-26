@@ -32,11 +32,14 @@ for capture in "${captures[@]}"; do
 	name=$(basename "$capture"); name=${name%.zst}; name=${name%.wlcap}
 	dir=${out:-$(dirname "$capture")}
 	mkdir -p "$dir"
-	# The size of its longest run, as `vp9cap info` lists the runs.
-	size=$("$vp9cap" info "$capture" | sed -nE 's/^([0-9]+x[0-9]+): frames ([0-9]+)\.\.([0-9]+),.*/\3 \2 \1/p' | awk '{ print $1 - $2, $3 }' | sort -n | tail -n 1 | cut -d' ' -f2)
-	[[ "$size" =~ ^[0-9]+x[0-9]+$ ]] || { echo "$0: $capture: no size from vp9cap info ($size)" >&2; exit 1; }
-	"$vp9cap" frames "$capture" --size "$size" --fps "$fps" 2>/dev/null |
+	# Its longest run, the earliest of the longest, as `vp9cap info` lists
+	# the runs: its first frame and its size.
+	read -r from size < <("$vp9cap" info "$capture" | sed -nE 's/^([0-9]+x[0-9]+): frames ([0-9]+)\.\.([0-9]+),.*/\2 \3 \1/p' | awk '{ print $2 - $1, $1, $3 }' | sort -k1,1nr -k2,2n | head -n 1 | cut -d' ' -f2-)
+	[[ "$from" =~ ^[0-9]+$ && "$size" =~ ^[0-9]+x[0-9]+$ ]] || { echo "$0: $capture: no run from vp9cap info" >&2; exit 1; }
+	# libx264's 4:2:0 takes even sides: an odd one is padded by a pixel.
+	"$vp9cap" frames "$capture" --from "$from" --fps "$fps" 2>/dev/null |
 		ffmpeg -nostdin -loglevel error -y -f rawvideo -pix_fmt bgr0 -s "$size" -r "$fps" -i - \
+			-vf 'pad=ceil(iw/2)*2:ceil(ih/2)*2' \
 			-c:v libx264 -preset medium -crf "$crf" -pix_fmt yuv420p -movflags +faststart "$dir/$name.mp4"
 	echo "$dir/$name.mp4 $size $(du -h "$dir/$name.mp4" | cut -f1)"
 done
