@@ -56,7 +56,7 @@ await_title() {
 	return 1
 }
 
-TW=1000 TH=640
+TW=$((W < 1000 ? W : 1000)) TH=$((H < 640 ? H : 640))
 TX=$(((W - TW) / 2)) TY=$(((H - TH) / 2))
 terminal() {
 	foot --app-id="$1" >/dev/null 2>&1 &
@@ -156,7 +156,7 @@ sleep 1.5
 part "the video in a window"
 mpv --vo=wlshm --hwdec=no --no-audio --loop=inf --no-osc --osd-level=0 --pause --input-ipc-server="$MATERIAL/mpv.sock" "$CAPTURE_VIDEO" >/dev/null 2>&1 &
 await_window mpv
-VW=1040 VH=660
+VW=$((W < 1040 ? W : 1040)) VH=$((H < 660 ? H : 660))
 swaymsg -q "[app_id=\"mpv\"] floating enable, resize set $VW $VH, move position $(((W - VW) / 2)) $(((H - VH) / 2))"
 sleep 1
 unpause

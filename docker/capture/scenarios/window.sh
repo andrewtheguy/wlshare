@@ -13,7 +13,10 @@ swaymsg -q '[app_id="chromium"] fullscreen disable'
 mkdir -p "$MATERIAL"
 mpv --vo=wlshm --hwdec=no --no-audio --loop=inf --no-border --no-osc --osd-level=0 --pause --input-ipc-server="$MATERIAL/mpv.sock" "$CAPTURE_VIDEO" >/dev/null 2>&1 &
 await_window mpv
-VW=$((W * 55 / 100)) VH=$((W * 55 / 100 * 9 / 16))
+# 55% of the width, or less where the desktop is too short for it at 16:9.
+VW=$((W * 55 / 100))
+((VW * 9 / 16 <= H)) || VW=$((H * 16 / 9))
+VH=$((VW * 9 / 16))
 swaymsg -q "[app_id=\"mpv\"] floating enable, resize set $VW $VH, move position $(((W - VW) / 2)) $(((H - VH) / 2))"
 ready
 unpause
