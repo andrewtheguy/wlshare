@@ -47,6 +47,10 @@ pub enum HandshakeError {
     Failed(String),
     #[error("the server sent {0} bytes of text where a sentence was expected")]
     TextTooLong(usize),
+    #[error(transparent)]
+    NotVersioned(#[from] wlshare_proto::version::VersionAnswerError),
+    #[error("the server speaks wlshare protocol {0}, and this client {PROTOCOL_VERSION}", PROTOCOL_VERSION = wlshare_proto::PROTOCOL_VERSION)]
+    ProtocolVersion(u8),
 }
 
 /// Read the server's version banner, which must be the one the daemon speaks.
@@ -95,6 +99,22 @@ pub async fn read_server_init<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Se
     reader.read_exact(&mut format).await?;
     let name = read_text(reader).await?;
     Ok(ServerInit { width, height, format: PixelFormat::parse(&format), name })
+}
+
+/// Read the server's answer to the protocol version the client's first list
+/// of private encodings carried ([`wlshare_proto::version`]): the first
+/// message after it, which must name this build's version. Anything else
+/// first is no answer, and is not waited out to the answer's length.
+pub async fn read_protocol_version<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), HandshakeError> {
+    let mut answer = [0u8; wlshare_proto::version::ANSWER_LEN];
+    reader.read_exact(&mut answer[..1]).await?;
+    if answer[0] == 0 {
+        reader.read_exact(&mut answer[1..]).await?;
+    }
+    match wlshare_proto::version::parse_answer(&answer)? {
+        version if version == wlshare_proto::PROTOCOL_VERSION => Ok(()),
+        version => Err(HandshakeError::ProtocolVersion(version)),
+    }
 }
 
 async fn read_text<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String, HandshakeError> {
@@ -673,5 +693,18 @@ mod tests {
         assert!(matches!(&err, HandshakeError::Failed(r) if r == "authentication failed"), "{err}");
         let err = read_version(&mut b"RFB 003.003\n".as_slice()).await.unwrap_err();
         assert!(matches!(&err, HandshakeError::Version(v) if v == "RFB 003.003"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_protocol_version_is_read_as_the_server_answers_it() {
+        use wlshare_proto::{PROTOCOL_VERSION, version};
+        read_protocol_version(&mut version::answer(PROTOCOL_VERSION).as_slice()).await.unwrap();
+        let other = version::answer(PROTOCOL_VERSION + 1);
+        let err = read_protocol_version(&mut other.as_slice()).await.unwrap_err();
+        assert!(matches!(err, HandshakeError::ProtocolVersion(v) if v == PROTOCOL_VERSION + 1), "{err}");
+        // A daemon from before the versions answered the density request first.
+        let density = wlshare_proto::density::output_scale(1024, 768, 1.0);
+        let err = read_protocol_version(&mut density.as_slice()).await.unwrap_err();
+        assert!(matches!(err, HandshakeError::NotVersioned(_)), "{err}");
     }
 }
