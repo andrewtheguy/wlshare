@@ -185,6 +185,15 @@ fn pct(v: &[f64], p: f64) -> f64 {
     v[((v.len() - 1) as f64 * p).round() as usize]
 }
 
+/// A flag's time in milliseconds, which is zero or more.
+fn millis(flag: &str, value: String) -> Result<f64, Error> {
+    let ms: f64 = value.parse()?;
+    if !(ms.is_finite() && ms >= 0.0) {
+        return Err(format!("{flag} {value}: a time of zero or more").into());
+    }
+    Ok(ms)
+}
+
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
@@ -208,18 +217,21 @@ fn main() -> Result<(), Error> {
                     })
                     .collect::<Result<_, Error>>()?
             }
-            "--rtt" => rtt = value()?.parse()?,
-            "--hop" => hop = value()?.parse()?,
+            "--rtt" => rtt = millis(&arg, value()?)?,
+            "--hop" => hop = millis(&arg, value()?)?,
             "--held" => held = true,
-            "--encode" => encode_ms = Some(value()?.parse()?),
-            "--paint" => paint = value()?.parse()?,
-            "--jitter" => jitter = value()?.parse()?,
+            "--encode" => encode_ms = Some(millis(&arg, value()?)?),
+            "--paint" => paint = millis(&arg, value()?)?,
+            "--jitter" => jitter = millis(&arg, value()?)?,
             "--ceiling" => ceiling = value()?.parse()?,
             "--threads" => threads = value()?.parse()?,
             "--timeline" => timeline = Some(std::io::BufWriter::new(File::create(value()?)?)),
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}").into()),
             _ => paths.push(arg),
         }
+    }
+    if paths.is_empty() {
+        return Err("walk-sim takes a capture to play".into());
     }
     let name = paths.iter().map(|p| p.rsplit('/').next().unwrap().trim_end_matches(".wlcap.zst").to_string()).collect::<Vec<_>>().join("+");
     let link_name = rates.iter().map(|(from, rate)| format!("{}@{}", rate * 8.0 / 1e6, from.as_secs_f64())).collect::<Vec<_>>().join(",");
