@@ -617,6 +617,11 @@ this: its Mac in Standard mode and its Windows over RDP hand it exact pixels
 of the same kind of desktop, so a wlshare capture at their sizes stands for
 them.
 
+To watch one, `scripts/capture-mp4.sh` makes an MP4 of it: `vp9cap frames`
+writes the capture's pictures at a constant rate, its own timing kept, into
+ffmpeg's libx264, so nothing passes through the VP9 encoder, and it runs
+wherever `vp9cap` builds, not only beside the daemon.
+
 The captures are the source, and the streams a decoder is tested and timed
 on are made of them: `vp9cap` (`crates/wlshare-vp9/examples/`) plays a
 capture into the encoder again, each frame with its rectangles, at the dial
