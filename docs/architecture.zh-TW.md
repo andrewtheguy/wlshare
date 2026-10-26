@@ -13,7 +13,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
                      data-control
 ```
 
-- `crates/wlshare-proto` 是 wlshare 私有擴充的位元組，兩個方向都在其中：VP9 和圖塊編碼的訊框封裝（framing）以及用戶端為它們列出的內容，密度、輸出、音訊、攝影機和麥克風擴充，捲動訊息，以及要求「旁邊的另一個顯示器」的 ClientInit 位元組。它是 zDesk 閘道所相依的唯一一個 crate，閘道在其 `wlshare` 功能（feature）之後依本儲存庫的發行標籤固定其版本，因此常駐程式和閘道用同一份程式碼建構和剖析每一個私有位元組。它只相依於 `thiserror`，不使用任何作業系統 API，每個建構函式都針對一個依據文件中的配置撰寫的解碼器進行測試，並由它的剖析器讀回。
+- `crates/wlshare-proto` 是 wlshare 私有擴充的位元組，兩個方向都在其中：VP9 和圖塊編碼的訊框封裝（framing）以及用戶端為它們列出的內容，密度、輸出、音訊、攝影機和麥克風擴充，捲動訊息，要求「旁邊的另一個顯示器」的 ClientInit 位元組，以及為它們全體命名的協定版本。它是 zDesk 閘道所相依的唯一一個 crate，閘道在其 `wlshare` 功能（feature）之後依它的 `proto-v<N>` 標籤固定其版本，因此常駐程式和閘道用同一份程式碼建構和剖析每一個私有位元組（[協定版本](#協定版本)）。它只相依於 `thiserror`，不使用任何作業系統 API，每個建構函式都針對一個依據文件中的配置撰寫的解碼器進行測試，並由它的剖析器讀回。
 - `crates/wlshare-vp9` 是 VP9 編碼器：固定由一個品質刻度（quality dial）控制的 libvpx，8 位元 4:4:4 或 4:2:0，連同位於它前面的各個平面、它的解碼器、品質遊走（quality walk），以及工作階段交給它的內容的擷取檔。它不決定任何關於傳輸的事情，也不使用任何作業系統 API。它目前的預先建置封存檔涵蓋 macOS arm64、Linux x86_64 和 aarch64，以及 Windows x86_64 MSVC。請參閱[VP9 編碼](#vp9-編碼)。
 - `crates/wlshare` 是常駐程式。`rfb/` 決定傳輸中不屬於私有擴充的每一個位元組：交握、訊息的剖析與建構、RSA-AES 及其訊框、ZRLE 編碼器、建立在 `wlshare-vp9` 之上的 VP9 編碼器、圖塊編碼器、音訊擴充的編碼器，以及游標和剪貼簿編碼。音訊擴充的 FLAC 編碼器是 `sound-flac` 自己的，以純 Rust 撰寫；它的 Opus 編碼器則是 `sound-opus` 之下的 libopus，一個預先建置的靜態封存檔。它的測試用一個獨立的解碼器解碼每個編碼器的輸出，用用戶端的剖析器（`rfb/client.rs`）讀回每則伺服器訊息，並針對一個依據規格撰寫的用戶端執行 RSA-AES 交換。`compositor.rs` 是 Wayland 執行緒及其指令處理器；`capture.rs`、`cursor.rs`、`outputs.rs`、`input.rs` 和 `clipboard.rs` 是它所使用的各個協定，`sway.rs` 是 sway 的 IPC，用來為用戶端的虛擬顯示器建立和拔除無頭輸出；`audio.rs`、`camera.rs` 和 `microphone.rs` 是 PipeWire 這一側，`decode.rs` 是攝影機的 libavcodec 解碼器，`h264.rs` 是透過同一個 libavcodec 的 H.264 編碼器（使用主機的硬體或 libx264），用於圖塊畫面中的移動區域；`framebuffer.rs` 是共用的像素和變更區域（damage）；`session.rs` 是一個用戶端；`auth.rs` 檢查 RSA-AES 登入，`pam.rs` 是該檢查的系統那一半；`state.rs` 告訴連線到狀態通訊端的任何一方桌面是否被佔用，`watch.rs` 是 `wlshare watch`，也就是追隨該通訊端並為每種狀態執行一道指令的處理程序；`shared.rs` 是在合成器執行緒和各工作階段之間傳遞的內容。它的配置器是 jemalloc，以靜態方式連結為 `malloc` 本身，因此它所連結的 C 函式庫也透過它配置記憶體：glibc 的每執行緒 arena 會保留每個執行緒釋放的記憶體，而 zDesk 閘道在它們之上的記憶體用量隨每個工作階段增長。arm64 建置把 jemalloc 的頁面大小設為 64K，這樣可以在 arm64 開發板所搭載的 4K、16K 和 64K 核心上執行。
 
@@ -101,6 +101,26 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 
 尺寸變更會先送出，作為單獨的一次更新——一個 ExtendedDesktopSize 矩形，其原因說明是誰要求的（伺服器、該用戶端、另一個用戶端），或者對於沒有該擴充的用戶端是一個 DesktopSize 矩形——整個影格緩衝區在下一次更新中跟上。兩者都沒有協商的用戶端無法得到通知，會在其下一次更新時被中斷連線，而不是被傳送它不知道尺寸的像素。回應該虛擬編碼的 ExtendedDesktopSize 宣告也是一次更新，並像其他更新一樣等待要求。
 
+## 協定版本
+
+下文的各個私有擴充共用一個版本，兩端所使用的必須完全相同：沒有任何擴充在新配置旁保留舊配置，因此版本不同的閘道和常駐程式不會少讀一些位元組，而是會把對方的位元組讀錯。它是 `wlshare-proto` 中的 `PROTOCOL_VERSION`，也就是該 crate 的主版本號，crate 的版本為 `<N>.0.0`。對這個 crate 的任何變更都是一個新版本。帶來新版本的那次發行會把它的提交加上 `proto-v<N>` 標籤，zDesk 閘道固定的就是這個標籤，因此不變更這個 crate 的發行對閘道沒有任何要求；如果某次發行的 crate 與其版本既有標籤中的內容不同，發行工作流程會拒絕它。`wlshare --version` 會列出這個版本，常駐程式開始監聽時也會在記錄中寫出它。
+
+- **版本**，用戶端 → 伺服器：虛擬編碼 `0x574c5600`（`WLV` 加一個零位元組）加上版本號，在每個列出了任何私有編碼的 `SetEncodings` 中都要列出——私有編碼即最高兩個位元組為 `WL` 的任何編碼。列出了其中任何一個卻沒有版本，或者列出了兩個版本的清單，都是致命錯誤。
+- **回應**，伺服器 → 用戶端：第一個帶有版本的清單會得到回應，回應先於常駐程式傳送的任何其他內容，也不等待要求，是一個只含一個空矩形的更新，矩形的編碼列出常駐程式自己的版本。如果用戶端的版本與之不同，常駐程式在送出回應後關閉連線，而用戶端已從回應中得知常駐程式的版本，會把兩者都指明。之後的清單帶有同一個版本，不會再次得到回應。
+
+| 位移 | 型別 | 欄位 |
+|---|---|---|
+| 0 | U8 | `0`，FramebufferUpdate |
+| 1 | U8 | 填補 |
+| 2 | U16 | 矩形數，`1` |
+| 4 | U16 | x，0 |
+| 6 | U16 | y，0 |
+| 8 | U16 | 寬度，0 |
+| 10 | U16 | 高度，0 |
+| 12 | S32 | 編碼，`0x574c5600` + 版本 |
+
+zDesk 把回應當作它的清單之後的第一則訊息來讀取；如果某個 `wlshare` 目標的伺服器先傳送了別的內容，zDesk 就拒絕它：不為擴充標示版本的伺服器，不是它能對其使用這些擴充的伺服器。
+
 ## VP9 編碼
 
 一種私有編碼 `WLSV`（`0x574c5356`），為 zDesk 閘道而設：把整個桌面作為一路 VP9 串流，供寧願要會動的畫面、也不要精確畫面的用戶端使用。在影格緩衝區不超過其視訊上限時，zDesk 會為設定了 `subtype = "wlshare"` 的目標上的每個瀏覽器列出它，並把每個影格原樣傳給瀏覽器，因為這正是 zDesk 否則要從 ZRLE 的像素編碼出來的串流——採用目標自己的刻度（dial）和瀏覽器的色度，兩者由它在該編碼旁邊指明，請見下文。不列出它的用戶端不受影響。
@@ -184,7 +204,7 @@ PNG 就是桌面在該處的精確像素，8 位元 RGB 或其調色盤形式，
 | 6 | U32 | 縮放，16.16 定點 |
 
 - **OutputScale**，伺服器 → 用戶端，十個位元組：類型、填補、以像素計的寬度和高度、縮放。作為對*每一個*列出該虛擬編碼的 `SetEncodings` 的回應傳送——這是宣告支援的唯一方式——並且每當共用輸出的尺寸或縮放改變時（包括另一個輸出成為共用輸出）也會傳送，且在以新尺寸擷取影格之前傳送，因此這份報告會先於調整尺寸的矩形到達。
-- **ClientDensity**，用戶端 → 伺服器，十個位元組，採用 OutputScale 的配置：類型、填補、以像素計的寬度和高度、縮放。用戶端每次都同時說明它希望輸出以什麼縮放繪製，*以及*它希望在該縮放下的尺寸，因此一次密度變更就是一次輸出設定：只給出縮放會改變邏輯尺寸，直到隨後再調整一次尺寸，而每個應用程式都會重繪兩次。密度不變時的調整尺寸用 `SetDesktopSize`。只接受列出了該虛擬編碼和 ExtendedDesktopSize 的用戶端發出的宣告，縮放只接受 0.5–8 範圍內的值，尺寸不能為空。伺服器透過 wlr-output-management 在一次設定中設定輸出的模式和縮放，只要求有差異的部分，規則與調整尺寸相同——無頭輸出且 `resize = true`——並且**對每一個宣告都以一則 OutputScale 回應**：在合成器的 head 縮放改變之後回應，或者在宣告與目前一致、遭到拒絕或無法套用時，立即以輸出的目前狀態回應。合成器接受但沒有改變縮放的設定也會得到回應：`succeeded` 之後接著一次 `wl_display.sync` 往返，若在此之後沒有收到縮放變更，就回報輸出的目前狀態。同一時間只有一個宣告的設定在進行中，它的事件與其他宣告的事件區分開來，因此每個宣告只回應一次：期間到達的宣告會等它塵埃落定，而較新的宣告會取代它，被取代的那個以輸出的目前狀態回應。合成器因為配置在其底下改變而*取消*的設定——新增或移除了一個輸出，用戶端的虛擬顯示器就會這樣——會針對新配置再做一次，僅此一次；第二次取消即視為拒絕。新尺寸以一個 ExtendedDesktopSize 矩形到達用戶端，其原因（reason）是該用戶端，與 SetDesktopSize 的情況一樣。
+- **ClientDensity**，用戶端 → 伺服器，十個位元組，採用 OutputScale 的配置：類型、填補、以像素計的寬度和高度、縮放。用戶端每次都同時說明它希望輸出以什麼縮放繪製，*以及*它希望在該縮放下的尺寸，因此一次密度變更就是一次輸出設定：只給出縮放會改變邏輯尺寸，直到隨後再調整一次尺寸，而每個應用程式都會重繪兩次。密度不變時的調整尺寸用 `SetDesktopSize`。只接受列出了該虛擬編碼和 ExtendedDesktopSize 的用戶端發出的宣告，縮放只接受 0.5–8 範圍內的值，尺寸不能為空。伺服器透過 wlr-output-management 在一次設定中設定輸出的模式和縮放，只要求有差異的部分，規則與調整尺寸相同——無頭輸出——並且**對每一個宣告都以一則 OutputScale 回應**：在合成器的 head 縮放改變之後回應，或者在宣告與目前一致、遭到拒絕或無法套用時，立即以輸出的目前狀態回應。合成器接受但沒有改變縮放的設定也會得到回應：`succeeded` 之後接著一次 `wl_display.sync` 往返，若在此之後沒有收到縮放變更，就回報輸出的目前狀態。同一時間只有一個宣告的設定在進行中，它的事件與其他宣告的事件區分開來，因此每個宣告只回應一次：期間到達的宣告會等它塵埃落定，而較新的宣告會取代它，被取代的那個以輸出的目前狀態回應。合成器因為配置在其底下改變而*取消*的設定——新增或移除了一個輸出，用戶端的虛擬顯示器就會這樣——會針對新配置再做一次，僅此一次；第二次取消即視為拒絕。新尺寸以一個 ExtendedDesktopSize 矩形到達用戶端，其原因（reason）是該用戶端，與 SetDesktopSize 的情況一樣。
 
 精確的縮放來自 wlr-output-management 的 head，包括小數縮放；當該協定不存在時，退而使用 `wl_output.scale`，而 wlroots 會將它無條件進位。
 
@@ -334,7 +354,7 @@ FLAC 是無損的，而音樂約佔其 1.5 Mbit/s PCM 速率的一半，語音�
 
 工作階段在每次影格緩衝區更新之前清空該佇列，因此聲音絕不會被擋在一個比它更晚就緒的像素更新之後。無頭工作階段不需要自己的輸出裝置：喇叭就是一個。
 
-除非設定中指定 `audio = true`，否則宣告是關閉的；關閉期間，列出該虛擬編碼的用戶端不會得到任何宣告。
+每個列出該虛擬編碼的用戶端都會收到宣告：沒有任何設定能關閉聲音，套件相依於它所經由播放的 PipeWire、WirePlumber 和 pipewire-pulse。
 
 ## 攝影機擴充
 
@@ -363,9 +383,9 @@ FLAC 是無損的，而音樂約佔其 1.5 Mbit/s PCM 速率的一半，語音�
 
 2026-09-14 在 PipeWire 1.4.2 的 sway 工作階段上測量：一個用戶端以 15/1 插入 640x480 並傳送 libx264 Constrained Baseline，一個 PipeWire 消費端連結到 `wlshare-camera-1` 並提供 YUY2、I420、NV12 和 BGRx。消費端協商出 15/1 下的 I420 640x480 並進入 *streaming*，wlshare 傳送了開始，消費端取得了完整的畫面——460800 位元組，跨距（stride）640——直到它離開，wlshare 傳送了停止。
 
-應用程式透過 PipeWire 找到該節點，瀏覽器則透過 xdg-desktop-portal 的 Camera 介面找到它，該介面交給瀏覽器一個只顯示角色為 `Camera` 的節點的 PipeWire 遠端（remote）。只有當某個後端實作了 Access（用來詢問使用者）時，portal 才匯出該介面；`xdg-desktop-portal-wlr` 沒有實作，`xdg-desktop-portal-gtk` 實作了。portal 在啟動時尋找它的後端，因此安裝後端之後，必須重新啟動正在執行的 portal。Chrome 也只有在啟用了 `chrome://flags/#enable-webrtc-pipewire-camera` 時才透過 PipeWire 存取攝影機；沒有這個旗標，或者沒有 portal 的 Camera 介面，它就只查看 `/dev/video*`，列不出任何攝影機。2026-09-13 在 xdg-desktop-portal 1.20.3 的 labwc 工作階段上用 Chrome 153 檢查：只安裝了 `xdg-desktop-portal-wlr` 時，portal 沒有匯出 `org.freedesktop.portal.Camera`；加上 `xdg-desktop-portal-gtk` 並重新啟動 portal 後，它匯出了。
+應用程式透過 PipeWire 找到該節點，瀏覽器則透過 xdg-desktop-portal 的 Camera 介面找到它，該介面交給瀏覽器一個只顯示角色為 `Camera` 的節點的 PipeWire 遠端（remote）。只有當某個後端實作了 Access（用來詢問使用者）時，portal 才匯出該介面；`xdg-desktop-portal-wlr` 沒有實作，`xdg-desktop-portal-gtk` 實作了。portal 在啟動時尋找它的後端，因此安裝後端之後，必須重新啟動正在執行的 portal。套件為此建議安裝（Recommends）`xdg-desktop-portal` 和 `xdg-desktop-portal-gtk`，而不是相依於它們：常駐程式兩者都不使用，自行開啟 PipeWire 的應用程式也不需要 portal。Chrome 也只有在啟用了 `chrome://flags/#enable-webrtc-pipewire-camera` 時才透過 PipeWire 存取攝影機；沒有這個旗標，或者沒有 portal 的 Camera 介面，它就只查看 `/dev/video*`，列不出任何攝影機。2026-09-13 在 xdg-desktop-portal 1.20.3 的 labwc 工作階段上用 Chrome 153 檢查：只安裝了 `xdg-desktop-portal-wlr` 時，portal 沒有匯出 `org.freedesktop.portal.Camera`；加上 `xdg-desktop-portal-gtk` 並重新啟動 portal 後，它匯出了。
 
-除非設定中設有 `camera = true`，否則這項宣告處於關閉狀態；關閉期間，列出該虛擬編碼的用戶端不會收到任何訊息。
+每個列出該虛擬編碼的用戶端都會收到這項宣告：沒有任何設定能關閉攝影機。
 
 ## 麥克風擴充
 
@@ -390,11 +410,11 @@ FLAC 是無損的，而音樂約佔其 1.5 Mbit/s PCM 速率的一半，語音�
 
 2026-09-14 在 PipeWire 1.4.2 的 labwc 工作階段上測量：一個用戶端插入麥克風，並在收到開始後每次傳送 20 ms 的 440 Hz 音調；`pw-record --target wlshare-microphone-1` 以 48 kHz 單聲道錄音三秒，然後再錄兩秒。每次錄音在連結時傳送了開始，在離開時傳送了停止；在最初的半秒之後，兩段錄音都保持著 440 Hz 的音調，沒有任何靜音的 10 ms 區塊，並且拔除之後該節點從圖中消失。
 
-除非設定中設有 `microphone = true`，否則這項宣告處於關閉狀態；關閉期間，列出該虛擬編碼的用戶端不會收到任何訊息。
+每個列出該虛擬編碼的用戶端都會收到這項宣告：沒有任何設定能關閉麥克風。
 
 ## 調整尺寸
 
-`SetDesktopSize` 在共用的輸出上設定一個自訂模式，規則相同。來自未列出 ExtendedDesktopSize 的用戶端的要求完全不予回應。在 `resize = false` 時到達的要求回應 *prohibited*（禁止）；指定的螢幕不是恰好一個、或沒有像素的要求，回應 *invalid layout*（無效配置）。要求目前尺寸的會立即回應 OK；針對無法重新設定的輸出的要求——只有無頭輸出，即名為 `HEADLESS-*` 的輸出，才能重新設定，而且只能透過 wlr-output-management——回應 *prohibited*；合成器拒絕的尺寸回應 *invalid layout*；合成器因配置在其執行期間發生變化而取消的尺寸，會針對新配置再執行一次，與宣告的做法相同；合成器接受的要求，在該尺寸的影格到達時回應，並附帶一個指明本用戶端為原因的 ExtendedDesktopSize 矩形。
+`SetDesktopSize` 在共用的輸出上設定一個自訂模式，規則相同。來自未列出 ExtendedDesktopSize 的用戶端的要求完全不予回應。指定的螢幕不是恰好一個、或沒有像素的要求，回應 *invalid layout*（無效配置）。要求目前尺寸的會立即回應 OK；針對無法重新設定的輸出的要求——只有無頭輸出，即名為 `HEADLESS-*` 的輸出，才能重新設定，而且只能透過 wlr-output-management——回應 *prohibited*；合成器拒絕的尺寸回應 *invalid layout*；合成器因配置在其執行期間發生變化而取消的尺寸，會針對新配置再執行一次，與宣告的做法相同；合成器接受的要求，在該尺寸的影格到達時回應，並附帶一個指明本用戶端為原因的 ExtendedDesktopSize 矩形。
 
 ## 輸入和剪貼簿
 

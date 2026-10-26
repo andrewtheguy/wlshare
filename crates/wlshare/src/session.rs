@@ -166,7 +166,7 @@ use wlshare_proto::density::{from_fixed, output_scale};
 use wlshare_proto::microphone::{microphone_available, microphone_start, microphone_stop};
 use wlshare_proto::outputs::output_list;
 use wlshare_proto::vp9::{Chroma, Vp9Stream};
-use wlshare_proto::{ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS, ENCODING_VP9};
+use wlshare_proto::{ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS, ENCODING_VP9, PROTOCOL_VERSION, version};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -230,16 +230,9 @@ const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_proto::QUALITY_MAX, ada
 pub struct SessionConfig {
     pub security: Security,
     pub name: String,
-    pub resize: bool,
     /// The interval the capture is paced to, one over `max_fps`: what a
     /// slowed link's frames are spaced from ([`QualityWalk::interval`]).
     pub capture: Duration,
-    /// Whether the audio extension is announced and served.
-    pub audio: bool,
-    /// Whether the camera extension is announced and served.
-    pub camera: bool,
-    /// Whether the microphone extension is announced and served.
-    pub microphone: bool,
     /// How long a connection has to finish the handshake before it is dropped.
     pub handshake_timeout: Duration,
     /// The output the configuration names, and how long a client taking the
@@ -381,6 +374,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         fence_supported: false,
         eds_supported: false,
         desktop_size_supported: false,
+        version_answered: false,
         cursor_supported: false,
         alpha_cursor: false,
         announce_cursor: false,
@@ -602,6 +596,9 @@ struct Session {
     fence_supported: bool,
     eds_supported: bool,
     desktop_size_supported: bool,
+    /// The protocol version has been answered: once, to the first list that
+    /// carried one ([`version`]).
+    version_answered: bool,
     /// The client listed the required standard Cursor pseudo-encoding.
     cursor_supported: bool,
     /// The client listed Cursor With Alpha, which the cursor goes out as instead.
@@ -844,6 +841,23 @@ impl Session {
                 self.format = format;
             }
             ClientMsg::SetEncodings(encodings) => {
+                // Ahead of everything: the private encodings below are this
+                // version's, and a client of another reads none of them alike.
+                // Its first answer goes before anything else is sent, so that
+                // the client reads it first, and a client of another version
+                // is told this one's before the connection closes.
+                let listed = version::listed(&encodings).context("reading the protocol version the client lists")?;
+                if let Some(listed) = listed {
+                    if !self.version_answered {
+                        self.version_answered = true;
+                        writer.send(&version::answer(PROTOCOL_VERSION)).await?;
+                    }
+                    anyhow::ensure!(
+                        listed == PROTOCOL_VERSION,
+                        "client {} speaks wlshare protocol {listed}, and this daemon {PROTOCOL_VERSION}",
+                        self.id.0
+                    );
+                }
                 let has = |e: i32| encodings.contains(&e);
                 anyhow::ensure!(
                     has(ENCODING_CURSOR),
@@ -973,10 +987,6 @@ impl Session {
                 }
                 self.outputs = outputs;
                 let audio = has(ENCODING_AUDIO);
-                if audio && !self.config.audio && !self.audio_supported {
-                    info!("client {}: asked for audio, which the configuration turns off", self.id.0);
-                }
-                let audio = audio && self.config.audio;
                 if audio && !self.audio_supported {
                     info!("client {}: asked for audio", self.id.0);
                     self.announce_audio = true;
@@ -1000,19 +1010,11 @@ impl Session {
                     self.restart_audio(writer).await?;
                 }
                 let camera = has(ENCODING_CAMERA);
-                if camera && !self.config.camera && !self.camera_supported {
-                    info!("client {}: offers a camera, which the configuration turns off", self.id.0);
-                }
-                let camera = camera && self.config.camera;
                 if camera && !self.camera_supported {
                     info!("client {}: offers a camera", self.id.0);
                 }
                 self.camera_supported = camera;
                 let microphone = has(ENCODING_MICROPHONE);
-                if microphone && !self.config.microphone && !self.microphone_supported {
-                    info!("client {}: offers a microphone, which the configuration turns off", self.id.0);
-                }
-                let microphone = microphone && self.config.microphone;
                 if microphone && !self.microphone_supported {
                     info!("client {}: offers a microphone", self.id.0);
                 }
@@ -1122,9 +1124,6 @@ impl Session {
                     let fb = self.shared.desks[self.desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                if !self.config.resize {
-                    return self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_PROHIBITED, current).await;
-                }
                 if screens.len() != 1 || width == 0 || height == 0 {
                     return self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_INVALID_LAYOUT, current).await;
                 }

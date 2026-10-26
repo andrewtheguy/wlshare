@@ -79,7 +79,6 @@ pub struct Compositor {
     input: Option<Input>,
     pub clipboard: Clipboard,
     pub max_fps: u32,
-    resize_allowed: bool,
     xkb: Xkb,
     /// The connection and queue, held between `connect` and `discover`.
     pending_queue: Option<(Connection, wayland_client::EventQueue<Compositor>)>,
@@ -108,11 +107,11 @@ pub fn start(config: &Config) -> anyhow::Result<(Handle, Arc<Shared>)> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<anyhow::Result<Arc<Shared>>>();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
     let output = config.output.clone();
-    let (max_fps, resize, xkb) = (config.max_fps, config.resize, config.xkb.clone());
+    let (max_fps, xkb) = (config.max_fps, config.xkb.clone());
     std::thread::Builder::new()
         .name("compositor".into())
         .spawn(move || {
-            let result = run(output.as_deref(), max_fps, resize, xkb, ready_tx);
+            let result = run(output.as_deref(), max_fps, xkb, ready_tx);
             let _ = done_tx.send(result);
         })
         .context("spawning the compositor thread")?;
@@ -123,13 +122,12 @@ pub fn start(config: &Config) -> anyhow::Result<(Handle, Arc<Shared>)> {
 fn run(
     output: Option<&str>,
     max_fps: u32,
-    resize: bool,
     xkb: Xkb,
     ready: std::sync::mpsc::Sender<anyhow::Result<Arc<Shared>>>,
 ) -> anyhow::Result<()> {
     let mut event_loop: EventLoop<'static, Compositor> = EventLoop::try_new().context("creating the event loop")?;
     let (commands_tx, commands_rx) = channel::channel::<Command>();
-    let mut compositor = match connect(event_loop.handle(), max_fps, resize, xkb) {
+    let mut compositor = match connect(event_loop.handle(), max_fps, xkb) {
         Ok(c) => c,
         Err(e) => {
             let _ = ready.send(Err(e));
@@ -170,7 +168,7 @@ fn run(
 
 /// Connect and bind the globals. The queue is returned separately because the
 /// registry roundtrip needs `&mut Compositor` beside it.
-fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, xkb: Xkb) -> anyhow::Result<Compositor> {
+fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> anyhow::Result<Compositor> {
     let conn = Connection::connect_to_env().context("connecting to the Wayland compositor (is WAYLAND_DISPLAY set?)")?;
     let (globals, queue) = registry_queue_init::<Compositor>(&conn).context("reading the registry")?;
     let qh = queue.handle();
@@ -222,7 +220,6 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, resize: bool, 
         input: None,
         clipboard: Clipboard::default(),
         max_fps,
-        resize_allowed: resize,
         xkb,
         pending_queue: None,
         exit: None,
@@ -565,10 +562,6 @@ impl Compositor {
     /// ([`ConfigKind`]).
     pub fn resize(&mut self, desk: usize, client: ClientId, width: u16, height: u16, retry: bool) {
         let refuse = |this: &Self, status: u16| this.shared().emit(Event::ResizeRefused { client, status });
-        if !self.resize_allowed {
-            info!("client {} asked for {width}x{height}: resizing is disabled", client.0);
-            return refuse(self, crate::rfb::msg::EDS_STATUS_PROHIBITED);
-        }
         if width == 0 || height == 0 {
             return refuse(self, crate::rfb::msg::EDS_STATUS_INVALID_LAYOUT);
         }
@@ -725,10 +718,6 @@ impl Compositor {
         let new_scale = ((current - scale).abs() >= 0.005).then_some(scale);
         let new_size = ((width, height) != current_size).then_some((width, height));
         if new_scale.is_none() && new_size.is_none() {
-            return self.answer_geometry(desk, Some(client));
-        }
-        if !self.resize_allowed {
-            info!("not following client {}'s density {scale:.2} at {width}x{height}: resizing is disabled", client.0);
             return self.answer_geometry(desk, Some(client));
         }
         info!(

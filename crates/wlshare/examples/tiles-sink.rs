@@ -13,8 +13,9 @@
 //! libx264, the daemon's choice; `hardware_h264 = false` skips the hardware
 //! probe and uses libx264 — and Fence and
 //! ContinuousUpdates so updates flow, ExtendedDesktopSize so
-//! `--size` can be sent as a SetDesktopSize before the first picture, and
-//! Cursor because the daemon requires it. Every rectangle is parsed by the
+//! `--size` can be sent as a SetDesktopSize before the first picture,
+//! Cursor because the daemon requires it, and the protocol version, whose
+//! answer is read before anything else and must be this build's. Every rectangle is parsed by the
 //! client's parser; a PNG and a region's START are counted, and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
@@ -134,7 +135,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut encodings = wlshare_proto::tiles::TilesPicture { quality: args.quality, adaptive: !args.held }.encodings();
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
+    encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
     out.write_all(&client::set_encodings(&encodings)).await?;
+    // The daemon answers the version first, before anything is asked of it.
+    client::read_protocol_version(&mut reader).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {
         out.write_all(&client::set_desktop_size(args.size.0, args.size.1)).await?;

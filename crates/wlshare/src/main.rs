@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use clap::Parser;
+use clap::{CommandFactory as _, FromArgMatches as _, Parser};
 use log::{error, info};
 use crate::rfb::rsa_aes::ServerKey;
 
@@ -94,7 +94,10 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let args = Args::parse();
+    // The release and the protocol version of the private extensions it speaks,
+    // which is what a gateway must match ([`wlshare_proto::version`]).
+    let version = format!("{} (wlshare protocol {})", env!("CARGO_PKG_VERSION"), wlshare_proto::PROTOCOL_VERSION);
+    let args = Args::from_arg_matches(&Args::command().version(&*version.leak()).get_matches()).unwrap_or_else(|e| e.exit());
     let path = args.config.unwrap_or_else(config::default_path);
     let watch = match args.command {
         Some(Command::HashPassword) => return hash_password(),
@@ -315,7 +318,7 @@ async fn serve(
     mut compositor: compositor::Handle,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen).await.with_context(|| format!("listening on {}", config.listen))?;
-    info!("listening on {}", config.listen);
+    info!("listening on {}, wlshare protocol {}", config.listen, wlshare_proto::PROTOCOL_VERSION);
     // Removed with the daemon, when the daemon gets to: a follower reads the
     // closed socket and not the file.
     let _state = match &config.state_socket {
@@ -334,11 +337,7 @@ async fn serve(
     let session_config = Arc::new(session::SessionConfig {
         security,
         name: config.name.clone(),
-        resize: config.resize,
         capture: std::time::Duration::from_secs_f64(1.0 / f64::from(config.max_fps)),
-        audio: config.audio,
-        camera: config.camera,
-        microphone: config.microphone,
         handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
         output: config.output.clone(),
         output_wait: std::time::Duration::from_secs(config.output_wait_secs),

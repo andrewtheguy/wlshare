@@ -4,6 +4,11 @@ name: Release wlshare
 # scripts/build-debs.sh runs locally, and publishes them as the GitHub release
 # v<version>, where the version is the workspace's in Cargo.toml. Run it by hand;
 # bump the version first.
+#
+# It also tags the release proto-v<N>, N being wlshare-proto's major version, the
+# protocol version, when that tag does not yet exist: the tag is what the zDesk
+# gateway pins. A tag that exists must hold this commit's wlshare-proto exactly,
+# so a change to the crate without a new version stops the release here.
 on:
   workflow_dispatch:
 
@@ -16,6 +21,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      proto_tag: ${{ steps.proto.outputs.tag }}
+      proto_new: ${{ steps.proto.outputs.new }}
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +53,36 @@ jobs:
           if git ls-remote --tags origin "refs/tags/${{ steps.version.outputs.tag }}" | grep -q .; then
             echo "::error::Tag ${{ steps.version.outputs.tag }} already exists on remote. Bump the version in Cargo.toml first."
             exit 1
+          fi
+
+      - name: Check the protocol version
+        id: proto
+        run: |
+          set -euo pipefail
+          # The protocol version is wlshare-proto's own version's major, and the
+          # crate's version is that and `.0.0`: its tests hold the two together.
+          PROTO=$(python3 -c '
+          import re, sys, tomllib
+          with open("crates/wlshare-proto/Cargo.toml", "rb") as f:
+              version = tomllib.load(f)["package"]["version"]
+          m = re.fullmatch(r"([1-9][0-9]*)\.0\.0", version)
+          if not m:
+              sys.exit(f"wlshare-proto version {version!r} is not <protocol>.0.0")
+          print(m.group(1))
+          ')
+          TAG="proto-v${PROTO}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+            git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
+            if [ "$(git rev-parse "${TAG}^{commit}:crates/wlshare-proto")" != "$(git rev-parse HEAD:crates/wlshare-proto)" ]; then
+              echo "::error::crates/wlshare-proto differs from ${TAG}. Bump PROTOCOL_VERSION and the crate's version to the next protocol version."
+              exit 1
+            fi
+            echo "Protocol version ${PROTO} unchanged since ${TAG}"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Protocol version ${PROTO} is new: this release tags ${TAG}"
+            echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create draft release
@@ -108,5 +145,22 @@ jobs:
           done
           cat release/SHA256SUMS
           gh release upload "${{ needs.prepare.outputs.tag }}" release/*
+      # Before the release is published, so a tag that cannot be made leaves the
+      # release a draft rather than published without it. A re-run finds the tag
+      # an earlier attempt made: on this commit it is done, on another it fails.
+      - name: Tag the protocol version
+        if: needs.prepare.outputs.proto_new == 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.proto_tag }}"
+          if EXISTING=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null); then
+            if [ "${EXISTING}" != "${{ github.sha }}" ]; then
+              echo "::error::${TAG} already exists at ${EXISTING}, not at this commit ${{ github.sha }}."
+              exit 1
+            fi
+            echo "${TAG} already tags this commit"
+          else
+            gh api "repos/${GH_REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${{ github.sha }}"
+          fi
       - name: Publish release (removes the draft, creates the tag)
         run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false

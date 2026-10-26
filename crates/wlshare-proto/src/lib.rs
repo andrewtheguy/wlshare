@@ -26,6 +26,8 @@
 //!   ([`scroll`]).
 //! - **The beside ClientInit byte** ([`CLIENT_INIT_BESIDE`]), a second
 //!   connection shown another output.
+//! - **The protocol version** ([`PROTOCOL_VERSION`]), which revision of all of
+//!   these both ends speak, exactly ([`version`]).
 //!
 //! Each builder here has a parser beside it, and each is tested against a
 //! decoder written from the documented layout rather than from the other.
@@ -40,7 +42,10 @@ pub mod microphone;
 pub mod outputs;
 pub mod scroll;
 pub mod tiles;
+pub mod version;
 pub mod vp9;
+
+pub use version::PROTOCOL_VERSION;
 
 /// The VP9 encoding, the ASCII bytes `WLSV`: a client that lists it, with a
 /// quality beside it ([`vp9::Vp9Stream`]), is sent every picture as one
@@ -69,6 +74,13 @@ pub const ENCODING_AUDIO: i32 = 0x574c_5346;
 /// Listed beside [`ENCODING_AUDIO`], asks for the sound as Opus in place of
 /// FLAC: the ASCII bytes `WLOP` ([`audio::Codec`]).
 pub const ENCODING_AUDIO_OPUS: i32 = 0x574c_4f50;
+
+/// Whether `encoding` is one of wlshare's own: every private encoding and
+/// pseudo-encoding is `WL` and two bytes more, and a list that names one names
+/// the protocol version beside it ([`version::listed`]).
+pub const fn private(encoding: i32) -> bool {
+    encoding >> 16 == 0x574c
+}
 
 /// The lowest quality on the 1–100 dial a VP9 stream and a region's stream are
 /// coded at.
@@ -136,6 +148,32 @@ mod tests {
         assert_eq!(ENCODING_MICROPHONE, i32::from_be_bytes(*b"WLSM"));
         assert_eq!(ENCODING_AUDIO, i32::from_be_bytes(*b"WLSF"));
         assert_eq!(ENCODING_AUDIO_OPUS, i32::from_be_bytes(*b"WLOP"));
+    }
+
+    #[test]
+    fn every_encoding_here_is_private() {
+        let quality = vp9::ENCODING_VP9_QUALITY_BASE;
+        for e in [
+            ENCODING_VP9,
+            ENCODING_TILES,
+            ENCODING_DENSITY,
+            ENCODING_OUTPUTS,
+            ENCODING_CAMERA,
+            ENCODING_MICROPHONE,
+            ENCODING_AUDIO,
+            ENCODING_AUDIO_OPUS,
+            vp9::ENCODING_VP9_HELD,
+            vp9::ENCODING_VP9_SUBSAMPLED,
+            quality + 1,
+            quality + 100,
+            version::encoding(1),
+        ] {
+            assert!(private(e), "{e:#x}");
+        }
+        // RFB's own: ZRLE, Cursor, and the QEMU Audio pseudo-encoding.
+        for e in [16, -239, -259] {
+            assert!(!private(e), "{e}");
+        }
     }
 
     #[test]
