@@ -121,6 +121,22 @@ const ADJUST_COOLDOWN: Duration = Duration::from_secs(1);
 /// second behind before it was walked back.
 const REFUSAL_COOLDOWN: Duration = Duration::from_millis(300);
 
+/// The least time between two steps down while the link is [`LAG_HEAVY`]
+/// behind or more. Half of [`ADJUST_COOLDOWN`]: every frame coded at a dial
+/// that far over the link adds a fifth of a second or more to the queue, and
+/// a walk that looked once a second took three seconds from the ceiling to a
+/// dial a 2 Mbit/s link bears, the picture half a second behind for them.
+/// Measured on the kept captures through a model of zDesk's held fence
+/// (`walk-sim`), it took a 1080p video on 2 Mbit/s to its dial in a second
+/// and a half, with what changed shown 25% sooner on average and its p95 22%
+/// sooner, for a dial up to 20 points lower on the slowest links, and moved
+/// nothing on a link with room. A step down this soon after the last
+/// move gives quality up and leaves the frames where they are: the lag it is
+/// taken on is still partly the queue the last step left, and halving the
+/// frames on it as well took a 1080p video from 20 Mbit/s cut to 3 down to a
+/// quarter of its frames.
+const HEAVY_COOLDOWN: Duration = Duration::from_millis(500);
+
 /// How much the lag must have fallen since the last step down for the queue to
 /// count as draining, as a fraction of what it was: a fifth. A step down that
 /// put the stream under the link leaves the queue it built to drain, and the
@@ -396,12 +412,18 @@ impl QualityWalk {
         // cooldown: the refusal is in the next few frames, and every one is queue.
         // Only while that step is the last move, though: a settle after it is a
         // move too, and the frames behind its picture are owed the full cooldown.
+        // A link far behind is looked at again sooner after a step down, every
+        // frame coded over it being that much more queue; not after a settle,
+        // whose frames carry the lag of its one large picture.
         let cooldown = if behind && self.reclaimed.is_some_and(|(_, at)| self.changed_at == Some(at)) {
             REFUSAL_COOLDOWN
+        } else if behind && lag >= LAG_HEAVY && self.stepped_on.is_some() {
+            HEAVY_COOLDOWN
         } else {
             ADJUST_COOLDOWN
         };
-        if self.changed_at.is_some_and(|at| now.saturating_duration_since(at) < cooldown) {
+        let since = self.changed_at.map(|at| now.saturating_duration_since(at));
+        if since.is_some_and(|since| since < cooldown) {
             return None;
         }
         let moved = if behind && self.verdicts.count_ones() >= BEHIND_FRAMES {
@@ -413,7 +435,7 @@ impl QualityWalk {
                 self.changed_at = Some(now);
                 return None;
             }
-            self.give_up(lag, now)
+            self.give_up(lag, now, since.is_some_and(|since| since < ADJUST_COOLDOWN))
         } else if self.clear.is_some_and(|(since, count)| count >= CLEAR_FRAMES && now.saturating_duration_since(since) >= CLEAR_SPAN) {
             self.take_back(now)
         } else {
@@ -459,8 +481,10 @@ impl QualityWalk {
     }
 
     /// Give quality up, and give frames up too once there is no quality left or
-    /// the lag is severe. `false` when there is nothing left of either.
-    fn give_up(&mut self, lag: Duration, now: Instant) -> bool {
+    /// the lag is severe — on a step `soon` after the last move, only once there
+    /// is no quality left ([`HEAVY_COOLDOWN`]). `false` when there is nothing
+    /// left of either.
+    fn give_up(&mut self, lag: Duration, now: Instant, soon: bool) -> bool {
         let steps = if lag >= LAG_SEVERE {
             3
         } else if lag >= LAG_HEAVY {
@@ -484,7 +508,7 @@ impl QualityWalk {
             self.quality = self.quality.saturating_sub(STEP_DOWN * steps).max(QUALITY_FLOOR);
             moved = true;
         }
-        if (on_floor || steps == 3) && self.slow < SLOW_MAX {
+        if (on_floor || (steps == 3 && !soon)) && self.slow < SLOW_MAX {
             self.slow += 1;
             moved = true;
         }
@@ -694,6 +718,30 @@ mod tests {
         let mut blocked = QualityWalk::new(90, CAPTURE, false);
         blocked.observe(LAG_SEVERE, Duration::ZERO, start);
         assert_eq!(blocked.observe(LAG_SEVERE, Duration::ZERO, start), Some(Pace { quality: 60, interval: CAPTURE * 2 }));
+    }
+
+    /// A link heavily behind is looked at again after [`HEAVY_COOLDOWN`] rather
+    /// than [`ADJUST_COOLDOWN`], and a step that soon gives quality up and
+    /// leaves the frames; one a little behind waits out the whole cooldown.
+    #[test]
+    fn a_link_far_behind_is_looked_at_again_sooner() {
+        let start = Instant::now();
+        let mut heavy = walk(90, start);
+        heavy.fenced(40 * MS + LAG_HEAVY, true, start);
+        assert_eq!(heavy.fenced(40 * MS + LAG_HEAVY, true, start).map(|pace| pace.quality), Some(70));
+        let soon = start + HEAVY_COOLDOWN;
+        assert_eq!(heavy.fenced(40 * MS + LAG_SEVERE, true, soon - MS), None, "a look inside the cooldown");
+        assert_eq!(heavy.fenced(40 * MS + LAG_SEVERE, true, soon), Some(Pace { quality: 40, interval: CAPTURE }));
+        // A full cooldown on, severe lag halves the frames as well.
+        let later = soon + ADJUST_COOLDOWN;
+        heavy.fenced(40 * MS + LAG_SEVERE, true, later);
+        assert_eq!(heavy.fenced(40 * MS + LAG_SEVERE, true, later), Some(Pace { quality: QUALITY_FLOOR, interval: CAPTURE * 2 }));
+
+        let mut behind = walk(90, start);
+        behind.fenced(40 * MS + LAG_BEHIND, true, start);
+        assert_eq!(behind.fenced(40 * MS + LAG_BEHIND, true, start).map(|pace| pace.quality), Some(80));
+        assert_eq!(behind.fenced(40 * MS + LAG_BEHIND, true, start + HEAVY_COOLDOWN), None);
+        assert_eq!(behind.fenced(40 * MS + LAG_BEHIND, true, start + ADJUST_COOLDOWN).map(|pace| pace.quality), Some(70));
     }
 
     #[test]
@@ -933,6 +981,13 @@ mod tests {
         assert_eq!(walk.fenced(140 * MS, true, start + 1300 * MS), None, "the settle was a move");
         // Counted all the same: the cooldown over, the verdict is already in.
         assert_eq!(walk.fenced(140 * MS, true, start + 2300 * MS).map(|pace| pace.quality), Some(40));
+        // However far behind the frames after it are, a settle is owed the
+        // full cooldown, not the one after a step down.
+        let at = start + 4000 * MS;
+        walk.settle(at);
+        walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN);
+        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN), None, "the settle's frames were stepped on");
+        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at + ADJUST_COOLDOWN).map(|pace| pace.quality), Some(QUALITY_FLOOR));
     }
 
     /// A settle is owed [`SETTLE_IDLE`] after a frame left any of the picture

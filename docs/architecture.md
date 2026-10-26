@@ -392,7 +392,7 @@ What a frame holds is fixed:
   default `max_fps`, and at 400 ms both go at once. The interval is read when
   the next frame is due, so a step the last frame's fence brings paces that
   frame. The cursor, the audio announcement and a desktop that changed size
-  never wait for a slowed frame's turn. A step is taken at most once a second, and while the lag
+  never wait for a slowed frame's turn. A step is taken at most once a second — half a second after a step down while the lag is 150 ms or more, such a step giving quality up and leaving the frames — and while the lag
   is still falling a fifth per second from the step before — the queue it
   left draining — no further step is taken, since the step was enough; after
   a keyframe the verdicts wait two seconds, since the frames behind it queue
@@ -592,6 +592,19 @@ under its own name with `vp9cap trim --frames`, chosen as the samples are,
 a quiet scenario's first and a busy one's busiest, the cut's first frame
 the picture as it stood, whole, with a keyframe asked; `walk` it copies
 whole, since its dial walks down, back up and settles over all of it.
+
+The walk is measured on the captures the same way, without a link being
+shaped: `walk-sim` (`crates/wlshare-rfb/examples/`) plays one or several of
+them through the encoder and `QualityWalk` as a session does, one frame in
+flight, to a model of zDesk passing the stream to a browser — the frame
+handed to the browser's link as it arrives, its fence echoed at once while
+nothing handed before it is unpainted and otherwise once the oldest such has
+been owed past the link's ping round trip, 500 ms at most — over a link of a
+given rate, changing at given times, and round trip. It says how long each
+change of the desktop took to be painted, the frames a second, the dial the
+motion was coded at and the link it used, and with `--timeline` every frame.
+The time is the model's, so a run takes seconds; `--encode` fixes what an
+encode takes, so that two walks are compared on the same frames.
 
 ### The client's paint
 
