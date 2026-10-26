@@ -398,7 +398,9 @@ What a frame holds is fixed:
   a keyframe the verdicts wait two seconds, since the frames behind it queue
   behind its crossing. A second of clear frames (30 ms or less), four at the
   least, takes frames back first, then quality in steps that double from
-  three to twenty-four while the link keeps taking them; a step the link
+  three to twenty-four while the link keeps taking them, and after a step
+  up the link took, half a second of them is enough while none has more
+  than 15 ms queued; a step the link
   refuses within four seconds is walked back after 300 ms to the quality it
   came from, and for fifteen seconds the walk climbs no further than halfway
   back towards the one refused. The dial

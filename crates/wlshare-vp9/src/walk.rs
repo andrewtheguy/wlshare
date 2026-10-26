@@ -19,7 +19,8 @@
 //! keeping up, and a finer picture than the operator asked for was never the
 //! goal. Quick to give quality up — by more the further behind the link is —
 //! and slow to take it back, in steps that double while the link keeps taking
-//! them and stop short of a quality it refused, so a link that is
+//! them, come sooner while it shows no queue at all, and stop short of a
+//! quality it refused, so a link that is
 //! intermittently bad settles at a quality it can hold rather than oscillating
 //! around one it cannot. Ordinarily quality goes down to the floor before the
 //! frame interval is doubled up to `SLOW_MAX` times; severe queueing moves both
@@ -100,6 +101,26 @@ const VERDICT_WINDOW: u32 = 4;
 const CLEAR_SPAN: Duration = Duration::from_secs(1);
 /// See [`CLEAR_SPAN`].
 const CLEAR_FRAMES: u32 = 4;
+
+/// Queueing at or below which a clear frame shows no queue at all: half of
+/// [`LAG_CLEAR`]. A step up the link took, every clear frame since this
+/// clear, is followed by the next after [`CLIMB_SPAN`] rather than
+/// [`CLEAR_SPAN`]: a link that has recovered shows nothing queued, where one
+/// that is only keeping up shows a little on most frames and climbs at the
+/// pace it did. A second a step took a 1080p video five and a half seconds
+/// from the floor to 89 on a link back from 3 Mbit/s to 20; this took it
+/// under three. Measured on the kept captures through a model of zDesk's
+/// held fence (`walk-sim`), it left every link at its limit as it was or
+/// better, from 2 Mbit/s to a 4K video at 10, and over all of them raised
+/// the dial 2% with what changed shown as soon. Its one cost was a step up
+/// a 3 Mbit/s link refused half a second before it recovered, where a
+/// second's wait had put the step after. A third of a second, or 20 ms of
+/// queue, cost a drag at 2 Mbit/s 6–7% of its latency. A write that did not
+/// block is no evidence of this: it says nothing of the queue past the
+/// socket, and a walk that is not lag-aware climbs at the pace it did.
+const LAG_IDLE: Duration = Duration::from_millis(15);
+/// See [`LAG_IDLE`].
+const CLIMB_SPAN: Duration = Duration::from_millis(500);
 
 /// How long after a keyframe the verdicts wait. A keyframe is the whole
 /// picture and no verdict itself, but the frames behind it queue behind its
@@ -237,8 +258,8 @@ pub struct QualityWalk {
     /// for a frame the link was behind on.
     verdicts: u8,
     /// The clear frames since the link was last behind: when the first came,
-    /// and how many.
-    clear: Option<(Instant, u32)>,
+    /// how many, and the most queueing among them.
+    clear: Option<(Instant, u32, Duration)>,
     /// When the dial last moved, for [`ADJUST_COOLDOWN`]. `None` before it
     /// ever has, so the first verdict does not wait out a cooldown that never
     /// ran.
@@ -263,6 +284,10 @@ pub struct QualityWalk {
     /// followed: what the next step down waits to see stop falling
     /// ([`DRAIN_FRACTION`]).
     stepped_on: Option<Duration>,
+    /// When the last step up was taken, of frames or quality, while it is the
+    /// last move made: the next may come sooner ([`LAG_IDLE`]). A settle and a
+    /// step down put it back.
+    climbed_at: Option<Instant>,
 }
 
 impl QualityWalk {
@@ -293,6 +318,7 @@ impl QualityWalk {
             reclaimed: None,
             refused: None,
             stepped_on: None,
+            climbed_at: None,
         }
     }
 
@@ -400,14 +426,24 @@ impl QualityWalk {
         self.held_until = None;
         let behind = blocked >= BEHIND_BLOCK || lag >= LAG_BEHIND;
         self.verdicts = ((self.verdicts << 1) | u8::from(behind)) & ((1 << VERDICT_WINDOW) - 1);
+        let lag = lag.max(blocked);
         if behind {
             self.clear = None;
         } else if lag <= LAG_CLEAR {
+            self.clear = Some(self.clear.map_or((now, 1, lag), |(since, count, most)| (since, count + 1, most.max(lag))));
+        } else if let Some((_, _, most)) = &mut self.clear {
             // Between the two thresholds a frame neither counts nor ends the
-            // run: not evidence of room, not evidence against it either.
-            self.clear = Some(self.clear.map_or((now, 1), |(since, count)| (since, count + 1)));
+            // run: not evidence of room, not evidence against it either. It
+            // is queue, though, which the run then shows.
+            *most = lag;
         }
-        let lag = lag.max(blocked);
+        // A step up the link took, with nothing queued since, is followed by
+        // the next sooner.
+        let climbing = self.lag_aware
+            && self.climbed_at.is_some()
+            && self.climbed_at == self.changed_at
+            && self.clear.is_some_and(|(.., most)| most <= LAG_IDLE);
+        let span = if climbing { CLIMB_SPAN } else { CLEAR_SPAN };
         // Walking back a step up the link refused does not wait out the full
         // cooldown: the refusal is in the next few frames, and every one is queue.
         // Only while that step is the last move, though: a settle after it is a
@@ -419,6 +455,8 @@ impl QualityWalk {
             REFUSAL_COOLDOWN
         } else if behind && lag >= LAG_HEAVY && self.stepped_on.is_some() {
             HEAVY_COOLDOWN
+        } else if climbing {
+            CLIMB_SPAN
         } else {
             ADJUST_COOLDOWN
         };
@@ -436,7 +474,7 @@ impl QualityWalk {
                 return None;
             }
             self.give_up(lag, now, since.is_some_and(|since| since < ADJUST_COOLDOWN))
-        } else if self.clear.is_some_and(|(since, count)| count >= CLEAR_FRAMES && now.saturating_duration_since(since) >= CLEAR_SPAN) {
+        } else if self.clear.is_some_and(|(since, count, _)| count >= CLEAR_FRAMES && now.saturating_duration_since(since) >= span) {
             self.take_back(now)
         } else {
             return None;
@@ -458,8 +496,8 @@ impl QualityWalk {
     /// clear run starts over too: the quiet is no evidence of room, and a run
     /// that spanned it would take quality back on the first frame of every
     /// burst. And a step up before the settle is no longer the last move: lag
-    /// behind the settle's frame is that frame's, not a refusal of the step.
-    /// No settle is owed from here: the frame says what it left
+    /// behind the settle's frame is that frame's, not a refusal of the step,
+    /// and nothing queued behind it no reason to climb sooner. No settle is owed from here: the frame says what it left
     /// ([`Self::sent`]), and one that never goes out is asked for by the next
     /// frame that does.
     pub fn settle(&mut self, now: Instant) {
@@ -469,6 +507,7 @@ impl QualityWalk {
         self.changed_at = Some(now);
         self.stepped_on = None;
         self.reclaimed = None;
+        self.climbed_at = None;
     }
 
     /// A keyframe went out: the verdicts wait `KEYFRAME_HOLD` for it to
@@ -514,6 +553,7 @@ impl QualityWalk {
         }
         self.reclaim = STEP_UP;
         self.reclaimed = None;
+        self.climbed_at = None;
         self.stepped_on = Some(lag);
         moved
     }
@@ -525,6 +565,7 @@ impl QualityWalk {
         if self.slow > 0 {
             self.slow -= 1;
             self.stepped_on = None;
+            self.climbed_at = Some(now);
             return true;
         }
         if self.refused.is_some_and(|(_, at)| now.saturating_duration_since(at) >= REFUSAL_HOLD) {
@@ -541,6 +582,7 @@ impl QualityWalk {
         self.reclaimed = Some((self.quality, now));
         self.quality = wanted;
         self.stepped_on = None;
+        self.climbed_at = Some(now);
         true
     }
 }
@@ -563,13 +605,13 @@ mod tests {
         walk
     }
 
-    /// `count` clear deliveries 33 ms apart from `at`: the last move, and when
-    /// they ended.
+    /// `count` clear deliveries 33 ms apart from `at`, with a little queued
+    /// ([`LAG_IDLE`]): the last move, and when they ended.
     fn clear(walk: &mut QualityWalk, count: u32, mut at: Instant) -> (Option<Pace>, Instant) {
         let mut moved = None;
         for _ in 0..count {
             at += 33 * MS;
-            if let Some(pace) = walk.fenced(40 * MS, true, at) {
+            if let Some(pace) = walk.fenced(40 * MS + LAG_CLEAR, true, at) {
                 moved = Some(pace);
             }
         }
@@ -931,6 +973,54 @@ mod tests {
         }
     }
 
+    /// After a step up the link took, the next comes [`CLIMB_SPAN`] on while
+    /// nothing is queued, and a [`CLEAR_SPAN`] on while a little is, after a
+    /// settle, or on a walk that is not lag-aware.
+    #[test]
+    fn a_link_with_nothing_queued_is_climbed_sooner() {
+        let idle = |walk: &mut QualityWalk, count: u32, mut at: Instant| {
+            let mut moved = None;
+            for _ in 0..count {
+                at += 33 * MS;
+                moved = walk.fenced(40 * MS, true, at).or(moved);
+            }
+            (moved.map(|pace| pace.quality), at)
+        };
+        let start = Instant::now();
+        let mut walk = walk(90, start);
+        walk.fenced(140 * MS, true, start);
+        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(80));
+        // The first step up waits a second, whatever the link shows.
+        let (moved, at) = idle(&mut walk, CLEAR_RUN, start);
+        assert_eq!(moved, Some(83));
+        // Sixteen frames are a first and the half second after it, less a frame.
+        let (moved, at) = idle(&mut walk, 16, at);
+        assert_eq!(moved, None, "a step inside the half second");
+        let (moved, at) = idle(&mut walk, 1, at);
+        assert_eq!(moved, Some(89));
+        // A little queued, and the next waits a second.
+        let (moved, at) = clear(&mut walk, 17, at);
+        assert_eq!(moved, None, "a link with something queued was climbed sooner");
+        let (moved, _) = clear(&mut walk, CLEAR_RUN - 17, at);
+        assert_eq!(moved.map(|pace| pace.quality), Some(90));
+
+        // A settle is a move that is no step up.
+        let mut settled = self::walk(90, start);
+        settled.fenced(140 * MS, true, start);
+        settled.fenced(140 * MS, true, start);
+        let (_, at) = idle(&mut settled, CLEAR_RUN, start);
+        settled.settle(at);
+        assert_eq!(idle(&mut settled, 17, at), (None, at + 17 * 33 * MS), "the settle's frames were climbed sooner");
+
+        // A push that did not block says nothing of the queue past the socket.
+        let mut pressed = QualityWalk::new(90, CAPTURE, false);
+        pressed.observe(BEHIND_BLOCK, Duration::ZERO, start);
+        pressed.observe(BEHIND_BLOCK, Duration::ZERO, start);
+        let (moved, at) = clear_pushes(&mut pressed, CLEAR_RUN, start);
+        assert_eq!(moved.map(|pace| pace.quality), Some(83));
+        assert_eq!(clear_pushes(&mut pressed, 17, at).0, None, "a walk that is not lag-aware was climbed sooner");
+    }
+
     #[test]
     fn a_frame_that_is_no_verdict_can_still_teach_the_floor() {
         let start = Instant::now();
@@ -1107,13 +1197,15 @@ mod tests {
         assert_eq!(walk.quality(), QUALITY_FLOOR, "the old floor made the new route read as queueing");
         assert_eq!(walk.interval(), CAPTURE * 8);
         // Once the old floor has left the window, the new route is a link that
-        // keeps up: the frames come back, then the quality.
+        // keeps up: the frames come back, then the quality. A little is queued
+        // on every other frame, so it climbs a step a run.
         at += BASELINE_WINDOW;
         let mut moved = Vec::new();
         for _ in 0..5 {
-            let (last, then) = (0..CLEAR_RUN).fold((None, at), |(last, at), _| {
+            let (last, then) = (0..CLEAR_RUN).fold((None, at), |(last, at), i| {
                 let at = at + 33 * MS;
-                (walk.fenced(240 * MS, true, at).or(last), at)
+                let queued = if i % 2 == 0 { Duration::ZERO } else { LAG_CLEAR };
+                (walk.fenced(240 * MS + queued, true, at).or(last), at)
             });
             moved.extend(last);
             at = then + ADJUST_COOLDOWN;
