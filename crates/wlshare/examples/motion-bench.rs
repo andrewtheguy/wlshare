@@ -26,8 +26,9 @@
 //! changing. Its dial is the capture's unless `--quality` names one, held
 //! there, the picture exact as a list that holds the dial asks; `--walk-at`
 //! codes the picture a walked list asks for, the walk held at its dial, the
-//! ceiling or below it, each still the smaller of a PNG and a WebP at it and
-//! owed again at the ceiling where it is below, as a link that is behind is
+//! ceiling or below it, each still a PNG where its tile fits a palette and a
+//! WebP at it otherwise, owed again at the ceiling where it is below, as a
+//! link that is behind is
 //! sent them ([`TilesEncoder::set_pace`]). Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264

@@ -1,8 +1,9 @@
 //! The tiles encoding's server side: the desktop as exact PNG tiles where it
 //! is still, and a video stream of its own for each region that moves, for a
-//! client on a link with room to spare — or, on a list whose dial walks, every
-//! still the smaller of a PNG and a lossy WebP at the walk's dial, for a
-//! client that wants the walk more than a picture that ends exact.
+//! client on a link with room to spare — or, on a list whose dial walks, a
+//! lossy WebP at the walk's dial wherever a tile is a picture rather than text
+//! or panels, for a client that wants the walk more than a picture that ends
+//! exact.
 //!
 //! The encoding — the rectangles and their kinds — is
 //! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::vp9`]'s rather than in
@@ -18,13 +19,15 @@
 //! the encoder below it ([`TilesEncoder::set_pace`]) as it moves the VP9
 //! encoding's. Each stream follows it from an IDR, since neither H.264
 //! encoder takes a new constant quantizer on a running stream, and the update
-//! that carries one counts as a keyframe for the walk. A still is coded both
-//! ways, a PNG and a lossy WebP at the dial
-//! ([`wlshare_proto::tiles::KIND_WEBP`]), and the smaller goes: text, rules
-//! and panels mostly as PNG, a photograph or a video's last picture as WebP,
-//! at the ceiling too. Nothing is owed exact: a still sent below the ceiling
-//! is owed again at the ceiling, as a tile a stream carried is, and the
-//! debts are paid while the walk is not slowed: a link that is behind is not
+//! that carries one counts as a keyframe for the walk. Each tile of a still is
+//! classified once, as the zDesk gateway classifies its own tiles: one whose
+//! pixels fit a palette — text, rules and panels — is a PNG, and any other — a
+//! photograph, a gradient, a video's last picture — a lossy WebP at the dial
+//! ([`wlshare_proto::tiles::KIND_WEBP`]), at the ceiling too; while the walk
+//! has slowed the frames, only a tile of one colour stays a PNG. A run is cut
+//! where its tiles change kind, each part coded once. Nothing is owed exact: a
+//! WebP sent below the ceiling is owed again at the ceiling, as a tile a
+//! stream carried is, and the debts are paid while the walk is not slowed: a link that is behind is not
 //! handed finer pictures of what it has already seen. A list that holds the
 //! dial never walks, and every still is exact.
 //!
@@ -540,9 +543,8 @@ fn encode_png(w: u16, h: u16, rgb: &[u8], indexed: Option<(Vec<u8>, Vec<u8>)>, o
     writer.finish()
 }
 
-/// libwebp's method for a still: 0 is its fastest search, since every still
-/// of a walked list is coded as a PNG too, and the WebP is sent only where it
-/// is the smaller.
+/// libwebp's method for a still: 0 is its fastest search, since a still is
+/// coded on the update's way out.
 const WEBP_METHOD: i32 = 0;
 
 /// `rgb`, `w`×`h` packed, appended to `out` as a lossy WebP at `quality`, the
@@ -693,21 +695,19 @@ pub struct TilesEncoder {
     /// The dial the client's list names: what the streams and the stills are
     /// coded at while the link keeps up, and the finest the walk asks for.
     ceiling: u8,
-    /// The list lets the dial walk: a still is the smaller of a PNG and a
-    /// WebP. Held, every still is a PNG.
+    /// The list lets the dial walk: a still is a PNG where its tile fits a
+    /// palette and a WebP otherwise. Held, every still is a PNG.
     adaptive: bool,
     /// The walk's dial: what the streams and the stills are coded at.
     quality: u8,
-    /// The walk has slowed the frames: no debt is paid until it has not.
+    /// The walk has slowed the frames: only a tile of one colour is a PNG, and
+    /// no debt is paid until it has not.
     coarse: bool,
     /// When a read last found a tile changed.
     changed_at: Duration,
     /// The coder every stream is opened on.
     coder: Box<dyn RegionCoder>,
     scratch: Vec<u8>,
-    /// A still's PNG and its WebP, before the smaller goes out.
-    exact: Vec<u8>,
-    lossy: Vec<u8>,
 }
 
 impl TilesEncoder {
@@ -742,8 +742,6 @@ impl TilesEncoder {
             changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
-            exact: Vec::new(),
-            lossy: Vec::new(),
         };
         encoder.forget();
         Ok(encoder)
@@ -896,7 +894,7 @@ impl TilesEncoder {
             out.keyframe = true;
         }
         for area in stills {
-            self.still(area, self.quality, now, &mut out)?;
+            self.still(area, self.quality, self.coarse, now, &mut out)?;
         }
         if std::mem::take(&mut self.read) {
             self.round(now, &mut out)?;
@@ -931,30 +929,53 @@ impl TilesEncoder {
         CellBox::of(cell).to_area(self.size).expect("a tile of the desktop")
     }
 
-    /// Send `area` of the picture as a still coded at `quality`: on a held
-    /// list a PNG, exact; on a walked one the smaller of that PNG and a lossy
-    /// WebP at `quality`. A PNG, or a still at the ceiling, pays the debt of
-    /// every tile it covers whole; a WebP below the ceiling owes every tile it
-    /// touches a still at the ceiling from now.
-    fn still(&mut self, area: Area, quality: u8, now: Duration, out: &mut Out) -> Result<(), TilesError> {
-        crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
-        let indexed = palette(&self.scratch);
-        self.exact.clear();
-        encode_png(area.w(), area.h(), &self.scratch, indexed, &mut self.exact)?;
-        let mut header = TileHeader::Png { len: 0 };
-        if self.adaptive {
-            self.lossy.clear();
-            encode_webp(area.w(), area.h(), &self.scratch, quality, &mut self.lossy)?;
-            if self.lossy.len() < self.exact.len() {
-                header = TileHeader::Webp { len: 0 };
+    /// Send `area` of the picture as stills coded at `quality`. On a held list
+    /// it is one PNG, exact. On a walked one each of its tiles is classified
+    /// once, as the zDesk gateway classifies its own tiles: one whose pixels fit
+    /// a palette — text, rules and flat panels — goes as a PNG, exact, and any
+    /// other — a photograph, a gradient, a video's last picture — as a lossy
+    /// WebP at `quality`; while `coarse`, only a tile of one colour stays a PNG.
+    /// The run is cut where its tiles change kind, and each part is coded once.
+    fn still(&mut self, area: Area, quality: u8, coarse: bool, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        if !self.adaptive {
+            return self.part(area, false, quality, now, out);
+        }
+        let mut parts: Vec<(Area, bool)> = Vec::new();
+        for (_, tile) in tiles_of(area) {
+            crop_rgb(&self.mirror, self.stride, tile, &mut self.scratch);
+            let lossy = palette(&self.scratch).is_none_or(|(colours, _)| coarse && colours.len() > 3);
+            match parts.last_mut() {
+                Some((run, kind)) if *kind == lossy && run.top == tile.top && run.right.checked_add(1) == Some(tile.left) => run.right = tile.right,
+                _ => parts.push((tile, lossy)),
             }
         }
-        let body = if matches!(header, TileHeader::Png { .. }) { &self.exact } else { &self.lossy };
+        for (part, lossy) in parts {
+            self.part(part, lossy, quality, now, out)?;
+        }
+        Ok(())
+    }
+
+    /// Send `area` as one image: a PNG, exact, or a lossy WebP at `quality`. A
+    /// PNG, or a WebP at the ceiling, pays the debt of every tile it covers
+    /// whole; a WebP below the ceiling owes every tile it touches a still at
+    /// the ceiling from now.
+    fn part(&mut self, area: Area, lossy: bool, quality: u8, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let from = out.out.len();
+        let header = if lossy { TileHeader::Webp { len: 0 } } else { TileHeader::Png { len: 0 } };
         let at = out.header(area, header);
-        out.out.extend_from_slice(body);
+        let coded = if lossy {
+            encode_webp(area.w(), area.h(), &self.scratch, quality, out.out)
+        } else {
+            encode_png(area.w(), area.h(), &self.scratch, palette(&self.scratch), out.out).map_err(TilesError::from)
+        };
+        if let Err(e) = coded {
+            out.out.truncate(from);
+            out.count -= 1;
+            return Err(e);
+        }
         out.length(from, at, header)?;
-        let settled = matches!(header, TileHeader::Png { .. }) || quality >= self.ceiling;
+        let settled = !lossy || quality >= self.ceiling;
         for (cell, _) in tiles_of(area) {
             if !settled {
                 self.debts.insert(cell, now);
@@ -1118,7 +1139,7 @@ impl TilesEncoder {
         }
         for run in runs {
             if let Some(area) = run.to_area(self.size) {
-                self.still(area, self.ceiling, now, out)?;
+                self.still(area, self.ceiling, false, now, out)?;
             }
         }
         Ok(())
@@ -1476,25 +1497,41 @@ mod tests {
         assert!(next.rects == 1 && !next.keyframe, "a tile that changed is no keyframe: {next:?}");
     }
 
-    /// On a walked list a still is the smaller of its PNG and its WebP, at the
-    /// ceiling too: a busy picture goes as WebP and owes nothing there, and a
-    /// tile of glyphs, cheaper exact, goes as PNG.
+    /// On a walked list each tile of a still is classified once: a picture
+    /// goes as WebP, at the ceiling too, and owes nothing there; a tile that
+    /// fits a palette goes as PNG, and a run is cut where its tiles change
+    /// kind. Coarse, only a tile of one colour stays a PNG.
     #[test]
-    fn a_walked_still_is_the_smaller_of_png_and_webp() {
+    fn a_walked_tile_is_a_png_where_it_fits_a_palette_and_a_webp_otherwise() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 11);
         let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
         assert!(first.keyframe);
-        assert_eq!((page.pngs, page.webps), (0, 2), "a busy picture goes lossy, at the ceiling");
+        assert_eq!((page.pngs, page.webps), (0, 2), "a busy picture goes lossy, a row's run at a time, at the ceiling");
         assert!(page.distance(&pixels) > 0, "and the page holds it lossy");
         assert!(!encoder.owed(), "a still at the ceiling is owed nothing");
-        let text = Rect { x: 128, y: 64, width: 64, height: 64 };
-        glyphs(&mut pixels, w, text);
-        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
-        assert_eq!((page.pngs, page.webps), (1, 2), "the glyphs go exact, the smaller");
+
+        // A row of picture, text, picture: three images.
+        let row = Rect { x: 0, y: 0, width: w, height: 64 };
+        paint(&mut pixels, w, row, 12);
+        glyphs(&mut pixels, w, Rect { x: 64, y: 0, width: 64, height: 64 });
+        let cut = update(&mut encoder, &mut page, &pixels, Some(&[row]), ms(100));
+        assert_eq!((cut.rects, page.pngs, page.webps), (3, 1, 4), "the run cut where its tiles change kind");
         assert!(!encoder.owed());
+
+        // Coarse: the text goes lossy too, and a flat tile stays exact.
+        encoder.set_pace(20, true);
+        glyphs(&mut pixels, w, Rect { x: 192, y: 64, width: 64, height: 64 });
+        for line in 64..128 {
+            pixels[line * usize::from(w) * 4..][..64 * 4].copy_from_slice(&[7, 8, 9, 0].repeat(64));
+        }
+        let text = Rect { x: 192, y: 64, width: 64, height: 64 };
+        let flat = Rect { x: 0, y: 64, width: 64, height: 64 };
+        step(&mut encoder, &mut page, &pixels, Some(&[text, flat]), ms(200));
+        assert_eq!((page.pngs, page.webps), (2, 5), "coarse, a palette tile goes lossy and one of one colour exact");
+        assert!(encoder.owed(), "the text sent below the ceiling is owed");
     }
 
     /// Below the ceiling a walked still is owed again at the ceiling once
@@ -1628,8 +1665,8 @@ mod tests {
         assert!(!next.keyframe, "the frame after it: {next:?}");
     }
 
-    /// On a walked list what a stream carried settles at the ceiling, the
-    /// smaller of PNG and WebP, and then nothing is owed.
+    /// On a walked list what a stream carried settles at the ceiling, a
+    /// picture as WebP, and then nothing is owed.
     #[test]
     fn a_walked_stream_settles_at_the_ceiling() {
         let (w, h) = (640u16, 384u16);

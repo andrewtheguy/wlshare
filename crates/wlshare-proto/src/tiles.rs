@@ -1,8 +1,8 @@
 //! The tiles encoding: the desktop as exact PNG tiles where it is still, and a
 //! video stream of its own for each region that moves, for a client on a link
-//! with room to spare — or, on a list that lets the dial walk, each still the
-//! smaller of a PNG and a lossy WebP at the dial, for a client that wants the
-//! walk more than a picture that ends exact.
+//! with room to spare — or, on a list that lets the dial walk, a lossy WebP at
+//! the dial where a tile is a picture rather than text or panels, for a client
+//! that wants the walk more than a picture that ends exact.
 //!
 //! A private encoding, [`crate::ENCODING_TILES`], beside the VP9 encoding
 //! ([`crate::vp9`]) rather than in place of it: a client lists one or the
@@ -26,9 +26,10 @@
 //!   over it. It depends on nothing before it.
 //! - A **WEBP** is the same rectangle lossy, a WebP of its pixels at the dial
 //!   the walk stands at, and depends on nothing before it either. It is sent
-//!   only on a list whose dial walks, where it is smaller than the PNG; one
-//!   below the ceiling is owed again at the ceiling once the link has room,
-//!   and nothing is owed exact.
+//!   only on a list whose dial walks, for tiles whose pixels fit no palette,
+//!   and for any but a tile of one colour while the walk has slowed the
+//!   frames; one below the ceiling is owed again at the ceiling once the link
+//!   has room, and nothing is owed exact.
 //! - A **START** begins a stream on `stream`, over its rectangle: an H.264
 //!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
 //!   4:2:0, BT.601 at studio swing, of the rectangle's size rounded up to even
@@ -64,8 +65,8 @@ pub const KIND_WEBP: u8 = 4;
 /// encoding's `WLQ` and the value ([`ENCODING_VP9_QUALITY_BASE`]) beside
 /// [`crate::ENCODING_TILES`], and whether it walks — the ceiling the streams
 /// and the stills are coded at while the link keeps up, walked down while it
-/// does not, each still the smaller of a PNG and a lossy WebP at the dial,
-/// nothing owed exact — or is held there,
+/// does not, each still a PNG where its tile fits a palette and a lossy WebP
+/// at the dial otherwise, nothing owed exact — or is held there,
 /// `WLSD` ([`ENCODING_VP9_HELD`]) beside it, every still exact and the
 /// streams at the dial whatever the link does, as the VP9 encoding reads
 /// the same two.
