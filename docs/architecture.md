@@ -659,7 +659,8 @@ nothing handed before it is unpainted and otherwise once the oldest such has
 been owed past the link's ping round trip, 500 ms at most — over a link of a
 given rate, changing at given times, and round trip. It says how long each
 change of the desktop took to be painted, the frames a second, the dial the
-motion was coded at and the link it used, and with `--timeline` every frame.
+motion was coded at and the link it used, and with `--timeline` every frame,
+as JSON lines, a JSON object a line.
 The time is the model's, so a run takes seconds; `--encode` fixes what an
 encode takes, so that two walks are compared on the same frames.
 
@@ -864,7 +865,8 @@ tiles' updates through the client's parser, a WebP by `image-webp`'s pure
 Rust decoder, and each region by libavcodec's
 software H.264 decoder; `--walk-at` codes the picture a walked list asks
 for, its walk held at the dial it names, every still a WebP; without it the
-dial is held and every still exact. Its regions are the daemon's own H.264 — `h264.rs`,
+dial is held and every still exact. It writes JSON lines as `walk-sim` does,
+and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its regions are the daemon's own H.264 — `h264.rs`,
 
 found as the daemon finds it, or libx264 with `--libx264` — so it runs where
 the daemon builds. The figures below were measured when the regions were VP9

@@ -15,7 +15,9 @@
 //! is painted, 5 ms, and `--jitter` up to how much more, at random.
 //! `--ceiling` is the dial the walk starts at and never passes, 90; `--held`
 //! holds it there, as a client that lists `WLSD`. `--timeline` writes every
-//! frame as CSV.
+//! frame as a JSON object a line: `t_ms`, `kind` (`key`, `settle` or `frame`),
+//! `quality`, `interval_ms`, `bytes`, `encode_ms`, `delivery_ms` and
+//! `latency_ms`.
 //!
 //! Time is the simulation's own: an encode takes what it took on this
 //! machine, or `--encode` for a run that is the same every time; a frame
@@ -23,9 +25,14 @@
 //! the capture's frames at the times they were captured, so a session that
 //! falls behind skips the frames it had no time for and carries their damage
 //! in the next. Several captures play one after the other in one session.
-//! What it says of a run is how long each change of the desktop took to be
-//! painted, the frames a second, the dial the motion was coded at, the link
-//! it used and how often the dial moved.
+//! What it says of a run, one JSON object on stdout, is how long each change of
+//! the desktop took to be painted (`shown_mean_ms`, `shown_p50_ms`,
+//! `shown_p95_ms`, `shown_max_ms`), the frames a second (`fps`, of `frames`,
+//! `motion_frames`, `keyframes` and `settles`), the dial the motion was coded
+//! at (`motion_q_mean`, `motion_q_p10`), the link it used (`mbps`, and
+//! `delivery_p50_ms`, `delivery_p95_ms`) and how often the dial moved (`moves`,
+//! `downs`), beside what it was run with: `capture`, `link` (each rate in
+//! Mbit/s and the second it starts at), `rtt_ms`, `ceiling` and `held`.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Write as _};
@@ -242,7 +249,7 @@ fn main() -> Result<(), Error> {
         return Err("walk-sim takes a capture to play".into());
     }
     let name = paths.iter().map(|p| p.rsplit('/').next().unwrap().trim_end_matches(".wlcap.zst").to_string()).collect::<Vec<_>>().join("+");
-    let link_name = rates.iter().map(|(from, rate)| format!("{}@{}", rate * 8.0 / 1e6, from.as_secs_f64())).collect::<Vec<_>>().join(",");
+    let link_steps: Vec<(f64, f64)> = rates.iter().map(|(from, rate)| (rate * 8.0 / 1e6, from.as_secs_f64())).collect();
     let mut source = Source { paths, reader: None, offset: Duration::ZERO, last: Duration::ZERO, peeked: None };
     let one_way = Duration::from_secs_f64(rtt / 2e3);
     let link = Link { rates, one_way, free: Duration::ZERO };
@@ -275,9 +282,6 @@ fn main() -> Result<(), Error> {
     let (mut unshown, mut shown) = (Vec::new(), Vec::new());
     let (mut frames, mut settles, mut keyframes, mut bytes, mut moves, mut downs) = (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
     let mut motion_frames = 0u32;
-    if let Some(t) = &mut timeline {
-        writeln!(t, "t_ms,kind,quality,interval_ms,bytes,encode_ms,delivery_ms,latency_ms")?;
-    }
 
     loop {
         // Everything the desktop did up to now.
@@ -387,7 +391,7 @@ fn main() -> Result<(), Error> {
             let kind = if keyframe { "key" } else if settling { "settle" } else { "frame" };
             writeln!(
                 t,
-                "{:.1},{kind},{coded_at},{:.0},{size},{:.1},{:.1},{:.1}",
+                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"encode_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}}}",
                 sent.as_secs_f64() * 1e3,
                 walk.interval().as_secs_f64() * 1e3,
                 encode.as_secs_f64() * 1e3,
@@ -410,8 +414,10 @@ fn main() -> Result<(), Error> {
     }
     // Through the last frame's paint, which its own fence can come back before.
     let span = now.max(gateway.painted).as_secs_f64();
+    let link_json = rates_json(&link_steps);
     println!(
-        "{name} link={link_name}Mb rtt={rtt}ms | {frames} frames ({motion_frames} motion, {keyframes} key, {settles} settle) {:.1}/s | motion q mean={:.1} p10={:.0} | shown after mean={:.0} p50={:.0} p95={:.0} max={:.0} ms | delivery p50={:.0} p95={:.0} | {:.2} Mb/s | {moves} moves, {downs} down",
+        "{{\"capture\":{},\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"settles\":{settles},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs}}}",
+        json(&name),
         f64::from(frames) / span,
         qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,
         pct(&qualities, 0.1),
@@ -424,4 +430,26 @@ fn main() -> Result<(), Error> {
         bytes as f64 * 8.0 / span / 1e6,
     );
     Ok(())
+}
+
+/// A string as JSON.
+fn json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The link's steps as JSON: each rate in Mbit/s and the second it starts at.
+fn rates_json(steps: &[(f64, f64)]) -> String {
+    let steps: Vec<String> = steps.iter().map(|(mbps, from)| format!("{{\"mbps\":{mbps},\"from_s\":{from}}}")).collect();
+    format!("[{}]", steps.join(","))
 }
