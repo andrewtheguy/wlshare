@@ -11,10 +11,11 @@
 //! `--link` is the browser's link in Mbit/s, 10 by default, and the rate it
 //! changes to from each `@` second on; `--rtt` its round trip, 40 ms; `--hop`
 //! the round trip between the session and the gateway, 1 ms; `--paint` how
-//! long the browser takes to paint a frame once it has it, 5 ms, and
-//! `--jitter` up to how much more, at random. `--ceiling` is the dial the
-//! walk starts at and never passes, 90; `--held` holds it there, as a client
-//! that lists `WLSD`. `--timeline` writes every frame as CSV.
+//! long the browser takes to paint a frame once it has it and the one before
+//! is painted, 5 ms, and `--jitter` up to how much more, at random.
+//! `--ceiling` is the dial the walk starts at and never passes, 90; `--held`
+//! holds it there, as a client that lists `WLSD`. `--timeline` writes every
+//! frame as CSV.
 //!
 //! Time is the simulation's own: an encode takes what it took on this
 //! machine, or `--encode` for a run that is the same every time; a frame
@@ -158,6 +159,9 @@ struct Gateway {
     owed: std::collections::VecDeque<(Duration, Duration)>,
     /// When the last echo went, which the next cannot overtake.
     echoed: Duration,
+    /// When the browser has painted the last frame, which it paints one at a
+    /// time, in order.
+    painted: Duration,
 }
 
 impl Gateway {
@@ -165,7 +169,8 @@ impl Gateway {
     /// painted it, and when its fence's echo is back at the session.
     fn frame(&mut self, sent: Duration, bytes: usize, paint: Duration) -> (Duration, Duration) {
         let handed = sent + self.hop / 2;
-        let painted = self.link.send(handed, bytes) + self.link.one_way + paint;
+        let painted = (self.link.send(handed, bytes) + self.link.one_way).max(self.painted) + paint;
+        self.painted = painted;
         while self.owed.front().is_some_and(|(_, acked)| *acked <= handed) {
             self.owed.pop_front();
         }
@@ -241,7 +246,7 @@ fn main() -> Result<(), Error> {
     let mut source = Source { paths, reader: None, offset: Duration::ZERO, last: Duration::ZERO, peeked: None };
     let one_way = Duration::from_secs_f64(rtt / 2e3);
     let link = Link { rates, one_way, free: Duration::ZERO };
-    let mut gateway = Gateway { link, hop: Duration::from_secs_f64(hop / 1e3), owed: Default::default(), echoed: Duration::ZERO };
+    let mut gateway = Gateway { link, hop: Duration::from_secs_f64(hop / 1e3), owed: Default::default(), echoed: Duration::ZERO, painted: Duration::ZERO };
     let paint = Duration::from_secs_f64(paint / 1e3);
     let mut seed = 0x2545_f491_4f6c_dd1du64;
     let mut jitter = move || {
@@ -393,7 +398,8 @@ fn main() -> Result<(), Error> {
             }
         }
     }
-    let span = now.as_secs_f64();
+    // Through the last frame's paint, which its own fence can come back before.
+    let span = now.max(gateway.painted).as_secs_f64();
     println!(
         "{name} link={link_name}Mb rtt={rtt}ms | {frames} frames ({motion_frames} motion, {keyframes} key, {settles} settle) {:.1}/s | motion q mean={:.1} p10={:.0} | shown after mean={:.0} p50={:.0} p95={:.0} max={:.0} ms | delivery p50={:.0} p95={:.0} | {:.2} Mb/s | {moves} moves, {downs} down",
         f64::from(frames) / span,
