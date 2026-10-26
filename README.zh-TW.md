@@ -7,7 +7,7 @@
 一個針對以 wlroots 為基礎的 Wayland 合成器的 VNC 伺服器，為 [zDesk](https://github.com/andrewtheguy/zdesk/blob/main/README.zh-TW.md) 閘道而打造。它透過 wlr-screencopy 擷取一個輸出，以 RFB 3.8 的 Raw 或 ZRLE 提供；或者，對於提出要求的用戶端（zDesk 就為它的瀏覽器這樣要求），以一路品質隨連線變化的 VP9 串流提供；在連線頻寬充裕時，則以精確的 PNG 圖塊提供，並為每個移動區域提供一路視訊串流，即由主機硬體或 libx264 編碼的 H.264。它透過虛擬鍵盤和虛擬指標協定注入輸入，透過 wlr-data-control 共用剪貼簿，把桌面來自 PipeWire 的聲音經由同一個連線傳輸；它還會告訴用戶端影格緩衝區是以什麼像素密度繪製的，而這是標準 RFB 做不到的，因此 `scale 2` 的輸出會以 2x 清晰顯示，用戶端自己的密度也會成為輸出的密度。有多個顯示器的桌面會把清單傳給用戶端，由用戶端選擇共用哪一個；該用戶端的第二個連線會在旁邊顯示另一個輸出，從而同時看到兩個。合成器的指標不包含在擷取的影格中，因此 wlshare 自行擷取游標圖像（即指標下方的應用程式所選擇的任何形狀，依輸出的像素密度），並透過 RFB 的 Cursor 虛擬編碼（pseudo-encoding）傳送；對於列出 Cursor With Alpha 的用戶端，還會附帶 Alpha 透明度。用戶端移動游標時不必等待影格緩衝區更新。
 
 在 zDesk 的示範中觀看：
-[Mac -> Linux（Sway 上的 wlshare），Retina/HiDPI 密度並帶聲音](https://zdesk.dev/zh-TW#mac-to-linux)。
+[Mac -> Linux（Sway 上的 wlshare），Retina/HiDPI 密度並帶聲音](https://zdesk.dev/zh-TW/demo#mac-to-linux)。
 
 在這組協定範圍內，它與特定合成器無關：任何提供所需協定、以 wlroots 為基礎的合成器都是同一類對等端。需要 `wlr-screencopy` 版本 2 或更新，以及具備輸出擷取來源的 `ext-image-copy-capture`，游標圖像就來自後者。調整輸出尺寸和縮放還需要 `wlr-output-management`；合成器提供虛擬鍵盤、虛擬指標和 `wlr-data-control` 協定時，輸入和剪貼簿會使用它們。在無頭輸出上讓游標保持獨立並擷取它，需要 wlroots 0.19 或更新版本。
 
