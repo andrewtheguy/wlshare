@@ -3,7 +3,7 @@ name = "wlshare-proto"
 # The protocol version, `version::PROTOCOL_VERSION`, as the major version and
 # nothing else: any change to this crate is a new one, tagged `proto-v<N>` by
 # the release that brings it, and that tag is what the gateway pins.
-version = "2.0.0"
+version = "3.0.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

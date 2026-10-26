@@ -1,7 +1,8 @@
 //! The tiles encoding's server side: the desktop as exact PNG tiles where it
 //! is still, and a video stream of its own for each region that moves, for a
-//! client on a link with room to spare — and, on a list whose dial walks, a
-//! lossy WebP where the link has fallen behind, made exact once it has room.
+//! client on a link with room to spare — or, on a list whose dial walks, every
+//! still the smaller of a PNG and a lossy WebP at the walk's dial, for a
+//! client that wants the walk more than a picture that ends exact.
 //!
 //! The encoding — the rectangles and their kinds — is
 //! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::vp9`]'s rather than in
@@ -17,14 +18,14 @@
 //! the encoder below it ([`TilesEncoder::set_pace`]) as it moves the VP9
 //! encoding's. Each stream follows it from an IDR, since neither H.264
 //! encoder takes a new constant quantizer on a running stream, and the update
-//! that carries one counts as a keyframe for the walk. A still at the ceiling
-//! is exact, a PNG; one below it is a lossy WebP at the dial
-//! ([`wlshare_proto::tiles::KIND_WEBP`]), except where its pixels fit a
-//! palette — text, rules and panels, which cost no more exact than lossy —
-//! until the walk has slowed the frames, when every still goes lossy. Every
-//! tile sent lossy is owed exact, as a tile a stream carried is, and the
+//! that carries one counts as a keyframe for the walk. A still is coded both
+//! ways, a PNG and a lossy WebP at the dial
+//! ([`wlshare_proto::tiles::KIND_WEBP`]), and the smaller goes: text, rules
+//! and panels mostly as PNG, a photograph or a video's last picture as WebP,
+//! at the ceiling too. Nothing is owed exact: a still sent below the ceiling
+//! is owed again at the ceiling, as a tile a stream carried is, and the
 //! debts are paid while the walk is not slowed: a link that is behind is not
-//! handed exact pictures of what it has already seen. A list that holds the
+//! handed finer pictures of what it has already seen. A list that holds the
 //! dial never walks, and every still is exact.
 //!
 //! **Which tiles move.** The desktop is in 64×64 tiles from its top-left. The
@@ -41,16 +42,18 @@
 //! told the damage inside it as the VP9 encoding's whole-desktop stream is, so
 //! the encoder's time follows the area that moves. It is 4:2:0 at the dial the
 //! client's list names, held there: what a stream loses of a picture lasts
-//! only while the region moves, since it settles exact. The encoder is the
+//! only while the region moves, since it settles. The encoder is the
 //! [`RegionCoder`] the daemon hands this one, its host's H.264 encoder: the
 //! hardware's, where a region costs the processor its conversion alone, or
 //! else libx264 at its fastest preset. A coder that refuses a stream, or
 //! fails one midway, fails the encode: a region has no other codec.
 //!
-//! **It settles exact.** Every tile a stream carried, or sent lossy, is owed a
-//! PNG once it has been still for half a second, looked for every quarter of
-//! a second ([`TilesEncoder::tick_at`]), at most 40 tiles at a time, and sent
-//! after the stream's END, so a desktop that stops is exact. A picture that
+//! **It settles.** Every tile a stream carried, or a walk sent below the
+//! ceiling, is owed a still at the ceiling — a PNG on a held list — once it
+//! has been still for half a second, looked for every quarter of a second
+//! ([`TilesEncoder::tick_at`]), at most 40 tiles at a time, and sent after the
+//! stream's END, so a desktop that stops is exact on a held list and at the
+//! ceiling on a walked one. A picture that
 //! starts over — an encoder's first, or one a client asks for whole
 //! ([`TilesEncoder::forget`]) — goes whole at once, in bands of 64 rows; from
 //! then on a band is sent as the runs of its changed tiles along each row.
@@ -65,7 +68,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use wlshare_proto::tiles::TileHeader;
+use wlshare_proto::tiles::{TileHeader, TilesPicture};
 
 use crate::rfb::vp9::Rect;
 
@@ -242,7 +245,7 @@ const STREAM_IDLE: Duration = Duration::from_millis(1000);
 const MERGE_WASTE: u32 = 2;
 /// The fewest moving tiles a component needs to be worth a stream.
 const MIN_STREAM_CELLS: u32 = 5;
-/// How long a tile a stream carried is still before it is owed as PNG.
+/// How long a tile a stream carried is still before it is owed its still.
 const CLEANUP_IDLE: Duration = Duration::from_millis(500);
 /// How often what is owed is looked for.
 pub const CLEANUP_TICK: Duration = Duration::from_millis(250);
@@ -537,8 +540,9 @@ fn encode_png(w: u16, h: u16, rgb: &[u8], indexed: Option<(Vec<u8>, Vec<u8>)>, o
     writer.finish()
 }
 
-/// libwebp's method for a still: 0 is its fastest search, and a still is the
-/// lossy pass of a tile that is owed exact anyway.
+/// libwebp's method for a still: 0 is its fastest search, since every still
+/// of a walked list is coded as a PNG too, and the WebP is sent only where it
+/// is the smaller.
 const WEBP_METHOD: i32 = 0;
 
 /// `rgb`, `w`×`h` packed, appended to `out` as a lossy WebP at `quality`, the
@@ -675,8 +679,8 @@ pub struct TilesEncoder {
     live: Vec<Live>,
     /// The tiles a live stream carries.
     covered: HashSet<(u16, u16)>,
-    /// Tile → when a stream last carried it, or a still sent it lossy, which
-    /// is owed a PNG.
+    /// Tile → when a stream last carried it, or a walk sent its still below
+    /// the ceiling, which is owed a still at the ceiling.
     debts: HashMap<(u16, u16), Duration>,
     retuned_at: Option<Duration>,
     /// The stills the reads since the last encode owe.
@@ -689,24 +693,29 @@ pub struct TilesEncoder {
     /// The dial the client's list names: what the streams and the stills are
     /// coded at while the link keeps up, and the finest the walk asks for.
     ceiling: u8,
-    /// The walk's dial: what the streams are coded at, and the stills below
-    /// the ceiling.
+    /// The list lets the dial walk: a still is the smaller of a PNG and a
+    /// WebP. Held, every still is a PNG.
+    adaptive: bool,
+    /// The walk's dial: what the streams and the stills are coded at.
     quality: u8,
-    /// The walk has slowed the frames: every still goes lossy, and no debt
-    /// is paid until it has not.
+    /// The walk has slowed the frames: no debt is paid until it has not.
     coarse: bool,
     /// When a read last found a tile changed.
     changed_at: Duration,
     /// The coder every stream is opened on.
     coder: Box<dyn RegionCoder>,
     scratch: Vec<u8>,
+    /// A still's PNG and its WebP, before the smaller goes out.
+    exact: Vec<u8>,
+    lossy: Vec<u8>,
 }
 
 impl TilesEncoder {
     /// An encoder for a `width`×`height` desktop whose streams are `coder`'s,
-    /// at `ceiling` (1–100), the dial its list names, where the walk starts.
-    /// The client holds nothing of it yet.
-    pub fn new(width: u16, height: u16, ceiling: u8, coder: Box<dyn RegionCoder>) -> Result<Self, TilesError> {
+    /// of the picture the client's list asks for: its ceiling (1–100), where
+    /// the walk starts, and whether the dial walks. The client holds nothing
+    /// of it yet.
+    pub fn new(width: u16, height: u16, picture: TilesPicture, coder: Box<dyn RegionCoder>) -> Result<Self, TilesError> {
         if width == 0 || height == 0 {
             return Err(TilesError::Empty(width, height));
         }
@@ -726,12 +735,15 @@ impl TilesEncoder {
             ended: Vec::new(),
             read: false,
             next_tick: Duration::ZERO,
-            ceiling,
-            quality: ceiling,
+            ceiling: picture.quality,
+            adaptive: picture.adaptive,
+            quality: picture.quality,
             coarse: false,
             changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
+            exact: Vec::new(),
+            lossy: Vec::new(),
         };
         encoder.forget();
         Ok(encoder)
@@ -750,10 +762,9 @@ impl TilesEncoder {
     }
 
     /// Where the walk stands: `quality` is the dial every stream is coded at
-    /// from here, each running stream starting over at a keyframe, and the
-    /// stills are lossy at it below the ceiling; `coarse` says the walk has
-    /// slowed the frames, which sends every still lossy and holds the exact
-    /// pictures owed until it has not.
+    /// from here, each running stream starting over at a keyframe, and every
+    /// still's WebP; `coarse` says the walk has slowed the frames, which holds
+    /// the stills owed at the ceiling until it has not.
     pub fn set_pace(&mut self, quality: u8, coarse: bool) {
         self.coarse = coarse;
         if quality != self.quality {
@@ -765,12 +776,15 @@ impl TilesEncoder {
         }
     }
 
-    /// A new ceiling: what the client holds was coded against the old one, so
-    /// the picture starts over as [`Self::forget`] starts it, every live
-    /// stream's END owed first, at the new ceiling from here.
-    pub fn set_ceiling(&mut self, ceiling: u8) {
-        self.ceiling = ceiling;
-        self.quality = ceiling;
+    /// A new picture, a ceiling or a walk the list did not name before: what
+    /// the client holds was coded against the old one, and nothing of it is
+    /// owed what the new one would owe, so the picture starts over as
+    /// [`Self::forget`] starts it, every live stream's END owed first, at the
+    /// new ceiling from here.
+    pub fn set_picture(&mut self, picture: TilesPicture) {
+        self.ceiling = picture.quality;
+        self.adaptive = picture.adaptive;
+        self.quality = picture.quality;
         self.forget();
     }
 
@@ -867,7 +881,7 @@ impl TilesEncoder {
     /// owe, a round of the streams after a read — the regions laid out again
     /// and every stream the damage fell on coded — and, at its time
     /// ([`Self::tick_at`]), the streams whose motion stopped ended and the
-    /// tiles still long enough sent exact. None when nothing is owed, which is
+    /// tiles still long enough sent at the ceiling. None when nothing is owed, which is
     /// no update to send.
     ///
     /// Tens of milliseconds for a desktop that changed all over. An error
@@ -882,7 +896,7 @@ impl TilesEncoder {
             out.keyframe = true;
         }
         for area in stills {
-            self.still(area, now, &mut out)?;
+            self.still(area, self.quality, now, &mut out)?;
         }
         if std::mem::take(&mut self.read) {
             self.round(now, &mut out)?;
@@ -896,14 +910,14 @@ impl TilesEncoder {
     }
 
     /// Whether anything is owed that no read will bring: a stream is live, or
-    /// its end is yet to be sent, or a tile one carried is yet to be sent exact.
+    /// its end is yet to be sent, or a tile is yet to be sent at the ceiling.
     pub fn owed(&self) -> bool {
         !self.live.is_empty() || !self.ended.is_empty() || !self.debts.is_empty()
     }
 
     /// When an [`Self::encode`] with no read is next owed something — a
-    /// stream to end, a tile to send exact — or `None` while the client holds
-    /// the picture exactly and nothing streams. Streams [`Self::forget`] ended
+    /// stream to end, a tile to send at the ceiling — or `None` while the
+    /// client holds the picture settled and nothing streams. Streams [`Self::forget`] ended
     /// are owed their ends at once.
     pub fn tick_at(&self) -> Option<Duration> {
         if !self.ended.is_empty() {
@@ -917,55 +931,34 @@ impl TilesEncoder {
         CellBox::of(cell).to_area(self.size).expect("a tile of the desktop")
     }
 
-    /// Send `area` of the picture as a still: exact, a PNG, which pays the
-    /// debt of every tile it covers whole, while the walk is not coarse and
-    /// stands at the ceiling, or below it where the pixels fit a palette;
-    /// otherwise lossy, a WebP at the walk's dial, which owes
-    /// every tile it touches exact from now.
-    fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    /// Send `area` of the picture as a still coded at `quality`: on a held
+    /// list a PNG, exact; on a walked one the smaller of that PNG and a lossy
+    /// WebP at `quality`. A PNG, or a still at the ceiling, pays the debt of
+    /// every tile it covers whole; a WebP below the ceiling owes every tile it
+    /// touches a still at the ceiling from now.
+    fn still(&mut self, area: Area, quality: u8, now: Duration, out: &mut Out) -> Result<(), TilesError> {
         crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let indexed = palette(&self.scratch);
-        let exact = !self.coarse && (self.quality >= self.ceiling || indexed.is_some());
-        let from = out.out.len();
-        let header = if exact { TileHeader::Png { len: 0 } } else { TileHeader::Webp { len: 0 } };
-        let at = out.header(area, header);
-        let coded = if exact {
-            encode_png(area.w(), area.h(), &self.scratch, indexed, out.out).map_err(TilesError::from)
-        } else {
-            encode_webp(area.w(), area.h(), &self.scratch, self.quality, out.out)
-        };
-        if let Err(e) = coded {
-            out.out.truncate(from);
-            out.count -= 1;
-            return Err(e);
-        }
-        out.length(from, at, header)?;
-        for (cell, _) in tiles_of(area) {
-            if !exact {
-                self.debts.insert(cell, now);
-            } else if area.contains(self.cell_area(cell)) {
-                self.debts.remove(&cell);
+        self.exact.clear();
+        encode_png(area.w(), area.h(), &self.scratch, indexed, &mut self.exact)?;
+        let mut header = TileHeader::Png { len: 0 };
+        if self.adaptive {
+            self.lossy.clear();
+            encode_webp(area.w(), area.h(), &self.scratch, quality, &mut self.lossy)?;
+            if self.lossy.len() < self.exact.len() {
+                header = TileHeader::Webp { len: 0 };
             }
         }
-        Ok(())
-    }
-
-    /// Send `area` of the picture exactly, which pays the debt of every tile
-    /// it covers whole.
-    fn png(&mut self, area: Area, out: &mut Out) -> Result<(), TilesError> {
-        crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
+        let body = if matches!(header, TileHeader::Png { .. }) { &self.exact } else { &self.lossy };
         let from = out.out.len();
-        let header = TileHeader::Png { len: 0 };
         let at = out.header(area, header);
-        let indexed = palette(&self.scratch);
-        if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, indexed, out.out) {
-            out.out.truncate(from);
-            out.count -= 1;
-            return Err(e.into());
-        }
+        out.out.extend_from_slice(body);
         out.length(from, at, header)?;
+        let settled = matches!(header, TileHeader::Png { .. }) || quality >= self.ceiling;
         for (cell, _) in tiles_of(area) {
-            if area.contains(self.cell_area(cell)) {
+            if !settled {
+                self.debts.insert(cell, now);
+            } else if area.contains(self.cell_area(cell)) {
                 self.debts.remove(&cell);
             }
         }
@@ -1093,8 +1086,8 @@ impl TilesEncoder {
     }
 
     /// The streams whose motion stopped ended, and up to
-    /// [`MAX_CLEANUPS_PER_TICK`] tiles still for [`CLEANUP_IDLE`] sent
-    /// exactly, oldest first, as runs along a row — none while the walk is
+    /// [`MAX_CLEANUPS_PER_TICK`] tiles still for [`CLEANUP_IDLE`] sent at
+    /// the ceiling, oldest first, as runs along a row — none while the walk is
     /// coarse, since the link is behind on what it has, until the desktop has
     /// been still for [`COARSE_QUIET`].
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
@@ -1125,7 +1118,7 @@ impl TilesEncoder {
         }
         for run in runs {
             if let Some(area) = run.to_area(self.size) {
-                self.png(area, out)?;
+                self.still(area, self.ceiling, now, out)?;
             }
         }
         Ok(())
@@ -1331,8 +1324,31 @@ mod tests {
         }
     }
 
+    /// Paint `rect` of a `w`-wide picture as a page of black glyphs on white,
+    /// lines of dots and gaps: sharp edges, which a lossy coder spends more on
+    /// than a palette PNG does.
+    fn glyphs(pixels: &mut [u8], w: u16, rect: Rect) {
+        for row in 0..usize::from(rect.height) {
+            for col in 0..usize::from(rect.width) {
+                let at = ((usize::from(rect.y) + row) * usize::from(w) + usize::from(rect.x) + col) * 4;
+                let v = if (col * 7 + row * 13) % 11 < 2 && row % 12 < 9 { 0 } else { 255 };
+                pixels[at..at + 4].copy_from_slice(&[v, v, v, 0]);
+            }
+        }
+    }
+
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
+    }
+
+    /// A list that holds the dial at `quality`.
+    fn held(quality: u8) -> TilesPicture {
+        TilesPicture { quality, adaptive: false }
+    }
+
+    /// A list that lets the dial walk under `quality`.
+    fn walked(quality: u8) -> TilesPicture {
+        TilesPicture { quality, adaptive: true }
     }
 
     /// A region coder standing in for the daemon's H.264 one: its frames are
@@ -1448,7 +1464,7 @@ mod tests {
         for row in 128..usize::from(h) {
             pixels[row * usize::from(w) * 4..][..usize::from(w) * 4].copy_from_slice(&[10, 20, 30, 0].repeat(usize::from(w)));
         }
-        let mut encoder = TilesEncoder::new(w, h, 80, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 5, y: 5, width: 1, height: 1 }]), ms(0));
         assert_eq!((first.rects, page.pngs), (3, 3), "the whole picture in three bands, whatever the read was told");
@@ -1460,49 +1476,56 @@ mod tests {
         assert!(next.rects == 1 && !next.keyframe, "a tile that changed is no keyframe: {next:?}");
     }
 
-    /// Below the ceiling a still is a lossy WebP, owed exact once still, and
-    /// one whose pixels fit a palette stays exact; coarse, every still is
-    /// lossy and nothing is paid back until the desktop has been quiet. At
-    /// the ceiling again, every still is exact.
+    /// On a walked list a still is the smaller of its PNG and its WebP, at the
+    /// ceiling too: a busy picture goes as WebP and owes nothing there, and a
+    /// tile of glyphs, cheaper exact, goes as PNG.
     #[test]
-    fn below_the_ceiling_a_still_is_lossy_and_owed_exact() {
+    fn a_walked_still_is_the_smaller_of_png_and_webp() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 11);
-        let mut encoder = TilesEncoder::new(w, h, 80, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert!(first.keyframe);
+        assert_eq!((page.pngs, page.webps), (0, 2), "a busy picture goes lossy, at the ceiling");
+        assert!(page.distance(&pixels) > 0, "and the page holds it lossy");
+        assert!(!encoder.owed(), "a still at the ceiling is owed nothing");
+        let text = Rect { x: 128, y: 64, width: 64, height: 64 };
+        glyphs(&mut pixels, w, text);
+        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        assert_eq!((page.pngs, page.webps), (1, 2), "the glyphs go exact, the smaller");
+        assert!(!encoder.owed());
+    }
+
+    /// Below the ceiling a walked still is owed again at the ceiling once
+    /// still; coarse, the debt waits until the desktop has been quiet. At the
+    /// ceiling again, a still owes nothing.
+    #[test]
+    fn below_the_ceiling_a_still_is_owed_again_at_the_ceiling() {
+        let (w, h) = (256u16, 128u16);
+        let mut pixels = noise(w, h, 12);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        assert_eq!((page.pngs, page.webps), (2, 0), "at the ceiling the picture is exact");
+        assert_eq!(page.webps, 2);
 
-        encoder.set_pace(50, false);
+        encoder.set_pace(30, false);
         let busy = Rect { x: 64, y: 0, width: 64, height: 64 };
-        paint(&mut pixels, w, busy, 12);
-        let before = page.distance(&pixels);
-        assert!(before > 0);
+        paint(&mut pixels, w, busy, 13);
         let lossy = update(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100));
-        assert_eq!((lossy.rects, lossy.keyframe, page.webps), (1, false, 1), "one tile that changed, lossy, no keyframe");
-        let after = page.distance(&pixels);
-        assert!(after > 0 && after < before, "the page holds the tile lossy: {after} off, from {before}");
-
-
-        assert!(encoder.owed() && encoder.tick_at().is_some(), "a lossy tile is owed exact");
-        // A tile of one colour fits a palette: exact even below the ceiling.
-        for row in 64..128 {
-            pixels[(row * usize::from(w) + 128) * 4..][..64 * 4].copy_from_slice(&[7, 8, 9, 0].repeat(64));
-        }
-        let flat = Rect { x: 128, y: 64, width: 64, height: 64 };
-        step(&mut encoder, &mut page, &pixels, Some(&[flat]), ms(200));
-        assert_eq!((page.pngs, page.webps), (3, 1), "a palette tile goes exact");
-        settle(&mut encoder, &mut page, ms(200));
-        assert_eq!((page.off(&pixels), page.pngs), (0, 4), "the lossy tile was sent exact, and nothing else");
+        assert_eq!((lossy.rects, lossy.keyframe, page.webps), (1, false, 3), "one tile that changed, at the walk's dial, no keyframe");
+        assert!(encoder.owed() && encoder.tick_at().is_some(), "a still below the ceiling is owed");
+        let coarse = page.distance(&pixels);
+        settle(&mut encoder, &mut page, ms(100));
+        assert_eq!((page.pngs, page.webps), (0, 4), "sent again, at the ceiling, and nothing else");
+        assert!(page.distance(&pixels) < coarse, "finer at the ceiling: {} from {coarse}", page.distance(&pixels));
         assert!(!encoder.owed());
 
-        // Coarse: the flat tile goes lossy too, and the debts wait.
+        // Coarse: the debt waits.
         encoder.set_pace(20, true);
-        for row in 64..128 {
-            pixels[(row * usize::from(w) + 128) * 4..][..64 * 4].copy_from_slice(&[90, 80, 70, 0].repeat(64));
-        }
-        step(&mut encoder, &mut page, &pixels, Some(&[flat]), ms(2000));
-        assert_eq!((page.pngs, page.webps), (4, 2), "coarse, a palette tile goes lossy");
+        paint(&mut pixels, w, busy, 14);
+        step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(2000));
+        assert_eq!(page.webps, 5);
         let mut out = Vec::new();
         for at in [3000, 3750] {
             assert_eq!(encoder.encode(ms(at), &mut out).unwrap().rects, 0, "nothing is paid while coarse and lately changed");
@@ -1512,16 +1535,14 @@ mod tests {
         // still desktop tells the walk nothing that would lift it.
         let paid_at = settle(&mut encoder, &mut page, ms(3750));
         assert!(paid_at >= ms(2000) + COARSE_QUIET, "paid at {paid_at:?}");
-        assert_eq!((page.off(&pixels), page.pngs, page.webps), (0, 5, 2), "paid exact while coarse, once quiet");
+        assert_eq!(page.webps, 6, "paid at the ceiling while coarse, once quiet");
         encoder.set_pace(80, false);
 
-        // At the ceiling, a change goes exact again.
-        paint(&mut pixels, w, busy, 13);
+        paint(&mut pixels, w, busy, 15);
         step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(5000));
-        assert_eq!((page.pngs, page.webps, page.off(&pixels)), (6, 2, 0));
-        assert!(!encoder.owed());
+        assert_eq!(page.webps, 7);
+        assert!(!encoder.owed(), "at the ceiling a still owes nothing");
     }
-
 
     /// The damage is compared with what the client holds: a redraw of the same
     /// pixels sends nothing, and one tile that changed is one PNG of it.
@@ -1529,7 +1550,7 @@ mod tests {
     fn only_tiles_that_changed_are_sent() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 2);
-        let mut encoder = TilesEncoder::new(w, h, 80, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let whole = [Rect { x: 0, y: 0, width: w, height: h }];
@@ -1557,7 +1578,7 @@ mod tests {
     fn what_moves_streams_and_settles_exact() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 3);
-        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let pngs = page.pngs;
@@ -1585,7 +1606,7 @@ mod tests {
     fn a_dial_move_is_a_keyframe_when_its_stream_is_coded() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, walked(60), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 192, height: 128 };
@@ -1607,24 +1628,26 @@ mod tests {
         assert!(!next.keyframe, "the frame after it: {next:?}");
     }
 
-    /// At a ceiling the walk cannot go under, its floor or below, a coarse walk
-    /// still sends a still lossy.
+    /// On a walked list what a stream carried settles at the ceiling, the
+    /// smaller of PNG and WebP, and then nothing is owed.
     #[test]
-    fn coarse_at_a_low_ceiling_a_still_is_lossy() {
-        let (w, h) = (128u16, 64u16);
-        let mut pixels = noise(w, h, 21);
-        let mut encoder = TilesEncoder::new(w, h, 20, Fake::coder()).unwrap();
+    fn a_walked_stream_settles_at_the_ceiling() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = noise(w, h, 4);
+        let mut encoder = TilesEncoder::new(w, h, walked(60), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let tile = Rect { x: 0, y: 0, width: 64, height: 64 };
-        paint(&mut pixels, w, tile, 22);
-        step(&mut encoder, &mut page, &pixels, Some(&[tile]), ms(100));
-        assert_eq!(page.webps, 0, "at the ceiling, not coarse: exact");
-        encoder.set_pace(20, true);
-        paint(&mut pixels, w, tile, 23);
-        step(&mut encoder, &mut page, &pixels, Some(&[tile]), ms(200));
-        assert_eq!(page.webps, 1, "coarse at the ceiling: lossy");
-        assert!(encoder.owed());
+        let video = Rect { x: 128, y: 64, width: 192, height: 128 };
+        for n in 1..=40u32 {
+            paint(&mut pixels, w, video, 200 + n);
+            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
+        let webps = page.webps;
+        settle(&mut encoder, &mut page, ms(2000));
+        assert_eq!(page.ends, 1, "the stream ended");
+        assert!(page.webps > webps, "its tiles sent again as stills");
+        assert!(page.streams.is_empty() && !encoder.owed());
     }
 
     /// A new ceiling ends every live stream before the picture starts over.
@@ -1632,7 +1655,7 @@ mod tests {
     fn a_new_ceiling_ends_the_live_streams() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 31);
-        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -1641,7 +1664,7 @@ mod tests {
             step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
         }
         assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
-        encoder.set_ceiling(80);
+        encoder.set_picture(held(80));
         let whole = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(700));
         assert!(whole.keyframe, "the picture starts over: {whole:?}");
         assert_eq!(page.ends, 1, "the live stream ended");
@@ -1655,7 +1678,7 @@ mod tests {
     fn a_redraw_inside_a_stream_codes_nothing() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 5);
-        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -1675,7 +1698,7 @@ mod tests {
     fn a_picture_forgotten_ends_its_streams_and_starts_over() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 4);
-        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -1719,7 +1742,7 @@ mod tests {
     fn a_region_coder_that_refuses_fails_the_encode() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::new(w, h, 60, Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None })).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(60), Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None })).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 20);
@@ -1734,7 +1757,7 @@ mod tests {
         let (w, h) = (512u16, 256u16);
         for (seed, fake) in [(8, Fake { refuse: false, fail_after: Some(4), fail_read_after: None }), (10, Fake { refuse: false, fail_after: None, fail_read_after: Some(4) })] {
             let mut pixels = noise(w, h, seed);
-            let mut encoder = TilesEncoder::new(w, h, 60, Box::new(fake)).unwrap();
+            let mut encoder = TilesEncoder::new(w, h, held(60), Box::new(fake)).unwrap();
             let mut page = Page::new(w, h);
             step(&mut encoder, &mut page, &pixels, None, ms(0));
             let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 40);

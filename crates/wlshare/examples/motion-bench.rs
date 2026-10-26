@@ -23,10 +23,12 @@
 //! being a picture the client asks for whole ([`TilesEncoder::forget`]), and
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
-//! changing. Its dial is the capture's unless `--quality` names one, the
-//! ceiling the picture is exact at; `--walk-at` holds the walk below it
-//! instead, where the stills are lossy WebP owed exact, as a link that is
-//! behind is sent them ([`TilesEncoder::set_pace`]). Its
+//! changing. Its dial is the capture's unless `--quality` names one, held
+//! there, the picture exact as a list that holds the dial asks; `--walk-at`
+//! codes the picture a walked list asks for, the walk held at its dial, the
+//! ceiling or below it, each still the smaller of a PNG and a WebP at it and
+//! owed again at the ceiling where it is below, as a link that is behind is
+//! sent them ([`TilesEncoder::set_pace`]). Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
@@ -74,6 +76,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use cpu_time::ProcessTime;
+use wlshare_proto::tiles::TilesPicture;
 use wlshare_vp9::Decoder;
 use wlshare_vp9::capture::Reader;
 use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
@@ -107,7 +110,7 @@ struct Args {
     captures: Vec<PathBuf>,
     threads: usize,
     quality: Option<u8>,
-    /// The tiles' walk held at this dial, below the ceiling.
+    /// The tiles walked, their walk held at this dial, the ceiling or below.
     walk_at: Option<u8>,
     /// libx264 for the regions, the hardware not looked for.
     libx264: bool,
@@ -403,10 +406,10 @@ struct Tiles {
 }
 
 impl Tiles {
-    /// The tiles of a desktop of `size` at `ceiling`, its regions on a coder
-    /// of `encoder`'s opened for it, as a session opens one.
-    fn new(size: (u16, u16), ceiling: u8, encoder: &h264::Encoder) -> Result<Self, Error> {
-        Ok(Self { encoder: TilesEncoder::new(size.0, size.1, ceiling, Box::new(encoder.coder()?))?, page: Page::new(size), out: Vec::new() })
+    /// The tiles of a desktop of `size` as `picture` asks, its regions on a
+    /// coder of `encoder`'s opened for it, as a session opens one.
+    fn new(size: (u16, u16), picture: TilesPicture, encoder: &h264::Encoder) -> Result<Self, Error> {
+        Ok(Self { encoder: TilesEncoder::new(size.0, size.1, picture, Box::new(encoder.coder()?))?, page: Page::new(size), out: Vec::new() })
     }
 
     /// Encode what is owed at `now` and draw it: the CPU time of the encode,
@@ -554,7 +557,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
         if fresh {
             let (coder, cost) = Wlsv::new(frame.size, quality, args.wlsv_chroma, args.threads)?;
             setup = cost;
-            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, quality, encoder)? });
+            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, TilesPicture { quality, adaptive: args.walk_at.is_some() }, encoder)? });
         }
         let run = run.as_mut().expect("just made");
 
@@ -697,7 +700,7 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
         let quality = args.quality.unwrap_or(frame.quality);
         let fresh = run.as_ref().is_none_or(|(size, _)| *size != frame.size);
         if fresh {
-            run = Some((frame.size, Tiles::new(frame.size, quality, encoder)?));
+            run = Some((frame.size, Tiles::new(frame.size, TilesPicture { quality, adaptive: false }, encoder)?));
         }
         let (_, tiles) = run.as_mut().expect("just made");
         tiles.ticks(now)?;
