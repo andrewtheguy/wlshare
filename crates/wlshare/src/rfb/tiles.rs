@@ -246,6 +246,12 @@ const MIN_STREAM_CELLS: u32 = 5;
 const CLEANUP_IDLE: Duration = Duration::from_millis(500);
 /// How often what is owed is looked for.
 pub const CLEANUP_TICK: Duration = Duration::from_millis(250);
+/// How long the desktop is still before what is owed is paid while the walk
+/// is coarse: the link that slowed it hears of nothing more once the desktop
+/// is quiet, so the walk would never say otherwise, and the picture would stay
+/// lossy. Longer than [`CLEANUP_IDLE`], so a pause in typing is not chased
+/// while the link is behind.
+const COARSE_QUIET: Duration = Duration::from_millis(2000);
 /// The most tiles a tick sends.
 const MAX_CLEANUPS_PER_TICK: usize = 40;
 /// The rows a report of damage is cut into.
@@ -689,6 +695,8 @@ pub struct TilesEncoder {
     /// The walk has slowed the frames: every still goes lossy, and no debt
     /// is paid until it has not.
     coarse: bool,
+    /// When a read last found a tile changed.
+    changed_at: Duration,
     /// The coder every stream is opened on.
     coder: Box<dyn RegionCoder>,
     scratch: Vec<u8>,
@@ -721,6 +729,7 @@ impl TilesEncoder {
             ceiling,
             quality: ceiling,
             coarse: false,
+            changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
         };
@@ -754,6 +763,15 @@ impl TilesEncoder {
                 live.restarting = true;
             }
         }
+    }
+
+    /// A new ceiling: what the client holds was coded against the old one, so
+    /// the picture starts over as [`Self::forget`] starts it, every live
+    /// stream's END owed first, at the new ceiling from here.
+    pub fn set_ceiling(&mut self, ceiling: u8) {
+        self.ceiling = ceiling;
+        self.quality = ceiling;
+        self.forget();
     }
 
     /// The client holds nothing: every stream ends, with its END at the next
@@ -804,6 +822,9 @@ impl TilesEncoder {
     /// names whose pixels are what the client holds is no change to anything.
     fn damage(&mut self, pixels: &[u8], stride: usize, area: Area, now: Duration) {
         let mut changed: HashSet<(u16, u16)> = tiles_of(area).filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part)).map(|(cell, _)| cell).collect();
+        if !changed.is_empty() {
+            self.changed_at = now;
+        }
         for (cell, part) in tiles_of(area) {
             if self.unknown.contains(&cell) {
                 changed.insert(cell);
@@ -897,14 +918,14 @@ impl TilesEncoder {
     }
 
     /// Send `area` of the picture as a still: exact, a PNG, which pays the
-    /// debt of every tile it covers whole, while the walk stands at the
-    /// ceiling, and below it where the pixels fit a palette and the walk is
-    /// not coarse; otherwise lossy, a WebP at the walk's dial, which owes
+    /// debt of every tile it covers whole, while the walk is not coarse and
+    /// stands at the ceiling, or below it where the pixels fit a palette;
+    /// otherwise lossy, a WebP at the walk's dial, which owes
     /// every tile it touches exact from now.
     fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
         crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let indexed = palette(&self.scratch);
-        let exact = self.quality >= self.ceiling || (!self.coarse && indexed.is_some());
+        let exact = !self.coarse && (self.quality >= self.ceiling || indexed.is_some());
         let from = out.out.len();
         let header = if exact { TileHeader::Png { len: 0 } } else { TileHeader::Webp { len: 0 } };
         let at = out.header(area, header);
@@ -1074,7 +1095,8 @@ impl TilesEncoder {
     /// The streams whose motion stopped ended, and up to
     /// [`MAX_CLEANUPS_PER_TICK`] tiles still for [`CLEANUP_IDLE`] sent
     /// exactly, oldest first, as runs along a row — none while the walk is
-    /// coarse, since the link is behind on what it has.
+    /// coarse, since the link is behind on what it has, until the desktop has
+    /// been still for [`COARSE_QUIET`].
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
         let before = self.live.len();
         for live in self.live.extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE) {
@@ -1085,7 +1107,7 @@ impl TilesEncoder {
         if self.live.len() != before {
             self.cover();
         }
-        if self.coarse {
+        if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
             return Ok(());
         }
 
@@ -1440,7 +1462,7 @@ mod tests {
 
     /// Below the ceiling a still is a lossy WebP, owed exact once still, and
     /// one whose pixels fit a palette stays exact; coarse, every still is
-    /// lossy and nothing is paid back until the walk is no longer coarse. At
+    /// lossy and nothing is paid back until the desktop has been quiet. At
     /// the ceiling again, every still is exact.
     #[test]
     fn below_the_ceiling_a_still_is_lossy_and_owed_exact() {
@@ -1482,13 +1504,16 @@ mod tests {
         step(&mut encoder, &mut page, &pixels, Some(&[flat]), ms(2000));
         assert_eq!((page.pngs, page.webps), (4, 2), "coarse, a palette tile goes lossy");
         let mut out = Vec::new();
-        for at in [3000, 4000] {
-            assert_eq!(encoder.encode(ms(at), &mut out).unwrap().rects, 0, "nothing is paid while coarse");
+        for at in [3000, 3750] {
+            assert_eq!(encoder.encode(ms(at), &mut out).unwrap().rects, 0, "nothing is paid while coarse and lately changed");
         }
         assert!(encoder.owed(), "the debt stands");
+        // Quiet long enough, it is paid though the walk is still coarse: a
+        // still desktop tells the walk nothing that would lift it.
+        let paid_at = settle(&mut encoder, &mut page, ms(3750));
+        assert!(paid_at >= ms(2000) + COARSE_QUIET, "paid at {paid_at:?}");
+        assert_eq!((page.off(&pixels), page.pngs, page.webps), (0, 5, 2), "paid exact while coarse, once quiet");
         encoder.set_pace(80, false);
-        settle(&mut encoder, &mut page, ms(4000));
-        assert_eq!((page.off(&pixels), page.pngs, page.webps), (0, 5, 2), "paid once the walk is not coarse");
 
         // At the ceiling, a change goes exact again.
         paint(&mut pixels, w, busy, 13);
@@ -1580,6 +1605,48 @@ mod tests {
         paint(&mut pixels, w, video, 601);
         let next = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(750));
         assert!(!next.keyframe, "the frame after it: {next:?}");
+    }
+
+    /// At a ceiling the walk cannot go under, its floor or below, a coarse walk
+    /// still sends a still lossy.
+    #[test]
+    fn coarse_at_a_low_ceiling_a_still_is_lossy() {
+        let (w, h) = (128u16, 64u16);
+        let mut pixels = noise(w, h, 21);
+        let mut encoder = TilesEncoder::new(w, h, 20, Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let tile = Rect { x: 0, y: 0, width: 64, height: 64 };
+        paint(&mut pixels, w, tile, 22);
+        step(&mut encoder, &mut page, &pixels, Some(&[tile]), ms(100));
+        assert_eq!(page.webps, 0, "at the ceiling, not coarse: exact");
+        encoder.set_pace(20, true);
+        paint(&mut pixels, w, tile, 23);
+        step(&mut encoder, &mut page, &pixels, Some(&[tile]), ms(200));
+        assert_eq!(page.webps, 1, "coarse at the ceiling: lossy");
+        assert!(encoder.owed());
+    }
+
+    /// A new ceiling ends every live stream before the picture starts over.
+    #[test]
+    fn a_new_ceiling_ends_the_live_streams() {
+        let (w, h) = (512u16, 256u16);
+        let mut pixels = noise(w, h, 31);
+        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        for n in 1..=12u32 {
+            paint(&mut pixels, w, video, 700 + n);
+            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
+        encoder.set_ceiling(80);
+        let whole = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(700));
+        assert!(whole.keyframe, "the picture starts over: {whole:?}");
+        assert_eq!(page.ends, 1, "the live stream ended");
+        assert!(page.streams.is_empty());
+        assert_eq!(page.off(&pixels), 0, "sent whole, exact at the new ceiling");
     }
 
     /// A redraw of what a live stream carries, the pixels the client holds,

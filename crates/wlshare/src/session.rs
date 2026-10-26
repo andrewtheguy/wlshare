@@ -941,23 +941,29 @@ impl Session {
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
                     }
-                    if !self.use_tiles || picture.quality != self.tiles_picture.quality {
+                    if !self.use_tiles {
+                        self.tiles = None;
+                        self.seen = 0;
+                    } else if picture.quality != self.tiles_picture.quality {
                         // A new ceiling is a new picture: what the client
                         // holds was coded against the old one, so it starts
                         // over whole at the next update, whether or not the
-                        // desktop changed.
-                        self.tiles = None;
+                        // desktop changed, every live stream ended first.
+                        if let Some(encoder) = &mut self.tiles {
+                            encoder.set_ceiling(picture.quality);
+                        }
                         self.seen = 0;
                     }
+                    self.tiles_picture = picture;
                     if changed {
                         // A fresh walk from the ceiling, which the running
                         // streams follow with no keyframe.
                         self.walk = QualityWalk::new(picture.quality, self.config.capture, picture.adaptive);
+                        let (quality, coarse) = self.tiles_pace();
                         if let Some(encoder) = &mut self.tiles {
-                            encoder.set_pace(self.walk.quality(), self.walk.slowed());
+                            encoder.set_pace(quality, coarse);
                         }
                     }
-                    self.tiles_picture = picture;
                 } else if self.use_tiles {
                     // What the client holds may be a stream's lossy picture
                     // where something moved, and its streams are over.
@@ -1478,7 +1484,8 @@ impl Session {
                     let coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
                     let mut encoder = TilesEncoder::new(width, height, self.tiles_picture.quality, Box::new(coder))
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
-                    encoder.set_pace(self.walk.quality(), self.walk.slowed());
+                    let (quality, coarse) = self.tiles_pace();
+                    encoder.set_pace(quality, coarse);
                     self.tiles = Some(encoder);
                     continue;
                 }
@@ -1845,10 +1852,21 @@ impl Session {
         if let Some(encoder) = &mut self.vp9 {
             encoder.set_quality(pace.quality);
         }
+        let (quality, coarse) = self.tiles_pace();
         if let Some(encoder) = &mut self.tiles {
-            encoder.set_pace(pace.quality, slowed);
+            encoder.set_pace(quality, coarse);
         }
+    }
 
+    /// The dial and the coarseness the tiles picture is coded at: the walk's
+    /// where it walks; where the client holds it, the ceiling and never
+    /// coarse, every still exact and the streams at the dial whatever the
+    /// link does ([`TilesPicture`]), the walk slowing the frames alone.
+    fn tiles_pace(&self) -> (u8, bool) {
+        match self.tiles_picture.adaptive {
+            true => (self.walk.quality(), self.walk.slowed()),
+            false => (self.tiles_picture.quality, false),
+        }
     }
 
     /// The damaged rectangles, each as ZRLE or — for a client that never listed

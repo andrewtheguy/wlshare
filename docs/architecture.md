@@ -767,9 +767,12 @@ the picture.
   more exact than lossy and stays a PNG until the walk has slowed the frames,
   when every still goes lossy. Every tile sent lossy is owed exact, as a tile
   a stream carried is, and the debts wait while the walk is slowed: a link
-  that is behind is not handed exact pictures of what it already has. With
-  `WLSD` beside the list the dial is held, every still is exact, and the
-  picture is what it was: for a link with room, where a walk would only ever
+  that is behind is not handed exact pictures of what it already has. They
+  wait until the desktop has been still for two seconds, and no longer: a
+  still desktop sends no update whose verdict could lift the walk. With
+  `WLSD` beside the list the dial is held, every still is exact, the streams
+  stay at the dial, and a walk moved by blocked writes only paces the
+  updates: for a link with room, where a walk would only ever
   stand at the ceiling. The walk is `WLSV`'s rather than one of its own
   because the verdict is the same — an update's queueing on the link — and
   a second set of thresholds would be a second thing to measure. Measured
@@ -845,8 +848,9 @@ the picture.
   lossy, is owed an exact PNG once it has been still for half a second. What
   is owed is looked for every quarter of a second, 40 tiles at most at a
   time, each look an update that waits for a request and the fence as any
-  other, and none while the walk is slowed, so a desktop that stops is exact
-  on the page once the link has room, and once it is nothing more is sent.
+  other, and none while the walk is slowed until the desktop has been still
+  for two seconds, so a desktop that stops is exact on the page, and once it
+  is nothing more is sent.
 - **Rounds as any other.** Each update ends with its fence, and one is in
   flight at a time. A new size ends every stream with no END — the size goes
   out first, and the picture whole after it — and a non-incremental request

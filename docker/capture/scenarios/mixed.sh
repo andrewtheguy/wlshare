@@ -127,13 +127,15 @@ type_slowly $'wc -l /tmp/fib.py && head /tmp/fib.py\n'
 sleep 2
 
 part "the terminal dragged aside and back"
+# 360 points right in a second, or as far as the desktop leaves room for.
+DRAG=$((W - TX - TW < 360 ? W - TX - TW : 360))
 for step in $(seq 1 30); do
-	swaymsg -q "[app_id=\"work\"] move position $((TX + step * 12)) $TY"
+	swaymsg -q "[app_id=\"work\"] move position $((TX + step * DRAG / 30)) $TY"
 	sleep 0.033
 done
 sleep 1.5
 for step in $(seq 29 -1 0); do
-	swaymsg -q "[app_id=\"work\"] move position $((TX + step * 12)) $TY"
+	swaymsg -q "[app_id=\"work\"] move position $((TX + step * DRAG / 30)) $TY"
 	sleep 0.033
 done
 sleep 1.5
