@@ -392,13 +392,15 @@ What a frame holds is fixed:
   default `max_fps`, and at 400 ms both go at once. The interval is read when
   the next frame is due, so a step the last frame's fence brings paces that
   frame. The cursor, the audio announcement and a desktop that changed size
-  never wait for a slowed frame's turn. A step is taken at most once a second, and while the lag
+  never wait for a slowed frame's turn. A step is taken at most once a second — half a second after a step down while the lag is 150 ms or more, such a step giving quality up and leaving the frames — and while the lag
   is still falling a fifth per second from the step before — the queue it
   left draining — no further step is taken, since the step was enough; after
   a keyframe the verdicts wait two seconds, since the frames behind it queue
   behind its crossing. A second of clear frames (30 ms or less), four at the
   least, takes frames back first, then quality in steps that double from
-  three to twenty-four while the link keeps taking them; a step the link
+  three to twenty-four while the link keeps taking them, and after a step
+  up the link took, half a second of them is enough while none has more
+  than 15 ms queued; a step the link
   refuses within four seconds is walked back after 300 ms to the quality it
   came from, and for fifteen seconds the walk climbs no further than halfway
   back towards the one refused. The dial
@@ -433,7 +435,15 @@ What a frame holds is fixed:
   the picture's width and those threads, for the decoder's sake: one tile
   column under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the
   threads, and a stream in four columns or more is coded without the loop
-  filter. The conversion
+  filter. An inter frame that codes half the picture or more — a page
+  scrolled, a video playing — is searched at libvpx's speed 9, the fastest
+  its real-time VP9 has, and every other frame, a keyframe and a settle
+  among them, at speed 7, the speed moving on the running encoder with no
+  keyframe: on the kept captures at 4:4:4 and quality 90, a scroll or a
+  video at 9 took 37–44% less of the processor a frame, for 1–15% more bytes
+  at 4K and 7–37% at 1080p and at most 0.4 dB below while it moved, where a
+  window dragged or uncovered, a quarter to a third of the picture, sent
+  1.4 to 2.3 times the bytes at 9 and is left at 7. The conversion
   from the framebuffer's pixels to the planes is the `yuv` crate's, which
   chooses its AVX2 or NEON path at run time: the daemon is built for its
   target's baseline and asks nothing more of the processor.
@@ -584,6 +594,19 @@ under its own name with `vp9cap trim --frames`, chosen as the samples are,
 a quiet scenario's first and a busy one's busiest, the cut's first frame
 the picture as it stood, whole, with a keyframe asked; `walk` it copies
 whole, since its dial walks down, back up and settles over all of it.
+
+The walk is measured on the captures the same way, without a link being
+shaped: `walk-sim` (`crates/wlshare-rfb/examples/`) plays one or several of
+them through the encoder and `QualityWalk` as a session does, one frame in
+flight, to a model of zDesk passing the stream to a browser — the frame
+handed to the browser's link as it arrives, its fence echoed at once while
+nothing handed before it is unpainted and otherwise once the oldest such has
+been owed past the link's ping round trip, 500 ms at most — over a link of a
+given rate, changing at given times, and round trip. It says how long each
+change of the desktop took to be painted, the frames a second, the dial the
+motion was coded at and the link it used, and with `--timeline` every frame.
+The time is the model's, so a run takes seconds; `--encode` fixes what an
+encode takes, so that two walks are compared on the same frames.
 
 ### The client's paint
 

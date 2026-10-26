@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! motion-bench [--threads N] [--quality Q] [--libx264] [--wlsv-chroma 444|420]
-//!              [--wlsv-speed usual|fastest] [--csv FILE] CAPTURE...
+//!              [--csv FILE] CAPTURE...
 //! motion-bench check [--threads N] [--quality Q] [--libx264] CAPTURE...
 //! ```
 //!
@@ -14,9 +14,8 @@
 //! then be on the path.
 //!
 //! **`WLSV`** is coded as `vp9cap streams` codes it: one stream per size, each
-//! frame its rectangles at its dial, a keyframe where one was asked, 4:4:4 and
-//! at libvpx's usual speed unless `--wlsv-chroma` and `--wlsv-speed` say
-//! otherwise. A stream the walk left coarse at the end is settled once at the
+//! frame its rectangles at its dial, a keyframe where one was asked, 4:4:4
+//! unless `--wlsv-chroma` says otherwise. A stream the walk left coarse at the end is settled once at the
 //! capture's highest dial, as a session settles a quiet desktop.
 //!
 //! **Tiles** is the encoder a session runs, one per size: each frame read with
@@ -76,7 +75,7 @@ use wlshare_rfb::capture::Reader;
 use wlshare_rfb::client::{self, RectBody, ServerMsg, TileBody};
 use wlshare_rfb::msg;
 use wlshare_rfb::tiles::TilesEncoder;
-use wlshare_rfb::vp9::{Chroma, Rect, Speed, Vp9Encoder};
+use wlshare_rfb::vp9::{Chroma, Rect, Vp9Encoder};
 use wlshare_vp9::Decoder;
 use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
 
@@ -91,7 +90,7 @@ mod h264;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--libx264] [--wlsv-chroma 444|420] [--wlsv-speed usual|fastest] [--csv FILE] CAPTURE...
+const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--libx264] [--wlsv-chroma 444|420] [--csv FILE] CAPTURE...
        motion-bench check [--threads N] [--quality Q] [--libx264] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
@@ -104,7 +103,6 @@ struct Args {
     /// libx264 for the regions, the hardware not looked for.
     libx264: bool,
     wlsv_chroma: Chroma,
-    wlsv_speed: Speed,
     csv: Option<PathBuf>,
     /// `check` rather than the bench.
     check: bool,
@@ -112,7 +110,7 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, libx264: false, wlsv_chroma: Chroma::Yuv444, wlsv_speed: Speed::Usual, csv: None, check: false };
+    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, libx264: false, wlsv_chroma: Chroma::Yuv444, csv: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
@@ -126,13 +124,6 @@ fn parse_args() -> Result<Args, String> {
                     other => return Err(format!("{other}: a chroma is 444 or 420")),
                 }
             }
-            "--wlsv-speed" => {
-                parsed.wlsv_speed = match value()?.as_str() {
-                    "usual" => Speed::Usual,
-                    "fastest" => Speed::Fastest,
-                    other => return Err(format!("{other}: a speed is usual or fastest")),
-                }
-            }
             "--csv" => parsed.csv = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
             "check" if parsed.captures.is_empty() && !parsed.check => parsed.check = true,
@@ -142,7 +133,7 @@ fn parse_args() -> Result<Args, String> {
     if parsed.captures.is_empty() {
         return Err("a capture to read".into());
     }
-    if parsed.check && (parsed.csv.is_some() || parsed.wlsv_chroma != Chroma::Yuv444 || parsed.wlsv_speed != Speed::Usual) {
+    if parsed.check && (parsed.csv.is_some() || parsed.wlsv_chroma != Chroma::Yuv444) {
         return Err("check codes no WLSV and writes no CSV".into());
     }
     Ok(parsed)
@@ -463,11 +454,10 @@ struct Wlsv {
 impl Wlsv {
     /// The encoder and what making it cost, as a region stream's making is
     /// the tiles' cost.
-    fn new((w, h): (u16, u16), quality: u8, chroma: Chroma, speed: Speed, threads: usize) -> Result<(Self, Duration), Error> {
+    fn new((w, h): (u16, u16), quality: u8, chroma: Chroma, threads: usize) -> Result<(Self, Duration), Error> {
         let decoder = Decoder::new(2)?;
         let cpu = ProcessTime::now();
-        let mut encoder = Vp9Encoder::with_threads(w, h, quality, chroma, threads)?;
-        encoder.set_speed(speed);
+        let encoder = Vp9Encoder::with_threads(w, h, quality, chroma, threads)?;
         let made = cpu.elapsed();
         Ok((Self { encoder, decoder, started: false, picture: vec![0; usize::from(w) * 4 * usize::from(h)], out: Vec::new() }, made))
     }
@@ -534,7 +524,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
         let mut setup = Duration::ZERO;
         let fresh = run.as_ref().is_none_or(|r| r.size != frame.size);
         if fresh {
-            let (coder, cost) = Wlsv::new(frame.size, quality, args.wlsv_chroma, args.wlsv_speed, args.threads)?;
+            let (coder, cost) = Wlsv::new(frame.size, quality, args.wlsv_chroma, args.threads)?;
             setup = cost;
             run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, quality, encoder)? });
         }
@@ -628,14 +618,10 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
     let (off, tiles_mse) = compare(&run.tiles.page.canvas, &picture);
     let wlsv_detail = format!("{} keyframes{}", wlsv.keyframes, if wlsv.tail_cpu > Duration::ZERO { format!(", settled at {ceiling} for {:.1} ms", ms(wlsv.tail_cpu)) } else { String::new() });
     let wlsv_name = format!(
-        "WLSV {}{}",
+        "WLSV {}",
         match args.wlsv_chroma {
             Chroma::Yuv444 => "4:4:4",
             Chroma::Yuv420 => "4:2:0",
-        },
-        match args.wlsv_speed {
-            Speed::Usual => "",
-            Speed::Fastest => ", speed 9",
         }
     );
     row(&name, &wlsv_name, &wlsv, seconds, &db(wlsv_mse), &wlsv_detail);
