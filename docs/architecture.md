@@ -1334,7 +1334,10 @@ xdg-desktop-portal's Camera interface, which hands it a PipeWire remote that
 shows only nodes of role `Camera`. The portal exports that interface only when a
 backend implements Access, to ask the user; `xdg-desktop-portal-wlr` does not,
 and `xdg-desktop-portal-gtk` does. The portal finds its backends when it starts,
-so a running one must be restarted after a backend is installed. Chrome also
+so a running one must be restarted after a backend is installed. The package
+recommends `xdg-desktop-portal` and `xdg-desktop-portal-gtk` for this, rather
+than depending on them: the daemon uses neither, and an application that opens
+PipeWire itself needs no portal. Chrome also
 reaches cameras through PipeWire only with
 `chrome://flags/#enable-webrtc-pipewire-camera` enabled; without the flag, or
 without the portal's Camera interface, it looks at `/dev/video*` alone and lists
