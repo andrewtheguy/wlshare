@@ -7,6 +7,8 @@
 //!
 //! ```text
 //! vp9cap info CAPTURE
+//! vp9cap times CAPTURE
+//! vp9cap frames CAPTURE [--from FRAME] [--fps N]
 //! vp9cap shape STREAM.ivf
 //! vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
 //! vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest]
@@ -21,6 +23,20 @@
 //! `info` says what a capture holds: for each run of frames at one size, how
 //! many there are, how many were whole pictures, how much of the picture the
 //! rest said changed, and how long the run lasted.
+//!
+//! `times` lists every frame, `frame,ms,width,height,whole,keyframe,changed`:
+//! when the session handed it over, counted from the capture's first, and the
+//! pixels it said changed, so that a part of a scripted session found by its
+//! time can be cut with `trim --from FRAME --frames N`.
+//!
+//! `frames` writes the run of a size that starts at frame `--from`, or
+//! without it the capture's longest (a second pass), to standard output as
+//! raw `B, G, R, X` pictures, rows tight, at a constant `--fps` (30 by
+//! default, 1000 at most): at each tick the picture as the latest frame at or before it
+//! left it, so the session's own timing survives, pauses and all. Its size,
+//! `WxH`, and the rate go to standard error first, for the encoder it is
+//! piped into: `ffmpeg -f rawvideo -pix_fmt bgr0 -s WxH -r N -i -`. Nothing
+//! is coded, so what is watched is what the session was handed.
 //!
 //! `shape` says what `sample` names a stream for, of any IVF: its size, its
 //! tile columns and whether it is loop filtered, as its first frame has them.
@@ -66,6 +82,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 
 use wlshare_vp9::capture::{Frame, Reader, Writer};
 use wlshare_vp9::{Chroma, Stream};
@@ -82,9 +99,14 @@ struct Args {
     threads: usize,
     from: u64,
     out: PathBuf,
+    fps: u32,
+    /// `--from` was given, 0 among what it may be.
+    from_given: bool,
 }
 
 const USAGE: &str = "usage: vp9cap info CAPTURE
+       vp9cap times CAPTURE
+       vp9cap frames CAPTURE [--from FRAME] [--fps N]
        vp9cap shape STREAM.ivf
        vp9cap streams CAPTURE --dir DIR --name NAME [--least N] [--threads N]
        vp9cap sample CAPTURE --dir DIR --name NAME --frames N [--busiest] [--threads N]
@@ -94,7 +116,7 @@ fn parse_args() -> Result<(String, Args), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or("a command")?;
     let capture = PathBuf::from(args.next().ok_or("a capture to read")?);
-    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, from: 0, out: PathBuf::new() };
+    let mut parsed = Args { capture, dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 4, from: 0, out: PathBuf::new(), fps: 30, from_given: false };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -104,13 +126,17 @@ fn parse_args() -> Result<(String, Args), String> {
             "--least" => parsed.least = value()?.parse().map_err(|_| "--least takes a count")?,
             "--busiest" => parsed.busiest = true,
             "--threads" => parsed.threads = value()?.parse().map_err(|_| "--threads takes a count")?,
-            "--from" => parsed.from = value()?.parse().map_err(|_| "--from takes a frame")?,
+            "--from" => {
+                parsed.from = value()?.parse().map_err(|_| "--from takes a frame")?;
+                parsed.from_given = true;
+            }
             "--out" => parsed.out = PathBuf::from(value()?),
+            "--fps" => parsed.fps = value()?.parse().ok().filter(|fps| (1..=1000).contains(fps)).ok_or("--fps takes a rate from 1 to 1000")?,
             other => return Err(format!("{other}: not a flag")),
         }
     }
     match command.as_str() {
-        "info" | "shape" => {}
+        "info" | "times" | "frames" | "shape" => {}
         "streams" | "sample" => {
             if parsed.dir.as_os_str().is_empty() || parsed.name.is_empty() {
                 return Err("--dir and --name are needed".into());
@@ -132,8 +158,14 @@ fn parse_args() -> Result<(String, Args), String> {
         }
         other => return Err(format!("{other}: not a command")),
     }
-    if command != "trim" && (parsed.from > 0 || !parsed.out.as_os_str().is_empty()) {
-        return Err("--from and --out are trim's".into());
+    if command != "frames" && parsed.fps != 30 {
+        return Err("--fps is frames'".into());
+    }
+    if !matches!(command.as_str(), "trim" | "frames") && parsed.from_given {
+        return Err("--from is trim's and frames'".into());
+    }
+    if command != "trim" && !parsed.out.as_os_str().is_empty() {
+        return Err("--out is trim's".into());
     }
     Ok((command, parsed))
 }
@@ -148,6 +180,8 @@ fn main() {
     };
     let done = match command.as_str() {
         "info" => info(&args),
+        "times" => times(&args),
+        "frames" => frames(&args, std::io::stdout().lock()),
         "shape" => shape(&args),
         "streams" => streams(&args),
         "trim" => trim(&args),
@@ -262,6 +296,69 @@ fn info(args: &Args) -> Result<(), Error> {
             partial.len(),
         );
     }
+    Ok(())
+}
+
+fn times(args: &Args) -> Result<(), Error> {
+    let seen = scan(&args.capture)?;
+    let start = seen.first().map_or(0, |f| f.micros);
+    println!("frame,ms,width,height,whole,keyframe,changed");
+    for (index, f) in seen.iter().enumerate() {
+        let (width, height) = f.size;
+        println!("{index},{:.1},{width},{height},{},{},{}", (f.micros - start) as f64 / 1e3, u8::from(f.whole), u8::from(f.keyframe), f.changed);
+    }
+    Ok(())
+}
+
+/// The run `--from` starts, or the longest, as raw pictures on `out`.
+fn frames(args: &Args, out: impl std::io::Write) -> Result<(), Error> {
+    // The run's first frame: `--from`, or the longest run's (a pass of its own).
+    let first = match args.from_given {
+        true => args.from,
+        false => {
+            let seen = scan(&args.capture)?;
+            runs(&seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?.start as u64
+        }
+    };
+    let tick = Duration::from_secs(1) / args.fps;
+    let mut out = BufWriter::with_capacity(1 << 22, out);
+    let mut source = Source::open(&args.capture)?;
+    // The frame waiting for the next to say when it ends, and the tick due.
+    let mut held: Option<(Duration, Vec<u8>)> = None;
+    let mut next: Option<Duration> = None;
+    let mut size = None;
+    while let Some(frame) = source.reader.next()? {
+        if frame.index < first {
+            continue;
+        }
+        // The run is the frames from the first at its size, until another.
+        if *size.get_or_insert_with(|| {
+            eprintln!("{}x{} {} fps", frame.size.0, frame.size.1, args.fps);
+            frame.size
+        }) != frame.size
+        {
+            break;
+        }
+        if let Some((at, pixels)) = &held {
+            let due = next.get_or_insert(*at);
+            while *due < frame.at {
+                out.write_all(pixels)?;
+                *due += tick;
+            }
+        }
+        match &mut held {
+            Some((at, pixels)) => {
+                *at = frame.at;
+                pixels.clear();
+                pixels.extend_from_slice(frame.pixels);
+            }
+            None => held = Some((frame.at, frame.pixels.to_vec())),
+        }
+    }
+    let (_, pixels) = held.ok_or_else(|| format!("the capture has no frame {first}"))?;
+    // The last frame lasts a tick.
+    out.write_all(&pixels)?;
+    out.flush()?;
     Ok(())
 }
 
@@ -671,4 +768,57 @@ fn keyframe_shape(frame: &[u8]) -> Option<Shape> {
         tile_columns_log2 += 1;
     }
     Some(Shape { width, height, loop_filter_level, tile_columns_log2 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture of 1×1 frames at 100 ms apart, one per `(size, value)`:
+    /// each picture's every byte is the value, so the output says which.
+    fn capture(name: &str, frames: &[(u16, u8)]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("vp9cap-test-{}-{name}.wlcap", std::process::id()));
+        let mut writer = Writer::new(File::create(&path).unwrap()).unwrap();
+        for (i, &(width, value)) in frames.iter().enumerate() {
+            let pixels = vec![value; usize::from(width) * 4];
+            writer.frame_at(Duration::from_millis(100 * i as u64), (width, 1), 50, i == 0, None, &pixels, pixels.len()).unwrap();
+        }
+        writer.flush().unwrap();
+        path
+    }
+
+    /// `frames` at 10 fps, a tick a frame: the values of the pictures written.
+    fn played(path: &Path, from: Option<u64>) -> Vec<u8> {
+        let args = Args { capture: path.to_owned(), dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 1, from: from.unwrap_or(0), out: PathBuf::new(), fps: 10, from_given: from.is_some() };
+        let mut out = Vec::new();
+        frames(&args, &mut out).unwrap();
+        out.chunks(4).map(|pixel| pixel[0]).collect()
+    }
+
+    #[test]
+    fn the_longest_run_is_played_where_a_size_comes_again() {
+        // 1 wide twice, 2 wide once, 1 wide three times: the second run of
+        // the first size, not the frames at that size from the first on.
+        let path = capture("longest", &[(1, 1), (1, 2), (2, 3), (1, 4), (1, 5), (1, 6)]);
+        assert_eq!(played(&path, None), [4, 5, 6]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn of_runs_as_long_the_first_is_played() {
+        let path = capture("tie", &[(1, 1), (1, 2), (2, 3), (1, 4), (1, 5)]);
+        assert_eq!(played(&path, None), [1, 2]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn from_plays_its_run_alone() {
+        let path = capture("from", &[(1, 1), (1, 2), (2, 3), (2, 4), (1, 5), (1, 6), (1, 7)]);
+        // Its run's start, or within it; and a run before the longest.
+        assert_eq!(played(&path, Some(4)), [5, 6, 7]);
+        assert_eq!(played(&path, Some(5)), [6, 7]);
+        assert_eq!(played(&path, Some(0)), [1, 2]);
+        assert_eq!(played(&path, Some(2)).len() / 2, 2);
+        std::fs::remove_file(path).unwrap();
+    }
 }

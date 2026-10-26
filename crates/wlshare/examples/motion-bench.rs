@@ -3,8 +3,8 @@
 //! ways, and what each cost the encoder and the link.
 //!
 //! ```text
-//! motion-bench [--threads N] [--quality Q] [--libx264] [--wlsv-chroma 444|420]
-//!              [--csv FILE] CAPTURE...
+//! motion-bench [--threads N] [--quality Q] [--walk-at Q] [--libx264]
+//!              [--wlsv-chroma 444|420] [--csv FILE] CAPTURE...
 //! motion-bench check [--threads N] [--quality Q] [--libx264] CAPTURE...
 //! ```
 //!
@@ -23,7 +23,10 @@
 //! being a picture the client asks for whole ([`TilesEncoder::forget`]), and
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
-//! changing. Its dial is the capture's unless `--quality` names one. Its
+//! changing. Its dial is the capture's unless `--quality` names one, the
+//! ceiling the picture is exact at; `--walk-at` holds the walk below it
+//! instead, where the stills are lossy WebP owed exact, as a link that is
+//! behind is sent them ([`TilesEncoder::set_pace`]). Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
@@ -51,7 +54,7 @@
 //! of the mean squared error over every frame and the share of frames it held
 //! exactly; and where it ended. `--csv` adds one line per frame:
 //! `capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,tiles_bytes,png_bytes,
-//! h264_bytes,streams,tick_us,tick_bytes`, a tick's columns what the ticks
+//! webp_bytes,h264_bytes,streams,tick_us,tick_bytes`, a tick's columns what the ticks
 //! since the frame before cost.
 //!
 //! **`check`** holds the tiles to what a picture that stops owes, on any
@@ -94,7 +97,7 @@ mod rfb;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--libx264] [--wlsv-chroma 444|420] [--csv FILE] CAPTURE...
+const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--walk-at Q] [--libx264] [--wlsv-chroma 444|420] [--csv FILE] CAPTURE...
        motion-bench check [--threads N] [--quality Q] [--libx264] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
@@ -104,6 +107,8 @@ struct Args {
     captures: Vec<PathBuf>,
     threads: usize,
     quality: Option<u8>,
+    /// The tiles' walk held at this dial, below the ceiling.
+    walk_at: Option<u8>,
     /// libx264 for the regions, the hardware not looked for.
     libx264: bool,
     wlsv_chroma: Chroma,
@@ -114,12 +119,13 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, libx264: false, wlsv_chroma: Chroma::Yuv444, csv: None, check: false };
+    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, walk_at: None, libx264: false, wlsv_chroma: Chroma::Yuv444, csv: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
             "--threads" => parsed.threads = value()?.parse().ok().filter(|&n| n > 0).ok_or("--threads takes a count of at least 1")?,
             "--quality" => parsed.quality = Some(value()?.parse().ok().filter(|q| (1..=100).contains(q)).ok_or("--quality takes 1 to 100")?),
+            "--walk-at" => parsed.walk_at = Some(value()?.parse().ok().filter(|q| (1..=100).contains(q)).ok_or("--walk-at takes 1 to 100")?),
             "--libx264" => parsed.libx264 = true,
             "--wlsv-chroma" => {
                 parsed.wlsv_chroma = match value()?.as_str() {
@@ -186,7 +192,7 @@ fn main() {
         }
     };
     if let Some(csv) = &mut csv
-        && let Err(e) = writeln!(csv, "capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,tiles_bytes,png_bytes,h264_bytes,streams,tick_us,tick_bytes")
+        && let Err(e) = writeln!(csv, "capture,frame,ms,changed,wlsv_us,wlsv_bytes,tiles_us,tiles_bytes,png_bytes,webp_bytes,h264_bytes,streams,tick_us,tick_bytes")
     {
         eprintln!("motion-bench: the CSV: {e}");
         std::process::exit(1);
@@ -258,6 +264,7 @@ impl Drop for Source {
 #[derive(Default)]
 struct Sent {
     png: u64,
+    webp: u64,
     /// The frames of the streams: the tiles' regions' H.264, or `WLSV`'s VP9.
     video: u64,
     starts: u64,
@@ -265,11 +272,12 @@ struct Sent {
 
 impl Sent {
     fn bytes(&self) -> u64 {
-        self.png + self.video
+        self.png + self.webp + self.video
     }
 
     fn add(&mut self, other: &Sent) {
         self.png += other.png;
+        self.webp += other.webp;
         self.video += other.video;
         self.starts += other.starts;
     }
@@ -317,14 +325,17 @@ impl Page {
                     if (info.width as usize, info.height as usize, info.color_type) != (w, h, png::ColorType::Rgb) {
                         return Err(format!("a PNG of {}x{} {:?} for {w}x{h}", info.width, info.height, info.color_type).into());
                     }
-                    let mut pixels = rgb.as_chunks::<3>().0.iter();
-                    for row in y..y + h {
-                        let at = row * self.stride + x * 4;
-                        for px in self.canvas[at..at + w * 4].as_chunks_mut::<4>().0 {
-                            let c = pixels.next().expect("a pixel for every one");
-                            px[..3].copy_from_slice(&[c[2], c[1], c[0]]);
-                        }
+                    self.paste((x, y, w, h), &rgb);
+                }
+                TileBody::Webp(webp) => {
+                    sent.webp += webp.len() as u64;
+                    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&webp))?;
+                    if decoder.dimensions() != (w as u32, h as u32) || decoder.has_alpha() {
+                        return Err(format!("a WebP of {:?} with alpha {} for {w}x{h}", decoder.dimensions(), decoder.has_alpha()).into());
                     }
+                    let mut rgb = vec![0; decoder.output_buffer_size().ok_or("a WebP too large")?];
+                    decoder.read_image(&mut rgb)?;
+                    self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Start { stream, frame } => {
                     sent.video += frame.len() as u64;
@@ -344,6 +355,18 @@ impl Page {
             }
         }
         Ok(sent)
+    }
+
+    /// Packed RGB drawn at the rectangle.
+    fn paste(&mut self, (x, y, w, h): (usize, usize, usize, usize), rgb: &[u8]) {
+        let mut pixels = rgb.as_chunks::<3>().0.iter();
+        for row in y..y + h {
+            let at = row * self.stride + x * 4;
+            for px in self.canvas[at..at + w * 4].as_chunks_mut::<4>().0 {
+                let c = pixels.next().expect("a pixel for every one");
+                px[..3].copy_from_slice(&[c[2], c[1], c[0]]);
+            }
+        }
     }
 
     fn region(&mut self, stream: u8, (x, y, w, h): (usize, usize, usize, usize), frame: &[u8]) -> Result<(), Error> {
@@ -380,10 +403,10 @@ struct Tiles {
 }
 
 impl Tiles {
-    /// The tiles of a desktop of `size`, its regions on a coder of
-    /// `encoder`'s opened for it, as a session opens one.
-    fn new(size: (u16, u16), quality: u8, encoder: &h264::Encoder) -> Result<Self, Error> {
-        Ok(Self { encoder: TilesEncoder::new(size.0, size.1, quality, Box::new(encoder.coder()?))?, page: Page::new(size), out: Vec::new() })
+    /// The tiles of a desktop of `size` at `ceiling`, its regions on a coder
+    /// of `encoder`'s opened for it, as a session opens one.
+    fn new(size: (u16, u16), ceiling: u8, encoder: &h264::Encoder) -> Result<Self, Error> {
+        Ok(Self { encoder: TilesEncoder::new(size.0, size.1, ceiling, Box::new(encoder.coder()?))?, page: Page::new(size), out: Vec::new() })
     }
 
     /// Encode what is owed at `now` and draw it: the CPU time of the encode,
@@ -391,20 +414,21 @@ impl Tiles {
     fn encode(&mut self, now: Duration) -> Result<(Duration, Sent), Error> {
         self.out.clear();
         let cpu = ProcessTime::now();
-        let count = self.encoder.encode(now, &mut self.out)?;
+        let update = self.encoder.encode(now, &mut self.out)?;
         let cost = cpu.elapsed();
-        Ok((cost, self.page.draw(count, &self.out)?))
+        Ok((cost, self.page.draw(update.rects, &self.out)?))
     }
 
     /// One captured frame read and encoded, its read's CPU time counted too:
-    /// `whole` for a picture the client asks for whole.
+    /// `whole` for a picture the client asks for whole, `quality` where the
+    /// walk stands.
     fn frame(&mut self, pixels: &[u8], changed: Option<&[Rect]>, whole: bool, quality: u8, now: Duration) -> Result<(Duration, Sent), Error> {
         let stride = usize::from(self.encoder.size().0) * 4;
         let cpu = ProcessTime::now();
         if whole {
             self.encoder.forget();
         }
-        self.encoder.set_quality(quality);
+        self.encoder.set_pace(quality, false);
         self.encoder.read(pixels, stride, changed, now)?;
         let read = cpu.elapsed();
         let (cost, sent) = self.encode(now)?;
@@ -561,7 +585,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
         w.check()?;
 
         // The tiles.
-        let (tiles_cpu, sent) = run.tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, quality, now)?;
+        let (tiles_cpu, sent) = run.tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, args.walk_at.unwrap_or(quality), now)?;
         tiles.frames += 1;
         tiles.cpu += tiles_cpu;
         tiles.per_frame.push(tiles_cpu);
@@ -574,7 +598,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
         if let Some(csv) = csv.as_deref_mut() {
             writeln!(
                 csv,
-                "{name},{},{},{},{},{wlsv_bytes},{},{},{},{},{},{},{}",
+                "{name},{},{},{},{},{wlsv_bytes},{},{},{},{},{},{},{},{}",
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
                 frame.changed_pixels(),
@@ -582,6 +606,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
                 tiles_cpu.as_micros(),
                 sent.bytes(),
                 sent.png,
+                sent.webp,
                 sent.video,
                 run.tiles.page.decoders.len(),
                 tick_cpu.as_micros(),
@@ -631,9 +656,11 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut csv: Option<&mut
     row(&name, &wlsv_name, &wlsv, seconds, &db(wlsv_mse), &wlsv_detail);
     let ends = if off == 0 { "exact".to_owned() } else { format!("{off} px off, {}", db(tiles_mse)) };
     let tiles_detail = format!(
-        "PNG {:.2} MB, H.264 {:.2} MB in {} streams; {} in {:.2} s after, {:.1} ms",
+        "PNG {:.2} MB, WebP {:.2} MB, H.264 {:.2} MB in {} streams; {} in {:.2} s after, {:.1} ms",
         mb(tiles.sent.png),
+        mb(tiles.sent.webp),
         mb(tiles.sent.video),
+
         tiles.sent.starts,
         if tiles.settled { "settled" } else { "NOT settled" },
         tiles.tail.as_secs_f64(),

@@ -252,6 +252,8 @@ pub enum RectBody {
 pub enum TileBody {
     /// A PNG of the rectangle's pixels, exact.
     Png(Vec<u8>),
+    /// A lossy WebP of the rectangle's pixels, owed exact later.
+    Webp(Vec<u8>),
     /// The first frame of a region's stream on `stream`, a keyframe.
     Start { stream: u8, frame: Vec<u8> },
     /// The next frame of the stream on `stream`.
@@ -445,6 +447,11 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                     (RectBody::Tiles(TileBody::Frame { stream, frame }), at + len)
                 }
                 TileHeader::End { stream } => (RectBody::Tiles(TileBody::End { stream }), at),
+                TileHeader::Webp { len } => {
+                    let Some(webp) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Webp(webp)), at + len)
+                }
+
             }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
@@ -500,7 +507,8 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
 mod tests {
     use super::*;
     use wlshare_proto::audio::{AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect};
-    use wlshare_proto::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START};
+    use wlshare_proto::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START, KIND_WEBP};
+
 
     use crate::rfb::audio::FlacEncoder;
     use crate::rfb::cursor::{CursorImage, alpha_cursor_rect, cursor_rect};
@@ -612,7 +620,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(11).to_vec();
+        let mut wire = msg::update_header(12).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -631,6 +639,8 @@ mod tests {
         wire.extend_from_slice(&[KIND_FRAME, 2, 0, 0, 0, 1, 0x86]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_END, 2]);
+        wire.extend_from_slice(&msg::rect_header(128, 0, 64, 64, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_WEBP, 0, 0, 0, 4, b'R', b'I', b'F', b'F']);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -654,7 +664,9 @@ mod tests {
         assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
         assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));
         assert_eq!((rects[10].width, &rects[10].body), (320, &RectBody::Tiles(TileBody::End { stream: 2 })));
+        assert_eq!(rects[11], Rect { x: 128, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Webp(b"RIFF".to_vec())) });
     }
+
 
     #[test]
     fn a_rectangle_nobody_asked_for_is_fatal() {
@@ -667,8 +679,9 @@ mod tests {
         assert_eq!(parse(&wire), Err(ParseError::RectTooLong(u32::MAX as usize)));
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
-        wire.push(4);
-        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(4))));
+        wire.push(5);
+        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(5))));
+
     }
 
     #[tokio::test]

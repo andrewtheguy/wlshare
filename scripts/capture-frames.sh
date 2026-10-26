@@ -12,8 +12,8 @@
 # sizes default to run.sh's. The captures are the source: the streams a
 # decoder is tested on are made of them by scripts/vp9-samples.sh, again
 # whenever the encoder changes. `--video` is the video file the video and
-# the walk play full screen, handed to the container read-only; a run with
-# either of them needs it.
+# the walk play full screen, the window in a window and the mixed in both,
+# handed to the container read-only; a run with any of them needs it.
 #
 # The container is docker's, or podman's where there is no docker or where
 # `docker` is podman under that name. The desktop runs as whoever runs this,

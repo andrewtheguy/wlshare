@@ -27,3 +27,8 @@ vpx-sys = { package = "libvpx-prebuilt-sys", git = "https://github.com/andrewthe
 # professional mode is the one to the planes whose every path, NEON with and
 # without RDM, AVX2, SSE and scalar, makes the same planes of a colour.
 yuv = { version = "0.8", features = ["professional_mode"] }
+
+# vp9cap's tests, of which run of a capture it plays, run with the crate's.
+[[example]]
+name = "vp9cap"
+test = true

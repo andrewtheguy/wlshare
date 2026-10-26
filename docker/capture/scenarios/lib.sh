@@ -12,7 +12,8 @@
 # video file in CAPTURE_VIDEO.
 #
 #   quiet: terminal.sh, still.sh, uncover.sh    little changes a frame, most of it still
-#   busy:  flood.sh, browser.sh, drag.sh, video.sh    most of the picture new
+#   busy:  flood.sh, browser.sh, drag.sh, video.sh, window.sh    most of the picture new, or the window's
+#   mixed: mixed.sh    minutes at the desk, quiet and busy in turn
 #
 # busy-lines.sh is the flood itself, for any terminal.
 
@@ -56,6 +57,21 @@ material() {
 			done
 			echo '</body></html>'
 		} >"$MATERIAL/page.html"
+	fi
+	if [[ ! -s "$MATERIAL/second.html" ]]; then
+		# The page a link leads to: another article, its photographs drawn
+		# as gradients, for mixed.sh.
+		{
+			echo '<!doctype html><html><head><meta charset="utf-8"><title>second</title><style>body{font-family:"DejaVu Sans",sans-serif;font-size:16px;line-height:1.6;max-width:60%;margin:30px auto;color:#1a1a1a;background:#fbfaf7}h1,h2{font-family:"DejaVu Serif",serif}.photo{height:320px;margin:1em 0;border-radius:6px}</style></head><body><h1>The second article</h1>'
+			local i
+			for i in $(seq 1 40); do
+				echo "<h2>Part $i</h2>"
+				echo "<p>Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo. Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit. Part $i of 40.</p>"
+				echo "<div class=photo style=\"background:radial-gradient(circle at $(((i * 29) % 100))% $(((i * 53) % 100))%,hsl($(((i * 47) % 360)),80%,70%),hsl($(((i * 47 + 140) % 360)),60%,25%))\"></div>"
+				echo "<p>Neque porro quisquam est, qui dolorem ipsum quia dolor sit amet, consectetur, adipisci velit, sed quia non numquam eius modi tempora incidunt ut labore et dolore magnam aliquam quaerat voluptatem.</p>"
+			done
+			echo '</body></html>'
+		} >"$MATERIAL/second.html"
 	fi
 }
 

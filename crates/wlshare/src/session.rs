@@ -70,9 +70,16 @@
 //! client's last update is copied out of the framebuffer under the lock into
 //! the encoder's own picture, and coded on the worker once it is let go, as a
 //! VP9 frame is; a damage that changes nothing the client holds sends nothing.
-//! The regions' streams are held at the quality the list names, with no walk:
-//! the picture is for a link with room. What the encoder still owes once the
-//! desktop stops — a stream to end, a tile a stream carried to send exact — is
+//! The dial the list names is a ceiling the same walk of the link moves the
+//! encoder below, unless the list holds it: each update's fence is the
+//! walk's verdict as a VP9 frame's is, a START, a picture sent whole or a
+//! stream starting over at the moved dial counting as a keyframe, and below
+//! the ceiling the stills go lossy, owed exact once the
+
+//! link has room ([`TilesEncoder::set_pace`]). A slowed walk paces the
+//! updates as it paces VP9's frames. What the encoder still owes once the
+//! desktop stops — a stream to end, a tile a stream carried or a still sent
+//! lossy to send exact — is
 //! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
 //! waits for a request and the fence as any other. A new size starts it over,
 //! and so does a non-incremental request, which ends every stream; a list that
@@ -177,6 +184,7 @@ use crate::rfb::msg::{self, ClientMsg, Screen};
 use crate::rfb::pixel::PixelFormat;
 use crate::rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use crate::rfb::tiles::TilesEncoder;
+use wlshare_proto::tiles::TilesPicture;
 use crate::rfb::vp9::{self, Vp9Encoder};
 use crate::rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use crate::rfb::{
@@ -354,12 +362,12 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         use_vp9: false,
         tiles: None,
         use_tiles: false,
-        tiles_quality: crate::rfb::vp9::QUALITY_MAX,
+        tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, adaptive: true },
         tiles_origin: Instant::now(),
         stream,
         keyframe_owed: false,
         walk,
-        vp9_in_flight: None,
+        in_flight: None,
         frame_sent: None,
         settle_owed: false,
         continuous_supported: false,
@@ -558,8 +566,9 @@ struct Session {
     tiles: Option<TilesEncoder>,
     /// The client listed the tiles encoding, which it gets instead of Raw or ZRLE.
     use_tiles: bool,
-    /// The dial the tiles picture's streams are held at, which its list names.
-    tiles_quality: u8,
+    /// What the tiles picture is to be, as the client's list asks: the
+    /// ceiling of its dial, and whether the walk moves it below.
+    tiles_picture: TilesPicture,
     /// What the tiles encoder's time is counted from.
     tiles_origin: Instant,
     /// What the VP9 stream is to be: the ceiling of its quality, whether the
@@ -568,16 +577,18 @@ struct Session {
     stream: Vp9Stream,
     /// The next VP9 frame must be a keyframe.
     keyframe_owed: bool,
-    /// The VP9 quality this client's link will bear.
+    /// The quality this client's link will bear, of the VP9 stream or the
+    /// tiles picture, whichever it lists.
     walk: QualityWalk,
-    /// The VP9 frame whose fence is outstanding: when it was written, and
-    /// whether its delivery is a verdict about the link — a delta frame at the
-    /// walk's quality, so neither a keyframe nor the settle's frame.
-    vp9_in_flight: Option<(Instant, bool)>,
-    /// When the last VP9 frame went out. On a link the walk has slowed, the
-    /// next may go the walk's interval after it ([`QualityWalk::interval`]),
-    /// read when it is asked for, so a step the fence of that frame brings
-    /// paces the very next one.
+    /// The VP9 frame or tiles update whose fence is outstanding: when it was
+    /// written, and whether its delivery is a verdict about the link — a
+    /// delta frame at the walk's quality, so neither a keyframe nor the
+    /// settle's frame, or a tiles update with no START and no picture whole.
+    in_flight: Option<(Instant, bool)>,
+    /// When the last VP9 frame or tiles update went out. On a link the walk
+    /// has slowed, the next may go the walk's interval after it
+    /// ([`QualityWalk::interval`]), read when it is asked for, so a step the
+    /// fence of that frame brings paces the very next one.
     frame_sent: Option<Instant>,
     /// The unchanged picture is owed as a frame at the configured quality.
     settle_owed: bool,
@@ -863,7 +874,8 @@ impl Session {
                 // Fatal without a quality: no client sends such a list.
                 let listed = Vp9Stream::listed(&encodings).context("reading the VP9 stream the client lists")?;
                 let vp9 = listed.is_some();
-                let changed = listed.is_some_and(|stream| stream != self.stream);
+                // The walk was the tiles picture's, where that was listed.
+                let changed = listed.is_some_and(|stream| stream != self.stream || self.use_tiles);
                 if let Some(stream) = listed.filter(|_| changed) {
                     // A new ceiling or walk is a fresh walk from the ceiling, which
                     // a running encoder follows without a keyframe. A new ceiling
@@ -914,22 +926,43 @@ impl Session {
                 }
                 self.use_vp9 = vp9;
                 // Fatal without a quality, or beside VP9: no client sends such a list.
-                let listed = wlshare_proto::tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
-                if let Some(quality) = listed {
-                    if !self.use_tiles || quality != self.tiles_quality {
-                        info!("client {}: asked for tiles, its moving regions at quality {quality}, H.264 by {}", self.id.0, self.config.h264.name());
+                let listed = TilesPicture::listed(&encodings).context("reading the tiles picture the client lists")?;
+                if let Some(picture) = listed {
+                    let changed = !self.use_tiles || picture != self.tiles_picture;
+                    if changed {
+                        info!(
+                            "client {}: asked for tiles up to quality {}, {}, H.264 by {}",
+                            self.id.0,
+                            picture.quality,
+                            if picture.adaptive { "walked by its lag" } else { "held there" },
+                            self.config.h264.name()
+                        );
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
                     }
                     if !self.use_tiles {
-                        // The picture starts over whole as PNG at the next
-                        // update, whether or not the desktop changed.
+                        self.tiles = None;
+                        self.seen = 0;
+                    } else if picture.quality != self.tiles_picture.quality {
+                        // A new ceiling is a new picture: what the client
+                        // holds was coded against the old one, so it starts
+                        // over whole at the next update, whether or not the
+                        // desktop changed, every live stream ended first.
+                        if let Some(encoder) = &mut self.tiles {
+                            encoder.set_ceiling(picture.quality);
+                        }
                         self.seen = 0;
                     }
-                    self.tiles_quality = quality;
-                    if let Some(encoder) = &mut self.tiles {
-                        encoder.set_quality(quality);
+                    self.tiles_picture = picture;
+                    if changed {
+                        // A fresh walk from the ceiling, which the running
+                        // streams follow with no keyframe.
+                        self.walk = QualityWalk::new(picture.quality, self.config.capture, picture.adaptive);
+                        let (quality, coarse) = self.tiles_pace();
+                        if let Some(encoder) = &mut self.tiles {
+                            encoder.set_pace(quality, coarse);
+                        }
                     }
                 } else if self.use_tiles {
                     // What the client holds may be a stream's lossy picture
@@ -1074,7 +1107,7 @@ impl Session {
                     writer.send(&msg::fence(echo, &payload)).await?;
                 } else {
                     self.fence_outstanding = false;
-                    if let Some((sent, verdict)) = self.vp9_in_flight.take() {
+                    if let Some((sent, verdict)) = self.in_flight.take() {
                         let now = Instant::now();
                         let delivery = now.saturating_duration_since(sent);
                         let moved = self.walk.fenced(delivery, verdict, now);
@@ -1449,8 +1482,10 @@ impl Session {
                     }
                     drop(fb);
                     let coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
-                    let encoder = TilesEncoder::new(width, height, self.tiles_quality, Box::new(coder))
+                    let mut encoder = TilesEncoder::new(width, height, self.tiles_picture.quality, Box::new(coder))
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
+                    let (quality, coarse) = self.tiles_pace();
+                    encoder.set_pace(quality, coarse);
                     self.tiles = Some(encoder);
                     continue;
                 }
@@ -1634,7 +1669,7 @@ impl Session {
                 self.follow_walk(moved);
             }
             if self.fence_supported {
-                self.vp9_in_flight = Some((sent, verdict));
+                self.in_flight = Some((sent, verdict));
             } else {
                 // Without Fence, a written frame is as delivered as it gets.
                 self.walk.delivered(now);
@@ -1706,7 +1741,7 @@ impl Session {
     /// slowed, or its interval has passed. The interval is the walk's as it
     /// stands now, not as it stood when the last frame went out.
     fn frame_at(&self) -> Option<Instant> {
-        if !self.use_vp9 || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
+        if !(self.use_vp9 || self.use_tiles) || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
             return None;
         }
         if !self.walk.slowed() {
@@ -1719,6 +1754,9 @@ impl Session {
     /// fence, and the framebuffer seen up to `generation`. An encode that owes
     /// nothing — damage that changed nothing the client holds — sends nothing,
     /// and the request waits for what will; `answered` is what is done of it then.
+    /// The update is the walk's to judge as a VP9 frame is: one with a START
+    /// or the picture whole crosses the link as a keyframe and is no verdict,
+    /// and any other is.
     async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(0));
@@ -1726,20 +1764,35 @@ impl Session {
         let (width, height) = encoder.size();
         // Tens of milliseconds for a large desktop that changed all over,
         // which is the worker's to spend and not the runtime's to wait on.
-        let count = tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
+        let update = tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
             .with_context(|| format!("encoding a {width}x{height} tiles picture"))?;
         self.seen = generation;
-        if count == 0 {
+        if update.rects == 0 {
             answered(self);
             return Ok(());
         }
-        self.out[..4].copy_from_slice(&msg::update_header(count));
+        self.out[..4].copy_from_slice(&msg::update_header(update.rects));
         if self.fence_supported {
             self.fence_seq = self.fence_seq.wrapping_add(1);
             self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
             self.fence_outstanding = true;
         }
+        let sent = Instant::now();
         writer.send(&self.out).await.context("writing an update")?;
+        let verdict = !update.keyframe;
+        if update.keyframe {
+            // The updates behind it queue behind its crossing.
+            self.walk.keyframe(sent);
+        }
+        self.frame_sent = Some(sent);
+        let now = Instant::now();
+        if verdict {
+            let moved = self.walk.written(now.saturating_duration_since(sent), self.fence_supported, now);
+            self.follow_walk(moved);
+        }
+        if self.fence_supported {
+            self.in_flight = Some((sent, verdict));
+        }
         self.pending = None;
         Ok(())
     }
@@ -1762,7 +1815,7 @@ impl Session {
     /// that carries the change, when the client asks for it, starts the quiet
     /// again.
     fn settle_at(&self) -> Option<Instant> {
-        if !self.use_vp9 || self.settle_owed || self.vp9_in_flight.is_some() || *self.frames.borrow() > self.seen {
+        if !self.use_vp9 || self.settle_owed || self.in_flight.is_some() || *self.frames.borrow() > self.seen {
             return None;
         }
         self.walk.settle_at()
@@ -1782,20 +1835,37 @@ impl Session {
         Ok(())
     }
 
-    /// Move the running encoder's dial to where the walk went, if it went
-    /// anywhere; an encoder made later starts there anyway. The interval the
-    /// walk asks for is read when a frame goes out.
+    /// Move the running encoder's dial, the VP9 stream's or the tiles
+    /// picture's, to where the walk went, if it went anywhere; an encoder made
+    /// later starts there anyway. The interval the walk asks for is read when
+    /// a frame goes out.
     fn follow_walk(&mut self, moved: Option<Pace>) {
         let Some(pace) = moved else {
             return;
         };
-        if self.walk.slowed() {
-            debug!("client {}: VP9 quality {}, at most one frame per {:?}", self.id.0, pace.quality, pace.interval);
+        let slowed = self.walk.slowed();
+        if slowed {
+            debug!("client {}: quality {}, at most one frame per {:?}", self.id.0, pace.quality, pace.interval);
         } else {
-            debug!("client {}: VP9 quality {}", self.id.0, pace.quality);
+            debug!("client {}: quality {}", self.id.0, pace.quality);
         }
         if let Some(encoder) = &mut self.vp9 {
             encoder.set_quality(pace.quality);
+        }
+        let (quality, coarse) = self.tiles_pace();
+        if let Some(encoder) = &mut self.tiles {
+            encoder.set_pace(quality, coarse);
+        }
+    }
+
+    /// The dial and the coarseness the tiles picture is coded at: the walk's
+    /// where it walks; where the client holds it, the ceiling and never
+    /// coarse, every still exact and the streams at the dial whatever the
+    /// link does ([`TilesPicture`]), the walk slowing the frames alone.
+    fn tiles_pace(&self) -> (u8, bool) {
+        match self.tiles_picture.adaptive {
+            true => (self.walk.quality(), self.walk.slowed()),
+            false => (self.tiles_picture.quality, false),
         }
     }
 

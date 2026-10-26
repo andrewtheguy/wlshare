@@ -25,9 +25,13 @@
 //! below: a region of an odd width or height is coded a pixel larger, its last
 //! row again below it and black to its right, and the gateway clips it to the
 //! region. Each frame is one Annex B access unit, the parameter sets ahead of
-//! every IDR, and the first frame of a stream is one; so is the first after the dial moves, since a VA-API quantizer is the
-//! encoder's for its life and a new one is a new encoder, which libx264's is
-//! too, the dial being held for a region's life anyway. No AUD; no SEI from
+//! every IDR, and the first frame of a stream is one; so is the first after
+//! the dial moves, since a VA-API quantizer is the encoder's for its life and
+//! a new one is a new encoder, and x264 takes no new constant quantizer on a
+//! running one either — its reconfiguration carries a rate factor and not a
+//! QP, so libavcodec's `qp` is read once, at the open — so libx264's is made
+//! again the same way. The tiles encoder counts the update that carries such
+//! a frame as a keyframe for the walk. No AUD; no SEI from
 //! the hardware, and from libx264 the one naming its version and options,
 //! ahead of a stream's first IDR, which a decoder passes over.
 //!
@@ -450,6 +454,7 @@ impl Stream {
             if self.coded_at != self.quality {
                 self.open().context("reopening the encoder at the new dial")?;
             }
+
             let frame = match self.backend {
                 Backend::Vaapi { .. } => {
                     check(ff::av_hwframe_get_buffer(self.frames, self.hw_frame, 0), "taking a VA-API surface")?;
@@ -681,6 +686,33 @@ mod tests {
         let types = nal_types(&unit);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets after the dial moved: {types:?}");
         decodes_to(&mut decoder, &unit, &pixels, w, h, 12 + slack);
+
+        // A picture of noise, which no prediction codes for free, at the
+        // dial's two ends: the coarser quantizer codes it in well under half
+        // the bytes, so the dial did move the quantizer.
+        let mut state = 0x9E37_79B9u32;
+        let noise: Vec<u8> = (0..w * h)
+            .flat_map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let [b, g, r, _] = state.to_le_bytes();
+                [b, g, r, 0]
+            })
+            .collect();
+        let mut sizes = Vec::new();
+        for quality in [100, 1] {
+            stream.set_quality(quality);
+            stream.read_bgrx(&noise, w * 4, None).unwrap();
+            unit.clear();
+            assert!(stream.encode(true, &mut unit).unwrap());
+            sizes.push(unit.len());
+        }
+        assert!(sizes[1] * 2 < sizes[0], "the dial at 1 codes noise in under half the bytes of 100: {sizes:?}");
+        stream.set_quality(60);
+        stream.read_bgrx(&pixels, w * 4, None).unwrap();
+
+
 
         // A keyframe asked for is one, with its parameter sets.
         unit.clear();
