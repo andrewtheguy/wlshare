@@ -32,16 +32,20 @@ COPY . /build
 # start on the 16K and 64K kernels arm64 boards ship (Raspberry Pi 5). 64K pages
 # run on all three.
 #
+# `wlshare --version` names the release and the protocol version, wlshare-proto's
+# major version, and is checked against both.
+#
 # The package version is the crate's, as cargo-deb writes it (<version>-1, a
 # prerelease's hyphen a tilde, so that 0.0.63~alpha.1 sorts before 0.0.63); the
 # distribution the package was built for is in the file name only, so the
 # release asset is wlshare-trixie-<arch>.deb whatever the version.
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
+    protocol="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare-proto","version":"\([0-9]*\)\.0\.0".*/\1/p' | head -n 1)"; \
     arch="$(dpkg --print-architecture)"; \
     if [ "${arch}" = arm64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi; \
     cargo build --release -p wlshare; \
-    [ "$(target/release/wlshare --version)" = "wlshare ${version}" ]; \
+    [ "$(target/release/wlshare --version)" = "wlshare ${version} (wlshare protocol ${protocol})" ]; \
     mkdir -p /out; \
     cargo deb -p wlshare --no-build -o "/out/wlshare-trixie-${arch}.deb"; \
     [ "$(dpkg-deb --field "/out/wlshare-trixie-${arch}.deb" Version)" = "${version/-/\~}-1" ]; \
