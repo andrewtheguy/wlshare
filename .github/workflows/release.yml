@@ -145,8 +145,22 @@ jobs:
           done
           cat release/SHA256SUMS
           gh release upload "${{ needs.prepare.outputs.tag }}" release/*
-      - name: Publish release (removes the draft, creates the tag)
-        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false
+      # Before the release is published, so a tag that cannot be made leaves the
+      # release a draft rather than published without it. A re-run finds the tag
+      # an earlier attempt made: on this commit it is done, on another it fails.
       - name: Tag the protocol version
         if: needs.prepare.outputs.proto_new == 'true'
-        run: gh api "repos/${GH_REPO}/git/refs" -f "ref=refs/tags/${{ needs.prepare.outputs.proto_tag }}" -f "sha=${{ github.sha }}"
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.proto_tag }}"
+          if EXISTING=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq '.object.sha' 2>/dev/null); then
+            if [ "${EXISTING}" != "${{ github.sha }}" ]; then
+              echo "::error::${TAG} already exists at ${EXISTING}, not at this commit ${{ github.sha }}."
+              exit 1
+            fi
+            echo "${TAG} already tags this commit"
+          else
+            gh api "repos/${GH_REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${{ github.sha }}"
+          fi
+      - name: Publish release (removes the draft, creates the tag)
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false
