@@ -20,6 +20,13 @@ chrome() {
 	chromium --ozone-platform=wayland --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --password-store=basic "$@" >>"$MATERIAL/chromium.log" 2>&1 &
 }
 
+# The pointer to X,Y: wlrctl moves it by an amount, so first into the
+# top-left corner, where the desktop stops it.
+point() {
+	wlrctl pointer move -100000 -100000
+	wlrctl pointer move "$1" "$2"
+}
+
 # A flick: a few fast notches of the wheel where the pointer is.
 flick() {
 	local _
@@ -62,7 +69,7 @@ terminal() {
 chrome --new-window "file://$MATERIAL/page.html"
 await_window chromium
 sleep 4
-wlrctl pointer move $((W / 2)) $((H / 2))
+point $((W / 2)) $((H / 2))
 ready
 
 part "folders listed in a terminal"
@@ -75,7 +82,7 @@ type_slowly $'exit\n'
 sleep 2
 
 part "the page read with flicks"
-wlrctl pointer move $((W / 2)) $((H / 2))
+point $((W / 2)) $((H / 2))
 read_page 4
 
 part "a second page opened, read and closed"
@@ -88,6 +95,9 @@ for try in 1 2 3; do
 	((try < 3)) || exit 1
 done
 swaymsg -q '[title="^second"] fullscreen enable'
+# The pointer enters a window that opened under it only when it moves:
+# still, the wheel would go nowhere.
+point $((W / 2)) $((H / 2))
 sleep 3
 read_page 2
 flick -15
@@ -105,7 +115,7 @@ part "a file printed in a terminal over the page, read back and typed into"
 terminal work
 type_slowly "cat $MATERIAL/page.html | fold -w 110"$'\n'
 sleep 1.5
-wlrctl pointer move $((TX + TW / 2)) $((TY + TH / 2))
+point $((TX + TW / 2)) $((TY + TH / 2))
 for _ in 1 2 3 4; do
 	for _ in $(seq 8); do wlrctl pointer scroll -15 0; sleep 0.04; done
 	sleep 2.5
@@ -165,7 +175,7 @@ sleep 2
 
 part "the page again, and the terminal closed"
 swaymsg -q '[app_id="chromium"] focus'
-wlrctl pointer move $((W / 2)) $((H / 2))
+point $((W / 2)) $((H / 2))
 read_page 1
 swaymsg -q '[app_id="work"] scratchpad show'
 sleep 1
