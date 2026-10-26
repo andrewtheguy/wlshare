@@ -433,7 +433,15 @@ What a frame holds is fixed:
   the picture's width and those threads, for the decoder's sake: one tile
   column under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the
   threads, and a stream in four columns or more is coded without the loop
-  filter. The conversion
+  filter. An inter frame that codes half the picture or more — a page
+  scrolled, a video playing — is searched at libvpx's speed 9, the fastest
+  its real-time VP9 has, and every other frame, a keyframe and a settle
+  among them, at speed 7, the speed moving on the running encoder with no
+  keyframe: on the kept captures at 4:4:4 and quality 90, a scroll or a
+  video at 9 took 37–44% less of the processor a frame, for 1–15% more bytes
+  at 4K and 7–37% at 1080p and at most 0.4 dB below while it moved, where a
+  window dragged or uncovered, a quarter to a third of the picture, sent
+  1.4 to 2.3 times the bytes at 9 and is left at 7. The conversion
   from the framebuffer's pixels to the planes is the `yuv` crate's, which
   chooses its AVX2 or NEON path at run time: the daemon is built for its
   target's baseline and asks nothing more of the processor.

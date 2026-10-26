@@ -6,7 +6,7 @@ use std::os::raw::{c_int, c_uint, c_ulong};
 
 use vpx_sys as vpx;
 
-use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, Speed, fits, loop_filtered, quality_to_q, tile_columns_log2};
+use crate::{Chroma, Error, MAX_THREADS, Picture, QUALITY_MAX, QUALITY_MIN, Rect, fits, loop_filtered, quality_to_q, tile_columns_log2};
 
 /// libvpx's image format for a picture at `chroma`.
 fn image_format(chroma: Chroma) -> vpx::vpx_img_fmt_t {
@@ -16,16 +16,21 @@ fn image_format(chroma: Chroma) -> vpx::vpx_img_fmt_t {
     }
 }
 
-/// libvpx's `cpu_used` for a speed, its speed setting, 0–9, higher being
-/// faster and worse. 7 is inside the 5–8 band libvpx's own live-encoding
-/// guidance names, and where the one other real-time desktop encoder to
-/// consult sits, measured rather than inherited; 9 is the fastest its
-/// real-time VP9 has.
-fn cpu_used(speed: Speed) -> c_int {
-    match speed {
-        Speed::Usual => 7,
-        Speed::Fastest => 9,
-    }
+/// libvpx's `cpu_used` for a frame, its speed setting, 0–9, higher being
+/// faster and worse: 9, the fastest its real-time VP9 has, for a `moving`
+/// one — an inter frame that codes half the picture or more, a page
+/// scrolled or a video playing, the frames that cost the most and that the
+/// next frame replaces — and 7 for the rest: a keyframe, a settle, and a
+/// change smaller than that. 7 is inside the 5–8 band libvpx's own
+/// live-encoding guidance names, and where the one other real-time desktop
+/// encoder to consult sits, measured rather than inherited. Measured on the
+/// kept captures at 4:4:4 and quality 90, 9 took a scroll or a video 37–44%
+/// less of the processor a frame at 1080p and 4K, for 1–15% more bytes at
+/// 4K and 7–37% at 1080p, and at most 0.4 dB below 7's picture while it
+/// moved; a window dragged or uncovered, a quarter to a third of the
+/// picture, at 9 sent 1.4 to 2.3 times the bytes, which is why it is half.
+fn cpu_used(moving: bool) -> c_int {
+    if moving { 9 } else { 7 }
 }
 
 /// The side of a block of libvpx's active map, in pixels.
@@ -63,11 +68,10 @@ pub struct Encoder {
     chroma: Chroma,
     /// The dial the next frame is coded at, which [`Self::set_quality`] moves.
     quality: u8,
-    /// The speed the next frame is searched at, which `set_speed` moves.
-    speed: Speed,
-    /// The dial and the speed libvpx is running at, which a frame brings to
-    /// the two above before it is coded ([`Self::follow`]).
-    running: (u8, Speed),
+    /// The dial and the `cpu_used` libvpx is running at, which a frame brings
+    /// to the dial and the speed it is coded at before it is coded
+    /// ([`Self::follow`]).
+    running: (u8, c_int),
     /// Where timestamps are measured from. Real elapsed time rather than a
     /// frame counter, so a pts is a millisecond on the timebase set below: the
     /// desktop decides when a frame happens, and a counter would tell the
@@ -184,8 +188,7 @@ impl Encoder {
             size: (width, height),
             chroma,
             quality,
-            speed: Speed::default(),
-            running: (quality, Speed::default()),
+            running: (quality, cpu_used(false)),
             started: std::time::Instant::now(),
             pts: -1,
             active: vec![0; usize::from(width).div_ceil(ACTIVE_BLOCK) * usize::from(height).div_ceil(ACTIVE_BLOCK)],
@@ -208,7 +211,7 @@ impl Encoder {
             // flat colour, hard edges and text, none of which a camera preset
             // expects.
             encoder.control(vpx::vp8e_enc_control_id_VP9E_SET_TUNE_CONTENT, vpx::vp9e_tune_content_VP9E_CONTENT_SCREEN as c_int, "tune_content")?;
-            encoder.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, cpu_used(encoder.speed), "cpuused")?;
+            encoder.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, encoder.running.1, "cpuused")?;
             // Say in the bitstream what the conversion did: BT.601 matrix,
             // studio swing. libvpx writes *unknown* unless told, and a decoder
             // given unknown guesses — Chromium picks BT.709 for anything HD — so
@@ -278,17 +281,19 @@ impl Encoder {
     }
 
     /// Bring libvpx to the dial and the speed the next frame is to be coded
-    /// at, where it is not there already.
+    /// at, where it is not there already: `moving` is that the frame is
+    /// motion ([`cpu_used`]).
     ///
     /// `vpx_codec_enc_config_set` is libvpx's own mechanism for the dial, and
     /// both halves are needed: the config carries the quantizer bounds and the
     /// control carries the value `VPX_Q` mode actually reads. A refusal leaves
     /// libvpx where it was, to be asked again by the next frame.
-    fn follow(&mut self) -> Result<(), Error> {
-        if self.speed != self.running.1 {
+    fn follow(&mut self, moving: bool) -> Result<(), Error> {
+        let cpu = cpu_used(moving);
+        if cpu != self.running.1 {
             // SAFETY: the context is live and the control's argument is an `int`.
-            unsafe { self.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, cpu_used(self.speed), "cpuused")? };
-            self.running.1 = self.speed;
+            unsafe { self.control(vpx::vp8e_enc_control_id_VP8E_SET_CPUUSED, cpu, "cpuused")? };
+            self.running.1 = cpu;
         }
         let q = quality_to_q(self.quality);
         if q == quality_to_q(self.running.0) {
@@ -336,25 +341,13 @@ impl Encoder {
         self.coded_at.iter().copied().min().unwrap_or(self.quality)
     }
 
-    /// The speed this encoder is coding at.
-    pub fn speed(&self) -> Speed {
-        self.speed
-    }
-
-    /// Move the speed, without a keyframe, as [`Self::set_quality`] moves
-    /// the dial: the next frame is searched at the new speed against the
-    /// frames before it.
-    pub fn set_speed(&mut self, speed: Speed) {
-        self.speed = speed;
-    }
-
     /// Settle `picture` at `quality`: encode it whole and at that dial, and
     /// leave the dial where it was, for the frames after it. Returns whether
     /// the frame is a keyframe, as [`Self::encode`] does.
     pub fn settle(&mut self, picture: &Picture, quality: u8, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         let walked = self.quality;
         self.set_quality(quality);
-        let encoded = self.encode(picture, keyframe, None, out);
+        let encoded = self.code(picture, keyframe, None, true, out);
         self.quality = walked;
         encoded
     }
@@ -379,6 +372,12 @@ impl Encoder {
     /// and one that made no frame of the picture is [`Error::NoFrame`]:
     /// nothing is appended either way.
     pub fn encode(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, out: &mut Vec<u8>) -> Result<bool, Error> {
+        self.code(picture, keyframe, changed, false, out)
+    }
+
+    /// [`Self::encode`], or with `settling` the frame [`Self::settle`] owes,
+    /// which is never motion ([`cpu_used`]): it is the picture that stays.
+    fn code(&mut self, picture: &Picture, keyframe: bool, changed: Option<&[Rect]>, settling: bool, out: &mut Vec<u8>) -> Result<bool, Error> {
         if picture.size() != self.size {
             let (w, h) = self.size;
             let (pw, ph) = picture.size();
@@ -387,7 +386,11 @@ impl Encoder {
         if picture.chroma() != self.chroma {
             return Err(Error::Sampling(self.chroma, picture.chroma()));
         }
-        self.follow()?;
+        // An encoder's first frame is a keyframe whether asked or not, and a
+        // keyframe has no blocks to skip.
+        let coded = self.map(changed.filter(|_| !keyframe && self.begun))?;
+        let moving = !keyframe && self.begun && !settling && coded * 2 >= self.active.len();
+        self.follow(moving)?;
         // Strictly increasing, which two encodes inside one millisecond would
         // otherwise not be.
         self.pts = (self.started.elapsed().as_millis() as i64).max(self.pts + 1);
@@ -396,9 +399,6 @@ impl Encoder {
         // the 32-bit case.
         let flags: vpx::vpx_enc_frame_flags_t = if keyframe { vpx::VPX_EFLAG_FORCE_KF as vpx::vpx_enc_frame_flags_t } else { 0 };
         let (planes, strides) = (picture.planes(), picture.strides());
-        // An encoder's first frame is a keyframe whether asked or not, and a
-        // keyframe has no blocks to skip.
-        self.map(changed.filter(|_| !keyframe && self.begun))?;
 
         // SAFETY: the three planes outlive this call — they belong to `picture`,
         // which is borrowed for it — and the strides are the ones the picture
@@ -474,8 +474,9 @@ impl Encoder {
     /// Tell libvpx which blocks the next frame may code: those `changed`
     /// touches, or with `None` all of them. libvpx keeps a map until it is
     /// given another, so one is handed over for every frame that has
-    /// rectangles and taken back by the first that has none.
-    fn map(&mut self, changed: Option<&[Rect]>) -> Result<(), Error> {
+    /// rectangles and taken back by the first that has none. Returns how
+    /// many blocks the frame may code.
+    fn map(&mut self, changed: Option<&[Rect]>) -> Result<usize, Error> {
         let (cols, rows) = (usize::from(self.size.0).div_ceil(ACTIVE_BLOCK), usize::from(self.size.1).div_ceil(ACTIVE_BLOCK));
         let active_map = match changed {
             Some(rects) => {
@@ -495,7 +496,7 @@ impl Encoder {
                 self.active.as_mut_ptr()
             }
             None if self.mapped => std::ptr::null_mut(),
-            None => return Ok(()),
+            None => return Ok(self.active.len()),
         };
         let mut map = vpx::vpx_active_map { active_map, rows: rows as u32, cols: cols as u32 };
         // SAFETY: the context is live, the control's argument is a pointer to
@@ -505,7 +506,7 @@ impl Encoder {
         // a null one is how a map is taken back.
         check(unsafe { vpx::vpx_codec_control_(&mut *self.ctx, vpx::vp8e_enc_control_id_VP8E_SET_ACTIVEMAP as c_int, &mut map as *mut vpx::vpx_active_map) }, "active_map")?;
         self.mapped = changed.is_some();
-        Ok(())
+        Ok(if self.mapped { self.active.iter().filter(|&&active| active != 0).count() } else { self.active.len() })
     }
 
     /// One `vpx_codec_control_` call with an `int` argument, checked.
@@ -1287,29 +1288,33 @@ mod tests {
         assert_eq!(encoder.quality(), QUALITY_MIN, "clamped, not wrapped");
     }
 
-    /// The speed reaches the running encoder without a keyframe, and the chain
-    /// across the change still decodes to its picture.
+    /// Motion is searched at 9 only in an inter frame that codes half the
+    /// picture or more: a keyframe, a smaller change and a settle are at 7.
+    /// The speed moves on the running encoder without a keyframe, and the
+    /// chain across the moves decodes to its picture.
     #[test]
-    fn the_speed_moves_on_a_live_encoder_without_a_keyframe() {
+    fn motion_is_searched_fastest_over_half_the_picture() {
         let mut encoder = Encoder::new(320, 240, 90, Chroma::Yuv444, 2).expect("an encoder");
-        assert_eq!(encoder.speed(), Speed::Usual);
-        let frame = |encoder: &mut Encoder, step| encode(encoder, &picture(320, 240, &moving(step)), false);
-        let mut frames = vec![frame(&mut encoder, 0).0];
-        for speed in [Speed::Fastest, Speed::Usual] {
-            encoder.set_speed(speed);
-            assert_eq!(encoder.speed(), speed);
-            for step in 1..4 {
-                let (data, keyframe) = frame(&mut encoder, step);
-                assert!(!keyframe, "moving the speed cost a keyframe");
-                frames.push(data);
-            }
-        }
+        let mut frames = Vec::new();
+        let mut frame = |encoder: &mut Encoder, step, changed: Option<&[Rect]>, want: c_int| {
+            let mut out = Vec::new();
+            let keyframe = encoder.encode(&picture(320, 240, &moving(step)), false, changed, &mut out).expect("an encode");
+            assert_eq!(encoder.running.1, want, "frame {step}");
+            assert_eq!(keyframe, step == 0, "frame {step}");
+            frames.push(out);
+        };
+        frame(&mut encoder, 0, None, 7);
+        frame(&mut encoder, 1, None, 9);
+        frame(&mut encoder, 2, Some(&[Rect { x: 0, y: 0, width: 320, height: 128 }]), 9);
+        frame(&mut encoder, 3, Some(&[Rect { x: 0, y: 0, width: 320, height: 112 }]), 7);
+        frame(&mut encoder, 4, Some(&[Rect { x: 0, y: 0, width: 320, height: 128 }]), 9);
+        let mut out = Vec::new();
+        assert!(!encoder.settle(&picture(320, 240, &moving(4)), 90, false, &mut out).expect("a settle"), "the settle cost a keyframe");
+        assert_eq!(encoder.running.1, 7, "the settle");
+        frames.push(out);
         let decoded = decode_chain(&frames, 320, 240);
-        // Inside the block's last place, and the background far from it.
-        let block = rgb_at(&decoded, 320, 3 * 3 + 50, 3 * 3 + 40);
-        let ground = rgb_at(&decoded, 320, 300, 200);
+        let block = rgb_at(&decoded, 320, 4 * 3 + 50, 4 * 3 + 40);
         assert!(block.iter().all(|c| c.abs_diff(230) <= 8), "the block decoded as {block:?}");
-        assert!(ground.iter().zip([30u8, 60, 90]).all(|(c, want)| c.abs_diff(want) <= 8), "the background decoded as {ground:?}");
     }
 
     /// An odd side is carried as it is, at either chroma, and decodes at its
