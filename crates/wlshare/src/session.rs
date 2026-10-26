@@ -74,8 +74,7 @@
 //! encoder below, unless the list holds it: each update's fence is the
 //! walk's verdict as a VP9 frame's is, a START, a picture sent whole or a
 //! stream starting over at the moved dial counting as a keyframe, and each
-//! still a PNG where its tile fits a palette and a WebP at the dial
-//! otherwise, owed again at the ceiling where it is below it
+//! still a WebP at the dial, owed again at the ceiling where it is below it
 //! ([`TilesEncoder::set_pace`]); a list that
 //! holds the dial is sent every still exact. A slowed walk paces the
 //! updates as it paces VP9's frames. What the encoder still owes once the
