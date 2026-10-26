@@ -144,7 +144,7 @@ assets = [
     ["target/release/wlshare", "usr/bin/", "755"],
     ["../../packaging/wlshare.service", "usr/lib/systemd/user/", "644"],
     ["../../packaging/pam.d/wlshare", "etc/pam.d/", "644"],
-    ["../../packaging/config.example.toml", "usr/share/doc/wlshare/", "644"],
+    ["../../wlshare.example.toml", "usr/share/doc/wlshare/", "644"],
     ["../../README.md", "usr/share/doc/wlshare/", "644"],
     ["../../docs/architecture.md", "usr/share/doc/wlshare/", "644"],
 ]

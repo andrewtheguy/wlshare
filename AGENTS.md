@@ -8,8 +8,10 @@
   whose RFB protocol is its own module (`src/rfb/`), not a crate. Its one
   client is the zDesk gateway; there is no native client. `wlshare-proto` is
   the one crate anything outside this repository depends on: the gateway pins
-  it by this repository's release tag, behind its `wlshare` feature, and it
-  depends on `thiserror` alone. Every private extension's bytes, both
+  it by its `proto-v<N>` tag, behind its `wlshare` feature, and it
+  depends on `thiserror` alone. Its version is the protocol version,
+  `<N>.0.0`: any change to it bumps `PROTOCOL_VERSION` and the crate's version
+  together, and the release that brings it tags `proto-v<N>`. Every private extension's bytes, both
   directions, are built and parsed there, never in the daemon or the gateway.
   `wlshare-vp9` is libvpx alone, from a
   prebuilt static archive, set up for a desktop, with the planes in front of
