@@ -689,10 +689,10 @@ moves, H.264 — the host's hardware, or libx264. It is a choice the gateway mak
 `WLSV`, one stream over the whole desktop walked on the link, stays the
 picture for a slow link, where a lossy stream in fewer bytes is what the link
 bears. This one spends bytes the link has, for less of the encoder's time and
-a picture that ends exact; and on a list that lets its dial walk, it follows
-the link as `WLSV` does, its stills lossy WebP while the link is behind and
-exact again once it has room, so a target that wants the encoder's time saved
-on a link that is not always wide gets that too. It is zDesk's Motion, which that gateway dropped
+a picture that ends exact, on a list that holds its dial; and on a list
+that lets its dial walk, it follows the link as `WLSV` does, each still the
+smaller of a PNG and a lossy WebP at the dial and nothing owed exact, so a
+client that wants the walk more than a picture that ends exact gets that too. It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
@@ -719,7 +719,8 @@ u8 kind
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
 depending on nothing before it. A WEBP is the same rectangle lossy, a WebP of
 its pixels at the dial the walk stands at, depending on nothing before it
-either, and owed exact; it is sent only on a list whose dial walks. A START begins a stream on its id over its
+either; it is sent only on a list whose dial walks, where it is smaller than
+the PNG. A START begins a stream on its id over its
 rectangle, an H.264 keyframe of that size rounded up to even sides, a picture
 a client cuts to the rectangle from its top-left; each FRAME on the id is the
 next frame of that stream over the same rectangle; an END says it is over, its last picture
@@ -727,15 +728,16 @@ staying until something draws over it. A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
 
-- **Still is exact.** The desktop is in 64×64 tiles from (0,0). The damage
+- **Still is a still.** The desktop is in 64×64 tiles from (0,0). The damage
   since the client's last update is copied out of the framebuffer under the
   lock into a picture the encoder keeps, and compared there tile by tile with
   what the client holds, so a compositor redrawing what it shows sends
-  nothing. A tile that changed and that no stream carries goes as PNG, a
-  row's run of them, cut into bands of 64 rows, one image. A picture that
+  nothing. A tile that changed and that no stream carries goes as a still —
+  a PNG, or on a walked list the smaller of it and a WebP, below — a row's
+  run of them, cut into bands of 64 rows, one image. A picture that
   starts over — the encoding newly listed, a new size, a non-incremental
   request — goes the same way at once, whole, where Motion streamed it first
-  and sent every tile as PNG after it anyway: on a link with room that stream
+  and sent every tile as a still after it anyway: on a link with room that stream
   is work for nothing. The PNG is the gateway's tile coder: a palette
   unfiltered where the pixels have at most 256 colours, RGB with each row's
   filter chosen otherwise, at `png`'s fast compression.
@@ -753,7 +755,7 @@ the picture.
   `WLSV`'s is, so the encoder's time follows the area that moves rather than
   the desktop. It is H.264 at 4:2:0, below, which every browser decodes, its
   hardware decoders included; what it loses lasts only while the region
-  moves, since the settle makes it exact. Its dial is the walk's, below.
+  moves, since the settle sends it again as a still. Its dial is the walk's, below.
 - **The dial walks, unless the list holds it.** The dial the list names is a
   ceiling, and the session's walk of the link — the same one, with the same
   thresholds and steps, that moves `WLSV`'s dial ([above](#the-vp9-encoding))
@@ -765,31 +767,23 @@ the picture.
   on a running stream (below), which the update that carries it counts as a
   keyframe too; and a slowed walk paces the updates as it paces `WLSV`'s
   frames. The stills
-  follow it too: at the ceiling a still is exact, a PNG, and below it a
-  lossy WebP at the dial — libwebp's VP8 at its fastest method, 4:2:0, which
-  every browser decodes, linked statically for the target's baseline — except
-  a still whose pixels fit a palette, text, rules and panels, which costs no
-  more exact than lossy and stays a PNG until the walk has slowed the frames,
-  when every still goes lossy. Every tile sent lossy is owed exact, as a tile
-  a stream carried is, and the debts wait while the walk is slowed: a link
-  that is behind is not handed exact pictures of what it already has. They
-  wait until the desktop has been still for two seconds, and no longer: a
-  still desktop sends no update whose verdict could lift the walk. With
-  `WLSD` beside the list the dial is held, every still is exact, the streams
-  stay at the dial, and a walk moved by blocked writes only paces the
-  updates: for a link with room, where a walk would only ever
-  stand at the ceiling. The walk is `WLSV`'s rather than one of its own
-  because the verdict is the same — an update's queueing on the link — and
-  a second set of thresholds would be a second thing to measure. Measured
-  2026-10-26 on an eight-core AMD EPYC (Milan) VM, libx264 on six threads,
-  120 frames of each scenario, with the walk held at 50 and at 20: a 1080p
-  video went from 19.3 MB at the ceiling to 5.6 and 3.5 MB for no more CPU
-  (1073 ms against 1027 and 932), its stills 9.6 MB of PNG at the ceiling
-  and 0.6 MB of WebP walked, plus one exact pass at the end; a 4K video from
-  51 MB to 14 and 9; a scroll, all stream, from 22 MB to 16 and 12; a drag,
-  whose stills are all palette tiles and stay PNG, only what the streams'
-  dial saves; the picture while it moved 38.6 and 34.7 dB against 44.6 at
-  the ceiling, and every capture ends exact.
+  follow it too: each is coded both ways, a PNG and a lossy WebP at the dial
+  — libwebp's VP8 at its fastest method, 4:2:0, which every browser decodes,
+  linked statically for the target's baseline — and the smaller goes, at the
+  ceiling as below it: text and panels mostly as PNG, a photograph or a
+  video's last picture as WebP. Nothing is owed exact: a client that lists the
+  walk wants it more than a picture that ends exact. A still sent below the
+  ceiling is owed again at the ceiling, as a tile a stream carried is, and the
+  debts wait while the walk is slowed: a link that is behind is not handed
+  finer pictures of what it already has. They wait until the desktop has been
+  still for two seconds, and no longer: a still desktop sends no update whose
+  verdict could lift the walk. With `WLSD` beside the list the dial is held,
+  every still is exact, the streams stay at the dial, and a walk moved by
+  blocked writes only paces the updates: for a link with room, where a walk
+  would only ever stand at the ceiling, and a picture that ends exact. The
+  walk is `WLSV`'s rather than one of its own because the verdict is the same
+  — an update's queueing on the link — and a second set of thresholds would
+  be a second thing to measure.
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
   region is H.264, by an encoder found once at startup; the client has no
@@ -849,13 +843,15 @@ the picture.
   tests code frames on libx264, on every machine, and on the hardware, and
   decode them with libavcodec's software decoder; the hardware's passes with
   a word on a machine with no encoder.
-- **It settles to lossless.** Every tile a stream carried, or a still sent
-  lossy, is owed an exact PNG once it has been still for half a second. What
-  is owed is looked for every quarter of a second, 40 tiles at most at a
-  time, each look an update that waits for a request and the fence as any
-  other, and none while the walk is slowed until the desktop has been still
-  for two seconds, so a desktop that stops is exact on the page, and once it
-  is nothing more is sent.
+- **It settles.** Every tile a stream carried, or a still sent below the
+  ceiling, is owed a still at the ceiling once it has been still for half a
+  second: a PNG on a held list, the smaller of a PNG and a WebP at the
+  ceiling on a walked one. What is owed is looked for every quarter of a
+  second, 40 tiles at most at a time, each look an update that waits for a
+  request and the fence as any other, and none while the walk is slowed
+  until the desktop has been still for two seconds, so a desktop that stops
+  is exact on the page on a held list and at the ceiling on a walked one,
+  and once it is nothing more is sent.
 - **Rounds as any other.** Each update ends with its fence, and one is in
   flight at a time. A new size ends every stream with no END — the size goes
   out first, and the picture whole after it — and a non-incremental request
@@ -866,8 +862,9 @@ the picture.
 through this encoder and through `WLSV`, both decoded as a page would, the
 tiles' updates through the client's parser, a WebP by `image-webp`'s pure
 Rust decoder, and each region by libavcodec's
-software H.264 decoder; `--walk-at` holds the tiles' walk below the ceiling,
-where the stills go lossy. Its regions are the daemon's own H.264 — `h264.rs`,
+software H.264 decoder; `--walk-at` codes the picture a walked list asks
+for, its walk held at the dial it names, the stills the smaller of PNG and
+WebP; without it the dial is held and every still exact. Its regions are the daemon's own H.264 — `h264.rs`,
 
 found as the daemon finds it, or libx264 with `--libx264` — so it runs where
 the daemon builds. The figures below were measured when the regions were VP9
