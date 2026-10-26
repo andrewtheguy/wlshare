@@ -181,7 +181,7 @@ fn main() {
     let done = match command.as_str() {
         "info" => info(&args),
         "times" => times(&args),
-        "frames" => frames(&args),
+        "frames" => frames(&args, std::io::stdout().lock()),
         "shape" => shape(&args),
         "streams" => streams(&args),
         "trim" => trim(&args),
@@ -310,7 +310,8 @@ fn times(args: &Args) -> Result<(), Error> {
     Ok(())
 }
 
-fn frames(args: &Args) -> Result<(), Error> {
+/// The run `--from` starts, or the longest, as raw pictures on `out`.
+fn frames(args: &Args, out: impl std::io::Write) -> Result<(), Error> {
     // The run's first frame: `--from`, or the longest run's (a pass of its own).
     let first = match args.from_given {
         true => args.from,
@@ -320,7 +321,7 @@ fn frames(args: &Args) -> Result<(), Error> {
         }
     };
     let tick = Duration::from_secs(1) / args.fps;
-    let mut out = BufWriter::with_capacity(1 << 22, std::io::stdout().lock());
+    let mut out = BufWriter::with_capacity(1 << 22, out);
     let mut source = Source::open(&args.capture)?;
     // The frame waiting for the next to say when it ends, and the tick due.
     let mut held: Option<(Duration, Vec<u8>)> = None;
@@ -767,4 +768,57 @@ fn keyframe_shape(frame: &[u8]) -> Option<Shape> {
         tile_columns_log2 += 1;
     }
     Some(Shape { width, height, loop_filter_level, tile_columns_log2 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture of 1×1 frames at 100 ms apart, one per `(size, value)`:
+    /// each picture's every byte is the value, so the output says which.
+    fn capture(name: &str, frames: &[(u16, u8)]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("vp9cap-test-{}-{name}.wlcap", std::process::id()));
+        let mut writer = Writer::new(File::create(&path).unwrap()).unwrap();
+        for (i, &(width, value)) in frames.iter().enumerate() {
+            let pixels = vec![value; usize::from(width) * 4];
+            writer.frame_at(Duration::from_millis(100 * i as u64), (width, 1), 50, i == 0, None, &pixels, pixels.len()).unwrap();
+        }
+        writer.flush().unwrap();
+        path
+    }
+
+    /// `frames` at 10 fps, a tick a frame: the values of the pictures written.
+    fn played(path: &Path, from: Option<u64>) -> Vec<u8> {
+        let args = Args { capture: path.to_owned(), dir: PathBuf::new(), name: String::new(), frames: 0, least: 1, busiest: false, threads: 1, from: from.unwrap_or(0), out: PathBuf::new(), fps: 10, from_given: from.is_some() };
+        let mut out = Vec::new();
+        frames(&args, &mut out).unwrap();
+        out.chunks(4).map(|pixel| pixel[0]).collect()
+    }
+
+    #[test]
+    fn the_longest_run_is_played_where_a_size_comes_again() {
+        // 1 wide twice, 2 wide once, 1 wide three times: the second run of
+        // the first size, not the frames at that size from the first on.
+        let path = capture("longest", &[(1, 1), (1, 2), (2, 3), (1, 4), (1, 5), (1, 6)]);
+        assert_eq!(played(&path, None), [4, 5, 6]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn of_runs_as_long_the_first_is_played() {
+        let path = capture("tie", &[(1, 1), (1, 2), (2, 3), (1, 4), (1, 5)]);
+        assert_eq!(played(&path, None), [1, 2]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn from_plays_its_run_alone() {
+        let path = capture("from", &[(1, 1), (1, 2), (2, 3), (2, 4), (1, 5), (1, 6), (1, 7)]);
+        // Its run's start, or within it; and a run before the longest.
+        assert_eq!(played(&path, Some(4)), [5, 6, 7]);
+        assert_eq!(played(&path, Some(5)), [6, 7]);
+        assert_eq!(played(&path, Some(0)), [1, 2]);
+        assert_eq!(played(&path, Some(2)).len() / 2, 2);
+        std::fs::remove_file(path).unwrap();
+    }
 }
