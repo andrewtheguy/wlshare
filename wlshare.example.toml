@@ -53,8 +53,8 @@ listen = "127.0.0.1:5900"
 # runs out. Zero keeps nobody waiting.
 # output_wait_secs = 0
 
-# Whether clients may resize the output and set its scale.
-resize = true
+# A client may always resize the output and set its scale -- a HEADLESS-* one
+# alone; a monitor keeps the modes it has. Nothing here turns that off.
 
 # The most frames captured per second.
 max_fps = 60
@@ -65,30 +65,29 @@ max_fps = 60
 # connection) spends most of this waiting on the person.
 handshake_timeout_secs = 120
 
-# Whether a client may hear the desktop; off by default. While a client that asks for wlshare's
-# audio extension (the zDesk gateway, in a session started with sound) has it
-# enabled, wlshare adds a PipeWire sink of its own, "wlshare remote audio", and
-# makes it the default: every stream that follows the default plays there and is
-# silent on the host, and one an application pinned to a sink of the host's is
-# still heard on it. What that sink plays is sent in the sample format the client
-# chose, encoded as FLAC or as Opus, whichever the client asked for. When the last client stops listening the sink goes and
-# the host's own is the default again. A headless session needs no sink of its
-# own: wlshare's is one.
-audio = false
-
-# Whether a client may lend the desktop its camera; off by default. A client that asks for the
-# camera extension (the zDesk gateway, for a session started with Camera ticked) plugs
-# its browser's camera and sends H.264, which becomes a PipeWire video source
-# named "wlshare remote camera" -- one that applications reaching cameras through
-# PipeWire (a browser's camera portal, OBS, GStreamer) can open. It sends frames
-# only while one of them has it open.
-camera = false
-
-# Whether a client may lend the desktop its microphone; off by default. A client that asks for
-# the microphone extension plugs its microphone, which becomes a PipeWire audio
-# source named "wlshare remote microphone" that applications record from like
-# any other. The client sends 16-bit PCM only while one of them is recording.
-microphone = false
+# A client may always hear the desktop, and lend it its camera and microphone;
+# nothing here turns those off, and the package depends on the PipeWire,
+# WirePlumber and pipewire-pulse they run through.
+#
+# While a client that asks for wlshare's audio extension (the zDesk gateway, in
+# a session started with sound) has it enabled, wlshare adds a PipeWire sink of
+# its own, "wlshare remote audio", and makes it the default: every stream that
+# follows the default plays there and is silent on the host, and one an
+# application pinned to a sink of the host's is still heard on it. What that
+# sink plays is sent in the sample format the client chose, encoded as FLAC or
+# as Opus, whichever the client asked for. When the last client stops listening
+# the sink goes and the host's own is the default again. A headless session
+# needs no sink of its own: wlshare's is one.
+#
+# A client that asks for the camera extension (the zDesk gateway, for a session
+# started with Camera ticked) plugs its browser's camera and sends H.264, which
+# becomes a PipeWire video source named "wlshare remote camera" -- one that
+# applications reaching cameras through PipeWire (a browser's camera portal,
+# OBS, GStreamer) can open. It sends frames only while one of them has it open.
+# One that asks for the microphone extension plugs its microphone, which becomes
+# a PipeWire audio source named "wlshare remote microphone" that applications
+# record from like any other. The client sends 16-bit PCM only while one of
+# them is recording.
 
 # Whether the tiles picture's moving regions -- the picture a zDesk session
 # started with "Tiles with motion" is sent -- are coded by the host's hardware

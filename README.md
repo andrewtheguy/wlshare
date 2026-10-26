@@ -5,8 +5,9 @@ English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 > **No backward compatibility.** A release may change or remove a configuration
 > key, a private RFB extension's wire format or a feature, with nothing that
 > reads the old form. Check
-> [`packaging/config.example.toml`](packaging/config.example.toml) against your
-> config when you upgrade, and upgrade the zDesk gateway along with it.
+> [`wlshare.example.toml`](wlshare.example.toml) against your
+> config when you upgrade, and upgrade the zDesk gateway with it when the
+> protocol version `wlshare --version` names has changed.
 
 A VNC server for wlroots-based Wayland compositors, built for the
 [zDesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
@@ -55,8 +56,9 @@ and that sink's monitor is sent encoded as lossless FLAC, or as Opus at the
 rate the client names where it asks for that instead. An application pinned
 to a sink of the host's stays there and is heard on the host. A client
 that does not list it hears nothing.
-Audio, the camera and the microphone are each off until the configuration sets
-`audio = true`, `camera = true` or `microphone = true`. A client that lists the camera extension —
+The sound, the camera and the microphone are always on, with no configuration
+to turn them on: the package depends on the PipeWire, WirePlumber and
+pipewire-pulse they run through. A client that lists the camera extension —
 zDesk does, for a session started with the picker's Camera tick — can lend the
 desktop its camera:
 the H.264 it sends is decoded with the system's libavcodec into a PipeWire video
@@ -137,7 +139,7 @@ systemctl --user enable --now wlshare.service
 
 Configuration is one TOML file, `$XDG_CONFIG_HOME/wlshare/config.toml` by
 default. An empty file uses defaults, and
-[`packaging/config.example.toml`](packaging/config.example.toml) lists every
+[`wlshare.example.toml`](wlshare.example.toml) lists every
 setting.
 
 Who may connect is one setting, and there are three answers. Nothing set: anyone
@@ -200,7 +202,8 @@ the server resolves the client's keysyms through the same keymap it uploads.
 The workspace has three crates: `wlshare`, the daemon, with the RFB protocol
 it speaks inside it; `wlshare-vp9`, the VP9 coding under it; and
 `wlshare-proto`, the bytes of wlshare's private extensions, which the zDesk
-gateway depends on too, pinned by this repository's release tag. The last two
+gateway depends on too, pinned by its `proto-v<N>` tag, the protocol version
+the release that brought it tagged. The last two
 have no OS APIs and build and test on the targets covered by the prebuilt
 libvpx archives: macOS arm64, Linux x86_64 and aarch64, and Windows x86_64
 MSVC. The daemon needs libxkbcommon, libpam, libpipewire and

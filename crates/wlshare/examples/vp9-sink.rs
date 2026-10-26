@@ -18,7 +18,9 @@
 //! only to the server whose key has `--fingerprint`, which is what the daemon
 //! logs of its key as it starts: neither goes to any other. The list names VP9 at the
 //! quality, Fence and ContinuousUpdates so frames flow and the walk is
-//! answered, and ExtendedDesktopSize so the desktop can be resized: `--size`
+//! answered, the protocol version, whose answer is read before anything else
+//! and must be this build's, and ExtendedDesktopSize so the desktop can be
+//! resized: `--size`
 //! is sent as a SetDesktopSize before the first frame, so the headless output
 //! takes the size the capture is to be at, and `--resize` sends another at
 //! that many seconds in. `--slow FROM:FOR:MILLIS` makes every read of the
@@ -256,7 +258,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // are parsed and dropped like everything but the frames.
     let mut encodings = Vp9Stream { quality: args.quality, adaptive: !args.held, chroma: Chroma::Yuv444 }.encodings();
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
+    encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
     out.send(&client::set_encodings(&encodings)).await?;
+    // The daemon answers the version first, before anything is asked of it.
+    client::read_protocol_version(&mut socket).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {
         out.send(&client::set_desktop_size(args.size.0, args.size.1)).await?;

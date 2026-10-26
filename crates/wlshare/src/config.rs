@@ -1,7 +1,9 @@
 //! The configuration file: what the server listens on, who may connect, which
-//! output it shares, whether its sound goes with it, whether a client may lend
-//! it a camera and a microphone, where it says whether the desktop is held, and
-//! how the virtual keyboard is laid out.
+//! output it shares, where it says whether the desktop is held, and how the
+//! virtual keyboard is laid out. A client may always hear the desktop, resize a
+//! headless output and set its scale, and lend the desktop its camera and
+//! microphone: nothing here turns those off, and the package brings the
+//! PipeWire they need.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -38,10 +40,6 @@ pub struct Config {
     /// nobody waiting.
     #[serde(default)]
     pub output_wait_secs: u64,
-    /// Whether clients may resize the output and set its scale. Only a headless
-    /// output is ever reconfigured.
-    #[serde(default = "default_true")]
-    pub resize: bool,
     /// The most frames captured per second.
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
@@ -51,24 +49,6 @@ pub struct Config {
     /// most of this waiting on the person.
     #[serde(default = "default_handshake_timeout_secs")]
     pub handshake_timeout_secs: u64,
-    /// Whether a client may hear the desktop, off unless set: the audio
-    /// extension is announced to a client that asks, and while the client has
-    /// it enabled a sink of wlshare's own is the default, captured from
-    /// PipeWire: streams that follow the default play there and are silent on
-    /// the host, and one pinned to a sink of the host's is still heard on it.
-    #[serde(default)]
-    pub audio: bool,
-    /// Whether a client may lend the desktop its camera, off unless set: the
-    /// camera extension is announced to a client that asks, and a camera it
-    /// plugs becomes a PipeWire video source until it unplugs or leaves.
-    #[serde(default)]
-    pub camera: bool,
-    /// Whether a client may lend the desktop its microphone, off unless set:
-    /// the microphone extension is announced to a client that asks, and a
-    /// microphone it plugs becomes a PipeWire audio source until it unplugs or
-    /// leaves.
-    #[serde(default)]
-    pub microphone: bool,
     /// Whether the tiles picture's moving regions are coded by the host's
     /// hardware H.264 encoder, through VA-API, where the daemon finds one at
     /// startup; on by default. Off, or with none found, they are libx264's.
@@ -206,16 +186,20 @@ pub fn default_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    /// The sample at the repository's root is a configuration this daemon
+    /// reads, so a key removed here cannot linger in it.
+    #[test]
+    fn the_sample_is_a_configuration() {
+        let c: Config = toml::from_str(include_str!("../../../wlshare.example.toml")).unwrap();
+        c.validate().unwrap();
+    }
+
     #[test]
     fn defaults_fill_an_empty_file() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.listen, default_listen());
-        assert!(c.resize);
         assert_eq!(c.max_fps, 60);
         assert_eq!(c.handshake_timeout_secs, 120);
-        assert!(!c.audio);
-        assert!(!c.camera);
-        assert!(!c.microphone);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());
         assert!(c.state_socket.is_none());
@@ -289,6 +273,15 @@ mod tests {
     #[test]
     fn the_vp9_keys_are_no_longer_keys() {
         for key in ["vp9_quality = 80", "vp9_quality_min = 45"] {
+            assert!(toml::from_str::<Config>(key).is_err(), "{key}");
+        }
+    }
+
+    /// The sound, the camera, the microphone and a client's resize are always
+    /// on: their keys are refused rather than read and ignored.
+    #[test]
+    fn the_audio_camera_microphone_and_resize_keys_are_no_longer_keys() {
+        for key in ["audio = true", "camera = true", "microphone = false", "resize = true"] {
             assert!(toml::from_str::<Config>(key).is_err(), "{key}");
         }
     }

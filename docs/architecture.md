@@ -17,10 +17,11 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - `crates/wlshare-proto` is the bytes of wlshare's private extensions, both
   directions: the VP9 and tiles encodings' framing and what a client lists
   for them, the density, outputs, audio, camera and microphone extensions, the
-  scroll message and the beside ClientInit byte. It is the one crate the zDesk
-  gateway depends on, pinned by this repository's release tag behind its
-  `wlshare` feature, so the daemon and the gateway build and parse every
-  private byte with the same code. It depends on `thiserror` alone, has no OS
+  scroll message and the beside ClientInit byte, and the protocol version
+  that names them all. It is the one crate the zDesk gateway depends on,
+  pinned by its `proto-v<N>` tag behind its `wlshare` feature, so the daemon
+  and the gateway build and parse every private byte with the same code
+  ([The protocol version](#the-protocol-version)). It depends on `thiserror` alone, has no OS
   APIs, and each builder is tested against a decoder written from the
   documented layout and read back by its parser.
 - `crates/wlshare-vp9` is the VP9 encoder: libvpx pinned to a quality dial,
@@ -330,6 +331,46 @@ whole framebuffer follows in the next update. A client that negotiated neither
 cannot be told and is disconnected at its next update rather than sent pixels at
 a size it does not know. The ExtendedDesktopSize announcement that answers the pseudo-encoding is an
 update too, and waits for a request like any other.
+
+## The protocol version
+
+The private extensions below have one version between them, and the two ends
+speak exactly the same one: none keeps an older layout beside a newer one, so
+a gateway and a daemon of different versions would read each other's bytes
+wrong rather than less. It is `PROTOCOL_VERSION` in `wlshare-proto`, which is
+that crate's major version, the crate being `<N>.0.0`. Any change to the crate
+is a new version. The release that brings one tags its commit `proto-v<N>`,
+and the zDesk gateway pins that tag, so a release that leaves the crate alone
+asks nothing of the gateway; the release workflow refuses a release whose
+crate differs from what its version's tag already holds. `wlshare --version`
+and the daemon names it when it starts listening.
+
+- **The version**, client → server: the pseudo-encoding `0x574c5600` (`WLV`
+  and a zero byte) plus the version, listed in every `SetEncodings` that lists
+  anything private — every encoding whose top two bytes are `WL`. A list that
+  names any of them without a version, or with two versions, is fatal.
+- **The answer**, server → client: the first list that carries a version is
+  answered, before anything else the daemon sends and without waiting for a
+  request, by an update of one empty rectangle whose encoding names the
+  daemon's own version. Where the client's is another, the daemon closes the
+  connection after it, and the client, which has the daemon's version from
+  the answer, names both. A later list carries the same version and is not
+  answered again.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | U8 | `0`, FramebufferUpdate |
+| 1 | U8 | padding |
+| 2 | U16 | rectangles, `1` |
+| 4 | U16 | x, 0 |
+| 6 | U16 | y, 0 |
+| 8 | U16 | width, 0 |
+| 10 | U16 | height, 0 |
+| 12 | S32 | encoding, `0x574c5600` + version |
+
+zDesk reads the answer as the first message after its list, and refuses a
+`wlshare` target whose server sends anything else first: a server that does
+not version the extensions is not one it can speak them to.
 
 ## The VP9 encoding
 
@@ -826,8 +867,8 @@ Both messages have one layout:
   a client that listed the pseudo-encoding and ExtendedDesktopSize, only in the
   range 0.5–8 and at a size that is not empty. The server sets the output's mode
   and scale through wlr-output-management in one configuration, asking only for
-  what differs, under the same rules as a resize — a headless output and
-  `resize = true` — and **answers every declaration** with an OutputScale: after
+  what differs, under the same rule as a resize — a headless output — and
+  **answers every declaration** with an OutputScale: after
   the compositor's head scale change, or at once with the output as it is when the
   declaration matches, is refused, or cannot be applied. A configuration the
   compositor accepts without changing the scale is answered too: `succeeded` is
@@ -1217,8 +1258,9 @@ The session drains that queue before every framebuffer update, so sound is never
 held behind a pixel update it was ready before. A headless session needs no sink
 of its own: the speaker is one.
 
-The announcement is off unless the configuration sets `audio = true`; while it
-is off, a client that lists the pseudo-encoding is told nothing.
+Every client that lists the pseudo-encoding is answered with the announcement:
+no configuration turns the sound off, and the package depends on the PipeWire,
+WirePlumber and pipewire-pulse it plays through.
 
 ## The camera extension
 
@@ -1301,8 +1343,8 @@ xdg-desktop-portal 1.20.3: with only `xdg-desktop-portal-wlr` installed, the
 portal exported no `org.freedesktop.portal.Camera`, and with
 `xdg-desktop-portal-gtk` added and the portal restarted, it did.
 
-The announcement is off unless the configuration sets `camera = true`; while it
-is off, a client that lists the pseudo-encoding is told nothing.
+Every client that lists the pseudo-encoding is answered with the announcement:
+no configuration turns the camera off.
 
 ## The microphone extension
 
@@ -1360,15 +1402,15 @@ two. Each recording sent start as it linked and stop as it left; past the first
 half second both held the tone at 440 Hz with no silent 10 ms block, and the node
 was gone from the graph after the unplug.
 
-The announcement is off unless the configuration sets `microphone = true`;
-while it is off, a client that lists the pseudo-encoding is told nothing.
+Every client that lists the pseudo-encoding is answered with the announcement:
+no configuration turns the microphone off.
 
 ## Resize
 
 `SetDesktopSize` sets a custom mode on the shared output, with the same rules.
 A request from a client that did not list ExtendedDesktopSize is not answered
-at all. One that arrives with `resize = false` is answered *prohibited*; one
-naming other than one screen, or no pixels, *invalid layout*. A request for the
+at all. One naming other than one screen, or no pixels, is answered *invalid
+layout*. A request for the
 current size is answered OK at once; one for an output that cannot be
 reconfigured — only a headless output, one named `HEADLESS-*`, ever is, and
 only through wlr-output-management — is answered *prohibited*; a size the
