@@ -53,8 +53,9 @@ use log::{debug, info, warn};
 use pipewire as pw;
 use pw::spa;
 use tokio::sync::Notify;
-use wlshare_rfb::audio::{AudioEncoder, AudioFormat, Codec, SampleFormat};
+use wlshare_proto::audio::{AudioFormat, Codec, SampleFormat};
 
+use crate::rfb::audio::AudioEncoder;
 use crate::shared::ClientId;
 
 /// Frames kept for a session slow to send them: past it the oldest FLAC frame

@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, watch};
 
-use wlshare_rfb::cursor::CursorImage;
-use wlshare_rfb::outputs::OutputEntry;
+use crate::rfb::cursor::CursorImage;
+use wlshare_proto::outputs::OutputEntry;
 
 use crate::framebuffer::Framebuffer;
 

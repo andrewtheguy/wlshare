@@ -18,7 +18,7 @@
 //! slow on purpose — so both run off the runtime.
 
 use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher as _, PasswordVerifier as _, Version};
-use wlshare_rfb::rsa_aes::{Credentials, MAX_CREDENTIAL_LEN, Subtype};
+use crate::rfb::rsa_aes::{Credentials, MAX_CREDENTIAL_LEN, Subtype};
 
 use crate::pam;
 

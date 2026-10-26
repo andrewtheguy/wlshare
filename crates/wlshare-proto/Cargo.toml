@@ -1,0 +1,15 @@
+[package]
+name = "wlshare-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wlshare's private RFB extensions, both ends of them: what the daemon sends and the zDesk gateway reads, and back"
+
+# The one crate outside this workspace may depend on: the zDesk gateway pins it
+# by this repository's release tag, behind its `wlshare` feature. Every byte of
+# a private extension is built and parsed here, for the daemon and the gateway
+# alike, so the two ends cannot disagree about one. Nothing but `thiserror`, so
+# a gateway that takes it takes no codec, no C and no OS API with it.
+[dependencies]
+thiserror.workspace = true

@@ -73,7 +73,7 @@ impl PixelFormat {
     }
 
     /// The 16 bytes of a PIXEL_FORMAT, padding included.
-    pub fn to_bytes(&self) -> [u8; 16] {
+    pub fn to_bytes(self) -> [u8; 16] {
         let mut b = [0u8; 16];
         b[0] = self.bits_per_pixel;
         b[1] = self.depth;

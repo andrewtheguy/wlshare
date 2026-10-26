@@ -24,7 +24,7 @@
 
 use flate2::{Compress, Compression, FlushCompress, Status};
 
-use crate::pixel::PixelFormat;
+use crate::rfb::pixel::PixelFormat;
 
 /// The tile edge.
 pub const TILE: usize = 64;

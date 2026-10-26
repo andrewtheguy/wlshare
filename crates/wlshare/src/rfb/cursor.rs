@@ -19,9 +19,9 @@
 //! to what it paints first: a cursor plane's buffer is often far larger than the
 //! shape in it.
 
-use crate::msg::rect_header;
-use crate::pixel::PixelFormat;
-use crate::{ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW};
+use crate::rfb::msg::rect_header;
+use crate::rfb::pixel::PixelFormat;
+use crate::rfb::{ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW};
 
 /// The alpha at and above which the standard Cursor's mask calls a pixel opaque.
 const MASK_THRESHOLD: u8 = 0x80;
@@ -86,6 +86,7 @@ impl CursorImage {
     }
 
     /// The pixels: premultiplied RGBA, rows top down.
+    #[cfg(test)]
     pub fn rgba(&self) -> &[u8] {
         &self.rgba
     }

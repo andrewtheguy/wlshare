@@ -1,46 +1,15 @@
-//! The tiles encoding: the desktop as exact PNG tiles where it is still, and a
-//! video stream of its own for each region that moves, for a client on a link
-//! with room to spare.
+//! The tiles encoding's server side: the desktop as exact PNG tiles where it
+//! is still, and a video stream of its own for each region that moves, for a
+//! client on a link with room to spare.
 //!
-//! A private encoding, [`crate::ENCODING_TILES`], beside [`crate::vp9`]'s
-//! rather than in place of it: the VP9 encoding, one stream over the whole
-//! desktop walked on the link, is the picture for a link that is short of
-//! bytes, and this one spends bytes the link has for less of the encoder's
-//! time and a picture that ends exact. Its rules are the zDesk gateway's
-//! Motion's, brought here because only here are the compositor's pixels and
-//! damage coded once.
-//!
-//! **The rectangles.** A pixel update in this encoding is any number of
-//! rectangles of it, drawn in order, each a rectangle of the desktop whose
-//! body begins with a kind:
-//!
-//! ```text
-//! u8 kind
-//! 0 PNG     u32 length | u8[length]  a PNG of exactly the rectangle's pixels
-//! 1 START   u8 stream | u32 length | u8[length]  a region's first frame
-//! 2 FRAME   u8 stream | u32 length | u8[length]  a region's next frame
-//! 3 END     u8 stream                            the region's stream is over
-//! ```
-//!
-//! - A **PNG** is the desktop's pixels in the rectangle exactly, 8-bit RGB or
-//!   a palette of it, and the picture there until a later rectangle draws
-//!   over it. It depends on nothing before it.
-//! - A **START** begins a stream on `stream`, over its rectangle: an H.264
-//!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
-//!   4:2:0, BT.601 at studio swing, by the host's hardware encoder or by
-//!   libx264, of the rectangle's size rounded up to even sides. Each
-//!   **FRAME** on that id is the next frame of that stream, over the same
-//!   rectangle, coded against the frames before it. A decoder draws each
-//!   frame's picture at the rectangle, cut to it from its top-left.
-//! - An **END** says the stream on `stream` is over: its last picture stays
-//!   until something draws over it, and no frame follows on the id until a
-//!   START begins another. The rectangle is the stream's.
-//!
-//! A PNG over a stream's rectangle only ever follows the stream's END, so a
-//! client draws every rectangle where it says, in order, and the picture is
-//! right. A change of the desktop's size, which is sent first as an update of
-//! its own, ends every stream with no END, and the next update sends the
-//! picture again whole.
+//! The encoding — the rectangles and their kinds — is
+//! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::vp9`]'s rather than in
+//! place of it: the VP9 encoding, one stream over the whole desktop walked on
+//! the link, is the picture for a link that is short of bytes, and this one
+//! spends bytes the link has for less of the encoder's time and a picture that
+//! ends exact. Its rules are the zDesk gateway's Motion's, brought here because
+//! only here are the compositor's pixels and damage coded once. A region's
+//! stream is H.264, by the host's hardware encoder or by libx264.
 //!
 //! **Which tiles move.** The desktop is in 64×64 tiles from its top-left. The
 //! damage a read is told of is compared, tile by tile, with what the client
@@ -80,16 +49,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::vp9::{QUALITY_MAX, QUALITY_MIN, Rect};
+use wlshare_proto::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START};
 
-/// A PNG of the rectangle's pixels.
-pub const KIND_PNG: u8 = 0;
-/// A region's first frame, which begins its stream.
-pub const KIND_START: u8 = 1;
-/// A region's next frame.
-pub const KIND_FRAME: u8 = 2;
-/// A region's stream is over.
-pub const KIND_END: u8 = 3;
+use crate::rfb::vp9::Rect;
 
 /// Why a region coder could not open or code a stream: its encoder's reason,
 /// in its own words.
@@ -125,38 +87,6 @@ pub trait RegionStream: Send {
     fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError>;
 }
 
-/// The dial the client's list asks the tiles picture's streams held at — the
-/// VP9 encoding's `WLQ` and the value
-/// ([`crate::vp9::ENCODING_VP9_QUALITY_BASE`]) beside [`crate::ENCODING_TILES`] —
-/// or `None` where the list does not name the encoding. The server has no
-/// quality of its own, so a list that names the encoding without one is
-/// fatal, and so is one that names the VP9 encoding beside it: they are two
-/// pictures, of which a client wants one.
-pub fn listed(encodings: &[i32]) -> Result<Option<u8>, TilesListError> {
-    if !encodings.contains(&crate::ENCODING_TILES) {
-        return Ok(None);
-    }
-    if encodings.contains(&crate::ENCODING_VP9) {
-        return Err(TilesListError::Both);
-    }
-    let quality = encodings
-        .iter()
-        .filter_map(|&e| u8::try_from(e.checked_sub(crate::vp9::ENCODING_VP9_QUALITY_BASE)?).ok())
-        .find(|q| (QUALITY_MIN..=QUALITY_MAX).contains(q))
-        .ok_or(TilesListError::NoQuality)?;
-    Ok(Some(quality))
-}
-
-/// Why a list that names the tiles encoding asks for no picture this server
-/// sends. Fatal to the connection, as a malformed message is.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum TilesListError {
-    #[error("the list names the tiles encoding without a quality 1–100 beside it")]
-    NoQuality,
-    #[error("the list names both the tiles and the VP9 encoding")]
-    Both,
-}
-
 /// Why a picture could not be read or encoded.
 #[derive(Debug, Error)]
 pub enum TilesError {
@@ -169,7 +99,7 @@ pub enum TilesError {
     Png(#[from] png::EncodingError),
     #[error("a {width}x{height} picture at a stride of {stride} does not fit in {bytes} bytes")]
     Buffer { width: u16, height: u16, stride: usize, bytes: usize },
-    #[error("a rectangle of {0} bytes is over the {max}-byte ceiling", max = crate::msg::MAX_RECT_BODY)]
+    #[error("a rectangle of {0} bytes is over the {max}-byte ceiling", max = wlshare_proto::MAX_BODY)]
     TooLong(usize),
     #[error("an update of {0} rectangles is more than one can count")]
     TooMany(usize),
@@ -609,7 +539,7 @@ struct Out<'a> {
 
 impl Out<'_> {
     fn header(&mut self, area: Area, kind: u8) {
-        self.out.extend_from_slice(&crate::msg::rect_header(area.left, area.top, area.w(), area.h(), crate::ENCODING_TILES));
+        self.out.extend_from_slice(&crate::rfb::msg::rect_header(area.left, area.top, area.w(), area.h(), wlshare_proto::ENCODING_TILES));
         self.out.push(kind);
         self.count += 1;
     }
@@ -618,7 +548,7 @@ impl Out<'_> {
     /// rectangle begun at `from` if it is past the ceiling.
     fn length(&mut self, from: usize, at: usize) -> Result<(), TilesError> {
         let len = self.out.len() - at - 4;
-        if len > crate::msg::MAX_RECT_BODY {
+        if len > wlshare_proto::MAX_BODY {
             self.out.truncate(from);
             self.count -= 1;
             return Err(TilesError::TooLong(len));
@@ -704,7 +634,9 @@ impl TilesEncoder {
         self.size
     }
 
-    /// The dial the streams are coded at.
+    /// The dial the streams are coded at, which `examples/motion-bench.rs`
+    /// reads.
+    #[allow(dead_code)]
     pub fn quality(&self) -> u8 {
         self.quality
     }
@@ -1037,7 +969,7 @@ impl TilesEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{self, RectBody, ServerMsg, TileBody};
+    use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
     use std::io::Read as _;
 
     /// A PNG as packed RGB, by the specification: the chunks, the IDAT
@@ -1124,7 +1056,7 @@ mod tests {
 
         /// One update of `count` rectangles, as the encoder appended them.
         fn draw(&mut self, count: u16, rects: &[u8]) {
-            let mut wire = crate::msg::update_header(count).to_vec();
+            let mut wire = crate::rfb::msg::update_header(count).to_vec();
             wire.extend_from_slice(rects);
             self.bytes += rects.len();
             let (ServerMsg::Update(rects), used) = client::parse(&wire).unwrap().expect("a whole update") else { panic!("an update") };
@@ -1304,17 +1236,6 @@ mod tests {
             assert!(now < ms(60_000), "never settled");
         }
         now
-    }
-
-    #[test]
-    fn the_quality_is_read_from_the_list_beside_the_encoding() {
-        let quality = crate::vp9::ENCODING_VP9_QUALITY_BASE + 70;
-        assert_eq!(crate::ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
-        assert_eq!(listed(&[crate::ENCODING_ZRLE, quality]), Ok(None));
-        assert_eq!(listed(&[crate::ENCODING_TILES, quality, crate::ENCODING_ZRLE]), Ok(Some(70)));
-        assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_ZRLE]), Err(TilesListError::NoQuality));
-        assert_eq!(listed(&[crate::ENCODING_TILES, crate::vp9::ENCODING_VP9_QUALITY_BASE + 101]), Err(TilesListError::NoQuality));
-        assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_VP9, quality]), Err(TilesListError::Both));
     }
 
     /// A first picture goes whole as PNG, a band at a time, exact; a palette

@@ -2,14 +2,20 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 
-- Three crates: `wlshare-rfb` (protocol) and `wlshare-vp9` (the VP9 coding),
-  platform-independent and tested by a bare `cargo test`, and `wlshare` (the
-  daemon, Linux + wlroots-based Wayland only). Its one client is the zDesk
-  gateway; there is no native client. `wlshare-vp9` is libvpx alone, from a
+- Three crates: `wlshare-proto` (the private extensions' bytes) and
+  `wlshare-vp9` (the VP9 coding), platform-independent and tested by a bare
+  `cargo test`, and `wlshare` (the daemon, Linux + wlroots-based Wayland only),
+  whose RFB protocol is its own module (`src/rfb/`), not a crate. Its one
+  client is the zDesk gateway; there is no native client. `wlshare-proto` is
+  the one crate anything outside this repository depends on: the gateway pins
+  it by this repository's release tag, behind its `wlshare` feature, and it
+  depends on `thiserror` alone. Every private extension's bytes, both
+  directions, are built and parsed there, never in the daemon or the gateway.
+  `wlshare-vp9` is libvpx alone, from a
   prebuilt static archive, set up for a desktop, with the planes in front of
-  it, its decoder and the quality walk; nothing about a wire is decided
-  there. Everything is built for its target's baseline, with no CPU floor.
-  libvpx's decoder is also what `wlshare-rfb`'s VP9 tests read the
+  it, its decoder, the quality walk and the capture file; nothing about a wire
+  is decided there. Everything is built for its target's baseline, with no CPU floor.
+  libvpx's decoder is also what the daemon's VP9 tests read the
   encoder's frames back with. A measurement of the encoder is run on an idle machine,
   alone: no build, test, profile or second measurement beside it. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
@@ -27,9 +33,10 @@
   its own encoder in plain Rust: nothing is needed to build or to run.
   Its Opus coding is the `sound-opus` repository, shared and pinned the same
   way, with libopus linked from a prebuilt static archive: nothing is needed
-  to build or to run, and `ffmpeg` on the path to run the protocol crate's Opus
+  to build or to run, and `ffmpeg` on the path to run the daemon's Opus
   tests, which decode with it.
-- Every protocol byte comes from `wlshare-rfb`; the daemon writes none itself.
+- Every protocol byte comes from the daemon's `rfb` module or, for a private
+  extension, from `wlshare-proto`; the rest of the daemon writes none itself.
   Every encoder gets an independent decoder in its tests. The daemon's
   H.264 encoder (`h264.rs`) is tested against libavcodec's software decoder:
   libx264 on every machine, and the hardware, libavcodec's `h264_vaapi`, where

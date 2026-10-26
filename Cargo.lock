@@ -1780,22 +1780,35 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 name = "wlshare"
 version = "0.0.89"
 dependencies = [
+ "aes",
  "anyhow",
  "argon2",
  "calloop",
  "calloop-wayland-source",
  "clap",
  "cpu-time",
+ "eax",
  "env_logger",
  "ffmpeg-sys-next",
+ "flate2",
  "libc",
  "log",
  "memmap2",
  "pipewire",
+ "pkcs8",
  "png",
+ "rand",
+ "rsa",
  "rustix",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2",
+ "sound-flac",
+ "sound-opus",
+ "subtle",
+ "symphonia-bundle-flac",
+ "symphonia-core",
  "thiserror",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
@@ -1805,34 +1818,17 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
- "wlshare-rfb",
+ "wlshare-proto",
  "wlshare-vp9",
  "xkbcommon",
  "yuv",
 ]
 
 [[package]]
-name = "wlshare-rfb"
+name = "wlshare-proto"
 version = "0.0.89"
 dependencies = [
- "aes",
- "eax",
- "flate2",
- "log",
- "pkcs8",
- "png",
- "rand",
- "rsa",
- "sha1",
- "sha2",
- "sound-flac",
- "sound-opus",
- "subtle",
- "symphonia-bundle-flac",
- "symphonia-core",
  "thiserror",
- "tokio",
- "wlshare-vp9",
 ]
 
 [[package]]

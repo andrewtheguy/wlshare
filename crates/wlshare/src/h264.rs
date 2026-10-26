@@ -4,7 +4,7 @@
 //! one, and libx264 at its fastest preset where it has none.
 //!
 //! A region of the tiles picture is a stream over its rectangle alone
-//! ([`wlshare_rfb::tiles`]), coded by the [`RegionCoder`] the daemon hands
+//! ([`crate::rfb::tiles`]), coded by the [`RegionCoder`] the daemon hands
 //! the encoder. This is that coder. On a host whose GPU has an H.264 encoder
 //! a VA-API driver reaches — Intel's iHD, AMD's Mesa — a region that moves
 //! costs the processor its conversion to NV12 and nothing of the search,
@@ -43,7 +43,7 @@
 //!
 //! **Failure ends the session.** A coder that cannot be opened, refuses a
 //! stream or fails one midway fails the tiles picture's encode
-//! ([`wlshare_rfb::tiles::TilesEncoder`]), and with it the session that
+//! ([`crate::rfb::tiles::TilesEncoder`]), and with it the session that
 //! asked for the picture. Each session opens the device itself
 //! ([`Encoder::coder`]), so a VA display is one thread's and the sessions
 //! share nothing of it.
@@ -59,8 +59,8 @@ use std::ptr;
 use anyhow::Context as _;
 use ffmpeg_sys_next as ff;
 use log::{debug, info};
-use wlshare_rfb::tiles::{RegionCoder, RegionError, RegionStream};
-use wlshare_rfb::vp9::Rect;
+use crate::rfb::tiles::{RegionCoder, RegionError, RegionStream};
+use crate::rfb::vp9::Rect;
 
 /// The H.264 encoder the startup found, which every session's coder opens.
 #[derive(Debug)]
@@ -379,7 +379,7 @@ impl Stream {
                     ctx.hw_frames_ctx = ff::av_buffer_ref(self.frames);
                     anyhow::ensure!(!ctx.hw_frames_ctx.is_null(), "libavutil could not share the frames context");
                 }
-                Backend::X264 => ctx.thread_count = wlshare_rfb::vp9::encoder_threads() as i32,
+                Backend::X264 => ctx.thread_count = wlshare_vp9::encoder_threads() as i32,
             }
             let mut dict = ptr::null_mut();
             for (key, value) in options {

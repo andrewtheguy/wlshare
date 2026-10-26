@@ -1,4 +1,4 @@
-//! What is made of a capture ([`wlshare_rfb::capture`]): the file a daemon
+//! What is made of a capture ([`wlshare_vp9::capture`]): the file a daemon
 //! started with `--capture-frames` wrote of what its VP9 encoder was handed,
 //! played into the encoder again, as the workspace has it now, and written as the
 //! streams a decoder is tested and timed on. At 4:4:4, always: the daemon
@@ -67,8 +67,8 @@ use std::io::{BufReader, BufWriter, Read, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use wlshare_rfb::vp9::Vp9Encoder;
-use wlshare_rfb::capture::{Frame, Reader, Writer};
+use wlshare_vp9::capture::{Frame, Reader, Writer};
+use wlshare_vp9::{Chroma, Stream};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -289,7 +289,7 @@ fn ivf_header(width: u16, height: u16) -> [u8; 32] {
 /// name it is to keep when it is whole, so a stream cut short is never taken
 /// for one.
 struct Output {
-    stream: Vp9Encoder,
+    stream: Stream,
     size: (u16, u16),
     ivf: BufWriter<File>,
     csv: BufWriter<File>,
@@ -308,7 +308,7 @@ impl Output {
         ivf.write_all(&ivf_header(size.0, size.1))?;
         let mut csv = BufWriter::new(File::create(part.with_extension("csv"))?);
         csv.write_all(b"frame,ms,bytes,keyframe,quality\n")?;
-        Ok(Self { stream: Vp9Encoder::with_threads(size.0, size.1, quality, wlshare_rfb::vp9::Chroma::Yuv444, threads)?, size, ivf, csv, part, began: None, frames: 0, first: Vec::new(), unit: Vec::new() })
+        Ok(Self { stream: Stream::new(size.0, size.1, quality, Chroma::Yuv444, threads)?, size, ivf, csv, part, began: None, frames: 0, first: Vec::new(), unit: Vec::new() })
     }
 
     /// Code `frame` as the session did, or as a keyframe of the whole picture
@@ -320,15 +320,10 @@ impl Output {
         }
         self.unit.clear();
         let changed = if starting { None } else { frame.changed };
-        self.stream.read(frame.pixels, usize::from(self.size.0) * 4, changed)?;
-        // A rectangle's body: the quality byte and the length word, which an
-        // IVF has no place for and its own of, and the frame. libvpx making
-        // none of a capture's frame is an error here, since every frame after
-        // it would be one early.
-        if !self.stream.encode(starting || frame.keyframe, &mut self.unit)? {
-            return Err("libvpx produced no frame".into());
-        }
-        self.unit.drain(..5);
+        self.stream.read_bgrx(frame.pixels, usize::from(self.size.0) * 4, changed)?;
+        // libvpx making none of a capture's frame is an error here, since
+        // every frame after it would be one early.
+        self.stream.encode(starting || frame.keyframe, &mut self.unit)?;
         let keyframe = wlshare_vp9::frame_header(&self.unit).is_some_and(|header| header.keyframe);
         let micros = frame.at.as_micros() as u64;
         let ms = (micros - *self.began.get_or_insert(micros)) / 1000;

@@ -8,7 +8,7 @@
 //! holds the planes it reads — BT.601 at studio swing, its colour at the
 //! stream's chroma — converted from packed RGB or the `B, G, R, X` a
 //! framebuffer holds. Behind it a [`Decoder`], libvpx's, gives the planes
-//! back, for every test here and in `wlshare-rfb`.
+//! back, for every test here and in the daemon's.
 //!
 //! The stream's shape is chosen for whoever decodes it. Tile columns follow the
 //! picture's width, one under 1440, two from 1440, four from 2048 and eight
@@ -40,9 +40,12 @@
 //! can reduce both at once. It takes them back when the link keeps up. What is
 //! not here is the rest of *when*: which picture to encode and where the link's
 //! lag is read from, which are the daemon's, and how a frame is framed on a
-//! wire, which is `wlshare-rfb`'s.
+//! wire, which is `wlshare-proto`'s.
 
 mod libvpx;
+// Not the codec: the file a daemon run by hand writes of what its encoder was
+// handed, and the tools that play it back read.
+pub mod capture;
 pub mod walk;
 
 pub use libvpx::{Decoded, Decoder};
@@ -141,6 +144,27 @@ const TILE_WIDTHS: [u16; 3] = [1440, 2048, 5760];
 
 /// The most threads an encoder takes.
 const MAX_THREADS: usize = 64;
+
+/// How many threads the encoder gets: the machine less two cores, at most
+/// `MAX_ENCODER_THREADS` (8). An encode is a burst of milliseconds a frame that
+/// the person at the other end is waiting on, and the encoder splits it
+/// across threads by rows and tile columns; the two cores kept back are for
+/// the compositor and the session, which are what make the next frame. The
+/// count also bounds the stream's tile columns, and so what a decoder's
+/// threads have to split. The daemon's software H.264 encoder takes the same
+/// count, so a region costs the machine's cores alike in either codec.
+pub fn encoder_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
+}
+
+/// The most threads the encoder takes, whatever the machine: what a 4K
+/// picture can use. The useful count is the picture's, not the machine's —
+/// superblock rows are handed out within each tile column, so the work to
+/// share grows with the picture — at about one thread a megapixel: eight for
+/// 4K's 8.3. 4K is the largest desktop this is tuned for; a larger one is an
+/// edge case that streams, not a target, and gets the 4K count.
+const MAX_ENCODER_THREADS: usize = 8;
+
 
 /// The 1–100 quality dial as a VP9 quantizer: [`QUALITY_MIN`] is the coarsest
 /// picture and becomes [`Q_COARSEST`], [`QUALITY_MAX`] the finest and becomes

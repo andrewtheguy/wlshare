@@ -48,7 +48,7 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
 };
-use wlshare_rfb::cursor::CursorImage;
+use crate::rfb::cursor::CursorImage;
 
 use crate::capture::ShmBuffer;
 use crate::compositor::Compositor;

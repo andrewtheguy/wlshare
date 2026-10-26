@@ -5,8 +5,8 @@
 //! capture, outputs, input, clipboard — and runs a calloop that also polls a
 //! command channel ([`compositor`]). The tokio runtime accepts clients and runs
 //! one task per connection ([`session`]). They share the framebuffer and a few
-//! channels ([`shared`]), and every protocol byte comes from the `wlshare-rfb`
-//! crate. A client that enables audio gets a PipeWire capture thread of its
+//! channels ([`shared`]), and every protocol byte comes from [`rfb`], the
+//! private extensions' from `wlshare-proto` under it. A client that enables audio gets a PipeWire capture thread of its
 //! own for as long as it listens ([`audio`]), and a client that plugs a camera
 //! gets a PipeWire video source, decoded by libavcodec, for as long as it is
 //! plugged ([`camera`], [`decode`]); a client that plugs a microphone gets a
@@ -30,6 +30,7 @@ mod input;
 mod microphone;
 mod outputs;
 mod pam;
+mod rfb;
 mod session;
 mod shared;
 mod state;
@@ -42,7 +43,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::Parser;
 use log::{error, info};
-use wlshare_rfb::rsa_aes::ServerKey;
+use crate::rfb::rsa_aes::ServerKey;
 
 use crate::auth::Login;
 use crate::session::{RsaAes, Security};
@@ -68,7 +69,7 @@ struct Args {
     #[arg(long)]
     listen: Option<std::net::SocketAddr>,
     /// Write what every VP9 stream is handed into this directory, exact: each
-    /// session's frames as a capture file (`wlshare_rfb::capture`), one
+    /// session's frames as a capture file (`wlshare_vp9::capture`), one
     /// `<unix millis>-client<id>.wlcap` per session, for an encoder to be
     /// run again on. A 4:4:4 stream's alone: a client that asks for 4:2:0
     /// is not captured. Uncompressed and large: run `zstd` on them afterwards.
@@ -213,7 +214,7 @@ fn server_key(key_path: std::path::PathBuf) -> anyhow::Result<ServerKey> {
     let key = match std::fs::read_to_string(&key_path) {
         Ok(pem) => ServerKey::from_pem(&pem).with_context(|| format!("{} is not a PKCS#8 PEM RSA key", key_path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!("generating a {}-bit RSA key into {}", wlshare_rfb::rsa_aes::SERVER_KEY_BITS, key_path.display());
+            info!("generating a {}-bit RSA key into {}", crate::rfb::rsa_aes::SERVER_KEY_BITS, key_path.display());
             let key = ServerKey::generate().context("generating the RSA key")?;
             if let Some(dir) = key_path.parent() {
                 std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;

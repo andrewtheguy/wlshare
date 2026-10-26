@@ -14,23 +14,31 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
                      data-control
 ```
 
+- `crates/wlshare-proto` is the bytes of wlshare's private extensions, both
+  directions: the VP9 and tiles encodings' framing and what a client lists
+  for them, the density, outputs, audio, camera and microphone extensions, the
+  scroll message and the beside ClientInit byte. It is the one crate the zDesk
+  gateway depends on, pinned by this repository's release tag behind its
+  `wlshare` feature, so the daemon and the gateway build and parse every
+  private byte with the same code. It depends on `thiserror` alone, has no OS
+  APIs, and each builder is tested against a decoder written from the
+  documented layout and read back by its parser.
 - `crates/wlshare-vp9` is the VP9 encoder: libvpx pinned to a quality dial,
-  8-bit 4:4:4 or 4:2:0, with the planes in front of it, its decoder, and the
-  quality walk. It decides nothing about the wire, and like the protocol crate
-  has no OS APIs. Its current prebuilt archives cover macOS arm64, Linux x86_64
-  and aarch64, and Windows x86_64 MSVC. See
+  8-bit 4:4:4 or 4:2:0, with the planes in front of it, its decoder, the
+  quality walk, and the capture file of what a session handed it. It decides
+  nothing about the wire, and has no OS APIs. Its current prebuilt archives
+  cover macOS arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC. See
   [The VP9 encoding](#the-vp9-encoding).
-- `crates/wlshare-rfb` decides every byte on the wire: handshake, message parsing
-  and building, RSA-AES and its frames, the ZRLE encoder, the VP9 encoding's
-  framing over its encoder, the tiles encoding, the cursor and clipboard encodings, and the
-  density, outputs, audio, camera and microphone extensions and the scroll
-  message. It has no platform
-  dependency — the audio extension's FLAC encoder is `sound-flac`'s own, in
-  plain Rust, and its Opus encoder, libopus under `sound-opus`, a prebuilt
-  static archive — and its tests decode every encoder's output with an
-  independent decoder, read every server message back with a client's parser,
-  and run the RSA-AES exchange against a client written from the specification.
-- `crates/wlshare` is the daemon. `compositor.rs` is the Wayland thread and its
+- `crates/wlshare` is the daemon. `rfb/` decides every byte on the wire that
+  is not a private extension's: handshake, message parsing and building,
+  RSA-AES and its frames, the ZRLE encoder, the VP9 encoder over
+  `wlshare-vp9`, the tiles encoder, the audio extension's encoders, and the
+  cursor and clipboard encodings. The audio extension's FLAC encoder is
+  `sound-flac`'s own, in plain Rust, and its Opus encoder libopus under
+  `sound-opus`, a prebuilt static archive. Its tests decode every encoder's
+  output with an independent decoder, read every server message back with a
+  client's parser (`rfb/client.rs`), and run the RSA-AES exchange against a
+  client written from the specification. `compositor.rs` is the Wayland thread and its
   command handler; `capture.rs`, `cursor.rs`, `outputs.rs`, `input.rs` and
   `clipboard.rs` are the protocols it speaks, and `sway.rs` is sway's IPC, which
   makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
@@ -355,8 +363,9 @@ it, so a client decodes them all with one decoder, in order. The coding is
 libvpx's, as `wlshare-vp9` sets it up: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
 asked for, and the colour declared in the bitstream.
-`crates/wlshare-rfb/src/vp9.rs` is the framing over it — the quality byte, the length word and
-its ceiling, and the framebuffer's pixels in.
+`crates/wlshare/src/rfb/vp9.rs` is the framebuffer's pixels in and the
+frame out in the rectangle's framing, which is `wlshare-proto`'s `vp9`
+module — the quality byte, the length word and its ceiling.
 What a frame holds is fixed:
 
 - **8-bit 4:4:4, VP9 profile 1, unless the list asks for 4:2:0.** A colour
@@ -505,7 +514,7 @@ A daemon started with `--capture-frames DIR` writes, for every session, what
 its VP9 encoder is handed, exact: each frame's time, its size, the dial at
 the time, whether a keyframe was asked, the damage rectangles or that there
 were none, and the rows the rectangles span as the framebuffer holds them,
-`B, G, R, X`. The file is the capture file of `wlshare-rfb`'s `capture`
+`B, G, R, X`. The file is the capture file of `wlshare-vp9`'s `capture`
 module, whose layout is written out there: this repository's own, read and
 written here, and owing nothing to the codec, since a capture is the pixels
 in front of an encoder whichever encoder that is. There is one
@@ -531,7 +540,7 @@ started has another id and is not taken for one.
 
 `docker/capture/` runs that without a person: a headless sway on wlroots
 0.19, the daemon started by the container's script with the flag and no
-authentication on loopback, and `vp9-sink` (`crates/wlshare-rfb/examples/`),
+authentication on loopback, and `vp9-sink` (`crates/wlshare/examples/`),
 the one client the container has, which lists VP9 at a quality with Fence,
 ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's size, echoes
 the fences, throws the frames away, on cue reads late for a while, and
@@ -568,7 +577,7 @@ of the same kind of desktop, so a wlshare capture at their sizes stands for
 them.
 
 The captures are the source, and the streams a decoder is tested and timed
-on are made of them: `vp9cap` (`crates/wlshare-rfb/examples/`) plays a
+on are made of them: `vp9cap` (`crates/wlshare-vp9/examples/`) plays a
 capture into the encoder again, each frame with its rectangles, at the dial
 it was coded at, a keyframe where one was asked. So a walk's steps and its
 settle are in the stream it makes without a slow link being played again,
@@ -596,7 +605,7 @@ the picture as it stood, whole, with a keyframe asked; `walk` it copies
 whole, since its dial walks down, back up and settles over all of it.
 
 The walk is measured on the captures the same way, without a link being
-shaped: `walk-sim` (`crates/wlshare-rfb/examples/`) plays one or several of
+shaped: `walk-sim` (`crates/wlshare-vp9/examples/`) plays one or several of
 them through the encoder and `QualityWalk` as a session does, one frame in
 flight, to a model of zDesk passing the stream to a browser — the frame
 handed to the browser's link as it arrives, its fence echoed at once while
@@ -638,7 +647,8 @@ a picture that ends exact. It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
-coded once. `crates/wlshare-rfb/src/tiles.rs` is the encoder and its framing.
+coded once. `crates/wlshare/src/rfb/tiles.rs` is the encoder, and
+`wlshare-proto`'s `tiles` module its framing.
 
 A client that lists it, with a quality beside it (`WLQ` and the value, as
 VP9's), gets it instead of a standard pixel encoding, wherever in the list it
@@ -704,8 +714,8 @@ the picture.
   frame for about twice its bytes, on a link that has them (measured below).
   `crates/wlshare/src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
   `libx264` through the libavcodec already linked for the camera — Debian's,
-  which links libx264 itself — and the `RegionCoder` of `wlshare-rfb`'s tiles
-  module, which opens a stream of it for each region. The coding
+  which links libx264 itself — and the `RegionCoder` of the daemon's tiles
+  encoder, which opens a stream of it for each region. The coding
   is pinned as VP9's is: constant quantizer, the dial mapped onto QP 40 down
   to 16, no bitrate, nothing dropped, no B-frames, one frame in and one out,
   BT.601 at studio swing in the stream's VUI; the picture the region's size
@@ -737,7 +747,7 @@ the picture.
   container with two cores and a flooded 1280×800 terminal, 20 s at quality
   90: the H.264 regions sent 598 frames for 6 s of the daemon's CPU where VP9
   sent 176 for 17 s, both read back whole by FFmpeg's own decoders
-  (`examples/tiles-sink.rs` in `wlshare-rfb` is the client that was run, and
+  (`examples/tiles-sink.rs` in the daemon's crate is the client that was run, and
   keeps each stream for that). Measured 2026-10-22 on a six-core machine
   with no GPU, under headless labwc, the same flooded terminal at 1280×800
   and quality 90, 20 s, every encoder on four threads: libx264 `ultrafast`
@@ -1133,7 +1143,7 @@ It makes one frame of every block the moment the block is whole, with nothing
 of the blocks before it, so a frame lost on the way costs its own samples and
 nothing after, which is why every frame is numbered zero. No marker or stream
 header is sent: a client builds the header from the format it set.
-`wlshare-rfb`'s tests read every frame back with symphonia's decoder, which
+The daemon's tests read every frame back with symphonia's decoder, which
 shares nothing with it.
 
 As Opus, every packet is twenty milliseconds too, `frequency / 50` frames, and
@@ -1159,7 +1169,7 @@ music-tuned, constrained variable rate around the bitrate, at full effort, with
 silence a few bytes a packet. libopus is linked from a prebuilt static archive
 its sys crate downloads: no C is compiled,
 nothing is loaded at run time and the package depends on nothing for it.
-`wlshare-rfb`'s tests wrap the packets in an Ogg stream behind the header a
+The daemon's tests wrap the packets in an Ogg stream behind the header a
 client builds and decode them with FFmpeg's own Opus decoder, which shares
 nothing with libopus, so they need `ffmpeg` on the path.
 
@@ -1455,7 +1465,7 @@ username and a password, for `[pam]`; subtype 2, a password alone, for
 `[password]` — and RFB's SecurityResult, ClientInit and everything after
 follow. The credentials have one shape on the wire either way, a length-prefixed
 username then a length-prefixed password, and a client answering subtype 2 sends
-the username empty. `crates/wlshare-rfb/src/rsa_aes.rs` has the exchange byte by
+the username empty. `crates/wlshare/src/rfb/rsa_aes.rs` has the exchange byte by
 byte.
 
 The server's key is long-lived — generated once into `rsa_key_file`, logged as

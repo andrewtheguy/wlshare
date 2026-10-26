@@ -567,17 +567,17 @@ impl Compositor {
         let refuse = |this: &Self, status: u16| this.shared().emit(Event::ResizeRefused { client, status });
         if !self.resize_allowed {
             info!("client {} asked for {width}x{height}: resizing is disabled", client.0);
-            return refuse(self, wlshare_rfb::msg::EDS_STATUS_PROHIBITED);
+            return refuse(self, crate::rfb::msg::EDS_STATUS_PROHIBITED);
         }
         if width == 0 || height == 0 {
-            return refuse(self, wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT);
+            return refuse(self, crate::rfb::msg::EDS_STATUS_INVALID_LAYOUT);
         }
         info!("client {} asks for a {width}x{height} desktop", client.0);
         self.desks[desk].pending_resize = Some((client, width, height));
         let qh = self.qh.clone();
         if !self.outputs.configure(&qh, desk, Some((width, height)), None, ConfigKind::Resize { client, width, height, retry }) {
             self.desks[desk].pending_resize = None;
-            refuse(self, wlshare_rfb::msg::EDS_STATUS_PROHIBITED);
+            refuse(self, crate::rfb::msg::EDS_STATUS_PROHIBITED);
         }
     }
 

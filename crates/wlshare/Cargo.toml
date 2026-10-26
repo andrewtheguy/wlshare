@@ -11,8 +11,12 @@ name = "wlshare"
 path = "src/main.rs"
 
 [dependencies]
-wlshare-rfb = { path = "../wlshare-rfb" }
-# The quality walk the VP9 stream's dial follows a link with.
+# The private extensions' bytes (src/rfb/), the crate the zDesk gateway reads
+# and writes them with too.
+wlshare-proto = { path = "../wlshare-proto" }
+# The VP9 encoding's codec, libvpx set up for a desktop, and the quality walk
+# its dial follows a link with. Its decoder is what the encoding's tests read
+# every frame back with.
 wlshare-vp9 = { path = "../wlshare-vp9" }
 anyhow.workspace = true
 log.workspace = true
@@ -24,6 +28,36 @@ serde_json = "1"
 toml = "1"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+# ZRLE's per-client deflate stream (src/rfb/zrle.rs). zlib-rs is the fastest
+# backend and pure Rust.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# RSA-AES (src/rfb/rsa_aes.rs): RSA-PKCS#1 v1.5 around the two randoms, with
+# `encoding` for the PKCS#8 PEM the server's key file holds; SHA-1 and SHA-256
+# for the two types' key derivation and the fingerprint; AES-EAX for every byte
+# after. The release-candidate `rsa` is the line on `rand_core` 0.10 and
+# `digest` 0.11.
+rsa = { version = "0.10.0-rc.18", default-features = false, features = ["std", "encoding", "hazmat"] }
+subtle = { version = "2.6", default-features = false }
+pkcs8 = { version = "0.11", default-features = false, features = ["pem", "std"] }
+rand = "0.10"
+aes = "0.9"
+eax = "0.6"
+sha1 = "0.11"
+sha2 = "0.11"
+# The audio extension's FLAC frames: the one place a desktop's sound is made
+# FLAC, for this workspace and for the zDesk gateway, each pinned to its
+# release tag. Its own encoder in plain Rust, encode only, so no C is compiled
+# and nothing is downloaded or looked for at run time.
+sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.9" }
+# The audio extension's Opus packets, for a client that asks for them in place
+# of FLAC: the one place a desktop's sound is coded as Opus, for this workspace
+# and for the zDesk gateway, each pinned to its release tag. libopus is linked
+# from a prebuilt static archive, so nothing of it is compiled here or looked
+# for at run time.
+sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.4" }
+# The tiles encoding's PNGs (src/rfb/tiles.rs), pure Rust; `fdeflate` is its
+# fast compression.
+png = "0.18"
 
 # The Wayland side. wayland-client speaks the protocol in its own Rust, with no
 # libwayland linked or loaded.
@@ -67,10 +101,16 @@ tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_support
 # the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).
 [dev-dependencies]
 # `examples/motion-bench.rs`, the tiles encoding measured against the VP9
-# encoding: the process's CPU time around each coder, and the page's reader of
-# the tiles' PNGs.
+# encoding: the process's CPU time around each coder.
 cpu-time = "1"
-png = "0.18"
+# The FLAC encoder's tests read every frame back with symphonia's decoder,
+# which shares nothing with `sound-flac`'s encoder; only the FLAC bundle of it
+# — `symphonia-core` for the decoder trait and the packet it takes.
+symphonia-bundle-flac = "0.6"
+symphonia-core = "0.6"
+# `io-std` for `examples/vp9-sink.rs`, the client the capture container runs
+# against the daemon, which types what it reads.
+tokio = { version = "1", features = ["io-std"] }
 
 [package.metadata.deb]
 name = "wlshare"

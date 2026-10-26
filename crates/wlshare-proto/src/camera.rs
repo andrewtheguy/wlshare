@@ -12,14 +12,14 @@
 //! - The server answers **every** such `SetEncodings` with a
 //!   [`camera_available`] — that answer is the only way support is ever
 //!   announced.
-//! - The client plugs a camera ([`ClientCamera::Plug`]), naming the H.264 it will
+//! - The client plugs a camera ([`plug`]), naming the H.264 it will
 //!   send: its geometry and frame rate. The server makes a camera of it that the
-//!   desktop's applications can open, and unplugs it again on
-//!   [`ClientCamera::Unplug`] or when the client leaves.
+//!   desktop's applications can open, and unplugs it again on an [`unplug`]
+//!   or when the client leaves.
 //! - Whether anything is sent is the desktop's decision, not the client's: the
 //!   server sends [`camera_start`] when an application opens the camera and
 //!   [`camera_stop`] when the last one closes it. Between the two the client
-//!   sends samples ([`ClientCamera::Sample`]), one H.264 access unit each, and
+//!   sends samples ([`sample`]), one H.264 access unit each, and
 //!   outside them it sends nothing.
 //! - A server that lost samples, or could not decode one, sends
 //!   [`camera_keyframe`]: H.264 cannot resume mid-GOP, so the next sample worth
@@ -90,7 +90,7 @@ pub enum ClientCamera {
 /// Why a client's camera message could not be one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CameraParseError {
-    #[error("camera operation {0} is not plug, unplug or sample")]
+    #[error("camera operation {0} is not one this end takes from the other")]
     UnknownOperation(u8),
     #[error("a camera of {width}x{height}")]
     EmptyGeometry { width: u16, height: u16 },
@@ -98,14 +98,6 @@ pub enum CameraParseError {
     BadRate { numerator: u32, denominator: u32 },
     #[error("a camera sample of {0} bytes is over the {MAX_SAMPLE}-byte ceiling")]
     SampleTooLong(usize),
-}
-
-fn u16_at(b: &[u8], i: usize) -> u16 {
-    u16::from_be_bytes([b[i], b[i + 1]])
-}
-
-fn u32_at(b: &[u8], i: usize) -> u32 {
-    u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
 }
 
 /// Parse the camera message at the front of `buf`, whose first byte is
@@ -124,12 +116,7 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientCamera, usize)>, CameraP
             if buf.len() < CAMERA_FORMAT_LEN {
                 return Ok(None);
             }
-            let format = CameraFormat {
-                width: u16_at(buf, 4),
-                height: u16_at(buf, 6),
-                fps_numerator: u32_at(buf, 8),
-                fps_denominator: u32_at(buf, 12),
-            };
+            let format = format_at(buf);
             if format.width == 0 || format.height == 0 {
                 return Err(CameraParseError::EmptyGeometry { width: format.width, height: format.height });
             }
@@ -143,7 +130,7 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientCamera, usize)>, CameraP
             if buf.len() < CAMERA_SAMPLE_HEADER_LEN {
                 return Ok(None);
             }
-            let len = u32_at(buf, 4) as usize;
+            let len = crate::u32_at(buf, 4) as usize;
             if len > MAX_SAMPLE {
                 return Err(CameraParseError::SampleTooLong(len));
             }
@@ -173,6 +160,26 @@ pub fn camera_available() -> [u8; CAMERA_BARE_LEN] {
     bare(SERVER_CAMERA_AVAILABLE)
 }
 
+fn with_format(operation: u8, format: CameraFormat) -> [u8; CAMERA_FORMAT_LEN] {
+    let mut msg = [0u8; CAMERA_FORMAT_LEN];
+    msg[..CAMERA_BARE_LEN].copy_from_slice(&bare(operation));
+    msg[4..6].copy_from_slice(&format.width.to_be_bytes());
+    msg[6..8].copy_from_slice(&format.height.to_be_bytes());
+    msg[8..12].copy_from_slice(&format.fps_numerator.to_be_bytes());
+    msg[12..16].copy_from_slice(&format.fps_denominator.to_be_bytes());
+    msg
+}
+
+/// The format a plug or a start carries, from its sixteen bytes.
+fn format_at(buf: &[u8]) -> CameraFormat {
+    CameraFormat {
+        width: crate::u16_at(buf, 4),
+        height: crate::u16_at(buf, 6),
+        fps_numerator: crate::u32_at(buf, 8),
+        fps_denominator: crate::u32_at(buf, 12),
+    }
+}
+
 /// Server → client: an application opened the camera, which is being fed in
 /// `format` — the format the client plugged, since it is the only one offered.
 ///
@@ -188,13 +195,7 @@ pub fn camera_available() -> [u8; CAMERA_BARE_LEN] {
 ///
 /// A plug is the same sixteen bytes with operation 0.
 pub fn camera_start(format: CameraFormat) -> [u8; CAMERA_FORMAT_LEN] {
-    let mut msg = [0u8; CAMERA_FORMAT_LEN];
-    msg[..CAMERA_BARE_LEN].copy_from_slice(&bare(SERVER_CAMERA_START));
-    msg[4..6].copy_from_slice(&format.width.to_be_bytes());
-    msg[6..8].copy_from_slice(&format.height.to_be_bytes());
-    msg[8..12].copy_from_slice(&format.fps_numerator.to_be_bytes());
-    msg[12..16].copy_from_slice(&format.fps_denominator.to_be_bytes());
-    msg
+    with_format(SERVER_CAMERA_START, format)
 }
 
 /// Server → client: the camera is no longer open; send no more samples.
@@ -206,6 +207,81 @@ pub fn camera_stop() -> [u8; CAMERA_BARE_LEN] {
 /// must be a keyframe.
 pub fn camera_keyframe() -> [u8; CAMERA_BARE_LEN] {
     bare(SERVER_CAMERA_KEYFRAME)
+}
+
+/// Client → server: a camera producing H.264 in `format`. The same sixteen
+/// bytes as a start ([`camera_start`]), with operation 0.
+pub fn plug(format: CameraFormat) -> [u8; CAMERA_FORMAT_LEN] {
+    with_format(CLIENT_CAMERA_PLUG, format)
+}
+
+/// Client → server: the camera is gone.
+pub fn unplug() -> [u8; CAMERA_BARE_LEN] {
+    bare(CLIENT_CAMERA_UNPLUG)
+}
+
+/// Client → server: one Annex B access unit, a keyframe or not.
+///
+/// | Offset | Type | Field |
+/// |---|---|---|
+/// | 0 | U8 | `0xE2` |
+/// | 1 | U8 | operation, 2 |
+/// | 2 | U8 | flags ([`SAMPLE_KEYFRAME`]) |
+/// | 3 | U8 | padding |
+/// | 4 | U32 | length of the unit |
+/// | 8 | U8[] | the unit |
+///
+/// A unit over [`MAX_SAMPLE`] is the server's to refuse, and ends the session:
+/// a client sends none.
+pub fn sample(keyframe: bool, unit: &[u8]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(CAMERA_SAMPLE_HEADER_LEN + unit.len());
+    msg.extend_from_slice(&[MSG_CAMERA, CLIENT_CAMERA_SAMPLE, if keyframe { SAMPLE_KEYFRAME } else { 0 }, 0]);
+    msg.extend_from_slice(&(unit.len() as u32).to_be_bytes());
+    msg.extend_from_slice(unit);
+    msg
+}
+
+/// A camera submessage from the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerCamera {
+    /// The server takes a camera: the answer to `SetEncodings`.
+    Available,
+    /// An application opened the camera, fed in this format.
+    Start(CameraFormat),
+    /// The last application closed it.
+    Stop,
+    /// The next sample must be a keyframe.
+    Keyframe,
+}
+
+/// How many bytes the server message whose first [`CAMERA_BARE_LEN`] are
+/// `header` is in all. An operation this client does not know is an error: the
+/// messages share no length field, so one that cannot be measured leaves the
+/// stream at an offset nothing recovers from.
+pub fn server_len(header: &[u8; CAMERA_BARE_LEN]) -> Result<usize, CameraParseError> {
+    debug_assert_eq!(header[0], MSG_CAMERA);
+    match header[1] {
+        SERVER_CAMERA_START => Ok(CAMERA_FORMAT_LEN),
+        SERVER_CAMERA_AVAILABLE | SERVER_CAMERA_STOP | SERVER_CAMERA_KEYFRAME => Ok(CAMERA_BARE_LEN),
+        other => Err(CameraParseError::UnknownOperation(other)),
+    }
+}
+
+/// Parse the server's camera message at the front of `buf`, whose first byte
+/// is [`MSG_CAMERA`]. `Ok(None)` means more bytes are needed.
+pub fn parse_server(buf: &[u8]) -> Result<Option<(ServerCamera, usize)>, CameraParseError> {
+    let Some(header) = buf.first_chunk::<CAMERA_BARE_LEN>() else { return Ok(None) };
+    let len = server_len(header)?;
+    if buf.len() < len {
+        return Ok(None);
+    }
+    let msg = match header[1] {
+        SERVER_CAMERA_AVAILABLE => ServerCamera::Available,
+        SERVER_CAMERA_START => ServerCamera::Start(format_at(buf)),
+        SERVER_CAMERA_STOP => ServerCamera::Stop,
+        _ => ServerCamera::Keyframe,
+    };
+    Ok(Some((msg, len)))
 }
 
 #[cfg(test)]
@@ -302,5 +378,33 @@ mod tests {
             Err(CameraParseError::SampleTooLong(MAX_SAMPLE + 1)),
             "refused before the unit is waited for"
         );
+    }
+
+    /// The client's messages, read back by the server's parser, whose layouts
+    /// the tests above hold to the documented ones.
+    #[test]
+    fn the_client_messages_parse_back() {
+        assert_eq!(plug(VGA), [0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03, 0xE9]);
+        assert_eq!(parse_client(&plug(VGA)), Ok(Some((ClientCamera::Plug(VGA), 16))));
+        assert_eq!(parse_client(&unplug()), Ok(Some((ClientCamera::Unplug, 4))));
+        assert_eq!(sample(true, &[0, 0, 1]), [0xE2, 2, SAMPLE_KEYFRAME, 0, 0, 0, 0, 3, 0, 0, 1]);
+        assert_eq!(parse_client(&sample(false, &[9])), Ok(Some((ClientCamera::Sample { keyframe: false, data: vec![9] }, 9))));
+    }
+
+    /// The server's messages, read back by the client's parser, against the
+    /// decoder written from the layout.
+    #[test]
+    fn the_server_messages_parse_back() {
+        for (bytes, expected) in [
+            (camera_available().to_vec(), ServerCamera::Available),
+            (camera_start(VGA).to_vec(), ServerCamera::Start(VGA)),
+            (camera_stop().to_vec(), ServerCamera::Stop),
+            (camera_keyframe().to_vec(), ServerCamera::Keyframe),
+        ] {
+            assert_eq!(parse_server(&bytes), Ok(Some((expected, bytes.len()))));
+            assert_eq!(server_len(bytes.first_chunk().unwrap()), Ok(bytes.len()));
+            assert_eq!(parse_server(&bytes[..bytes.len() - 1]), Ok(None), "a partial message asks for more");
+        }
+        assert_eq!(parse_server(&[0xE2, 4, 0, 0]), Err(CameraParseError::UnknownOperation(4)));
     }
 }

@@ -1,16 +1,18 @@
-# The daemon, the protocol crate it is built on and the VP9 coding under both,
-# libvpx as `wlshare-vp9` sets it up (see docs/architecture.md). The FLAC coding
-# is sound-flac and the Opus coding sound-opus, each its own repository.
+# The daemon, with the RFB protocol it speaks inside it; the bytes of its
+# private extensions, `wlshare-proto`, which the zDesk gateway depends on too;
+# and the VP9 coding, libvpx as `wlshare-vp9` sets it up (see
+# docs/architecture.md). The FLAC coding is sound-flac and the Opus coding
+# sound-opus, each its own repository.
 #
 # `default-members` deliberately omits the daemon: it needs libxkbcommon, libpam,
 # libpipewire and libavcodec and only runs against a Wayland compositor, so a bare
-# `cargo test` on a target covered by libvpx-prebuilt exercises the protocol
-# crate and the VP9 coding and nothing else, the Opus tests with the ffmpeg that
-# machine has installed.
+# `cargo test` on a target covered by libvpx-prebuilt exercises the private
+# extensions and the VP9 coding and nothing else. The daemon's tests, the Opus
+# ones with the ffmpeg that machine has installed, run where it builds.
 # Build the daemon explicitly with `-p wlshare`.
 [workspace]
-members = ["crates/wlshare-rfb", "crates/wlshare-vp9", "crates/wlshare"]
-default-members = ["crates/wlshare-rfb", "crates/wlshare-vp9"]
+members = ["crates/wlshare-proto", "crates/wlshare-vp9", "crates/wlshare"]
+default-members = ["crates/wlshare-proto", "crates/wlshare-vp9"]
 resolver = "3"
 
 [workspace.package]

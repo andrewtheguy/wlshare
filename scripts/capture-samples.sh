@@ -49,7 +49,7 @@ all=("$captures"/*.wlcap.zst)
 shopt -u nullglob
 [[ ${#all[@]} -gt 0 ]] || { echo "$0: no *.wlcap.zst in $captures: run scripts/capture-frames.sh" >&2; exit 1; }
 
-cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-rfb --example vp9cap
+cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-vp9 --example vp9cap
 vp9cap="${here}/target/release/examples/vp9cap"
 
 mkdir -p "$out"

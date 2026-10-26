@@ -32,10 +32,15 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpStream;
-use wlshare_rfb::client::{self, RectBody, ServerMsg, TileBody};
-use wlshare_rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
-use wlshare_rfb::vp9::ENCODING_VP9_QUALITY_BASE;
-use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_TILES};
+
+use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
+use crate::rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
+use crate::rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE};
+
+// The daemon's protocol module, of which the sink uses the client's half.
+#[allow(unused)]
+#[path = "../src/rfb/mod.rs"]
+mod rfb;
 
 struct Args {
     addr: String,
@@ -113,7 +118,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     socket.set_nodelay(true)?;
     let (mut reader, mut out) = socket.into_split();
     client::read_version(&mut reader).await?;
-    out.write_all(wlshare_rfb::msg::PROTOCOL_VERSION).await?;
+    out.write_all(crate::rfb::msg::PROTOCOL_VERSION).await?;
     let types = client::read_security_types(&mut reader).await?;
     if !types.contains(&SECURITY_NONE) {
         return Err(format!("the daemon offers security {types:?}, not None: start it without [pam] and [password]").into());
@@ -124,7 +129,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let init = client::read_server_init(&mut reader).await?;
     eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
 
-    let encodings = [ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + i32::from(args.quality), ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR];
+    let mut encodings = wlshare_proto::tiles::encodings(args.quality);
+    encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     out.write_all(&client::set_encodings(&encodings)).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {

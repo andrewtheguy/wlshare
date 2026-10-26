@@ -13,7 +13,7 @@
 //! The socket is `SWAYSOCK` in the environment, which sway sets for everything
 //! it starts and the session's user manager carries to its units. Without it,
 //! or with something that does not answer as sway, the daemon makes no outputs
-//! and says so in every list ([`wlshare_rfb::outputs::output_list`]): [`MOST`]
+//! and says so in every list ([`wlshare_proto::outputs::output_list`]): [`MOST`]
 //! virtual displays where it can, none where it cannot. Nothing is configured.
 //!
 //! The protocol is i3's: the magic `i3-ipc`, a native-endian length and a
