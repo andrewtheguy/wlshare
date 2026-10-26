@@ -13,7 +13,7 @@
 //!
 //! Which output is shared is the configuration's to begin with and the client's
 //! from there: a client that speaks the outputs extension is sent the list and
-//! may name another one ([`wlshare_rfb::outputs`], [`Outputs::entries`]). The
+//! may name another one ([`wlshare_proto::outputs`], [`Outputs::entries`]). The
 //! configured output need not be there: another is shared while it is not, and
 //! the desktop moves to it when it appears ([`Outputs::wanted`]).
 
@@ -32,7 +32,7 @@ use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_mode_v1::{self, ZwlrOutputModeV1},
 };
 
-use wlshare_rfb::outputs::OutputEntry;
+use wlshare_proto::outputs::OutputEntry;
 
 use crate::compositor::Compositor;
 use crate::shared::{ClientId, Event, FIRST};
@@ -527,7 +527,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                         if let Some(desk) = state.desk_of(client) {
                             state.desks[desk].pending_resize = None;
                         }
-                        state.shared().emit(Event::ResizeRefused { client, status: wlshare_rfb::msg::EDS_STATUS_INVALID_LAYOUT });
+                        state.shared().emit(Event::ResizeRefused { client, status: crate::rfb::msg::EDS_STATUS_INVALID_LAYOUT });
                     }
                     ConfigKind::Declare { id, .. } => {
                         if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == id) {

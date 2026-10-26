@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Make the VP9 streams a decoder is tested and timed on from the captures
 # scripts/capture-frames.sh left: each capture played into the encoder as the
-# workspace has it now (crates/wlshare-rfb/examples/vp9cap.rs), so that a change
+# workspace has it now (crates/wlshare-vp9/examples/vp9cap.rs), so that a change
 # to how a desktop is coded — in wlshare-vp9, or a bump of its libvpx — is one
 # run of this and no desktop has to be played again.
 #
@@ -68,7 +68,7 @@ all_captures=("$captures"/*.wlcap.zst)
 shopt -u nullglob
 [[ ${#quiet_captures[@]} -gt 0 ]] || { echo "$0: no $quiet-*.wlcap.zst in $captures: run scripts/capture-frames.sh" >&2; exit 1; }
 
-cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-rfb --example vp9cap
+cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-vp9 --example vp9cap
 vp9cap="${here}/target/release/examples/vp9cap"
 coded_by="$(cargo metadata --manifest-path "${here}/Cargo.toml" --format-version 1 --locked | tr '{' '\n' | sed -n 's/.*"name":"wlshare-vp9","version":"\([^"]*\)".*/wlshare-vp9 \1/p' | head -n 1), libvpx"
 

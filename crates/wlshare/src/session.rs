@@ -39,7 +39,7 @@
 //!
 //! A client that lists the VP9 encoding gets every pixel update as one rectangle
 //! over the whole framebuffer, the next frame of one VP9 stream
-//! ([`wlshare_rfb::vp9`]), at the chroma the list asks for. The encoder is made again at every
+//! ([`crate::rfb::vp9`]), at the chroma the list asks for. The encoder is made again at every
 //! new size, whose first frame is a keyframe; a non-incremental request or the encoding's
 //! being listed anew also asks for one. A frame between them is handed the
 //! damage since the client's last one, and the encoder converts and codes that
@@ -63,7 +63,7 @@
 //!
 //! A client that lists the tiles encoding instead gets each pixel update as
 //! exact PNG tiles where the desktop changed and a frame of a stream of its own
-//! for each region that moves ([`wlshare_rfb::tiles`]): H.264 by the encoder
+//! for each region that moves ([`crate::rfb::tiles`]): H.264 by the encoder
 //! the daemon found at startup ([`crate::h264`]), the host's hardware or
 //! libx264, on a coder the session opens for each tiles picture it makes; a
 //! coder that cannot be opened, or fails a stream, ends the session. The damage since the
@@ -126,7 +126,7 @@
 //!
 //! ## Sharing the clipboard
 //!
-//! Extended Clipboard is the only clipboard spoken ([`wlshare_rfb::clipboard`]);
+//! Extended Clipboard is the only clipboard spoken ([`crate::rfb::clipboard`]);
 //! a latin-1 cut text is dropped, and a client that did not list the extension
 //! has no clipboard. Every SetEncodings that lists it is answered with this
 //! server's caps, which take text, every action, and no unsolicited text. A
@@ -153,33 +153,35 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
-use wlshare_rfb::audio::{AudioFormat, Codec, audio_begin, audio_end, audio_rect};
-use wlshare_rfb::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
-use wlshare_rfb::clipboard::{self, Caps, Message as ClipboardMessage};
-use wlshare_rfb::cursor::{alpha_cursor_rect, cursor_rect};
-use wlshare_rfb::density::{from_fixed, output_scale};
-use wlshare_rfb::microphone::{microphone_available, microphone_start, microphone_stop};
-use wlshare_rfb::msg::{self, ClientMsg, Screen};
-use wlshare_rfb::outputs::output_list;
-use wlshare_rfb::pixel::PixelFormat;
-use wlshare_rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
-use wlshare_rfb::tiles::{self, TilesEncoder};
-use wlshare_rfb::vp9::{self, Vp9Encoder, Vp9Stream};
-use wlshare_rfb::zrle::{ZrleEncoder, encode_raw_rect};
-use wlshare_rfb::{
-    ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_CONTINUOUS_UPDATES, ENCODING_DENSITY, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_MICROPHONE,
-    ENCODING_OUTPUTS, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_RAW, ENCODING_VP9, ENCODING_ZRLE,
-};
+use wlshare_proto::audio::{AudioFormat, Codec, audio_begin, audio_end, audio_rect};
+use wlshare_proto::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
+use wlshare_proto::density::{from_fixed, output_scale};
+use wlshare_proto::microphone::{microphone_available, microphone_start, microphone_stop};
+use wlshare_proto::outputs::output_list;
+use wlshare_proto::vp9::{Chroma, Vp9Stream};
+use wlshare_proto::{ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS, ENCODING_VP9};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, watch};
+use wlshare_vp9::capture;
 
 use crate::audio::{Capture, Lease};
 use crate::auth::Login;
 use crate::camera::{Camera, Signal as CameraSignal};
 use crate::framebuffer::{Rect, ResizeOrigin};
 use crate::microphone::{Microphone, Signal as MicrophoneSignal};
+use crate::rfb::clipboard::{self, Caps, Message as ClipboardMessage};
+use crate::rfb::cursor::{alpha_cursor_rect, cursor_rect};
+use crate::rfb::msg::{self, ClientMsg, Screen};
+use crate::rfb::pixel::PixelFormat;
+use crate::rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
+use crate::rfb::tiles::TilesEncoder;
+use crate::rfb::vp9::{self, Vp9Encoder};
+use crate::rfb::zrle::{ZrleEncoder, encode_raw_rect};
+use crate::rfb::{
+    ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE,
+};
 use wlshare_vp9::walk::{Pace, QualityWalk};
 use crate::shared::{BESIDE, ClientId, Command, Event, FIRST, Seats, Shared};
 
@@ -215,7 +217,7 @@ impl Security {
 /// from: a list that asks for VP9 names the stream it asks for, and a client
 /// that has seen nothing of a stream starts it at a keyframe whatever this
 /// held.
-const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_rfb::vp9::QUALITY_MAX, adaptive: true, chroma: vp9::Chroma::Yuv444 };
+const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_proto::QUALITY_MAX, adaptive: true, chroma: Chroma::Yuv444 };
 
 pub struct SessionConfig {
     pub security: Security,
@@ -237,7 +239,7 @@ pub struct SessionConfig {
     pub output: Option<String>,
     pub output_wait: Duration,
     /// Where each session writes what its VP9 stream is handed, exact
-    /// ([`wlshare_rfb::capture`]), or `None` for no capture: a flag of a
+    /// ([`wlshare_vp9::capture`]), or `None` for no capture: a flag of a
     /// daemon run by hand, for an encoder to be run again on the pictures a
     /// desktop is shown as. A 4:4:4 stream's alone: a capture is played back
     /// at 4:4:4 (`examples/vp9cap.rs`), the chroma every use of one is about,
@@ -359,7 +361,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         use_vp9: false,
         tiles: None,
         use_tiles: false,
-        tiles_quality: wlshare_rfb::vp9::QUALITY_MAX,
+        tiles_quality: crate::rfb::vp9::QUALITY_MAX,
         tiles_origin: Instant::now(),
         stream,
         keyframe_owed: false,
@@ -495,7 +497,7 @@ async fn superseded(seats: &mut watch::Receiver<Seats>, id: ClientId, beside: bo
 
 /// RFB 3.8 version, security and ClientInit. Returns the transport the rest of
 /// the session runs over, and whether the ClientInit asked to be shown another
-/// output beside the client on the desktop ([`msg::CLIENT_INIT_BESIDE`]). Any
+/// output beside the client on the desktop ([`wlshare_proto::CLIENT_INIT_BESIDE`]). Any
 /// other value takes the desktop, RFB's shared flag included.
 async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer, bool)> {
     writer.write_all(msg::PROTOCOL_VERSION).await?;
@@ -535,7 +537,7 @@ async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config
     };
     writer.send(&msg::security_ok()).await?;
     let init = reader.read_u8().await.context("reading ClientInit")?;
-    Ok((reader, writer, init == msg::CLIENT_INIT_BESIDE))
+    Ok((reader, writer, init == wlshare_proto::CLIENT_INIT_BESIDE))
 }
 
 struct Session {
@@ -554,7 +556,7 @@ struct Session {
     /// daemon was started with a capture directory and the stream is 4:4:4:
     /// opened at the session's first such frame, and spanning every encoder
     /// the session makes.
-    capture: Option<wlshare_rfb::capture::Writer<BufWriter<File>>>,
+    capture: Option<capture::Writer<BufWriter<File>>>,
     /// The client listed the VP9 encoding, which it gets instead of Raw or ZRLE.
     use_vp9: bool,
     /// The tiles picture's encoder, at the framebuffer's size once an update
@@ -873,13 +875,13 @@ impl Session {
                         "client {}: asked for VP9 at {} up to quality {}, {}",
                         self.id.0,
                         match stream.chroma {
-                            vp9::Chroma::Yuv444 => "4:4:4",
-                            vp9::Chroma::Yuv420 => "4:2:0",
+                            Chroma::Yuv444 => "4:4:4",
+                            Chroma::Yuv420 => "4:2:0",
                         },
                         stream.quality,
                         if stream.adaptive { "walked by its lag" } else { "held there" }
                     );
-                    if self.config.capture_frames.is_some() && stream.chroma != vp9::Chroma::Yuv444 {
+                    if self.config.capture_frames.is_some() && stream.chroma != Chroma::Yuv444 {
                         info!("client {}: a 4:2:0 stream is not captured: a capture is 4:4:4's", self.id.0);
                     }
                 }
@@ -898,7 +900,7 @@ impl Session {
                 }
                 self.use_vp9 = vp9;
                 // Fatal without a quality, or beside VP9: no client sends such a list.
-                let listed = tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
+                let listed = wlshare_proto::tiles::listed(&encodings).context("reading the tiles picture the client lists")?;
                 if let Some(quality) = listed {
                     if !self.use_tiles || quality != self.tiles_quality {
                         info!("client {}: asked for tiles, its moving regions at quality {quality}, H.264 by {}", self.id.0, self.config.h264.name());
@@ -1457,7 +1459,7 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), self.stream.chroma)
+                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), vp9::chroma(self.stream.chroma))
                     .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
                 self.vp9 = Some(encoder);
                 self.keyframe_owed = true;
@@ -1519,7 +1521,7 @@ impl Session {
                     damage.as_ref().map(|rects| rects.iter().map(|r| vp9::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
                 let encoder = self.vp9.as_mut().expect("made before the lock was kept");
                 encoder.read(&fb.pixels, stride, read.as_deref()).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
-                if self.config.capture_frames.is_some() && self.stream.chroma == vp9::Chroma::Yuv444 {
+                if self.config.capture_frames.is_some() && self.stream.chroma == Chroma::Yuv444 {
                     // The capture is written after the lock is let go, from
                     // a copy kept for it: the rectangles that changed, and
                     // the rest of `scratch` is what the frames before left
@@ -1661,7 +1663,7 @@ impl Session {
         let (encoder, out) = (self.vp9.as_mut().expect("made for the read"), &mut self.out);
         let keyframe = full || self.keyframe_owed;
         // A 4:4:4 stream's frames alone, which is what a capture is played back as.
-        if let Some(dir) = self.config.capture_frames.as_ref().filter(|_| self.stream.chroma == vp9::Chroma::Yuv444) {
+        if let Some(dir) = self.config.capture_frames.as_ref().filter(|_| self.stream.chroma == Chroma::Yuv444) {
             let capture = match &mut self.capture {
                 Some(capture) => capture,
                 None => {
@@ -1669,7 +1671,7 @@ impl Session {
                     let path = dir.join(format!("{millis}-client{}.wlcap", self.id.0));
                     let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
                     info!("client {}: capturing what the VP9 encoder is handed into {}", self.id.0, path.display());
-                    let writer = wlshare_rfb::capture::Writer::new(BufWriter::with_capacity(1 << 20, file)).context("beginning the VP9 capture")?;
+                    let writer = capture::Writer::new(BufWriter::with_capacity(1 << 20, file)).context("beginning the VP9 capture")?;
                     self.capture.insert(writer)
                 }
             };
@@ -1880,7 +1882,7 @@ mod output_tests {
     use super::*;
     use crate::framebuffer::Framebuffer;
     use crate::shared::{Displays, Geometry};
-    use wlshare_rfb::outputs::OutputEntry;
+    use wlshare_proto::outputs::OutputEntry;
 
     fn entry(id: u32, name: &str) -> OutputEntry {
         OutputEntry { id, name: name.into(), width: 1920, height: 1080, scale: 1.0, headless: name.starts_with("HEADLESS-") }

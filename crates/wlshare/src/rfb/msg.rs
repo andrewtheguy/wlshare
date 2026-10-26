@@ -8,13 +8,14 @@
 
 use thiserror::Error;
 
-use crate::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
-use crate::camera::{CameraFormat, CameraParseError, ClientCamera, MSG_CAMERA};
-use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY};
-use crate::microphone::{ClientMicrophone, MSG_MICROPHONE, MicrophoneParseError};
-use crate::outputs::{ClientOutputs, MSG_OUTPUTS, OutputsParseError};
-use crate::pixel::PixelFormat;
-use crate::scroll::{MSG_SCROLL, SCROLL_LEN};
+use wlshare_proto::audio::{AudioFormat, AudioParseError, ClientAudio, MSG_QEMU};
+use wlshare_proto::camera::{CameraFormat, CameraParseError, ClientCamera, MSG_CAMERA};
+use wlshare_proto::density::{Density, MSG_DENSITY};
+use wlshare_proto::microphone::{ClientMicrophone, MSG_MICROPHONE, MicrophoneParseError};
+use wlshare_proto::outputs::{ClientOutputs, MSG_OUTPUTS, OutputsParseError};
+use wlshare_proto::scroll::MSG_SCROLL;
+
+use crate::rfb::pixel::PixelFormat;
 
 // ── Client message types ─────────────────────────────────────────────────────
 pub const CLIENT_SET_PIXEL_FORMAT: u8 = 0;
@@ -50,7 +51,6 @@ pub const EDS_REASON_THIS_CLIENT: u16 = 1;
 pub const EDS_REASON_OTHER_CLIENT: u16 = 2;
 pub const EDS_STATUS_OK: u16 = 0;
 pub const EDS_STATUS_PROHIBITED: u16 = 1;
-pub const EDS_STATUS_OUT_OF_RESOURCES: u16 = 2;
 pub const EDS_STATUS_INVALID_LAYOUT: u16 = 3;
 
 /// Cut text longer than this is refused rather than buffered.
@@ -89,7 +89,7 @@ pub enum ClientMsg {
     /// Latin-1 cut text, which wlshare does not speak: framed so that it can be
     /// skipped, and otherwise ignored.
     CutText(Vec<u8>),
-    /// An Extended Clipboard body ([`crate::clipboard`]): a `ClientCutText`
+    /// An Extended Clipboard body ([`crate::rfb::clipboard`]): a `ClientCutText`
     /// with a negative length.
     ExtendedCutText(Vec<u8>),
     EnableContinuousUpdates { enable: bool, x: u16, y: u16, width: u16, height: u16 },
@@ -97,17 +97,17 @@ pub enum ClientMsg {
     SetDesktopSize { width: u16, height: u16, screens: Vec<Screen> },
     /// The density extension's declaration: the size in pixels the client wants
     /// and the scale it wants them drawn at, as 16.16 fixed point
-    /// ([`crate::density::from_fixed`]).
+    /// ([`wlshare_proto::density`]).
     ClientDensity { width: u16, height: u16, fixed: u32 },
     /// The outputs extension's request: share the output with this id, as the
-    /// last list named it ([`crate::outputs`]).
+    /// last list named it ([`wlshare_proto::outputs`]).
     SelectOutput { id: u32 },
     /// The outputs extension's other request: have this many virtual displays
-    /// ([`crate::outputs`]).
+    /// ([`wlshare_proto::outputs`]).
     VirtualDisplays { count: u32 },
     /// The scroll message: scroll by this distance in the output's logical
     /// pixels, positive rightward and downward, where the pointer is
-    /// ([`crate::scroll`]).
+    /// ([`wlshare_proto::scroll`]).
     Scroll { dx: i16, dy: i16 },
     /// The QEMU Audio extension: start sending the desktop's sound.
     AudioEnable,
@@ -119,13 +119,13 @@ pub enum ClientMsg {
     /// coded at as Opus.
     AudioBitrate(u32),
     /// The camera extension: a camera producing H.264 in this format
-    /// ([`crate::camera`]).
+    /// ([`wlshare_proto::camera`]).
     CameraPlug(CameraFormat),
     /// The camera extension: the camera is gone.
     CameraUnplug,
     /// The camera extension: one Annex B access unit.
     CameraSample { keyframe: bool, data: Vec<u8> },
-    /// The microphone extension: a microphone is lent ([`crate::microphone`]).
+    /// The microphone extension: a microphone is lent ([`wlshare_proto::microphone`]).
     MicrophonePlug,
     /// The microphone extension: the microphone is gone.
     MicrophoneUnplug,
@@ -155,10 +155,6 @@ pub enum ParseError {
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
     u16::from_be_bytes([b[i], b[i + 1]])
-}
-
-fn i16_at(b: &[u8], i: usize) -> i16 {
-    i16::from_be_bytes([b[i], b[i + 1]])
 }
 
 fn u32_at(b: &[u8], i: usize) -> u32 {
@@ -266,33 +262,33 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
                 .collect();
             (ClientMsg::SetDesktopSize { width: u16_at(buf, 2), height: u16_at(buf, 4), screens }, 8 + 16 * n)
         }
-        MSG_DENSITY => {
-            need!(CLIENT_DENSITY_LEN);
-            (ClientMsg::ClientDensity { width: u16_at(buf, 2), height: u16_at(buf, 4), fixed: u32_at(buf, 6) }, CLIENT_DENSITY_LEN)
-        }
-        MSG_OUTPUTS => match crate::outputs::parse_client(buf)? {
+        MSG_DENSITY => match Density::parse(buf) {
+            None => return Ok(None),
+            Some((Density { width, height, fixed }, n)) => (ClientMsg::ClientDensity { width, height, fixed }, n),
+        },
+        MSG_OUTPUTS => match wlshare_proto::outputs::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientOutputs::Select { id }, n)) => (ClientMsg::SelectOutput { id }, n),
             Some((ClientOutputs::VirtualDisplays { count }, n)) => (ClientMsg::VirtualDisplays { count }, n),
         },
-        MSG_SCROLL => {
-            need!(SCROLL_LEN);
-            (ClientMsg::Scroll { dx: i16_at(buf, 2), dy: i16_at(buf, 4) }, SCROLL_LEN)
-        }
-        MSG_QEMU => match crate::audio::parse_client(buf)? {
+        MSG_SCROLL => match wlshare_proto::scroll::parse(buf) {
+            None => return Ok(None),
+            Some(((dx, dy), n)) => (ClientMsg::Scroll { dx, dy }, n),
+        },
+        MSG_QEMU => match wlshare_proto::audio::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientAudio::Enable, n)) => (ClientMsg::AudioEnable, n),
             Some((ClientAudio::Disable, n)) => (ClientMsg::AudioDisable, n),
             Some((ClientAudio::SetFormat(format), n)) => (ClientMsg::AudioFormat(format), n),
             Some((ClientAudio::SetBitrate(bitrate), n)) => (ClientMsg::AudioBitrate(bitrate), n),
         },
-        MSG_CAMERA => match crate::camera::parse_client(buf)? {
+        MSG_CAMERA => match wlshare_proto::camera::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientCamera::Plug(format), n)) => (ClientMsg::CameraPlug(format), n),
             Some((ClientCamera::Unplug, n)) => (ClientMsg::CameraUnplug, n),
             Some((ClientCamera::Sample { keyframe, data }, n)) => (ClientMsg::CameraSample { keyframe, data }, n),
         },
-        MSG_MICROPHONE => match crate::microphone::parse_client(buf)? {
+        MSG_MICROPHONE => match wlshare_proto::microphone::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientMicrophone::Plug, n)) => (ClientMsg::MicrophonePlug, n),
             Some((ClientMicrophone::Unplug, n)) => (ClientMsg::MicrophoneUnplug, n),
@@ -307,12 +303,6 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
 
 /// The version banner, ours and the one a client must answer with.
 pub const PROTOCOL_VERSION: &[u8; 12] = b"RFB 003.008\n";
-
-/// The ClientInit byte with which a connection asks to be shown another output
-/// beside the client on the desktop, which it leaves there. RFB reads the byte
-/// as a shared flag, zero or not; wlshare takes the desktop for every other
-/// value, and a server that is not wlshare reads this one as shared.
-pub const CLIENT_INIT_BESIDE: u8 = 0xB5;
 
 /// Security type 1: no authentication, offered alone when nothing is configured.
 pub const SECURITY_NONE: u8 = 1;
@@ -377,7 +367,7 @@ pub fn rect_header(x: u16, y: u16, width: u16, height: u16, encoding: i32) -> [u
 
 /// A DesktopSize rectangle: the announcement is the header, there is no body.
 pub fn desktop_size_rect(width: u16, height: u16) -> [u8; 12] {
-    rect_header(0, 0, width, height, crate::ENCODING_DESKTOP_SIZE)
+    rect_header(0, 0, width, height, crate::rfb::ENCODING_DESKTOP_SIZE)
 }
 
 /// An ExtendedDesktopSize rectangle, header and layout. The header's x is the
@@ -385,7 +375,7 @@ pub fn desktop_size_rect(width: u16, height: u16) -> [u8; 12] {
 /// them), and the body is the screen list.
 pub fn extended_desktop_size_rect(reason: u16, status: u16, width: u16, height: u16, screens: &[Screen]) -> Vec<u8> {
     let mut rect = Vec::with_capacity(16 + 16 * screens.len());
-    rect.extend_from_slice(&rect_header(reason, status, width, height, crate::ENCODING_EXTENDED_DESKTOP_SIZE));
+    rect.extend_from_slice(&rect_header(reason, status, width, height, crate::rfb::ENCODING_EXTENDED_DESKTOP_SIZE));
     rect.push(screens.len() as u8);
     rect.extend_from_slice(&[0, 0, 0]);
     for s in screens {
@@ -414,7 +404,7 @@ pub fn fence(flags: u32, payload: &[u8]) -> Vec<u8> {
     msg
 }
 
-/// ServerCutText carrying an Extended Clipboard body ([`crate::clipboard`]):
+/// ServerCutText carrying an Extended Clipboard body ([`crate::rfb::clipboard`]):
 /// the length is the body's, negated.
 pub fn server_extended_cut_text(body: &[u8]) -> Vec<u8> {
     extended_cut_text(SERVER_CUT_TEXT, body)
@@ -443,7 +433,7 @@ mod tests {
     #[test]
     fn set_encodings_carries_negative_and_private_numbers() {
         let mut buf = vec![CLIENT_SET_ENCODINGS, 0, 0, 3];
-        for e in [16i32, -313, crate::ENCODING_DENSITY] {
+        for e in [16i32, -313, wlshare_proto::ENCODING_DENSITY] {
             buf.extend_from_slice(&e.to_be_bytes());
         }
         buf.push(0xFF); // the next message's first byte, untouched
@@ -483,7 +473,7 @@ mod tests {
 
     #[test]
     fn the_audio_submessages_parse_and_a_bad_one_is_fatal() {
-        use crate::audio::SampleFormat;
+        use wlshare_proto::audio::SampleFormat;
         let (m, n) = parse(&[255, 1, 0, 0, 9]).unwrap().unwrap();
         assert_eq!((m, n), (ClientMsg::AudioEnable, 4));
         let (m, _) = parse(&[255, 1, 0, 1]).unwrap().unwrap();

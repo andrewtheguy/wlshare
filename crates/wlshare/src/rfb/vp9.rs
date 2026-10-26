@@ -1,126 +1,32 @@
-//! The VP9 encoding: the whole framebuffer as one VP9 stream, for a client
-//! that would rather have a picture that moves than one that is exact.
-//!
-//! A private encoding, [`crate::ENCODING_VP9`], which only a client that lists
-//! it is ever sent. Its rectangle always covers the whole framebuffer, and its
-//! body is the dial the frame was coded at, a length word and one VP9 frame:
-//!
-//! ```text
-//! u8 quality   the 1–100 dial the frame was coded at
-//! u32 length   the frame's bytes
-//! u8[length]   one VP9 frame (a superframe counts as one)
-//! ```
-//!
-//! The quality is what the walk (below) had the encoder at for this frame, or
-//! the ceiling for a settle's: the one thing a client that passes the frames
-//! on undecoded cannot read from them, and what a session on a slow link is
-//! judged by at its end. The rectangles of successive updates are one stream, each frame coded
-//! against the frames before it, so none of them means anything alone. The
-//! stream begins with a keyframe, and so does every picture a decoder has to be
-//! able to start from: the first after the encoding is listed, the first at a
-//! new framebuffer size, and the one that answers a non-incremental request.
+//! The VP9 encoding's server side: the framebuffer's pixels in, and each
+//! frame out in the rectangle's body the encoding has ([`wlshare_proto::vp9`]):
+//! the dial it was coded at, its length and the frame.
 //!
 //! **What a frame holds.** Every frame is 8-bit VP9 converted from the
-//! framebuffer as BT.601 at studio swing, which the keyframe header says so a
-//! decoder does not guess. Its chroma is **4:4:4** (profile 1) — a colour
-//! sample per pixel, since the loss 4:2:0 costs a desktop is its text's colour
-//! and not its edges — unless the client's list asks for **4:2:0** (profile 0,
-//! [`ENCODING_VP9_SUBSAMPLED`]), which the zDesk gateway does for a browser
-//! whose own decoder takes no profile 1. The quantizer is pinned by a 1–100 quality
+//! framebuffer as BT.601 at studio swing. Its chroma is **4:4:4** (profile 1) —
+//! a colour sample per pixel, since the loss 4:2:0 costs a desktop is its
+//! text's colour and not its edges — unless the client's list asks for
+//! **4:2:0** (profile 0), which the zDesk gateway does for a browser whose own
+//! decoder takes no profile 1. The quantizer is pinned by a 1–100 quality
 //! dial, which only the encoder's owner moves ([`Vp9Encoder::set_quality`]): no
 //! bitrate, no adaptive quantization, no dropped frames, so every frame is sent
-//! at exactly the dial's quality at the time. The client's pixel format does
-//! not apply to this encoding; what it decodes to is its own business.
+//! at exactly the dial's quality at the time.
 //!
 //! The coding itself is [`wlshare_vp9`]'s, by libvpx as that crate sets it up
-//! for a desktop. What this module owns is the framing — the quality byte, the
-//! length word and its ceiling — and the framebuffer's pixels in.
+//! for a desktop. What this module owns is the framebuffer's pixels in, and the
+//! frame framed as [`wlshare_proto::vp9::frame_header`] lays it out.
 
 use thiserror::Error;
 
 pub use wlshare_vp9::{Chroma, QUALITY_MAX, QUALITY_MIN, Rect};
 
-/// Listed beside [`crate::ENCODING_VP9`] with a quality 1–100 added, names the
-/// ceiling the stream's walk never goes above: the ASCII bytes `WLQ` and the
-/// value, the way Tight's quality levels ride `SetEncodings`. A value outside
-/// the dial is not one of these. A VP9 list carries one: the server has no
-/// quality of its own.
-pub const ENCODING_VP9_QUALITY_BASE: i32 = 0x574c_5100;
-
-/// Listed beside [`crate::ENCODING_VP9`], holds the dial at its ceiling: the
-/// ASCII bytes `WLSD`. The walk then hears nothing in a fence, and only a
-/// blocked write moves it.
-pub const ENCODING_VP9_HELD: i32 = 0x574c_5344;
-
-/// Listed beside [`crate::ENCODING_VP9`], asks for the stream at 4:2:0, VP9
-/// profile 0, rather than 4:4:4: the ASCII bytes `WLSS`, subsampled. What
-/// every browser's decoder takes, its hardware one included, where some take
-/// no profile 1 at all.
-pub const ENCODING_VP9_SUBSAMPLED: i32 = 0x574c_5353;
-
-/// What the client wants the VP9 stream to be, read from its `SetEncodings`:
-/// the pseudo-encodings above, beside the encoding itself. Pseudo-encodings
-/// rather than a message because a server that is not wlshare ignores an
-/// encoding it does not know, where a message it does not know ends the
-/// connection; and they ride the very list that names the encoding, so the first
-/// frame is already what was asked for. The zDesk gateway lists them from the
-/// target's own keys, so that those keys mean on a passed stream what they mean
-/// on one the gateway codes itself. A list that names VP9 without a quality
-/// is fatal ([`Vp9ListError::NoQuality`]): the server has no quality of its
-/// own, the gateway names one beside the encoding on every list, and a client
-/// that is not the gateway lists no VP9 at all. Without `WLSD` it walks, and without `WLSS` it is 4:4:4.
-///
-/// A change of quality or of the walk moves the running encoder's dial
-/// without a keyframe; a change of chroma is a new stream, from a keyframe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Vp9Stream {
-    pub quality: u8,
-    pub adaptive: bool,
-    pub chroma: Chroma,
-}
-
-impl Vp9Stream {
-    /// The stream `encodings` asks for: `None` where the list does not name
-    /// [`crate::ENCODING_VP9`], and an error where it does and names no
-    /// quality on the dial beside it.
-    pub fn listed(encodings: &[i32]) -> Result<Option<Self>, Vp9ListError> {
-        let has = |e: i32| encodings.contains(&e);
-        if !has(crate::ENCODING_VP9) {
-            return Ok(None);
-        }
-        let quality = encodings
-            .iter()
-            .filter_map(|&e| u8::try_from(e.checked_sub(ENCODING_VP9_QUALITY_BASE)?).ok())
-            .find(|q| (QUALITY_MIN..=QUALITY_MAX).contains(q))
-            .ok_or(Vp9ListError::NoQuality)?;
-        let chroma = if has(ENCODING_VP9_SUBSAMPLED) { Chroma::Yuv420 } else { Chroma::Yuv444 };
-        Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD), chroma }))
+/// The codec's chroma for the one a client's list asks for
+/// ([`wlshare_proto::vp9::Vp9Stream`]).
+pub fn chroma(listed: wlshare_proto::vp9::Chroma) -> Chroma {
+    match listed {
+        wlshare_proto::vp9::Chroma::Yuv444 => Chroma::Yuv444,
+        wlshare_proto::vp9::Chroma::Yuv420 => Chroma::Yuv420,
     }
-
-    /// The list that asks for this stream: the encoding, the quality always,
-    /// the held dial where it is held, and 4:2:0 where it is subsampled.
-    #[cfg(test)]
-    fn encodings(self) -> Vec<i32> {
-        let mut listed = vec![crate::ENCODING_VP9, ENCODING_VP9_QUALITY_BASE + i32::from(self.quality)];
-        if !self.adaptive {
-            listed.push(ENCODING_VP9_HELD);
-        }
-        if self.chroma == Chroma::Yuv420 {
-            listed.push(ENCODING_VP9_SUBSAMPLED);
-        }
-        listed
-    }
-}
-
-/// Why a list that names VP9 asks for no stream this server codes. Fatal to
-/// the connection, as a malformed message is.
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum Vp9ListError {
-    /// No quality on the dial beside the encoding, which no client sends: the
-    /// gateway names one on every list, and a client that is not the gateway
-    /// lists no VP9.
-    #[error("the list names VP9 without a quality 1–100 beside it")]
-    NoQuality,
 }
 
 /// Why a picture could not be encoded, or in the tests a frame decoded.
@@ -130,32 +36,12 @@ pub enum Vp9Error {
     /// decoder too.
     #[error(transparent)]
     Codec(#[from] wlshare_vp9::Error),
-    #[error("a frame of {0} bytes is over the {max}-byte ceiling", max = crate::msg::MAX_RECT_BODY)]
+    #[error("a frame of {0} bytes is over the {max}-byte ceiling", max = wlshare_proto::MAX_BODY)]
     FrameTooLong(usize),
     #[cfg(test)]
     #[error("the frame is {0}x{1} and its rectangle {2}x{3}")]
     Size(u32, u32, usize, usize),
 }
-
-/// How many threads the encoder gets: the machine less two cores, at most
-/// `MAX_ENCODER_THREADS` (8). An encode is a burst of milliseconds a frame that
-/// the person at the other end is waiting on, and the encoder splits it
-/// across threads by rows and tile columns; the two cores kept back are for
-/// the compositor and the session, which are what make the next frame. The
-/// count also bounds the stream's tile columns, and so what a decoder's
-/// threads have to split. The daemon's software H.264 encoder takes the same
-/// count, so a region costs the machine's cores alike in either codec.
-pub fn encoder_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
-}
-
-/// The most threads the encoder takes, whatever the machine: what a 4K
-/// picture can use. The useful count is the picture's, not the machine's —
-/// superblock rows are handed out within each tile column, so the work to
-/// share grows with the picture — at about one thread a megapixel: eight for
-/// 4K's 8.3. 4K is the largest desktop this is tuned for; a larger one is an
-/// edge case that streams, not a target, and gets the 4K count.
-const MAX_ENCODER_THREADS: usize = 8;
 
 /// How many threads the tests' decoder gets: half the machine, at most four.
 /// A decode gains nothing past the stream's tile columns.
@@ -175,7 +61,7 @@ impl Vp9Encoder {
     /// An encoder for a `width`×`height` picture at `quality` (1–100) and
     /// `chroma`, on as many threads as this machine gives one.
     pub fn new(width: u16, height: u16, quality: u8, chroma: Chroma) -> Result<Self, Vp9Error> {
-        Self::with_threads(width, height, quality, chroma, encoder_threads())
+        Self::with_threads(width, height, quality, chroma, wlshare_vp9::encoder_threads())
     }
 
     /// [`Self::new`] on `threads` threads, which a stream's tile columns
@@ -190,6 +76,7 @@ impl Vp9Encoder {
     }
 
     /// How this encoder's stream samples colour.
+    #[cfg(test)]
     pub fn chroma(&self) -> Chroma {
         self.stream.chroma()
     }
@@ -269,9 +156,7 @@ impl Vp9Encoder {
     /// over the ceiling.
     fn framed(&mut self, out: &mut Vec<u8>, quality: u8, encode: impl FnOnce(&mut wlshare_vp9::Stream, &mut Vec<u8>) -> Result<bool, wlshare_vp9::Error>) -> Result<bool, Vp9Error> {
         let body_at = out.len();
-        out.push(quality);
-        let length_at = out.len();
-        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&wlshare_proto::vp9::frame_header(quality, 0));
         match encode(&mut self.stream, out) {
             Ok(_) => {}
             Err(wlshare_vp9::Error::NoFrame) => {
@@ -283,12 +168,12 @@ impl Vp9Encoder {
                 return Err(e.into());
             }
         }
-        let len = out.len() - length_at - 4;
-        if len > crate::msg::MAX_RECT_BODY {
+        let len = out.len() - body_at - wlshare_proto::vp9::FRAME_HEADER_LEN;
+        if len > wlshare_proto::MAX_BODY {
             out.truncate(body_at);
             return Err(Vp9Error::FrameTooLong(len));
         }
-        out[length_at..length_at + 4].copy_from_slice(&(len as u32).to_be_bytes());
+        out[body_at..body_at + wlshare_proto::vp9::FRAME_HEADER_LEN].copy_from_slice(&wlshare_proto::vp9::frame_header(quality, len as u32));
         Ok(true)
     }
 }
@@ -533,37 +418,3 @@ mod tests {
     }
 }
 
-/// What a client's list asks the stream to be, both ways.
-#[cfg(test)]
-mod stream_tests {
-    use super::*;
-
-    #[test]
-    fn the_stream_is_read_from_the_list_beside_the_encoding() {
-        let asked = Vp9Stream { quality: 60, adaptive: true, chroma: Chroma::Yuv444 };
-        assert_eq!(asked.encodings(), [crate::ENCODING_VP9, 0x574c_513c]);
-        let listed = [crate::ENCODING_VP9, 0x574c_513c, crate::ENCODING_ZRLE];
-        assert_eq!(Vp9Stream::listed(&listed), Ok(Some(asked)));
-        let held = Vp9Stream { quality: 100, adaptive: false, chroma: Chroma::Yuv444 };
-        assert_eq!(held.encodings(), [crate::ENCODING_VP9, 0x574c_5164, 0x574c_5344]);
-        assert_eq!(Vp9Stream::listed(&held.encodings()), Ok(Some(held)));
-        let subsampled = Vp9Stream { quality: 60, adaptive: true, chroma: Chroma::Yuv420 };
-        assert_eq!(ENCODING_VP9_SUBSAMPLED, i32::from_be_bytes(*b"WLSS"));
-        assert_eq!(subsampled.encodings(), [crate::ENCODING_VP9, 0x574c_513c, 0x574c_5353]);
-        assert_eq!(Vp9Stream::listed(&subsampled.encodings()), Ok(Some(subsampled)));
-    }
-
-    /// A list without VP9 asks for no stream, whatever else it names; the
-    /// server has no quality of its own, so one that names VP9 without a
-    /// quality is no list a client sends.
-    #[test]
-    fn a_list_that_names_vp9_without_a_quality_is_fatal() {
-        assert_eq!(Vp9Stream::listed(&[crate::ENCODING_ZRLE]), Ok(None));
-        assert_eq!(Vp9Stream::listed(&[0x574c_513c, 0x574c_5344, crate::ENCODING_ZRLE]), Ok(None), "a quality without the encoding");
-        assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, crate::ENCODING_ZRLE]), Err(Vp9ListError::NoQuality));
-        // A quality off the dial is some other encoding, not a quality.
-        for off in [ENCODING_VP9_QUALITY_BASE, ENCODING_VP9_QUALITY_BASE + 101, ENCODING_VP9_QUALITY_BASE + 255, ENCODING_VP9_QUALITY_BASE + 256] {
-            assert_eq!(Vp9Stream::listed(&[crate::ENCODING_VP9, off]), Err(Vp9ListError::NoQuality), "{off:#x}");
-        }
-    }
-}

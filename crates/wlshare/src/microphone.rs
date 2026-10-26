@@ -1,7 +1,7 @@
 //! The client's microphone, lent to the desktop: a PipeWire `Audio/Source` node
 //! the desktop's applications record from like any other microphone, fed from
 //! the PCM the client sends over the microphone extension
-//! ([`wlshare_rfb::microphone`]).
+//! ([`wlshare_proto::microphone`]).
 //!
 //! The camera's twin ([`crate::camera`]): a node in the session's own graph, so
 //! it needs no kernel module and no privilege, and it exists from the client's
@@ -39,7 +39,7 @@ use log::{debug, info, warn};
 use pipewire as pw;
 use pw::spa;
 use tokio::sync::mpsc;
-use wlshare_rfb::microphone::MicrophoneFormat;
+use wlshare_proto::microphone::MicrophoneFormat;
 
 use crate::shared::ClientId;
 

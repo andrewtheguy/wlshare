@@ -3,8 +3,8 @@
 //! was actually shown as and the rectangles they came with.
 //!
 //! Not the wire: no client is ever sent this. It is here because the daemon
-//! writes it and the tools that play it back read it (`examples/vp9cap.rs`),
-//! and this crate is the one both build against. The format
+//! writes it and the tools that play it back read it (`examples/vp9cap.rs`,
+//! `examples/walk-sim.rs`), and this crate is the one both build against. The format
 //! is this module's alone and owes nothing to the codec: a capture is the
 //! pixels in front of an encoder, whichever encoder that is.
 //!
@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::vp9::Rect;
+use crate::Rect;
 
 /// What every capture file begins with.
 pub const MAGIC: &[u8; 8] = b"WLSHCAP1";

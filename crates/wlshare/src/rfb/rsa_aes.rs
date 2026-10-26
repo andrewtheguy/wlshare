@@ -137,6 +137,7 @@ impl Subtype {
         }
     }
 
+    #[allow(dead_code)]
     fn of(byte: u8) -> Option<Self> {
         match byte {
             1 => Some(Self::UserPass),
@@ -434,11 +435,16 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 }
 
 /// The key a client makes for one session and forgets with it.
+///
+/// The client's end, from here to [`Exchange::login`], is what the tests and
+/// `examples/vp9-sink.rs` speak; the daemon never calls it.
+#[allow(dead_code)]
 pub struct ClientKey {
     private: RsaPrivateKey,
     wire: WireKey,
 }
 
+#[allow(dead_code)]
 impl ClientKey {
     pub fn of_bits(bits: usize) -> Result<Self, rsa::Error> {
         let private = RsaPrivateKey::new(&mut rand::rng(), bits)?;
@@ -452,6 +458,7 @@ impl ClientKey {
 /// [`Self::fingerprint`] is the server meant and to answer [`Self::subtype`]
 /// with [`Self::login`]. The decision comes first — the credentials go to
 /// whoever holds that key.
+#[allow(dead_code)]
 pub struct Exchange {
     session: Session,
     fingerprint: String,
@@ -465,6 +472,7 @@ pub struct Exchange {
 /// decrypt is safe only because the key dies with the connection that refused
 /// it. Answer the same key twice and the refusals become a padding oracle, so
 /// a second exchange has to be a second key.
+#[allow(dead_code)]
 pub async fn begin<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut R,
     writer: &mut W,
@@ -520,6 +528,7 @@ pub async fn begin<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     Ok(Exchange { session: Session { sealer, opener }, fingerprint: server_wire.fingerprint(), subtype })
 }
 
+#[allow(dead_code)]
 impl Exchange {
     /// RealVNC's display of the server's key, to compare with the one the
     /// server logged at startup or the one seen last time.

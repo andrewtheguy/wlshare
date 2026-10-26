@@ -2,9 +2,9 @@
 //! `examples/vp9-sink.rs` connects with: the messages a client sends, built
 //! into bytes, and the server's, parsed from a byte buffer.
 //!
-//! This is [`crate::msg`] seen from the other end — it frames exactly what
+//! This is [`crate::rfb::msg`] seen from the other end — it frames exactly what
 //! wlshare sends and nothing a server of another kind might. The builders are
-//! checked against [`crate::msg::parse`], and the parser against the builders
+//! checked against [`crate::rfb::msg::parse`], and the parser against the builders
 //! the daemon sends with, so neither half is tested against itself.
 //!
 //! Parsing is incremental, as the server's is: [`parse`] looks at the front of
@@ -14,23 +14,19 @@
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
-use crate::audio::{
-    AUDIO_FRAME_HEADER_LEN, AudioFormat, AudioParseError, CLIENT_AUDIO_BITRATE_LEN, CLIENT_AUDIO_DISABLE, CLIENT_AUDIO_ENABLE, CLIENT_AUDIO_FORMAT_LEN,
-    CLIENT_AUDIO_SET_BITRATE, CLIENT_AUDIO_SET_FORMAT,
-    CLIENT_AUDIO_SWITCH_LEN, MAX_AUDIO_FRAME, MSG_AUDIO_FRAME, MSG_QEMU, SERVER_AUDIO_BEGIN, SERVER_AUDIO_END, SUBMESSAGE_AUDIO,
-};
-use crate::density::{CLIENT_DENSITY_LEN, MSG_DENSITY, to_fixed};
-use crate::msg::{
+use wlshare_proto::audio::{AUDIO_FRAME_HEADER_LEN, AudioParseError, MSG_AUDIO_FRAME, MSG_QEMU, ServerAudio};
+use wlshare_proto::density::{Density, MSG_DENSITY};
+use wlshare_proto::tiles::{TileHeader, TilesParseError};
+use wlshare_proto::vp9::{FRAME_HEADER_LEN, Vp9FrameError};
+use wlshare_proto::{ENCODING_AUDIO, ENCODING_TILES, ENCODING_VP9};
+
+use crate::rfb::msg::{
     CLIENT_ENABLE_CONTINUOUS_UPDATES, CLIENT_FENCE, CLIENT_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_KEY_EVENT, CLIENT_POINTER_EVENT,
     CLIENT_SET_DESKTOP_SIZE, CLIENT_SET_ENCODINGS, CLIENT_SET_PIXEL_FORMAT, FENCE_MAX_PAYLOAD, MAX_CUT_TEXT, MAX_RECT_BODY, SERVER_CUT_TEXT,
     SERVER_END_OF_CONTINUOUS_UPDATES, SERVER_FENCE, SERVER_FRAMEBUFFER_UPDATE, Screen,
 };
-use crate::pixel::PixelFormat;
-use crate::{
-    ENCODING_AUDIO, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW,
-    ENCODING_TILES, ENCODING_VP9, ENCODING_ZRLE,
-};
-use crate::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START};
+use crate::rfb::pixel::PixelFormat;
+use crate::rfb::{ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW, ENCODING_ZRLE};
 
 // ── Handshake ────────────────────────────────────────────────────────────────
 
@@ -53,11 +49,11 @@ pub enum HandshakeError {
     TextTooLong(usize),
 }
 
-/// Read the server's version banner, which must be the one this crate speaks.
+/// Read the server's version banner, which must be the one the daemon speaks.
 pub async fn read_version<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), HandshakeError> {
     let mut version = [0u8; 12];
     reader.read_exact(&mut version).await?;
-    if &version != crate::msg::PROTOCOL_VERSION {
+    if &version != crate::rfb::msg::PROTOCOL_VERSION {
         return Err(HandshakeError::Version(String::from_utf8_lossy(&version).trim_end().to_owned()));
     }
     Ok(())
@@ -169,7 +165,7 @@ pub fn pointer_event(buttons: u8, x: u16, y: u16) -> [u8; 6] {
 }
 
 /// A ClientFence. The echo of a server's fence is its flags without
-/// [`crate::msg::FENCE_REQUEST`] and its payload as it came.
+/// [`crate::rfb::msg::FENCE_REQUEST`] and its payload as it came.
 pub fn fence(flags: u32, payload: &[u8]) -> Vec<u8> {
     debug_assert!(payload.len() <= FENCE_MAX_PAYLOAD);
     let mut msg = vec![CLIENT_FENCE, 0, 0, 0];
@@ -196,71 +192,10 @@ pub fn set_desktop_size(width: u16, height: u16) -> Vec<u8> {
     msg
 }
 
-/// The scroll message: a distance in logical pixels ([`crate::scroll`]).
-pub fn scroll(dx: i16, dy: i16) -> [u8; crate::scroll::SCROLL_LEN] {
-    let mut msg = [0u8; crate::scroll::SCROLL_LEN];
-    msg[0] = crate::scroll::MSG_SCROLL;
-    msg[2..4].copy_from_slice(&dx.to_be_bytes());
-    msg[4..6].copy_from_slice(&dy.to_be_bytes());
-    msg
-}
-
-/// ClientCutText carrying an Extended Clipboard body ([`crate::clipboard`]):
+/// ClientCutText carrying an Extended Clipboard body ([`crate::rfb::clipboard`]):
 /// the length is the body's, negated.
 pub fn client_extended_cut_text(body: &[u8]) -> Vec<u8> {
-    crate::msg::extended_cut_text(crate::msg::CLIENT_CUT_TEXT, body)
-}
-
-/// The density extension's `ClientDensity`: the scale the client's display is
-/// drawn at, which it would like the output to be, and the size in pixels it
-/// wants at that scale ([`crate::density`]). The layout is `OutputScale`'s.
-pub fn client_density(width: u16, height: u16, scale: f64) -> [u8; CLIENT_DENSITY_LEN] {
-    let mut msg = [0u8; CLIENT_DENSITY_LEN];
-    msg[0] = MSG_DENSITY;
-    msg[2..4].copy_from_slice(&width.to_be_bytes());
-    msg[4..6].copy_from_slice(&height.to_be_bytes());
-    msg[6..].copy_from_slice(&to_fixed(scale).to_be_bytes());
-    msg
-}
-
-fn audio_op(operation: u16) -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
-    let op = operation.to_be_bytes();
-    [MSG_QEMU, SUBMESSAGE_AUDIO, op[0], op[1]]
-}
-
-/// The audio extension: start sending the desktop's sound, in the format last
-/// set ([`crate::audio`]).
-pub fn audio_enable() -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
-    audio_op(CLIENT_AUDIO_ENABLE)
-}
-
-/// The audio extension: stop.
-pub fn audio_disable() -> [u8; CLIENT_AUDIO_SWITCH_LEN] {
-    audio_op(CLIENT_AUDIO_DISABLE)
-}
-
-/// The audio extension: the format every FLAC frame is to decode to, and the
-/// one Opus is coded from, if it is one the extension carries — the server takes any other as the end of the
-/// connection.
-pub fn audio_set_format(format: &AudioFormat) -> Result<[u8; CLIENT_AUDIO_FORMAT_LEN], AudioParseError> {
-    format.check()?;
-    let mut msg = [0u8; CLIENT_AUDIO_FORMAT_LEN];
-    msg[..4].copy_from_slice(&audio_op(CLIENT_AUDIO_SET_FORMAT));
-    msg[4] = format.sample as u8;
-    msg[5] = format.channels;
-    msg[6..].copy_from_slice(&format.frequency.to_be_bytes());
-    Ok(msg)
-}
-
-/// The audio extension: the rate, in bits per second, the sound is coded at as
-/// Opus, if it is one Opus is coded at — the server takes any other as the end
-/// of the connection.
-pub fn audio_set_bitrate(bitrate: u32) -> Result<[u8; CLIENT_AUDIO_BITRATE_LEN], AudioParseError> {
-    crate::audio::check_bitrate(bitrate)?;
-    let mut msg = [0u8; CLIENT_AUDIO_BITRATE_LEN];
-    msg[..4].copy_from_slice(&audio_op(CLIENT_AUDIO_SET_BITRATE));
-    msg[4..].copy_from_slice(&bitrate.to_be_bytes());
-    Ok(msg)
+    crate::rfb::msg::extended_cut_text(crate::rfb::msg::CLIENT_CUT_TEXT, body)
 }
 
 // ── Server messages ──────────────────────────────────────────────────────────
@@ -275,7 +210,7 @@ pub enum RectBody {
     /// One VP9 frame without its length word, and the 1–100 dial it was coded
     /// at; the rectangle is the whole framebuffer.
     Vp9 { quality: u8, frame: Vec<u8> },
-    /// A rectangle of the tiles encoding ([`crate::tiles`]).
+    /// A rectangle of the tiles encoding ([`wlshare_proto::tiles`]).
     Tiles(TileBody),
     /// The framebuffer is now the rectangle's width and height.
     DesktopSize,
@@ -321,7 +256,7 @@ pub enum ServerMsg {
     /// Latin-1 cut text, which wlshare never sends: framed so that it can be
     /// skipped, and otherwise ignored.
     CutText(Vec<u8>),
-    /// An Extended Clipboard body ([`crate::clipboard`]): a `ServerCutText`
+    /// An Extended Clipboard body ([`crate::rfb::clipboard`]): a `ServerCutText`
     /// with a negative length.
     ExtendedCutText(Vec<u8>),
     EndOfContinuousUpdates,
@@ -345,8 +280,6 @@ pub enum ParseError {
     UnknownType(u8),
     #[error("a rectangle of encoding {0}, which was never asked for")]
     UnknownEncoding(i32),
-    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME and END")]
-    UnknownTileKind(u8),
     #[error("a cursor with alpha whose pixels are in encoding {0}, not Raw")]
     CursorEncoding(i32),
     #[error("a rectangle of {0} bytes is over the {MAX_RECT_BODY}-byte ceiling")]
@@ -355,14 +288,12 @@ pub enum ParseError {
     CutTextTooLong(usize),
     #[error("a fence payload of {0} bytes is over the {FENCE_MAX_PAYLOAD}-byte ceiling")]
     FencePayloadTooLong(usize),
-    /// The QEMU submessages share no length field, so one that is not audio
-    /// cannot be measured, and the stream is at an offset nothing recovers from.
-    #[error("QEMU submessage {0} is not audio, the one QEMU extension spoken here")]
-    UnknownQemuSubmessage(u8),
-    #[error("audio operation {0} is not begin or end")]
-    UnknownAudioOperation(u16),
-    #[error("an audio frame of {0} bytes is over the {MAX_AUDIO_FRAME}-byte ceiling")]
-    AudioFrameTooLong(usize),
+    #[error(transparent)]
+    Audio(#[from] AudioParseError),
+    #[error(transparent)]
+    Vp9(#[from] Vp9FrameError),
+    #[error(transparent)]
+    Tiles(#[from] TilesParseError),
 }
 
 fn u16_at(b: &[u8], i: usize) -> u16 {
@@ -421,26 +352,17 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
             (ServerMsg::Fence { flags: u32_at(buf, 4), payload: buf[9..9 + len].to_vec() }, 9 + len)
         }
         MSG_DENSITY => {
-            need!(10);
-            (ServerMsg::OutputScale { width: u16_at(buf, 2), height: u16_at(buf, 4), fixed: u32_at(buf, 6) }, 10)
+            let Some((Density { width, height, fixed }, used)) = Density::parse(buf) else { return Ok(None) };
+            (ServerMsg::OutputScale { width, height, fixed }, used)
         }
-        MSG_QEMU => {
-            need!(4);
-            if buf[1] != SUBMESSAGE_AUDIO {
-                return Err(ParseError::UnknownQemuSubmessage(buf[1]));
-            }
-            match u16_at(buf, 2) {
-                SERVER_AUDIO_BEGIN => (ServerMsg::AudioBegin, 4),
-                SERVER_AUDIO_END => (ServerMsg::AudioEnd, 4),
-                other => return Err(ParseError::UnknownAudioOperation(other)),
-            }
-        }
+        MSG_QEMU => match wlshare_proto::audio::parse_server(buf)? {
+            None => return Ok(None),
+            Some((ServerAudio::Begin, used)) => (ServerMsg::AudioBegin, used),
+            Some((ServerAudio::End, used)) => (ServerMsg::AudioEnd, used),
+        },
         MSG_AUDIO_FRAME => {
-            need!(AUDIO_FRAME_HEADER_LEN);
-            let len = u32_at(buf, 4) as usize;
-            if len > MAX_AUDIO_FRAME {
-                return Err(ParseError::AudioFrameTooLong(len));
-            }
+            let Some(header) = buf.first_chunk() else { return Ok(None) };
+            let len = wlshare_proto::audio::frame_len(header)?;
             need!(AUDIO_FRAME_HEADER_LEN + len);
             (ServerMsg::AudioFrame(buf[AUDIO_FRAME_HEADER_LEN..AUDIO_FRAME_HEADER_LEN + len].to_vec()), AUDIO_FRAME_HEADER_LEN + len)
         }
@@ -479,38 +401,30 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             (RectBody::Zrle(payload), 16 + len)
         }
         ENCODING_VP9 => {
-            if buf.len() < 17 {
-                return Ok(None);
-            }
-            let (quality, len) = (buf[12], u32_at(buf, 13) as usize);
-            let Some(frame) = take(17, len)? else { return Ok(None) };
-            (RectBody::Vp9 { quality, frame }, 17 + len)
+            let Some(header) = buf[12..].first_chunk::<FRAME_HEADER_LEN>() else { return Ok(None) };
+            let (quality, len) = wlshare_proto::vp9::parse_frame_header(header)?;
+            let at = 12 + FRAME_HEADER_LEN;
+            let Some(frame) = take(at, len)? else { return Ok(None) };
+            (RectBody::Vp9 { quality, frame }, at + len)
         }
         ENCODING_TILES => {
-            let Some(&kind) = buf.get(12) else { return Ok(None) };
-            match kind {
-                KIND_PNG => {
-                    if buf.len() < 17 {
-                        return Ok(None);
-                    }
-                    let len = u32_at(buf, 13) as usize;
-                    let Some(png) = take(17, len)? else { return Ok(None) };
-                    (RectBody::Tiles(TileBody::Png(png)), 17 + len)
+            let Some((header, used)) = TileHeader::parse(&buf[12..])? else { return Ok(None) };
+            let at = 12 + used;
+            let body = |len: usize| take(at, len);
+            match header {
+                TileHeader::Png { len } => {
+                    let Some(png) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Png(png)), at + len)
                 }
-                KIND_START | KIND_FRAME => {
-                    if buf.len() < 18 {
-                        return Ok(None);
-                    }
-                    let (stream, len) = (buf[13], u32_at(buf, 14) as usize);
-                    let Some(frame) = take(18, len)? else { return Ok(None) };
-                    let body = if kind == KIND_START { TileBody::Start { stream, frame } } else { TileBody::Frame { stream, frame } };
-                    (RectBody::Tiles(body), 18 + len)
+                TileHeader::Start { stream, len } => {
+                    let Some(frame) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Start { stream, frame }), at + len)
                 }
-                KIND_END => {
-                    let Some(&stream) = buf.get(13) else { return Ok(None) };
-                    (RectBody::Tiles(TileBody::End { stream }), 14)
+                TileHeader::Frame { stream, len } => {
+                    let Some(frame) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Frame { stream, frame }), at + len)
                 }
-                other => return Err(ParseError::UnknownTileKind(other)),
+                TileHeader::End { stream } => (RectBody::Tiles(TileBody::End { stream }), at),
             }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
@@ -565,9 +479,12 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{FlacEncoder, SampleFormat, audio_begin, audio_end, audio_rect};
-    use crate::cursor::{CursorImage, alpha_cursor_rect, cursor_rect};
-    use crate::msg::{self, ClientMsg};
+    use wlshare_proto::audio::{AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect};
+    use wlshare_proto::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START};
+
+    use crate::rfb::audio::FlacEncoder;
+    use crate::rfb::cursor::{CursorImage, alpha_cursor_rect, cursor_rect};
+    use crate::rfb::msg::{self, ClientMsg};
 
     /// Every builder, read back by the parser the server reads clients with.
     #[test]
@@ -580,7 +497,7 @@ mod tests {
         let rgbx = PixelFormat { red_shift: 0, green_shift: 8, blue_shift: 16, ..PixelFormat::NATIVE };
         assert_eq!(parsed(&set_pixel_format(&rgbx)), ClientMsg::SetPixelFormat(rgbx));
         assert_eq!(
-            parsed(&set_encodings(&[ENCODING_ZRLE, ENCODING_CURSOR, crate::ENCODING_DENSITY])),
+            parsed(&set_encodings(&[ENCODING_ZRLE, ENCODING_CURSOR, wlshare_proto::ENCODING_DENSITY])),
             ClientMsg::SetEncodings(vec![16, -239, 0x574c_5348])
         );
         assert_eq!(
@@ -594,28 +511,27 @@ mod tests {
         assert_eq!(parsed(&key_event(true, 0xFFEB)), ClientMsg::KeyEvent { down: true, keysym: 0xFFEB });
         assert_eq!(parsed(&key_event(false, 0x0100_20AC)), ClientMsg::KeyEvent { down: false, keysym: 0x0100_20AC });
         assert_eq!(parsed(&pointer_event(0b101, 300, 20)), ClientMsg::PointerEvent { buttons: 5, x: 300, y: 20 });
-        assert_eq!(parsed(&scroll(48, -700)), ClientMsg::Scroll { dx: 48, dy: -700 });
+        assert_eq!(parsed(&wlshare_proto::scroll::scroll(48, -700)), ClientMsg::Scroll { dx: 48, dy: -700 });
         assert_eq!(parsed(&fence(msg::FENCE_BLOCK_BEFORE, &[0, 0, 0, 9])), ClientMsg::Fence { flags: 1, payload: vec![0, 0, 0, 9] });
         assert_eq!(
             parsed(&set_desktop_size(3456, 1802)),
             ClientMsg::SetDesktopSize { width: 3456, height: 1802, screens: vec![Screen::whole(3456, 1802)] }
         );
         assert_eq!(
-            parsed(&client_density(2592, 1350, 1.5)),
+            parsed(&wlshare_proto::density::client_density(2592, 1350, 1.5)),
             ClientMsg::ClientDensity { width: 2592, height: 1350, fixed: 0x0001_8000 }
         );
         assert_eq!(parsed(&client_extended_cut_text(&[2, 0, 0, 1])), ClientMsg::ExtendedCutText(vec![2, 0, 0, 1]));
-        assert_eq!(parsed(&audio_enable()), ClientMsg::AudioEnable);
-        assert_eq!(parsed(&audio_disable()), ClientMsg::AudioDisable);
+        use wlshare_proto::audio::{disable, enable, set_bitrate, set_format};
+        assert_eq!(parsed(&enable()), ClientMsg::AudioEnable);
+        assert_eq!(parsed(&disable()), ClientMsg::AudioDisable);
         for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
             let format = AudioFormat { sample, channels: 1, frequency: 44_100 };
-            assert_eq!(parsed(&audio_set_format(&format).unwrap()), ClientMsg::AudioFormat(format));
+            assert_eq!(parsed(&set_format(format)), ClientMsg::AudioFormat(format));
         }
         let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
-        assert_eq!(parsed(&audio_set_format(&format).unwrap()), ClientMsg::AudioFormat(format));
-        assert_eq!(parsed(&audio_set_bitrate(64_000).unwrap()), ClientMsg::AudioBitrate(64_000));
-        assert_eq!(audio_set_bitrate(64_000).unwrap(), [255, 1, 0, 3, 0, 0, 0xFA, 0]);
-        assert_eq!(audio_set_bitrate(5_999), Err(AudioParseError::BadBitrate(5_999)));
+        assert_eq!(parsed(&set_format(format)), ClientMsg::AudioFormat(format));
+        assert_eq!(parsed(&set_bitrate(64_000)), ClientMsg::AudioBitrate(64_000));
     }
 
     #[test]
@@ -628,7 +544,7 @@ mod tests {
         assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::ExtendedCutText(vec![8, 0, 0, 1]), wire.len()));
         let latin1 = [3, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'a'];
         assert_eq!(parse(&latin1).unwrap().unwrap(), (ServerMsg::CutText(vec![0xE9, b'a']), latin1.len()));
-        let wire = crate::density::output_scale(3456, 1802, 2.0);
+        let wire = wlshare_proto::density::output_scale(3456, 1802, 2.0);
         assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::OutputScale { width: 3456, height: 1802, fixed: 0x0002_0000 }, 10));
         assert_eq!(parse(&[7]), Err(ParseError::UnknownType(7)));
     }
@@ -662,12 +578,12 @@ mod tests {
     /// that has lost its framing: all three end the connection.
     #[test]
     fn audio_that_cannot_be_framed_is_fatal() {
-        assert_eq!(parse(&[255, 2, 0, 0]), Err(ParseError::UnknownQemuSubmessage(2)));
+        assert_eq!(parse(&[255, 2, 0, 0]), Err(ParseError::Audio(AudioParseError::UnknownSubmessage(2))));
         // QEMU's own raw data, which this extension never sends.
-        assert_eq!(parse(&[255, 1, 0, 2]), Err(ParseError::UnknownAudioOperation(2)));
+        assert_eq!(parse(&[255, 1, 0, 2]), Err(ParseError::Audio(AudioParseError::UnknownOperation(2))));
         let mut wire = vec![0xE4, 0, 0, 0];
         wire.extend_from_slice(&(MAX_AUDIO_FRAME as u32 + 1).to_be_bytes());
-        assert_eq!(parse(&wire), Err(ParseError::AudioFrameTooLong(MAX_AUDIO_FRAME + 1)));
+        assert_eq!(parse(&wire), Err(ParseError::Audio(AudioParseError::FrameTooLong(MAX_AUDIO_FRAME + 1))));
     }
 
     /// One update with a rectangle of every kind, fed a byte short at every
@@ -732,7 +648,7 @@ mod tests {
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
         wire.push(4);
-        assert_eq!(parse(&wire), Err(ParseError::UnknownTileKind(4)));
+        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(4))));
     }
 
     #[tokio::test]

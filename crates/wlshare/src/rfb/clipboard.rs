@@ -22,8 +22,8 @@
 //! text is UTF-8 with CRLF line endings and a terminating NUL; here it is a
 //! `String` with LF line endings, and [`provide`] and [`parse`] convert.
 //!
-//! Every body built here is framed by [`crate::msg::server_extended_cut_text`],
-//! and every one received is the body [`crate::msg::ClientMsg::ExtendedCutText`]
+//! Every body built here is framed by [`crate::rfb::msg::server_extended_cut_text`],
+//! and every one received is the body [`crate::rfb::msg::ClientMsg::ExtendedCutText`]
 //! carries.
 
 use std::io::{Read as _, Write as _};
@@ -34,7 +34,7 @@ use flate2::write::ZlibEncoder;
 use thiserror::Error;
 
 /// The extension's pseudo-encoding, listed by a client that speaks it.
-pub use crate::ENCODING_EXTENDED_CLIPBOARD as ENCODING;
+pub use crate::rfb::ENCODING_EXTENDED_CLIPBOARD as ENCODING;
 
 /// Plain text: UTF-8, CRLF line endings, NUL-terminated.
 pub const FORMAT_TEXT: u32 = 1 << 0;
@@ -48,13 +48,13 @@ pub const ACTION_PROVIDE: u32 = 1 << 28;
 const FORMAT_MASK: u32 = 0x0000_ffff;
 const ACTION_MASK: u32 = 0xff00_0000;
 
-/// Every action this crate speaks, which is every action the extension has.
+/// Every action this module speaks, which is every action the extension has.
 pub const ALL_ACTIONS: u32 = ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE;
 
 /// The longest text either end sends or accepts, in bytes of UTF-8. Half the
 /// cut-text ceiling, so a provide's deflated body — which for text that does not
 /// compress is a little larger than the text — always fits inside one message.
-pub const MAX_TEXT: usize = crate::msg::MAX_CUT_TEXT / 2;
+pub const MAX_TEXT: usize = crate::rfb::msg::MAX_CUT_TEXT / 2;
 
 /// What a peer said it is willing to receive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +133,7 @@ fn flags(actions: u32, formats: u32) -> [u8; 4] {
 }
 
 /// A caps body: the flags, then the largest unsolicited size of each format
-/// named, in format order. Text is the only format this crate names.
+/// named, in format order. Text is the only format this module names.
 pub fn caps(caps: &Caps) -> Vec<u8> {
     let formats = if caps.text_size.is_some() { FORMAT_TEXT } else { 0 };
     let mut body = flags(caps.actions | ACTION_CAPS, formats).to_vec();
@@ -154,6 +154,7 @@ pub fn request() -> Vec<u8> {
 }
 
 /// A peek body.
+#[cfg(test)]
 pub fn peek() -> Vec<u8> {
     flags(ACTION_PEEK, 0).to_vec()
 }

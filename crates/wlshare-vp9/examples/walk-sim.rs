@@ -32,9 +32,9 @@ use std::io::{BufReader, Read, Write as _};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use wlshare_rfb::capture::Reader;
-use wlshare_rfb::vp9::{Chroma, Rect, Vp9Encoder};
+use wlshare_vp9::capture::Reader;
 use wlshare_vp9::walk::QualityWalk;
+use wlshare_vp9::{Chroma, Rect, Stream};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -203,7 +203,7 @@ fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
     let (mut hop, mut held, mut encode_ms) = (1.0, false, None::<f64>);
-    let (mut rtt, mut paint, mut jitter, mut ceiling, mut threads) = (40.0, 5.0, 0.0, 90u8, wlshare_rfb::vp9::encoder_threads());
+    let (mut rtt, mut paint, mut jitter, mut ceiling, mut threads) = (40.0, 5.0, 0.0, 90u8, wlshare_vp9::encoder_threads());
     let mut timeline = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -259,7 +259,7 @@ fn main() -> Result<(), Error> {
     // A 60 Hz capture, the daemon's default.
     let base = Instant::now();
     let mut walk = QualityWalk::new(ceiling, Duration::from_micros(16_667), !held);
-    let mut encoder: Option<Vp9Encoder> = None;
+    let mut encoder: Option<Stream> = None;
     let mut now = Duration::ZERO;
     // The desktop as it stands and what changed since the client's last frame.
     let mut desk: Option<Desk> = None;
@@ -330,7 +330,7 @@ fn main() -> Result<(), Error> {
         let d = desk.as_ref().unwrap();
         let (w, h) = d.size;
         if encoder.as_ref().is_none_or(|e| e.size() != d.size) {
-            encoder = Some(Vp9Encoder::with_threads(w, h, walk.quality(), Chroma::Yuv444, threads)?);
+            encoder = Some(Stream::new(w, h, walk.quality(), Chroma::Yuv444, threads)?);
             asked_key = true;
             damage = None;
         }
@@ -338,11 +338,18 @@ fn main() -> Result<(), Error> {
         let keyframe = asked_key;
         out.clear();
         let started = Instant::now();
-        let produced = if settling {
-            encoder.settle(walk.ceiling(), keyframe, &mut out)?
+        let coded = if settling {
+            encoder.settle(walk.ceiling(), keyframe, &mut out)
         } else {
-            encoder.read(&d.pixels, usize::from(w) * 4, if keyframe { None } else { damage.as_deref() })?;
-            encoder.encode(keyframe, &mut out)?
+            encoder.read_bgrx(&d.pixels, usize::from(w) * 4, if keyframe { None } else { damage.as_deref() })?;
+            encoder.encode(keyframe, &mut out)
+        };
+        // libvpx making no frame of a picture is the session's to skip, as it
+        // skips it.
+        let produced = match coded {
+            Ok(_) => true,
+            Err(wlshare_vp9::Error::NoFrame) => false,
+            Err(e) => return Err(e.into()),
         };
         let encode = encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
         dirty = false;
@@ -353,7 +360,10 @@ fn main() -> Result<(), Error> {
         }
         let sent = now + encode;
         let coded_at = if settling { walk.ceiling() } else { encoder.quality() };
-        let size = out.len() + 30;
+        // The frame, the five bytes of dial and length before it in its
+        // rectangle, and the thirty this model counts for the framing around
+        // that.
+        let size = out.len() + 35;
         let (painted, back) = gateway.frame(sent, size, paint + jitter());
         if keyframe {
             walk.keyframe(base + sent);

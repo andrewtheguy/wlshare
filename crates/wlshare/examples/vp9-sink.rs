@@ -13,7 +13,7 @@
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
 //! without a `[pam]` or `[password]` table, or with `--login` RSA-AES: the
-//! exchange `wlshare_rfb::rsa_aes` has both ends of, answered with that
+//! exchange `crate::rfb::rsa_aes` has both ends of, answered with that
 //! username and the password in the environment's `VP9_SINK_PASSWORD`, and
 //! only to the server whose key has `--fingerprint`, which is what the daemon
 //! logs of its key as it starts: neither goes to any other. The list names VP9 at the
@@ -52,11 +52,17 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
-use wlshare_rfb::rsa_aes::{self, ClientKey, Credentials, FrameReader, SECURITY_RSA_AES_128, SECURITY_RSA_AES_256, Sealer, Strength};
-use wlshare_rfb::client::{self, RectBody, ServerMsg};
-use wlshare_rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
-use wlshare_rfb::vp9::{ENCODING_VP9_HELD, ENCODING_VP9_QUALITY_BASE};
-use wlshare_rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_VP9};
+use wlshare_proto::vp9::{Chroma, Vp9Stream};
+
+use crate::rfb::client::{self, RectBody, ServerMsg};
+use crate::rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
+use crate::rfb::rsa_aes::{self, ClientKey, Credentials, FrameReader, SECURITY_RSA_AES_128, SECURITY_RSA_AES_256, Sealer, Strength};
+use crate::rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE};
+
+// The daemon's protocol module, of which the sink uses the client's half.
+#[allow(unused)]
+#[path = "../src/rfb/mod.rs"]
+mod rfb;
 
 struct Args {
     addr: String,
@@ -210,7 +216,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (mut reader, half) = socket.into_split();
     let mut out = Out { half, sealer: None };
     client::read_version(&mut reader).await?;
-    out.send(wlshare_rfb::msg::PROTOCOL_VERSION).await?;
+    out.send(crate::rfb::msg::PROTOCOL_VERSION).await?;
     let types = client::read_security_types(&mut reader).await?;
     let mut socket: Box<dyn AsyncRead + Unpin> = match &args.login {
         None => {
@@ -248,17 +254,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Cursor because the daemon requires it of every client; its rectangles
     // are parsed and dropped like everything but the frames.
-    let mut encodings = vec![
-        ENCODING_VP9,
-        ENCODING_VP9_QUALITY_BASE + i32::from(args.quality),
-        ENCODING_FENCE,
-        ENCODING_CONTINUOUS_UPDATES,
-        ENCODING_EXTENDED_DESKTOP_SIZE,
-        ENCODING_CURSOR,
-    ];
-    if args.held {
-        encodings.push(ENCODING_VP9_HELD);
-    }
+    let mut encodings = Vp9Stream { quality: args.quality, adaptive: !args.held, chroma: Chroma::Yuv444 }.encodings();
+    encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     out.send(&client::set_encodings(&encodings)).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {

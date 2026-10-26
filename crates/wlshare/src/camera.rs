@@ -1,6 +1,6 @@
 //! The client's camera, lent to the desktop: a PipeWire `Video/Source` node the
 //! desktop's applications open like any other camera, fed from the H.264 the
-//! client sends over the camera extension ([`wlshare_rfb::camera`]).
+//! client sends over the camera extension ([`wlshare_proto::camera`]).
 //!
 //! wlshare runs inside the user's session, where the video graph is, so the
 //! camera needs no kernel module and no privilege: it is a node in the same
@@ -39,7 +39,7 @@ use log::{debug, info, warn};
 use pipewire as pw;
 use pw::spa;
 use tokio::sync::mpsc;
-use wlshare_rfb::camera::CameraFormat;
+use wlshare_proto::camera::CameraFormat;
 
 use crate::decode::{Decoder, Picture};
 use crate::shared::ClientId;

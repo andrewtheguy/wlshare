@@ -3,22 +3,22 @@
 //!
 //! The camera extension's twin ([`crate::camera`]), and the fourth of wlshare's
 //! private pairs: one pseudo-encoding and one message type, used in both
-//! directions. The audio extension ([`crate::audio`]) carries sound from the server alone, and
-//! no registered extension carries it the other way.
+//! directions. The audio extension ([`crate::audio`]) carries sound from the
+//! server alone, and no registered extension carries it the other way.
 //!
 //! - The client lists [`crate::ENCODING_MICROPHONE`] in `SetEncodings`. A server
 //!   that does not know it ignores it, as RFB requires.
 //! - The server answers **every** such `SetEncodings` with a
 //!   [`microphone_available`] — that answer is the only way support is ever
 //!   announced.
-//! - The client plugs a microphone ([`ClientMicrophone::Plug`]). The server makes
-//!   a microphone of it that the desktop's applications can record from, and
-//!   unplugs it again on [`ClientMicrophone::Unplug`] or when the client leaves.
+//! - The client plugs a microphone ([`plug`]). The server makes a microphone of
+//!   it that the desktop's applications can record from, and unplugs it again
+//!   on an [`unplug`] or when the client leaves.
 //! - Whether anything is sent is the desktop's decision, not the client's: the
 //!   server sends [`microphone_start`] when an application starts recording, naming
 //!   the format it wants the samples in, and [`microphone_stop`] when the last one
-//!   stops. Between the two the client sends samples
-//!   ([`ClientMicrophone::Sample`]), and outside them it sends nothing.
+//!   stops. Between the two the client sends samples ([`sample`]), and outside
+//!   them it sends nothing.
 //!
 //! The format is the server's to choose, as a host's is over RDP: samples are
 //! always signed 16-bit little-endian and interleaved, and the start names the
@@ -89,14 +89,10 @@ pub enum ClientMicrophone {
 /// Why a client's microphone message could not be one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum MicrophoneParseError {
-    #[error("microphone operation {0} is not plug, unplug or sample")]
+    #[error("microphone operation {0} is not one this end takes from the other")]
     UnknownOperation(u8),
     #[error("a microphone sample of {0} bytes is over the {MAX_SAMPLE}-byte ceiling")]
     SampleTooLong(usize),
-}
-
-fn u32_at(b: &[u8], i: usize) -> u32 {
-    u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
 }
 
 /// Parse the microphone message at the front of `buf`, whose first byte is
@@ -113,7 +109,7 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientMicrophone, usize)>, Mic
             if buf.len() < MICROPHONE_SAMPLE_HEADER_LEN {
                 return Ok(None);
             }
-            let len = u32_at(buf, 4) as usize;
+            let len = crate::u32_at(buf, 4) as usize;
             if len > MAX_SAMPLE {
                 return Err(MicrophoneParseError::SampleTooLong(len));
             }
@@ -164,6 +160,78 @@ pub fn microphone_start(format: MicrophoneFormat) -> [u8; MICROPHONE_START_LEN] 
 /// Server → client: nothing is recording any more; send no more samples.
 pub fn microphone_stop() -> [u8; MICROPHONE_BARE_LEN] {
     bare(SERVER_MICROPHONE_STOP)
+}
+
+/// Client → server: a microphone is lent.
+pub fn plug() -> [u8; MICROPHONE_BARE_LEN] {
+    bare(CLIENT_MICROPHONE_PLUG)
+}
+
+/// Client → server: the microphone is gone.
+pub fn unplug() -> [u8; MICROPHONE_BARE_LEN] {
+    bare(CLIENT_MICROPHONE_UNPLUG)
+}
+
+/// Client → server: interleaved PCM in the format the last start named.
+///
+/// | Offset | Type | Field |
+/// |---|---|---|
+/// | 0 | U8 | `0xE3` |
+/// | 1 | U8 | operation, 2 |
+/// | 2 | U16 | padding |
+/// | 4 | U32 | length of the PCM |
+/// | 8 | U8[] | the PCM |
+///
+/// PCM over [`MAX_SAMPLE`] is the server's to refuse, and ends the session: a
+/// client sends none.
+pub fn sample(pcm: &[u8]) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(MICROPHONE_SAMPLE_HEADER_LEN + pcm.len());
+    msg.extend_from_slice(&bare(CLIENT_MICROPHONE_SAMPLE));
+    msg.extend_from_slice(&(pcm.len() as u32).to_be_bytes());
+    msg.extend_from_slice(pcm);
+    msg
+}
+
+/// A microphone submessage from the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerMicrophone {
+    /// The server takes a microphone: the answer to `SetEncodings`.
+    Available,
+    /// An application started recording, and wants PCM in this format.
+    Start(MicrophoneFormat),
+    /// The last application stopped.
+    Stop,
+}
+
+/// How many bytes the server message whose first [`MICROPHONE_BARE_LEN`] are
+/// `header` is in all. An operation this client does not know is an error: the
+/// messages share no length field, so one that cannot be measured leaves the
+/// stream at an offset nothing recovers from.
+pub fn server_len(header: &[u8; MICROPHONE_BARE_LEN]) -> Result<usize, MicrophoneParseError> {
+    debug_assert_eq!(header[0], MSG_MICROPHONE);
+    match header[1] {
+        SERVER_MICROPHONE_START => Ok(MICROPHONE_START_LEN),
+        SERVER_MICROPHONE_AVAILABLE | SERVER_MICROPHONE_STOP => Ok(MICROPHONE_BARE_LEN),
+        other => Err(MicrophoneParseError::UnknownOperation(other)),
+    }
+}
+
+/// Parse the server's microphone message at the front of `buf`, whose first
+/// byte is [`MSG_MICROPHONE`]. `Ok(None)` means more bytes are needed.
+pub fn parse_server(buf: &[u8]) -> Result<Option<(ServerMicrophone, usize)>, MicrophoneParseError> {
+    let Some(header) = buf.first_chunk::<MICROPHONE_BARE_LEN>() else { return Ok(None) };
+    let len = server_len(header)?;
+    if buf.len() < len {
+        return Ok(None);
+    }
+    let msg = match header[1] {
+        SERVER_MICROPHONE_AVAILABLE => ServerMicrophone::Available,
+        SERVER_MICROPHONE_START => {
+            ServerMicrophone::Start(MicrophoneFormat { channels: crate::u16_at(buf, 4), frequency: crate::u32_at(buf, 8) })
+        }
+        _ => ServerMicrophone::Stop,
+    };
+    Ok(Some((msg, len)))
 }
 
 #[cfg(test)]
@@ -254,5 +322,29 @@ mod tests {
             Err(MicrophoneParseError::SampleTooLong(MAX_SAMPLE + 1)),
             "refused before the samples are waited for"
         );
+    }
+
+    /// The client's messages, read back by the server's parser.
+    #[test]
+    fn the_client_messages_parse_back() {
+        assert_eq!(parse_client(&plug()), Ok(Some((ClientMicrophone::Plug, 4))));
+        assert_eq!(parse_client(&unplug()), Ok(Some((ClientMicrophone::Unplug, 4))));
+        assert_eq!(sample(&[1, 0]), [0xE3, 2, 0, 0, 0, 0, 0, 2, 1, 0]);
+        assert_eq!(parse_client(&sample(&[1, 0, 0xFF, 0x7F])), Ok(Some((ClientMicrophone::Sample(vec![1, 0, 0xFF, 0x7F]), 12))));
+    }
+
+    /// The server's messages, read back by the client's parser.
+    #[test]
+    fn the_server_messages_parse_back() {
+        for (bytes, expected) in [
+            (microphone_available().to_vec(), ServerMicrophone::Available),
+            (microphone_start(MONO_48K).to_vec(), ServerMicrophone::Start(MONO_48K)),
+            (microphone_stop().to_vec(), ServerMicrophone::Stop),
+        ] {
+            assert_eq!(parse_server(&bytes), Ok(Some((expected, bytes.len()))));
+            assert_eq!(server_len(bytes.first_chunk().unwrap()), Ok(bytes.len()));
+            assert_eq!(parse_server(&bytes[..bytes.len() - 1]), Ok(None), "a partial message asks for more");
+        }
+        assert_eq!(parse_server(&[0xE3, 3, 0, 0]), Err(MicrophoneParseError::UnknownOperation(3)));
     }
 }

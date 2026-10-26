@@ -1,6 +1,6 @@
 //! libvpx: its encoder as a desktop is coded with it ([`Encoder`]), and its
 //! decoder ([`Decoder`]), which gives the planes back for every test here and
-//! in `wlshare-rfb`. The one place libvpx is spoken to.
+//! in the daemon. The one place libvpx is spoken to.
 
 use std::os::raw::{c_int, c_uint, c_ulong};
 

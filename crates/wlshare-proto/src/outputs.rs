@@ -1,7 +1,7 @@
 //! The outputs extension: how a client learns which outputs the compositor has
 //! and asks for the one it wants shared.
 //!
-//! One framebuffer is one output ([`crate`]), so the client that wants the other
+//! One framebuffer is one output, so the client that wants the other
 //! monitor has to say so. Standard RFB has no word for it: `ExtendedDesktopSize`
 //! describes screens *inside* one framebuffer, which is not what these are. This
 //! private extension adds one pseudo-encoding and one message type, in both
@@ -12,17 +12,15 @@
 //! - The server answers **every** such `SetEncodings` with an [`output_list`] —
 //!   that answer is the only way support is ever announced — and sends another
 //!   whenever the list, an entry, or the shared one changes.
-//! - The client may send a `SelectOutput`
-//!   ([`crate::msg::ClientMsg::SelectOutput`]) naming the output it wants shared.
-//!   The server switches the capture to it and answers with an `OutputList`
+//! - The client may send a `SelectOutput` ([`select_output`]) naming the
+//!   output it wants shared. The server switches the capture to it and answers with an `OutputList`
 //!   whose `active` says what actually happened: a request it cannot honour —
 //!   an id it does not have, an output that went away — is answered with the
 //!   list as it is, so the client's menu ends up agreeing with what is on the
 //!   canvas rather than with what was clicked. A request is never left without
 //!   an answer.
-//! - The client may send a `VirtualDisplays`
-//!   ([`crate::msg::ClientMsg::VirtualDisplays`]) saying how many virtual
-//!   displays it wants, as an RDP client's monitor layout and a Mac's display
+//! - The client may send a `VirtualDisplays` ([`virtual_displays`]) saying
+//!   how many virtual displays it wants, as an RDP client's monitor layout and a Mac's display
 //!   configuration do. A server whose compositor can make outputs — sway,
 //!   through its IPC — adds headless outputs and takes them away until there
 //!   are that many, each arrival and departure a list of its own; the request
@@ -194,6 +192,55 @@ fn clipped(name: &str) -> &str {
     &name[..end]
 }
 
+/// The bytes of an `OutputList` before its entries, type included.
+pub const LIST_HEADER_LEN: usize = 8;
+
+/// The bytes of an entry before its name.
+pub const ENTRY_HEADER_LEN: usize = 14;
+
+/// An `OutputList`'s header: the most virtual displays the server makes, how
+/// many entries follow, and the shared output's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListHeader {
+    pub virtual_displays: u8,
+    pub count: u16,
+    pub active: u32,
+}
+
+impl ListHeader {
+    /// The header of a list, whose first byte is [`MSG_OUTPUTS`].
+    pub fn parse(header: &[u8; LIST_HEADER_LEN]) -> Self {
+        debug_assert_eq!(header[0], MSG_OUTPUTS);
+        Self { virtual_displays: header[1], count: crate::u16_at(header, 2), active: crate::u32_at(header, 4) }
+    }
+}
+
+/// An entry's fixed part: everything but its name, and how long that is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryHeader {
+    pub id: u32,
+    pub width: u16,
+    pub height: u16,
+    /// The scale, 16.16 fixed ([`crate::density::from_fixed`]).
+    pub fixed: u32,
+    pub headless: bool,
+    /// The bytes of the name that follows.
+    pub name_len: u8,
+}
+
+impl EntryHeader {
+    pub fn parse(entry: &[u8; ENTRY_HEADER_LEN]) -> Self {
+        Self {
+            id: crate::u32_at(entry, 0),
+            width: crate::u16_at(entry, 4),
+            height: crate::u16_at(entry, 6),
+            fixed: crate::u32_at(entry, 8),
+            headless: entry[12] & OUTPUT_HEADLESS != 0,
+            name_len: entry[13],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +328,16 @@ mod tests {
         assert_eq!(parse_client(&virtual_displays(1)), Ok(Some((ClientOutputs::VirtualDisplays { count: 1 }, 8))));
         assert_eq!(parse_client(&[0xE1, 1, 0, 0, 0, 0, 0]), Ok(None), "a short message asks for more");
         assert_eq!(parse_client(&[0xE1, 2, 0, 0, 0, 0, 0, 1]), Err(OutputsParseError::UnknownOperation(2)));
+    }
+
+    /// The client's reading of a list, against the builder.
+    #[test]
+    fn the_headers_read_back_what_the_list_was_built_from() {
+        let bytes = output_list(7, 2, &[entry(7, "HEADLESS-1", 1728, 1117, 1.5, true)]);
+        let header = ListHeader::parse(bytes[..LIST_HEADER_LEN].try_into().unwrap());
+        assert_eq!(header, ListHeader { virtual_displays: 2, count: 1, active: 7 });
+        let entry = EntryHeader::parse(bytes[LIST_HEADER_LEN..LIST_HEADER_LEN + ENTRY_HEADER_LEN].try_into().unwrap());
+        assert_eq!(entry, EntryHeader { id: 7, width: 1728, height: 1117, fixed: 0x0001_8000, headless: true, name_len: 10 });
+        assert_eq!(&bytes[LIST_HEADER_LEN + ENTRY_HEADER_LEN..], b"HEADLESS-1");
     }
 }

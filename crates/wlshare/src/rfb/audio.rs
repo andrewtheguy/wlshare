@@ -1,325 +1,40 @@
-//! wlshare's audio extension: how the desktop's sound reaches a client over the
-//! RFB connection it already has, as FLAC or as Opus, whichever the client
-//! asked for.
+//! The audio extension's encoders: the desktop's sound as the client asked
+//! for it, FLAC or Opus, in the extension's frame messages.
 //!
-//! The extension is private, and its client is the zDesk gateway:
-//!
-//! - The client lists the pseudo-encoding [`crate::ENCODING_AUDIO`] (`WLSF`) in
-//!   `SetEncodings`. The server announces support with an empty
-//!   pseudo-rectangle of that encoding ([`audio_rect`]) in a
-//!   `FramebufferUpdate` — the only way support is ever announced, as with
-//!   ExtendedDesktopSize.
-//! - The client then sets the sample format it wants
-//!   ([`ClientAudio::SetFormat`]) and enables audio ([`ClientAudio::Enable`]);
-//!   it may disable it again ([`ClientAudio::Disable`]). These three are the
-//!   client messages of the QEMU Audio extension `rfbproto` registers — message
-//!   type 255, submessage 1 — taken as they are, though QEMU's pseudo-encoding,
-//!   -259, is not spoken: what it promises is raw samples, and none are sent.
-//! - The server sends [`audio_begin`] when a stream starts and [`audio_end`]
-//!   when it stops, QEMU's messages again, and between them the sound, one
-//!   frame of it to a message of the private type [`MSG_AUDIO_FRAME`]: a FLAC
-//!   frame ([`FlacEncoder`]), or an Opus packet ([`OpusEncoder`]) for a client
-//!   that listed [`crate::ENCODING_AUDIO_OPUS`] beside the encoding
-//!   ([`Codec`]). Which is the client's to choose and no configuration of the
-//!   server's, as the format is.
-//! - A client that asked for Opus may name the rate it is coded at
-//!   ([`ClientAudio::SetBitrate`]), before the stream or while it runs: a
-//!   private operation beside QEMU's three.
+//! The extension itself — what the client lists and sends, the begin, the end
+//! and the frame message — is [`wlshare_proto::audio`]'s. What is here is the
+//! coding: a frame message for every [`AudioFormat::block_frames`] frames the
+//! capture hands over, twenty milliseconds.
 //!
 //! FLAC is lossless: the client decodes exactly the samples the capture
 //! produced, while music takes about half of its PCM rate, speech under a
 //! third, and silence a few bytes a frame. The FLAC stream header (`STREAMINFO`)
-//! is never sent, because everything in it is already agreed — the format is
-//! the one the client set, and every frame carries [`AudioFormat::block_frames`]
-//! frames of it, twenty milliseconds, so a client builds the header itself.
-//! Each frame decodes on its own, so one a session dropped costs nothing but
-//! its own samples.
+//! is never sent, because everything in it is already agreed, so a client
+//! builds the header itself. Each frame decodes on its own, so one a session
+//! dropped costs nothing but its own samples.
 //!
 //! The tests read every frame back as a client does: `streaminfo` is the
 //! header it builds, and `FlacDecoder` turns each frame back into samples in
 //! the format it set; an Opus stream's packets are decoded by FFmpeg behind the
 //! `OpusHead` a client builds.
 //!
-//! FLAC stores only signed samples, of at most 24 bits, so the formats are the
-//! four of 8 and 16 bits. An unsigned sample has its top bit flipped before it
-//! is encoded, which maps its range exactly onto the signed one of the same
-//! width, with silence landing on zero; the client flips it back, and since the
-//! flip is its own inverse it gets the original values bit for bit. Samples are
-//! little-endian on both sides of the codec.
-//!
 //! Opus is the lossy choice, for a client whose own listener takes Opus: the
 //! zDesk gateway hands each packet to the browser as it came, where it would
 //! otherwise decode the FLAC and code Opus itself. A packet is twenty
 //! milliseconds too, at the one frame size the whole stream keeps, and decodes
-//! from the packets before it as any Opus stream does, and nothing on the
-//! wire numbers them, so a server must send every packet it coded: one that
-//! has to lose sound loses it before the encoder. The format's frequency
-//! must be one Opus codes at ([`OPUS_FREQUENCIES`]); its sample format says
-//! only what the capture hands the encoder, since what an Opus decoder gives
-//! back is its own business. The coding is `sound-opus`'s, the one place a
-//! desktop's sound is made Opus for wlshare and the gateway alike, with libopus
-//! linked statically under it.
+//! from the packets before it as any Opus stream does, so a server must send
+//! every packet it coded: one that has to lose sound loses it before the
+//! encoder. The format's frequency must be one Opus codes at
+//! ([`sound_opus::RATES`]); its sample format says only what the capture hands
+//! the encoder. The coding is `sound-opus`'s, the one place a desktop's sound is
+//! made Opus for wlshare and the gateway alike, with libopus linked statically
+//! under it.
 
 use sound_flac::{Encoder, Stream};
 use thiserror::Error;
-
-/// The message type the client's messages and the server's begin and end use,
-/// shared with every other QEMU extension; [`SUBMESSAGE_AUDIO`] names this one.
-pub const MSG_QEMU: u8 = 255;
-/// The submessage type under [`MSG_QEMU`] that is audio.
-pub const SUBMESSAGE_AUDIO: u8 = 1;
-
-/// The frame message's type, server → client only; outside every registered
-/// type. One FLAC frame or one Opus packet follows its header.
-pub const MSG_AUDIO_FRAME: u8 = 0xE4;
-/// The bytes of a frame message before the frame, type included.
-pub const AUDIO_FRAME_HEADER_LEN: usize = 8;
-/// The most bytes one frame may be. The largest block there is — twenty
-/// milliseconds of 16-bit stereo at [`MAX_FREQUENCY`] — is 7680 bytes of
-/// samples, and FLAC adds a few header bytes at worst, while an Opus packet is
-/// under [`OPUS_MAX_PACKET`], so a length past this is a server that has lost
-/// its framing rather than a frame to buffer.
-pub const MAX_AUDIO_FRAME: usize = 64 * 1024;
-
-/// Client operation: start sending audio.
-pub const CLIENT_AUDIO_ENABLE: u16 = 0;
-/// Client operation: stop sending audio.
-pub const CLIENT_AUDIO_DISABLE: u16 = 1;
-/// Client operation: the sample format the client wants, which follows.
-pub const CLIENT_AUDIO_SET_FORMAT: u16 = 2;
-/// Client operation: the rate Opus is coded at, which follows. wlshare's own,
-/// beside QEMU's three.
-pub const CLIENT_AUDIO_SET_BITRATE: u16 = 3;
-
-/// Server operation: the stream stopped.
-pub const SERVER_AUDIO_END: u16 = 0;
-/// Server operation: a stream started.
-pub const SERVER_AUDIO_BEGIN: u16 = 1;
-
-/// The bytes of an enable or a disable, type and submessage included.
-pub const CLIENT_AUDIO_SWITCH_LEN: usize = 4;
-/// The bytes of a set-format, type and submessage included.
-pub const CLIENT_AUDIO_FORMAT_LEN: usize = 10;
-/// The bytes of a set-bitrate, type and submessage included.
-pub const CLIENT_AUDIO_BITRATE_LEN: usize = 8;
-
-/// The rates Opus codes at, in Hz: the only frequencies a format coded as Opus
-/// may have.
-pub use sound_opus::RATES as OPUS_FREQUENCIES;
-/// The lowest and highest Opus rates a client may ask for, in bits per second.
-pub use sound_opus::{BITRATE_MAX as OPUS_BITRATE_MAX, BITRATE_MIN as OPUS_BITRATE_MIN};
-/// The most bytes one Opus packet is.
-pub use sound_opus::MAX_PACKET as OPUS_MAX_PACKET;
-/// The samples, at 48 kHz, a decoder is to discard from the start of an Opus
-/// stream, which the `OpusHead` a client builds states as its pre-skip: nothing
-/// of that header is sent.
-pub use sound_opus::PRE_SKIP as OPUS_PRE_SKIP;
-
-/// The lowest sampling frequency a client may ask for.
-///
-/// A FLAC frame here is twenty milliseconds, and FLAC has no block shorter
-/// than 16 frames, which puts the floor at 800 Hz; 8 kHz is the lowest rate
-/// real audio uses, so nothing a client could legitimately want is refused.
-pub const MIN_FREQUENCY: u32 = 8_000;
-
-/// The highest sampling frequency a client may ask for.
-///
-/// The field is a `u32`, and a server that took it at its word would overflow
-/// the buffer size in frames it asks PipeWire for. FLAC's own ceiling is the
-/// twenty bits its stream header has for the rate; this one is twice what the
-/// desktop's own graph runs at, and more than any client of this server asks
-/// for.
-pub const MAX_FREQUENCY: u32 = 96_000;
-
-/// A sample's encoding, as QEMU's set-format numbers them. Its 32-bit codes,
-/// 4 and 5, are not here: FLAC stores at most 24 bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SampleFormat {
-    U8 = 0,
-    S8 = 1,
-    U16 = 2,
-    S16 = 3,
-}
-
-impl SampleFormat {
-    /// The format a wire byte names, if it is one carried here.
-    pub fn from_wire(code: u8) -> Option<Self> {
-        Some(match code {
-            0 => Self::U8,
-            1 => Self::S8,
-            2 => Self::U16,
-            3 => Self::S16,
-            _ => return None,
-        })
-    }
-
-    /// One sample's width in bytes.
-    pub fn bytes(self) -> usize {
-        match self {
-            Self::U8 | Self::S8 => 1,
-            Self::U16 | Self::S16 => 2,
-        }
-    }
-
-    /// Whether the top bit is flipped on the way into FLAC and back out.
-    pub fn unsigned(self) -> bool {
-        matches!(self, Self::U8 | Self::U16)
-    }
-}
-
-/// The format a client asked for: what the samples every FLAC frame decodes to
-/// are in, and what the capture hands the Opus encoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AudioFormat {
-    pub sample: SampleFormat,
-    /// 1 or 2.
-    pub channels: u8,
-    /// Samples per second per channel.
-    pub frequency: u32,
-}
-
-impl AudioFormat {
-    /// What QEMU streams to a client that enables audio without setting a
-    /// format: CD-quality signed 16-bit stereo.
-    pub const DEFAULT: Self = Self { sample: SampleFormat::S16, channels: 2, frequency: 44_100 };
-
-    /// The bytes of one frame: one sample per channel.
-    pub fn frame_bytes(&self) -> usize {
-        self.sample.bytes() * usize::from(self.channels)
-    }
-
-    /// The frames in every FLAC frame: twenty milliseconds, rounded down —
-    /// 960 at 48 kHz, 882 at 44.1.
-    pub fn block_frames(&self) -> usize {
-        (self.frequency / 50) as usize
-    }
-
-    /// Whether this is a format the extension carries: 1 or 2 channels, at
-    /// [`MIN_FREQUENCY`] to [`MAX_FREQUENCY`]. A set-format is parsed only
-    /// into one that is, and nothing is encoded, decoded or sent in one that
-    /// is not.
-    pub fn check(&self) -> Result<(), AudioParseError> {
-        if !(1..=2).contains(&self.channels) {
-            return Err(AudioParseError::BadChannels(self.channels));
-        }
-        if self.frequency < MIN_FREQUENCY {
-            return Err(AudioParseError::FrequencyTooLow(self.frequency));
-        }
-        if self.frequency > MAX_FREQUENCY {
-            return Err(AudioParseError::FrequencyTooHigh(self.frequency));
-        }
-        Ok(())
-    }
-}
-
-/// An audio submessage from the client.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientAudio {
-    Enable,
-    Disable,
-    SetFormat(AudioFormat),
-    /// The rate Opus is coded at, in bits per second.
-    SetBitrate(u32),
-}
-
-/// What the sound is coded as, which the client chooses in its `SetEncodings`:
-/// Opus where [`crate::ENCODING_AUDIO_OPUS`] is listed beside
-/// [`crate::ENCODING_AUDIO`], FLAC where it is not. A pseudo-encoding rather
-/// than a message, as the VP9 stream's choices are, so it rides the list that
-/// asks for the sound at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Codec {
-    Flac,
-    Opus,
-}
-
-impl Codec {
-    /// The codec `encodings` asks for.
-    pub fn listed(encodings: &[i32]) -> Self {
-        if encodings.contains(&crate::ENCODING_AUDIO_OPUS) { Self::Opus } else { Self::Flac }
-    }
-}
-
-/// Why a client's audio submessage could not be one.
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
-pub enum AudioParseError {
-    #[error("QEMU submessage {0} is not audio, the one QEMU extension spoken here")]
-    UnknownSubmessage(u8),
-    #[error("audio operation {0} is not enable, disable, set-format or set-bitrate")]
-    UnknownOperation(u16),
-    #[error("sample format {0} is not U8, S8, U16 or S16, the ones FLAC carries here")]
-    UnknownSampleFormat(u8),
-    #[error("{0} channels; the extension allows 1 or 2")]
-    BadChannels(u8),
-    #[error("a frequency of {0} Hz, under the {MIN_FREQUENCY} Hz this server accepts")]
-    FrequencyTooLow(u32),
-    #[error("a frequency of {0} Hz, over the {MAX_FREQUENCY} Hz this server accepts")]
-    FrequencyTooHigh(u32),
-    #[error("an Opus rate of {0} bit/s, outside the {OPUS_BITRATE_MIN} to {OPUS_BITRATE_MAX} Opus is coded at")]
-    BadBitrate(u32),
-}
-
-/// Parse the audio submessage at the front of `buf`, whose first byte is
-/// [`MSG_QEMU`]. `Ok(None)` means more bytes are needed.
-pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioParseError> {
-    debug_assert_eq!(buf.first(), Some(&MSG_QEMU));
-    if buf.len() < CLIENT_AUDIO_SWITCH_LEN {
-        return Ok(None);
-    }
-    if buf[1] != SUBMESSAGE_AUDIO {
-        return Err(AudioParseError::UnknownSubmessage(buf[1]));
-    }
-    let operation = u16::from_be_bytes([buf[2], buf[3]]);
-    match operation {
-        CLIENT_AUDIO_ENABLE => Ok(Some((ClientAudio::Enable, CLIENT_AUDIO_SWITCH_LEN))),
-        CLIENT_AUDIO_DISABLE => Ok(Some((ClientAudio::Disable, CLIENT_AUDIO_SWITCH_LEN))),
-        CLIENT_AUDIO_SET_FORMAT => {
-            if buf.len() < CLIENT_AUDIO_FORMAT_LEN {
-                return Ok(None);
-            }
-            let sample = SampleFormat::from_wire(buf[4]).ok_or(AudioParseError::UnknownSampleFormat(buf[4]))?;
-            let format = AudioFormat { sample, channels: buf[5], frequency: u32::from_be_bytes([buf[6], buf[7], buf[8], buf[9]]) };
-            format.check()?;
-            Ok(Some((ClientAudio::SetFormat(format), CLIENT_AUDIO_FORMAT_LEN)))
-        }
-        CLIENT_AUDIO_SET_BITRATE => {
-            if buf.len() < CLIENT_AUDIO_BITRATE_LEN {
-                return Ok(None);
-            }
-            let bitrate = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
-            check_bitrate(bitrate)?;
-            Ok(Some((ClientAudio::SetBitrate(bitrate), CLIENT_AUDIO_BITRATE_LEN)))
-        }
-        other => Err(AudioParseError::UnknownOperation(other)),
-    }
-}
-
-/// Whether `bitrate`, in bits per second, is one Opus is coded at here. A
-/// set-bitrate is parsed only into one that is.
-pub fn check_bitrate(bitrate: u32) -> Result<(), AudioParseError> {
-    if (OPUS_BITRATE_MIN..=OPUS_BITRATE_MAX).contains(&bitrate) { Ok(()) } else { Err(AudioParseError::BadBitrate(bitrate)) }
-}
-
-/// The announcement: an empty pseudo-rectangle of [`crate::ENCODING_AUDIO`],
-/// sent inside a `FramebufferUpdate` as its whole content.
-pub fn audio_rect() -> [u8; 12] {
-    crate::msg::rect_header(0, 0, 0, 0, crate::ENCODING_AUDIO)
-}
-
-fn server_op(operation: u16) -> [u8; 4] {
-    let op = operation.to_be_bytes();
-    [MSG_QEMU, SUBMESSAGE_AUDIO, op[0], op[1]]
-}
-
-/// Server → client: a stream is starting; its frames follow.
-pub fn audio_begin() -> [u8; 4] {
-    server_op(SERVER_AUDIO_BEGIN)
-}
-
-/// Server → client: the stream stopped.
-pub fn audio_end() -> [u8; 4] {
-    server_op(SERVER_AUDIO_END)
-}
+use wlshare_proto::audio::{AUDIO_FRAME_HEADER_LEN, AudioFormat, AudioParseError, Codec, check_bitrate, frame_header};
+#[cfg(test)]
+use wlshare_proto::audio::{MAX_AUDIO_FRAME, MAX_FREQUENCY, MIN_FREQUENCY, SampleFormat};
 
 /// Why a frame could not be made.
 #[derive(Debug, Error)]
@@ -344,13 +59,13 @@ pub enum AudioEncodeError {
 /// written once the frame is behind it ([`finish`]).
 fn begin(capacity: usize) -> Vec<u8> {
     let mut msg = Vec::with_capacity(AUDIO_FRAME_HEADER_LEN + capacity);
-    msg.extend_from_slice(&[MSG_AUDIO_FRAME, 0, 0, 0, 0, 0, 0, 0]);
+    msg.extend_from_slice(&frame_header(0));
     msg
 }
 
 fn finish(mut msg: Vec<u8>) -> Vec<u8> {
     let length = (msg.len() - AUDIO_FRAME_HEADER_LEN) as u32;
-    msg[4..AUDIO_FRAME_HEADER_LEN].copy_from_slice(&length.to_be_bytes());
+    msg[..AUDIO_FRAME_HEADER_LEN].copy_from_slice(&frame_header(length));
     msg
 }
 
@@ -371,7 +86,7 @@ impl Pending {
     }
 }
 
-/// One stream's FLAC encoder: the capture's buffers in, [`MSG_AUDIO_FRAME`]
+/// One stream's FLAC encoder: the capture's buffers in, [`wlshare_proto::audio::MSG_AUDIO_FRAME`]
 /// messages out, one for every [`AudioFormat::block_frames`] frames.
 ///
 /// The capture's buffers are twenty milliseconds once PipeWire settles, but
@@ -439,7 +154,7 @@ impl FlacEncoder {
     }
 }
 
-/// One stream's Opus encoder: the capture's buffers in, [`MSG_AUDIO_FRAME`]
+/// One stream's Opus encoder: the capture's buffers in, [`wlshare_proto::audio::MSG_AUDIO_FRAME`]
 /// messages out, one packet for every [`AudioFormat::block_frames`] frames,
 /// twenty milliseconds, as [`FlacEncoder`]'s are and with the same message
 /// around it.
@@ -447,7 +162,8 @@ impl FlacEncoder {
 /// The packets are `sound-opus`'s, which the zDesk gateway codes the sound
 /// of a desktop it encodes itself with, so a passed stream and one made there
 /// are the same. No header goes with them: a client builds `OpusHead` from the
-/// format it set and [`OPUS_PRE_SKIP`].
+/// format it set and [`sound_opus::PRE_SKIP`], the samples a decoder discards
+/// from the start of the stream.
 pub struct OpusEncoder {
     format: AudioFormat,
     codec: sound_opus::Encoder,
@@ -574,7 +290,7 @@ enum AudioDecodeError {
 }
 
 /// One stream's decoder, the client's end of [`FlacEncoder`]: the frame a
-/// [`MSG_AUDIO_FRAME`] message carries in, interleaved little-endian samples in
+/// [`wlshare_proto::audio::MSG_AUDIO_FRAME`] message carries in, interleaved little-endian samples in
 /// the client's format out. Made at a begin, from the format that was set.
 ///
 /// Every frame decodes on its own, so a frame that fails costs its own twenty
@@ -650,75 +366,6 @@ mod tests {
         assert!(AudioEncoder::new(Codec::Flac, format, None).is_ok());
     }
 
-    #[test]
-    fn the_client_operations_parse() {
-        assert_eq!(parse_client(&[255, 1, 0, 0]), Ok(Some((ClientAudio::Enable, 4))));
-        assert_eq!(parse_client(&[255, 1, 0, 1, 9]), Ok(Some((ClientAudio::Disable, 4))));
-        let set = [255, 1, 0, 2, 3, 2, 0, 0, 0xBB, 0x80];
-        assert_eq!(
-            parse_client(&set),
-            Ok(Some((ClientAudio::SetFormat(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }), 10)))
-        );
-        assert_eq!(parse_client(&[255, 1, 0]), Ok(None));
-        assert_eq!(parse_client(&set[..9]), Ok(None));
-    }
-
-    #[test]
-    fn a_bad_submessage_operation_or_format_is_fatal() {
-        assert_eq!(parse_client(&[255, 2, 0, 0]), Err(AudioParseError::UnknownSubmessage(2)));
-        assert_eq!(parse_client(&[255, 1, 0, 4]), Err(AudioParseError::UnknownOperation(4)));
-        assert_eq!(parse_client(&[255, 1, 0, 2, 6, 2, 0, 0, 0xBB, 0x80]), Err(AudioParseError::UnknownSampleFormat(6)));
-        assert_eq!(parse_client(&[255, 1, 0, 2, 3, 3, 0, 0, 0xBB, 0x80]), Err(AudioParseError::BadChannels(3)));
-        assert_eq!(parse_client(&[255, 1, 0, 2, 4, 2, 0, 0, 0xBB, 0x80]), Err(AudioParseError::UnknownSampleFormat(4)));
-        assert_eq!(parse_client(&[255, 1, 0, 2, 3, 1, 0, 0, 0, 0]), Err(AudioParseError::FrequencyTooLow(0)));
-    }
-
-    /// The frequency is bounded at both ends. A `u32::MAX` accepted here would
-    /// overflow the frame count the capture is asked for, and a rate under the
-    /// floor makes a frame shorter than FLAC's encoder takes, so both bounds
-    /// are parse rules rather than checks at the point of use.
-    #[test]
-    fn a_frequency_outside_the_bounds_is_fatal() {
-        let set_at = |frequency: u32| {
-            let f = frequency.to_be_bytes();
-            parse_client(&[255, 1, 0, 2, 3, 2, f[0], f[1], f[2], f[3]])
-        };
-        assert!(matches!(set_at(MAX_FREQUENCY), Ok(Some((ClientAudio::SetFormat(_), _)))));
-        assert_eq!(set_at(MAX_FREQUENCY + 1), Err(AudioParseError::FrequencyTooHigh(MAX_FREQUENCY + 1)));
-        assert_eq!(set_at(u32::MAX), Err(AudioParseError::FrequencyTooHigh(u32::MAX)));
-        assert!(matches!(set_at(MIN_FREQUENCY), Ok(Some((ClientAudio::SetFormat(_), _)))));
-        assert_eq!(set_at(MIN_FREQUENCY - 1), Err(AudioParseError::FrequencyTooLow(MIN_FREQUENCY - 1)));
-        // Every rate that survives leaves the daemon's frame count well inside
-        // a u32 (`frequency * 20 / 1000` in `wlshare::audio`).
-        assert!(MAX_FREQUENCY.checked_mul(20).is_some());
-        // And the rates real clients ask for are all far below it.
-        for rate in [8_000, 44_100, 48_000] {
-            assert!(matches!(set_at(rate), Ok(Some((ClientAudio::SetFormat(_), _)))));
-        }
-    }
-
-    #[test]
-    fn sample_widths_frame_sizes_and_blocks() {
-        assert_eq!(SampleFormat::from_wire(0), Some(SampleFormat::U8));
-        assert_eq!(SampleFormat::from_wire(3), Some(SampleFormat::S16));
-        assert_eq!(SampleFormat::from_wire(4), None, "32-bit is wider than FLAC stores");
-        assert_eq!(SampleFormat::from_wire(5), None);
-        assert_eq!(AudioFormat::DEFAULT.frame_bytes(), 4);
-        assert_eq!(AudioFormat::DEFAULT.block_frames(), 882);
-        assert_eq!(AudioFormat { sample: SampleFormat::U8, channels: 1, frequency: 8000 }.frame_bytes(), 1);
-        assert_eq!(AudioFormat { sample: SampleFormat::U8, channels: 1, frequency: MIN_FREQUENCY }.block_frames(), 160);
-        assert_eq!(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }.block_frames(), 960);
-    }
-
-    /// The server messages, read back by a decoder written from the
-    /// documented layouts rather than from the builders.
-    #[test]
-    fn server_messages_have_the_documented_layouts() {
-        assert_eq!(audio_rect(), [0, 0, 0, 0, 0, 0, 0, 0, b'W', b'L', b'S', b'F']);
-        assert_eq!(audio_begin(), [255, 1, 0, 1]);
-        assert_eq!(audio_end(), [255, 1, 0, 0]);
-    }
-
     /// Decode a run of frame messages with [`FlacDecoder`] — symphonia's
     /// decoder, which shares nothing with `sound-flac` — checking each message's
     /// framing on the way.
@@ -763,8 +410,7 @@ mod tests {
         ] {
             assert_eq!(streaminfo(format), Err(error.clone()));
             assert!(matches!(FlacEncoder::new(format), Err(AudioEncodeError::Unsupported(e)) if e == error));
-            assert_eq!(FlacDecoder::new(format).err(), Some(AudioDecodeError::Unsupported(error.clone())));
-            assert_eq!(crate::client::audio_set_format(&format), Err(error));
+            assert_eq!(FlacDecoder::new(format).err(), Some(AudioDecodeError::Unsupported(error)));
         }
     }
 
@@ -875,28 +521,12 @@ mod tests {
         }
     }
 
+    /// The bounds a set-bitrate is parsed within are the encoder's own.
     #[test]
-    fn the_bitrate_parses_within_libopus_bounds() {
-        let set_at = |bitrate: u32| {
-            let b = bitrate.to_be_bytes();
-            parse_client(&[255, 1, 0, 3, b[0], b[1], b[2], b[3]])
-        };
-        assert_eq!(set_at(96_000), Ok(Some((ClientAudio::SetBitrate(96_000), 8))));
-        assert_eq!(parse_client(&[255, 1, 0, 3, 0, 1, 0x77]), Ok(None));
-        assert!(set_at(OPUS_BITRATE_MIN).is_ok() && set_at(OPUS_BITRATE_MAX).is_ok());
-        for bitrate in [0, OPUS_BITRATE_MIN - 1, OPUS_BITRATE_MAX + 1, u32::MAX] {
-            assert_eq!(set_at(bitrate), Err(AudioParseError::BadBitrate(bitrate)));
-        }
-        assert_eq!((OPUS_BITRATE_MIN, OPUS_BITRATE_MAX), (6_000, 510_000));
-    }
-
-    /// The codec is FLAC unless the list that asks for the sound says Opus.
-    #[test]
-    fn the_codec_is_the_one_the_encodings_list() {
-        assert_eq!(crate::ENCODING_AUDIO_OPUS.to_be_bytes(), *b"WLOP");
-        assert_eq!(Codec::listed(&[crate::ENCODING_ZRLE, crate::ENCODING_AUDIO]), Codec::Flac);
-        assert_eq!(Codec::listed(&[crate::ENCODING_AUDIO, crate::ENCODING_AUDIO_OPUS]), Codec::Opus);
-        assert_eq!(Codec::listed(&[]), Codec::Flac);
+    fn the_bitrate_bounds_are_libopus_bounds() {
+        use wlshare_proto::audio::{OPUS_BITRATE_MAX, OPUS_BITRATE_MIN};
+        assert_eq!((OPUS_BITRATE_MIN, OPUS_BITRATE_MAX), (sound_opus::BITRATE_MIN, sound_opus::BITRATE_MAX));
+        assert!(check_bitrate(BITRATE).is_ok());
     }
 
     /// One Ogg page holding `packet` whole, as RFC 3533 lays a page out, its
@@ -947,7 +577,7 @@ mod tests {
             assert_eq!(&msg[1..4], &[0, 0, 0]);
             let len = u32::from_be_bytes([msg[4], msg[5], msg[6], msg[7]]) as usize;
             assert_eq!(msg.len(), 8 + len);
-            assert!(len > 0 && len <= OPUS_MAX_PACKET);
+            assert!(len > 0 && len <= sound_opus::MAX_PACKET);
             let last = if n + 1 == messages.len() { 4 } else { 0 };
             file.extend(ogg_page(last, (n as u64 + 1) * 960, n as u32 + 2, &msg[8..]));
         }
@@ -1007,7 +637,7 @@ mod tests {
         let expected = (0.5 * 32_768.0_f64).powi(2) / 2.0;
         for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
             for channels in [1, 2] {
-                for frequency in OPUS_FREQUENCIES {
+                for frequency in sound_opus::RATES {
                     let format = AudioFormat { sample, channels, frequency };
                     let blocks = 25;
                     let pcm = tone(format, blocks * format.block_frames());
@@ -1099,10 +729,10 @@ mod tests {
     /// The pre-skip a client's `OpusHead` states is the encoder's own.
     #[test]
     fn the_pre_skip_is_the_encoders_lookahead() {
-        assert_eq!(OPUS_PRE_SKIP, 312);
-        for rate in OPUS_FREQUENCIES {
+        assert_eq!(sound_opus::PRE_SKIP, 312);
+        for rate in sound_opus::RATES {
             let mut encoder = sound_opus::Encoder::new(sound_opus::Stream { rate, channels: 2 }, BITRATE).unwrap();
-            assert_eq!(encoder.pre_skip().unwrap(), OPUS_PRE_SKIP);
+            assert_eq!(encoder.pre_skip().unwrap(), sound_opus::PRE_SKIP);
         }
     }
 }

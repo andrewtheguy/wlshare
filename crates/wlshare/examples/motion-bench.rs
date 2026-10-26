@@ -1,5 +1,5 @@
-//! The tiles encoding ([`wlshare_rfb::tiles`]) measured against the VP9
-//! encoding on captures ([`wlshare_rfb::capture`]): every frame coded both
+//! The tiles encoding ([`crate::rfb::tiles`]) measured against the VP9
+//! encoding on captures ([`wlshare_vp9::capture`]): every frame coded both
 //! ways, and what each cost the encoder and the link.
 //!
 //! ```text
@@ -71,22 +71,26 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use cpu_time::ProcessTime;
-use wlshare_rfb::capture::Reader;
-use wlshare_rfb::client::{self, RectBody, ServerMsg, TileBody};
-use wlshare_rfb::msg;
-use wlshare_rfb::tiles::TilesEncoder;
-use wlshare_rfb::vp9::{Chroma, Rect, Vp9Encoder};
 use wlshare_vp9::Decoder;
+use wlshare_vp9::capture::Reader;
 use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
 
-// The daemon's own modules, of which the bench uses the encoder and the
-// decoder and nothing more.
+use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
+use crate::rfb::msg;
+use crate::rfb::tiles::TilesEncoder;
+use crate::rfb::vp9::{Chroma, Rect, Vp9Encoder};
+
+// The daemon's own modules, of which the bench uses the encoders, the
+// decoder and the client's half of the wire, and nothing more.
 #[allow(dead_code)]
 #[path = "../src/decode.rs"]
 mod decode;
 #[allow(dead_code)]
 #[path = "../src/h264.rs"]
 mod h264;
+#[allow(unused)]
+#[path = "../src/rfb/mod.rs"]
+mod rfb;
 
 type Error = Box<dyn std::error::Error>;
 

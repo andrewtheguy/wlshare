@@ -26,7 +26,7 @@ COPY . /build
 RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git \
     set -eux; \
     cargo build --release --locked -p wlshare; \
-    cargo build --release --locked -p wlshare-rfb --example vp9-sink; \
+    cargo build --release --locked -p wlshare --example vp9-sink; \
     mkdir -p /out; \
     cargo deb -p wlshare --no-build -o /out/wlshare.deb; \
     cp target/release/examples/vp9-sink /out/
