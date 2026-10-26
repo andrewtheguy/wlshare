@@ -602,6 +602,8 @@ struct Live {
     dirty: bool,
     /// Its START went out, and so its END is owed when it ends.
     started: bool,
+    /// The dial moved under it: its next frame starts it over at a keyframe.
+    restarting: bool,
     carried: bool,
     moving_at: Duration,
 }
@@ -687,8 +689,6 @@ pub struct TilesEncoder {
     /// The walk has slowed the frames: every still goes lossy, and no debt
     /// is paid until it has not.
     coarse: bool,
-    /// The dial moved under a live stream, whose next frame is a keyframe.
-    dial_moved: bool,
     /// The coder every stream is opened on.
     coder: Box<dyn RegionCoder>,
     scratch: Vec<u8>,
@@ -721,7 +721,6 @@ impl TilesEncoder {
             ceiling,
             quality: ceiling,
             coarse: false,
-            dial_moved: false,
             coder,
             scratch: Vec::new(),
         };
@@ -752,8 +751,8 @@ impl TilesEncoder {
             self.quality = quality;
             for live in &mut self.live {
                 live.stream.set_quality(quality);
+                live.restarting = true;
             }
-            self.dial_moved = !self.live.is_empty();
         }
     }
 
@@ -958,7 +957,6 @@ impl TilesEncoder {
         let moving = self.churn.moving(now);
         self.retune(&moving, now, out)?;
         let stride = self.stride;
-        let dial_moved = std::mem::take(&mut self.dial_moved);
         for live in &mut self.live {
             live.carried = false;
             if !live.dirty {
@@ -969,9 +967,6 @@ impl TilesEncoder {
             // Whether the rectangle was begun, which a failed read never does.
             let mut headed = false;
             let header = if live.started { TileHeader::Frame { stream: live.id, len: 0 } } else { TileHeader::Start { stream: live.id, len: 0 } };
-            if !live.started || dial_moved {
-                out.keyframe = true;
-            }
 
             let coded = live.stream.read_bgrx(&self.mirror[at..], stride, Some(&live.pending)).and_then(|()| {
                 live.pending.clear();
@@ -982,6 +977,8 @@ impl TilesEncoder {
             match coded {
                 Ok((true, header_at)) => {
                     out.length(from, header_at, header)?;
+                    out.keyframe |= !live.started || live.restarting;
+                    live.restarting = false;
                     live.dirty = false;
                     live.started = true;
                     live.carried = true;
@@ -1071,7 +1068,7 @@ impl TilesEncoder {
         for cell in &cells {
             self.debts.insert(*cell, now);
         }
-        Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, carried: false, moving_at: now })
+        Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, restarting: false, carried: false, moving_at: now })
     }
 
     /// The streams whose motion stopped ended, and up to
@@ -1554,6 +1551,35 @@ mod tests {
         assert_eq!(page.ends, 1, "the stream ended");
         assert_eq!(page.off(&pixels), 0, "the picture settled exact");
         assert!(page.streams.is_empty());
+    }
+
+    /// A dial move restarts each live stream at its next frame, which is
+    /// when the update counts as a keyframe: not an update before it that
+    /// codes none of them.
+    #[test]
+    fn a_dial_move_is_a_keyframe_when_its_stream_is_coded() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = noise(w, h, 7);
+        let mut encoder = TilesEncoder::new(w, h, 60, Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let video = Rect { x: 0, y: 0, width: 192, height: 128 };
+        for n in 1..=12u32 {
+            paint(&mut pixels, w, video, 500 + n);
+            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
+        encoder.set_pace(40, false);
+        let elsewhere = Rect { x: 512, y: 320, width: 64, height: 64 };
+        paint(&mut pixels, w, elsewhere, 900);
+        let other = update(&mut encoder, &mut page, &pixels, Some(&[elsewhere]), ms(650));
+        assert!(other.rects > 0 && !other.keyframe, "an update that codes no stream: {other:?}");
+        paint(&mut pixels, w, video, 600);
+        let restarted = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(700));
+        assert!(restarted.keyframe, "the stream's restart: {restarted:?}");
+        paint(&mut pixels, w, video, 601);
+        let next = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(750));
+        assert!(!next.keyframe, "the frame after it: {next:?}");
     }
 
     /// A redraw of what a live stream carries, the pixels the client holds,
