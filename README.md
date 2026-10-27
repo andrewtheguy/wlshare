@@ -47,7 +47,8 @@ tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; zDesk asks for both,
-and for the VP9 stream, or with the picker's *Tiles with motion* the tiles, on a
+and for the VP9 stream, or with the picker's *Tiles with motion* or *Adaptive
+tiles* the tiles, on a
 `vnc` target with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
 that zDesk asks for in a session on such a target started with sound: while it
