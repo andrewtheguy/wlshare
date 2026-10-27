@@ -752,19 +752,26 @@ the picture.
   changed in 2 of the last 8 tenths — runs of 16 pixels of the new picture,
   up to 64 of them, none of one colour, are looked for in the old one, along
   every fourth of its rows within the damage and 512 pixels of the tiles, by
-  a rolling hash. A run found at more than a few places, in a texture or a
-  line of the same glyphs, says nothing and is dropped; an offset two runs
-  agree on is grown from each into the largest rectangle whose every row is
-  the old picture's at that offset, and sent as a COPY ahead of the update's
-  stills, at most 8 a read. Its tiles are no still and, with those it reads
+  a rolling hash. A run found at more than 32 places, in a texture or a flat
+  fill with an edge, says nothing and is dropped, where one in a line of text,
+  found on many of a page's lines, still counts; an offset two runs agree on
+  is grown from each into the largest rectangle whose every row is the old
+  picture's at that offset, and sent as a COPY ahead of the update's stills,
+  at most 8 a read, where it draws some changed tile whole: one that draws
+  only parts of tiles saves nothing, as each is a still anyway. Its tiles are no still and, with those it reads
   from, no churn, so a scroll or a window dragged stays copies and the strip
   it uncovers stills, and never becomes a region's stream. A copy reads only
   what the client holds by then — no tile a stream carries, none owed a still
   not yet sent, nothing another copy of the read draws — and draws on no
   tile a stream carries; every tile it draws on is owed what its source is
   owed, so a copy of a stream's picture or of a still below the ceiling
-  settles as they do. It is looked for on a held list and a walked one alike:
-  a scroll sends a few bytes and the strip it uncovered.
+  settles as they do. On a walked list every copy is owed the ceiling: what
+  it draws is lossy, a patchwork of the runs once coded elsewhere, and a
+  still where it now is codes it better, so the picture ends as it would
+  have without the copy. It is looked for on a held list and a walked one
+  alike: a scroll sends a few bytes and the strip it uncovered, a page
+  scrolled a third of the bytes it did held and a fifth walked at the ceiling
+  ([measured](tiles-performance.md#copies)).
 - **What moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
   components, one under 5 tiles is left to PNG, boxes merge unless the merged

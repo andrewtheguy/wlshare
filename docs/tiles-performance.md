@@ -25,7 +25,8 @@ swap, the regions by libx264 and `WLSV` on four threads, over the samples from
 - **Walked to 50 and to 20**: 1.2 and 1.1 times held's CPU, a quarter of
   `WLSV`'s, for 1.1 and 0.7 times `WLSV`'s bytes: under it on video (63 and
   30 MB against 117) and the mixed session, and still 3 to 11 times it on a
-  scroll and a drag, where the stills are most of what is sent. The picture
+  scroll and a drag, where the stills are most of what is sent, before a
+  scroll was a copy ([below](#copies)). The picture
   while it walks is, at 1080p, 38–42 dB at 50 and 34–37 at 20, and it settles
   at the ceiling's.
 
@@ -45,6 +46,60 @@ A lower ceiling takes most off `WLSV`: over both mixed sessions its bytes are
 313, their stills exact whatever the dial, and the walked tiles' at the
 ceiling 654, 279 and 151. Every capture settles within 13 s of its last frame,
 and `check` passes on all 92.
+
+## Copies
+
+Measured 2026-10-27 on the same VM in the same way, the tiles alone
+(`--tiles-only`) against the tiles above, once a scroll and a dragged window
+are copies of what the client holds ([What moved is a
+copy](architecture.md#the-tiles-encoding)) and a stream that ends sends what
+it had not carried, held and walked at the ceiling and to 20, summed over the
+scenarios, flood left out:
+
+| Picture | CPU | Bytes | Ends at |
+|---|---:|---:|---|
+| Tiles, held | −8% | −15% | exact |
+| Tiles, walked, at the ceiling | −2% | −25% | 46.35 dB, as before |
+| Tiles, walked to 20 | −3% | −35% | 46.35 dB, as before |
+
+A page scrolled sends 65% fewer bytes held, 78% walked at the ceiling and 68%
+walked to 20, for 41% less CPU held, where its regions no longer stream; a
+dragged window 23–26% fewer, an uncovered one 12–15%, and the mixed session
+10%, 18% and 34%. Video, a video in a window and the walk find no copy and
+send the same, their CPU within the 4% two runs of the same build differ by
+on this VM. Walked to 20, a scroll is 0.6–1.3 times `WLSV`'s bytes, where it
+was 2.1–4.3, and a drag 0.4–10.7 times, where it was 4.0–12.7: from
+2048×1536 up, few of a drag's frames are found as copies, and it still
+streams. While a capture runs the held picture is 49.2 dB where it was 45.9,
+a scrolled page's 76 dB. Every capture settles within 13 s of its last frame,
+and `check` passes on all 82.
+
+Over the mixed session at 1920×1080:
+
+| Picture | CPU | Bytes | Ends at |
+|---|---:|---:|---|
+| Tiles, held | 20.0 s | 237 MB | exact |
+| Tiles, walked, at the ceiling | 25.6 s | 184 MB | 44 dB |
+| Tiles, walked to 20 | 19.7 s | 36 MB | 44 dB |
+
+A stream that ends sending what it had not carried, measured alone with the
+copies off, changes the bytes by at most 1% (the walk's), and lifts the held
+picture while a capture runs: a drag's from 48.5 to 52.4 dB, the walk's from
+39.6 to 44.1, where the client held a stream's last frame until the settle
+reached it.
+
+The copies' rules were chosen on these samples. A probe found at more than 4
+places was dropped at first: at 2× on a page of text nearly every one is, so
+a scroll was missed, the tiles it missed streamed, and the streams restarted
+as they grew, and at 32 a page scrolled sends half the bytes again. A copy
+that draws no changed tile whole is not sent, which took the 9% that one
+uncovering a window had cost back off. Walked, a copy owes the ceiling,
+without which a dragged window ended up to 3.8 dB under the picture without
+copies, a patchwork of the strips that were sent, for 0.4–3% of the bytes. A
+scan of more than 16 times the tiles looked among found a copy in 6 of 18 in
+the copying scenarios and none elsewhere; stopping there would take about 4%
+of the CPU off video and the walk for 3.6% more bytes on a drag at 2×, and
+the limit is 32.
 
 ## The regions' encoder
 

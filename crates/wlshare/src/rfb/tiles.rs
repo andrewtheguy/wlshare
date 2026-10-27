@@ -633,9 +633,11 @@ const MAX_PROBES: usize = 64;
 /// The most offsets a read tries, the one the most probes found first.
 const MAX_OFFSETS: usize = 3;
 /// The most places a probe is found at and still counted: one found at more
-/// is in something that repeats, a texture or a run of the same glyphs, and
-/// says nothing of where anything moved.
-const MAX_PROBE_HITS: usize = 4;
+/// is in something that repeats, a texture or a flat fill with an edge, and
+/// says nothing of where anything moved. A run of text is found on many of a
+/// page's lines and still counts, its places spread over offsets the scroll's
+/// gathers more probes than.
+const MAX_PROBE_HITS: usize = 32;
 /// The most copies a read sends.
 const MAX_COPIES: usize = 8;
 /// How far from the tiles it looks among a read looks for where they were, in
@@ -659,8 +661,10 @@ const MAX_SCAN_STEP: u16 = 4;
 const HASH_BASE: u64 = 0x0000_0100_0000_01b3;
 
 /// A rectangle the client draws from what it holds: `dst` from the same size
-/// at `src`, and whether the source is owed a still at the ceiling, which the
-/// rectangle then is too.
+/// at `src`, and whether it is owed a still at the ceiling: where its source
+/// is, and on a walked list always, as what it draws is a lossy still coded
+/// elsewhere, a patchwork of the runs that were sent, and a still sent where
+/// it now is codes it better.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CopyRect {
     dst: Area,
@@ -978,10 +982,11 @@ impl TilesEncoder {
     /// those tiles, none of one colour, are looked for along the rows of the
     /// old picture within the damage and [`COPY_REACH`] of them, every
     /// [`MAX_SCAN_STEP`]th at most, by a rolling hash; of those found at
-    /// a few places at most, the offsets the most were found at are grown, from each run, into the rectangle
-    /// whose rows are the old picture's at that offset. A copy goes out ahead
-    /// of the update's stills, so it reads only what the client holds by
-    /// then: never a tile a stream carries, or one a still not yet sent is
+    /// [`MAX_PROBE_HITS`] places at most, the offsets the most were found at
+    /// are grown, from each run, into the rectangle whose rows are the old
+    /// picture's at that offset, kept where it draws a changed tile whole. A
+    /// copy goes out ahead of the update's stills, so it reads only what the
+    /// client holds by then: never a tile a stream carries, or one a still not yet sent is
     /// owed for, or the rectangle of a copy before it in the same read, since
     /// it is matched against the picture before any of them; nor does it draw
     /// over a tile a stream carries.
@@ -1092,9 +1097,15 @@ impl TilesEncoder {
                 if u32::from(dst.w()) * u32::from(dst.h()) < COPY_MIN_PIXELS {
                     continue;
                 }
+                // Where it draws only some of a tile, the tile is a still
+                // anyway: a copy that draws no changed tile whole saves
+                // nothing, and cuts the stills' runs short.
+                if !parts.iter().any(|(_, part)| dst.contains(*part)) {
+                    continue;
+                }
                 let src = ((i32::from(dst.left) + offset.0) as u16, (i32::from(dst.top) + offset.1) as u16);
                 let copy = CopyRect { dst, src, owed: false };
-                let owed = tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
+                let owed = self.adaptive || tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
                 copies.push(CopyRect { owed, ..copy });
             }
         }
@@ -2369,6 +2380,27 @@ mod tests {
         step(&mut TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap(), &mut fresh, &pixels, None, ms(0));
         let (settled, ceiling) = (page.distance(&pixels), fresh.distance(&pixels));
         assert!(settled < coarse && settled <= ceiling + ceiling / 20, "settled {settled}, against {coarse} at 20 and {ceiling} for the picture sent at 80");
+    }
+
+    /// On a walked list a copy is owed the ceiling even from a still sent
+    /// at it, and the settle sends its tiles again where they now are.
+    #[test]
+    fn a_walked_copy_is_owed_the_ceiling() {
+        let (w, h) = (256u16, 256u16);
+        let document = ramps(w, 3 * h);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        assert!(!encoder.owed(), "the first picture, at the ceiling, owes nothing");
+        let pixels = scrolled(&document, w, 40, h);
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!(page.copies, 1);
+        assert!(encoder.owed(), "the copied tiles are owed the ceiling");
+        let webps = page.webps;
+        settle(&mut encoder, &mut page, ms(100));
+        assert!(page.webps > webps, "the copied tiles sent again");
+        assert!(!encoder.owed());
     }
 
     /// Beside a region's stream, a scroll's copy neither draws on the tiles
