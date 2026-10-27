@@ -27,7 +27,7 @@
 use thiserror::Error;
 
 /// The revision of the private extensions this crate builds and parses.
-pub const PROTOCOL_VERSION: u8 = 3;
+pub const PROTOCOL_VERSION: u8 = 4;
 
 /// `WLV` and a zero byte: [`encoding`] puts the version in that byte.
 pub const ENCODING_VERSION_BASE: i32 = 0x574c_5600;

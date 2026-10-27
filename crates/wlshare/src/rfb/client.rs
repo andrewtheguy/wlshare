@@ -260,6 +260,9 @@ pub enum TileBody {
     Frame { stream: u8, frame: Vec<u8> },
     /// The stream on `stream` is over.
     End { stream: u8 },
+    /// What the client holds at `(x, y)`, the rectangle's size, drawn at the
+    /// rectangle.
+    Copy { x: u16, y: u16 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,7 +454,7 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                     let Some(webp) = body(len)? else { return Ok(None) };
                     (RectBody::Tiles(TileBody::Webp(webp)), at + len)
                 }
-
+                TileHeader::Copy { x, y } => (RectBody::Tiles(TileBody::Copy { x, y }), at),
             }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
@@ -507,7 +510,7 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
 mod tests {
     use super::*;
     use wlshare_proto::audio::{AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect};
-    use wlshare_proto::tiles::{KIND_END, KIND_FRAME, KIND_PNG, KIND_START, KIND_WEBP};
+    use wlshare_proto::tiles::{KIND_COPY, KIND_END, KIND_FRAME, KIND_PNG, KIND_START, KIND_WEBP};
 
 
     use crate::rfb::audio::FlacEncoder;
@@ -620,7 +623,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(12).to_vec();
+        let mut wire = msg::update_header(13).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -641,6 +644,8 @@ mod tests {
         wire.extend_from_slice(&[KIND_END, 2]);
         wire.extend_from_slice(&msg::rect_header(128, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_WEBP, 0, 0, 0, 4, b'R', b'I', b'F', b'F']);
+        wire.extend_from_slice(&msg::rect_header(0, 0, 320, 160, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_COPY, 0, 0, 0, 40]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -665,6 +670,7 @@ mod tests {
         assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));
         assert_eq!((rects[10].width, &rects[10].body), (320, &RectBody::Tiles(TileBody::End { stream: 2 })));
         assert_eq!(rects[11], Rect { x: 128, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Webp(b"RIFF".to_vec())) });
+        assert_eq!(rects[12], Rect { x: 0, y: 0, width: 320, height: 160, body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 }) });
     }
 
 
@@ -679,9 +685,8 @@ mod tests {
         assert_eq!(parse(&wire), Err(ParseError::RectTooLong(u32::MAX as usize)));
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
-        wire.push(5);
-        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(5))));
-
+        wire.push(6);
+        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(6))));
     }
 
     #[tokio::test]

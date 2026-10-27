@@ -716,6 +716,7 @@ u8 kind
 2 FRAME   u8 stream | u32 length | u8[length]              the stream's next frame
 3 END     u8 stream                                        the stream is over
 4 WEBP    u32 length | u8[length]                          a lossy WebP of the rectangle's pixels
+5 COPY    u16 x | u16 y                                    what the client holds at (x, y), drawn here
 ```
 
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
@@ -725,7 +726,11 @@ either; it is every still of a list whose dial walks, and sent on no other. A ST
 rectangle, an H.264 keyframe of that size rounded up to even sides, a picture
 a client cuts to the rectangle from its top-left; each FRAME on the id is the
 next frame of that stream over the same rectangle; an END says it is over, its last picture
-staying until something draws over it. A PNG over a stream's rectangle only
+staying until something draws over it. A COPY draws at its rectangle what
+the client holds at `(x, y)`, the same size, as the rectangles before it left
+it: a scroll, or a window moved, as RFB's CopyRect draws one, the two
+overlapping as a picture drawn onto itself does, its source read whole first.
+A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
 
@@ -742,13 +747,34 @@ the picture.
   is work for nothing. The PNG is the gateway's tile coder: a palette
   unfiltered where the pixels have at most 256 colours, RGB with each row's
   filter chosen otherwise, at `png`'s fast compression.
+- **What moved is a copy.** Where a read changed enough tiles that no
+  stream carries and that have not been changing in place — 4, none of them
+  changed in 2 of the last 8 tenths — runs of 16 pixels of the new picture,
+  up to 64 of them, none of one colour, are looked for in the old one, along
+  every fourth of its rows within the damage and 512 pixels of the tiles, by
+  a rolling hash. A run found at more than a few places, in a texture or a
+  line of the same glyphs, says nothing and is dropped; an offset two runs
+  agree on is grown from each into the largest rectangle whose every row is
+  the old picture's at that offset, and sent as a COPY ahead of the update's
+  stills, at most 8 a read. Its tiles are no still and, with those it reads
+  from, no churn, so a scroll or a window dragged stays copies and the strip
+  it uncovers stills, and never becomes a region's stream. A copy reads only
+  what the client holds by then — no tile a stream carries, none owed a still
+  not yet sent, nothing another copy of the read draws — and draws on no
+  tile a stream carries; every tile it draws on is owed what its source is
+  owed, so a copy of a stream's picture or of a still below the ceiling
+  settles as they do. It is looked for on a held list and a walked one alike:
+  a scroll sends a few bytes and the strip it uncovered.
 - **What moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
   components, one under 5 tiles is left to PNG, boxes merge unless the merged
   box would be more than twice the moving tiles, and at most 4 regions stream
   at once. The regions are laid out again at most every 500 ms: one that
   shrinks keeps its stream, one that grows is started again at a keyframe, one
-  with no motion for a second ends. A region is at most the desktop, which
+  with no motion for a second ends. What changed under a stream that ends
+  that no frame of it carried goes as stills after its END in the same update,
+  or the client would hold it as the stream's last frame left it, older than
+  the picture. A region is at most the desktop, which
   has the ceiling `WLSV`'s whole-desktop stream has: the gateway lists this
   encoding only for a desktop its browser's decoder takes, as it does `WLSV`,
   so wlshare holds a region to no ceiling of its own. Each region
@@ -853,7 +879,7 @@ the picture.
 `examples/motion-bench.rs` in the daemon's crate plays the kept captures
 through this encoder and through `WLSV`, both decoded as a page would, the
 tiles' updates through the client's parser, a WebP by `image-webp`'s pure
-Rust decoder, and each region by libavcodec's
+Rust decoder, a copy from the page's own picture, and each region by libavcodec's
 software H.264 decoder; `--walk-at` codes the picture a walked list asks
 for, its walk held at the dial it names, every still a WebP; without it the
 dial is held and every still exact. It writes JSON lines as `walk-sim` does,
