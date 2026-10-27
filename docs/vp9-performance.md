@@ -87,16 +87,20 @@ once its memory is in use.
 ## The walk on a slow link
 
 What the walk ([The VP9 encoding](architecture.md#the-vp9-encoding)) buys a
-slow link, by `walk-sim`'s model of the browser's link. Measured 2026-10-26 on
+slow link, by `walk-sim`'s model of the browser's link. Measured 2026-10-27 on
 an eight-core AMD EPYC (Milan) VM, idle and with no swap, with this machine's
 encode times, on the whole window and mixed captures at 1920×1080,
 2880×1800@2 and 3840×2160@2, the dial's ceiling 90, over links of 5 to
-50 Mbit/s: at 25 Mbit/s and over the walk barely moves, and walked and held
+50 Mbit/s, the gateway reading no more of the session while 512 KiB is
+queued ahead of the browser: at 25 Mbit/s and over the walk barely moves, and walked and held
 are the same within a tenth. At 5, over the mixed session at 2880×1800@2, the
-walked stream painted 12.8 frames a second, 95% of changes within 236 ms, at
-a mean dial of 55, where held painted 5.2 and 1,664 ms; on a link that falls
-from 50 Mbit/s to 5 for 8 s, the window at 4K was painted within 270 ms
-against 618.
+walked stream painted 12.8 frames a second, 95% of changes within 222 ms, at
+a mean dial of 54, where held painted 5.3 and 1,304 ms; on a link that falls
+from 50 Mbit/s to 5 for 8 s, the window at 4K was painted within 273 ms
+against 627. Without the gateway's budget in the model, the day before, they
+were 236 ms at a dial of 55, 1,664 ms held, and 270 against 618. The
+tiles on the same links are in [Tiles
+performance](tiles-performance.md#the-walks-verdicts).
 
 ## Done: motion at speed 9
 

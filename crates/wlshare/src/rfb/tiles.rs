@@ -17,8 +17,11 @@
 //! ceiling, and the session's walk of the link ([`wlshare_vp9::walk`]) moves
 //! the encoder below it ([`TilesEncoder::set_pace`]) as it moves the VP9
 //! encoding's. Each stream follows it from an IDR, since neither H.264
-//! encoder takes a new constant quantizer on a running stream, and the update
-//! that carries one counts as a keyframe for the walk. Every still is a lossy
+//! encoder takes a new constant quantizer on a running stream. That IDR, as a
+//! stream's START, is no keyframe for the walk: it is the load a desktop that
+//! moves keeps sending, which the walk is there to judge, where the picture
+//! whole again is a burst once; and an update of the tick alone, what the
+//! desktop stopping owes, is no verdict ([`Update`]). Every still is a lossy
 //! WebP at the dial ([`wlshare_proto::tiles::KIND_WEBP`]), at the ceiling too,
 //! and coded once. Nothing is owed exact: a WebP sent below the ceiling is owed again at the ceiling, as a tile a
 //! stream carried is, and the debts are paid while the walk is not slowed: a link that is behind is not
@@ -611,14 +614,16 @@ fn encode_webp(w: u16, h: u16, rgb: &[u8], quality: u8, out: &mut Vec<u8>) -> Re
     Ok(())
 }
 
-/// What one [`TilesEncoder::encode`] appended: how many rectangles, and
-/// whether any of them is a stream's START or a still of what the client
-/// held nothing of — the whole picture over again, which crosses a link as a
-/// keyframe does.
+/// What one [`TilesEncoder::encode`] appended: how many rectangles; whether
+/// any of them is a still of what the client held nothing of — the whole
+/// picture over again, which crosses a link as a keyframe does; and whether
+/// all of them are the tick's ([`TilesEncoder::tick_at`]), what was owed once
+/// the desktop stopped and none of what a read brought.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Update {
     pub rects: u16,
     pub keyframe: bool,
+    pub tick: bool,
 }
 
 // ── What moved ───────────────────────────────────────────────────────────────
@@ -732,8 +737,6 @@ struct Live {
     dirty: bool,
     /// Its START went out, and so its END is owed when it ends.
     started: bool,
-    /// The dial moved under it: its next frame starts it over at a keyframe.
-    restarting: bool,
     carried: bool,
     moving_at: Duration,
 }
@@ -751,7 +754,7 @@ impl Live {
 struct Out<'a> {
     out: &'a mut Vec<u8>,
     count: usize,
-    /// A START, or a still of what the client did not hold, was appended.
+    /// A still of what the client did not hold was appended.
     keyframe: bool,
 }
 
@@ -899,7 +902,6 @@ impl TilesEncoder {
             self.quality = quality;
             for live in &mut self.live {
                 live.stream.set_quality(quality);
-                live.restarting = true;
             }
         }
     }
@@ -1296,6 +1298,7 @@ impl TilesEncoder {
         if std::mem::take(&mut self.read) {
             self.round(now, &mut out)?;
         }
+        let brought = out.count;
         if now >= self.next_tick {
             self.next_tick = now + CLEANUP_TICK;
             self.tick(now, &mut out)?;
@@ -1305,7 +1308,7 @@ impl TilesEncoder {
             self.still(area, self.quality, now, &mut out)?;
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
-        Ok(Update { rects, keyframe: out.keyframe })
+        Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0 })
     }
 
     /// Whether anything is owed that no read will bring: a stream is live, or
@@ -1401,8 +1404,6 @@ impl TilesEncoder {
                 Ok((true, header_at)) => {
                     out.length(from, header_at, header)?;
                     live.pending.clear();
-                    out.keyframe |= !live.started || live.restarting;
-                    live.restarting = false;
                     live.dirty = false;
                     live.started = true;
                     live.carried = true;
@@ -1513,7 +1514,7 @@ impl TilesEncoder {
         for cell in &cells {
             self.debts.insert(*cell, now);
         }
-        Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, restarting: false, carried: false, moving_at: now })
+        Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, carried: false, moving_at: now })
     }
 
     /// The streams whose motion stopped ended, and the tiles still for
@@ -2148,11 +2149,11 @@ mod tests {
         assert!(held, "the change is held exact, not the stream's last frame");
     }
 
-    /// A dial move restarts each live stream at its next frame, which is
-    /// when the update counts as a keyframe: not an update before it that
-    /// codes none of them.
+    /// A stream's START is no keyframe, nor its restart at a moved dial: a
+    /// region's IDR is the load a desktop that moves keeps sending, which the
+    /// walk is there to judge, where the picture whole again is a burst once.
     #[test]
-    fn a_dial_move_is_a_keyframe_when_its_stream_is_coded() {
+    fn a_stream_that_starts_or_restarts_is_no_keyframe() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 7);
         let mut encoder = TilesEncoder::new(w, h, walked(60), Fake::coder()).unwrap();
@@ -2161,20 +2162,59 @@ mod tests {
         let video = Rect { x: 0, y: 0, width: 192, height: 128 };
         for n in 1..=12u32 {
             paint(&mut pixels, w, video, 500 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            let made = page.starts;
+            let one = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            assert!(!one.keyframe, "frame {n}, a START among it or not: {one:?}");
+            if page.starts > made {
+                assert!(one.rects > 0 && !one.tick, "the START is what the read brought: {one:?}");
+            }
         }
         assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
         encoder.set_pace(40, false);
-        let elsewhere = Rect { x: 512, y: 320, width: 64, height: 64 };
-        paint(&mut pixels, w, elsewhere, 900);
-        let other = update(&mut encoder, &mut page, &pixels, Some(&[elsewhere]), ms(650));
-        assert!(other.rects > 0 && !other.keyframe, "an update that codes no stream: {other:?}");
         paint(&mut pixels, w, video, 600);
         let restarted = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(700));
-        assert!(restarted.keyframe, "the stream's restart: {restarted:?}");
-        paint(&mut pixels, w, video, 601);
-        let next = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(750));
-        assert!(!next.keyframe, "the frame after it: {next:?}");
+        assert!(restarted.rects > 0 && !restarted.keyframe, "the stream's restart: {restarted:?}");
+    }
+
+    /// An update is the tick's when all it sends is what the desktop
+    /// stopping owes — a still sent again at the ceiling, a stream's end —
+    /// with a read before it that changed nothing or none, and not once a
+    /// read brought anything; the session hands the walk no verdict of it.
+    #[test]
+    fn an_update_of_the_tick_alone_says_so() {
+        let (w, h) = (256u16, 128u16);
+        let mut pixels = noise(w, h, 21);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert!(first.keyframe && !first.tick, "{first:?}");
+        encoder.set_pace(30, false);
+        let busy = Rect { x: 64, y: 0, width: 64, height: 64 };
+        paint(&mut pixels, w, busy, 22);
+        let lossy = update(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100));
+        assert!(lossy.rects == 1 && !lossy.tick, "what the read brought: {lossy:?}");
+        // The read the session makes with nothing changed, as it does at a
+        // tick, until the debt is old enough to be paid.
+        let paid = loop {
+            let at = encoder.tick_at().expect("a still below the ceiling is owed");
+            let paid = update(&mut encoder, &mut page, &pixels, Some(&[]), at);
+            if paid.rects > 0 {
+                break paid;
+            }
+            assert!(paid.tick);
+        };
+        assert!(paid.rects > 0 && paid.tick, "the debt, at the ceiling: {paid:?}");
+        assert!(!encoder.owed());
+
+        // A change read at the tick's time is the read's, debts and all.
+        encoder.set_pace(30, false);
+        paint(&mut pixels, w, busy, 23);
+        update(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(1000));
+        let at = encoder.tick_at().expect("owed again");
+        let other = Rect { x: 192, y: 64, width: 64, height: 64 };
+        paint(&mut pixels, w, other, 24);
+        let both = update(&mut encoder, &mut page, &pixels, Some(&[other]), at);
+        assert!(both.rects > 0 && !both.tick, "a change and the tick: {both:?}");
     }
 
     /// On a walked list what a stream carried settles at the ceiling, a

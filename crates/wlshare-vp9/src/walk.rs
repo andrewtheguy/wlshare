@@ -497,7 +497,8 @@ impl QualityWalk {
     }
 
     /// A desktop that went quiet below the ceiling is being sharpened there
-    /// with one frame: the walk keeps its place, since the screen stopping
+    /// with one frame, or, for the daemon's tiles, sent what its stopping
+    /// owes on their tick, none of it a verdict: the walk keeps its place, since the screen stopping
     /// says nothing about the link, and starts its verdicts over from here
     /// with the cooldown restarted like any other move, so the frames queued
     /// behind that one large picture are not read as the link giving way. The

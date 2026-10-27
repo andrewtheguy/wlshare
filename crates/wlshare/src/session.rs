@@ -72,8 +72,8 @@
 //! VP9 frame is; a damage that changes nothing the client holds sends nothing.
 //! The dial the list names is a ceiling the same walk of the link moves the
 //! encoder below, unless the list holds it: each update's fence is the
-//! walk's verdict as a VP9 frame's is, a START, a picture sent whole or a
-//! stream starting over at the moved dial counting as a keyframe, and each
+//! walk's verdict as a VP9 frame's is, a picture sent whole counting as a
+//! keyframe and one of the tick alone as a settle, no verdict, and each
 //! still a WebP at the dial, owed again at the ceiling where it is below it
 //! ([`TilesEncoder::set_pace`]); a list that
 //! holds the dial is sent every still exact. A slowed walk paces the
@@ -364,6 +364,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         use_tiles: false,
         tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, adaptive: true },
         tiles_origin: Instant::now(),
+        tiles_quiet: false,
         stream,
         keyframe_owed: false,
         walk,
@@ -571,6 +572,9 @@ struct Session {
     tiles_picture: TilesPicture,
     /// What the tiles encoder's time is counted from.
     tiles_origin: Instant,
+    /// The last tiles update was the tick's alone: the desktop is quiet, and
+    /// the walk was told so at the first.
+    tiles_quiet: bool,
     /// What the VP9 stream is to be: the ceiling of its quality, whether the
     /// walk moves it below, and its chroma, as the client's list asks
     /// ([`Vp9Stream`]).
@@ -1754,9 +1758,12 @@ impl Session {
     /// fence, and the framebuffer seen up to `generation`. An encode that owes
     /// nothing — damage that changed nothing the client holds — sends nothing,
     /// and the request waits for what will; `answered` is what is done of it then.
-    /// The update is the walk's to judge as a VP9 frame is: one with a START
-    /// or the picture whole crosses the link as a keyframe and is no verdict,
-    /// and any other is.
+    /// The update is the walk's to judge as a VP9 frame is: one with the
+    /// picture whole crosses the link as a keyframe and is no verdict, and one
+    /// of the tick alone — what the desktop stopping owes — is no verdict
+    /// either, as a VP9 settle is not: the walk keeps its place through the
+    /// quiet, its verdicts starting over at the first such
+    /// ([`QualityWalk::settle`]). Any other is a verdict, a START among it.
     async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(0));
@@ -1779,11 +1786,15 @@ impl Session {
         }
         let sent = Instant::now();
         writer.send(&self.out).await.context("writing an update")?;
-        let verdict = !update.keyframe;
+        let verdict = !update.keyframe && !update.tick;
         if update.keyframe {
             // The updates behind it queue behind its crossing.
             self.walk.keyframe(sent);
         }
+        if update.tick && !self.tiles_quiet {
+            self.walk.settle(sent);
+        }
+        self.tiles_quiet = update.tick;
         self.frame_sent = Some(sent);
         let now = Instant::now();
         if verdict {
