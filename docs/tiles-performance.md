@@ -279,3 +279,23 @@ aside and closed — serves 9% of its still bytes at 1280×800 and 36% at
 2880x1800@2; browser, drag, terminal, video, walk and the video in a window
 serve 0 to 7%. Unbounded adds little over 16384 slots, 1024 halves the gain,
 so the cache is 4096 slots, 64 MiB of pixels on the page.
+
+Built, it was run on every sample on lab1 on 2026-10-27 at `69d2d3e`
+(protocol 5), the tiles alone held at ceiling 90 and walked at 90 to 90, to
+50 and to 20, read against the settle's run before it
+(`bench/settle-20261027/final/` in the artifacts; this run is
+`bench/tiles-cache-20261027/`). Summed over the scenarios, flood out:
+
+| Pass | Bytes | CPU | Tiles drawn from the cache | At the end |
+|---|---|---|---:|---|
+| held at 90 | 2,174 MB → 2,085, −4% | 161 s → 156, −3% | 60,870 | exact, 82 of 82, as before |
+| walked at 90 to 90 | 1,327 → 1,265, −5% | 237 → 218, −8% | 66,941 | 46.35 dB, as before |
+| walked to 20 | 361 → 323, −11% | 189 → 174, −8% | 65,407 | 46.35 dB, as before |
+
+By scenario, held: uncover −20% of the bytes, browser −15%, drag −9%, mixed
+−4%, the rest within 2%; walked to 20: uncover −22%, browser −17%, mixed
+−15%, drag −7%, the video in a window −5%. Walked, the cache serves a little
+more than held and the CPU falls further: a tile drawn from a slot is coded
+neither coarse nor again at the ceiling. The held CPU is within the 4% two
+runs of one build differ by on lab1. `check` passes 82 of 82: the held tiles
+settle exact and send nothing after.
