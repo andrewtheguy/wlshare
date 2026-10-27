@@ -489,11 +489,10 @@ What a frame holds is fixed:
   scrolled, a video playing — is searched at libvpx's speed 9, the fastest
   its real-time VP9 has, and every other frame, a keyframe and a settle
   among them, at speed 7, the speed moving on the running encoder with no
-  keyframe: on the kept captures at 4:4:4 and quality 90, a scroll or a
-  video at 9 took 37–44% less of the processor a frame, for 1–15% more bytes
-  at 4K and 7–37% at 1080p and at most 0.4 dB below while it moved, where a
-  window dragged or uncovered, a quarter to a third of the picture, sent
-  1.4 to 2.3 times the bytes at 9 and is left at 7. The conversion
+  keyframe: speed 9 saves a scroll or a video much of the processor for a
+  few more bytes, where a window dragged or uncovered, a quarter to a third
+  of the picture, would send far more, and is left at 7
+  ([measured](vp9-performance.md#done-motion-at-speed-9)). The conversion
   from the framebuffer's pixels to the planes is the `yuv` crate's, which
   chooses its AVX2 or NEON path at run time: the daemon is built for its
   target's baseline and asks nothing more of the processor.
@@ -648,7 +647,9 @@ parts of them: `scripts/capture-samples.sh` cuts each capture to 120 frames
 under its own name with `vp9cap trim --frames`, chosen as the samples are,
 a quiet scenario's first and a busy one's busiest, the cut's first frame
 the picture as it stood, whole, with a keyframe asked; `walk` it copies
-whole, since its dial walks down, back up and settles over all of it.
+whole, since its dial walks down, back up and settles over all of it, and
+`mixed`, minutes at the desk of which a cut would keep only the busiest, the
+video full screen.
 
 The walk is measured on the captures the same way, without a link being
 shaped: `walk-sim` (`crates/wlshare-vp9/examples/`) plays one or several of
@@ -662,7 +663,8 @@ change of the desktop took to be painted, the frames a second, the dial the
 motion was coded at and the link it used, and with `--timeline` every frame,
 as JSON lines, a JSON object a line.
 The time is the model's, so a run takes seconds; `--encode` fixes what an
-encode takes, so that two walks are compared on the same frames.
+encode takes, so that two walks are compared on the same frames. What it
+measured is in [VP9 performance](vp9-performance.md#the-walk-on-a-slow-link).
 
 ### The client's paint
 
@@ -794,7 +796,7 @@ the picture.
   for: the processor pays for the conversion to NV12 and nothing of the
   search. On a host with none, or with the key off, it is libx264 at its
   `ultrafast` preset, which costs the processor about a third of VP9's time a
-  frame for about twice its bytes, on a link that has them (measured below).
+  frame for about twice its bytes, on a link that has them ([measured](tiles-performance.md#the-regions-encoder)).
   `crates/wlshare/src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
   `libx264` through the libavcodec already linked for the camera — Debian's,
   which links libx264 itself — and the `RegionCoder` of the daemon's tiles
@@ -828,19 +830,8 @@ the picture.
   display is one thread's. The
   whole-desktop `WLSV` stream is VP9 whatever the list says: the walk's
   quantizer moves every frame, which a hardware encoder's does not.
-  Measured 2026-10-21 on an Intel UHD 630's low-power encoder, in a
-  container with two cores and a flooded 1280×800 terminal, 20 s at quality
-  90: the H.264 regions sent 598 frames for 6 s of the daemon's CPU where VP9
-  sent 176 for 17 s, both read back whole by FFmpeg's own decoders
-  (`examples/tiles-sink.rs` in the daemon's crate is the client that was run, and
-  keeps each stream for that). Measured 2026-10-22 on a six-core machine
-  with no GPU, under headless labwc, the same flooded terminal at 1280×800
-  and quality 90, 20 s, every encoder on four threads: libx264 `ultrafast`
-  sent 590 frames for 15–17 s of the daemon's CPU where VP9 sent 395 for
-  33 s, about 27 ms of the processor a frame against 83, at about 1.8 times
-  VP9's bytes a frame, 100–135 Mbit/s against 37; libx264's `superfast` and
-  `veryfast`, with CABAC and more search, cost 42 s for about 535 frames, no
-  less than VP9, which is why the preset is `ultrafast`. The daemon's unit
+  `examples/tiles-sink.rs` in the daemon's crate is a client that keeps
+  each stream, for FFmpeg's own decoders to read back whole. The daemon's unit
   tests code frames on libx264, on every machine, and on the hardware, and
   decode them with libavcodec's software decoder; the hardware's passes with
   a word on a machine with no encoder.
@@ -866,28 +857,16 @@ Rust decoder, and each region by libavcodec's
 software H.264 decoder; `--walk-at` codes the picture a walked list asks
 for, its walk held at the dial it names, every still a WebP; without it the
 dial is held and every still exact. It writes JSON lines as `walk-sim` does,
-and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its regions are the daemon's own H.264 — `h264.rs`,
-
-found as the daemon finds it, or libx264 with `--libx264` — so it runs where
-the daemon builds. The figures below were measured when the regions were VP9
-by libvpx at speed 9, before they were H.264. The rules beyond Motion's were chosen by
-it: told its damage rather than coded whole, a stream's encoder costs what
-moves; at speed 9 motion took 44–72% of `WLSV`'s CPU at 4:2:0 and speed 7,
-against 73–98% at speed 7, the picture while it moved at most 1.3 dB below
-speed 7's and mostly within half a dB; a first picture as PNG rather than a
-stream took 1–15% off the CPU over a capture, and nine tenths off a
-terminal's; a band no stream touches sent as its changed tiles rather than
-whole sent 3–15% fewer bytes where the damage is loose. Against `WLSV` at
-4:2:0 and speed 7, at 1080p and 4K: typing takes 3% of its CPU; motion
-44–72%, nearly all of that saving speed 9's, since `WLSV` at speed 9 takes
-about the tiles' CPU; the picture while it moves is up to 3 dB better and at
-worst 0.6 dB below, a terminal's exact throughout where `WLSV`'s is 53 dB;
-every capture ends exact where `WLSV` ends at 23.9–52.7 dB, and the bytes are
-1.2–13 times `WLSV`'s: up to 53 Mbit/s, and 95 and 129 for a desktop flooded
-with change at 1080p and 4K. The ratios hold from 1280×800 to 4K. Its `check`
-holds the encoder to sending nothing once settled, through 5 s of quiet and
-10 redraws of the pixels the page already has, and to ending exact; the
-`still` captures are for it and no measurement.
+and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
+regions are the daemon's own H.264 — `h264.rs`, found as the daemon finds
+it, or libx264 with `--libx264` — so it runs where the daemon builds.
+`--tiles-only` codes no `WLSV`: both tile pictures carry their motion as
+H.264, so a change to the tiles is measured against the `WLSV` of a run
+before. Its `check` holds the encoder to sending nothing once settled,
+through 5 s of quiet and 10 redraws of the pixels the page already has, and
+to ending exact; the `still` captures are for it and no measurement. What
+it measured, and what the rules beyond Motion's were chosen by, is in
+[Tiles performance](tiles-performance.md).
 
 ## The density extension
 

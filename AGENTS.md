@@ -57,3 +57,6 @@
   differ (网关/閘道, 配置/設定, 软件包/套件, 会话/工作階段, 文件/檔案), so each
   keeps its own vocabulary.
 - Design and wire details live in `docs/architecture.md`, not here.
+  Measurements live in their own English documents, untranslated
+  (`docs/vp9-performance.md`, `docs/tiles-performance.md`), which the
+  architecture links to rather than repeats.
