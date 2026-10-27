@@ -24,6 +24,18 @@
 //! `whole` and not as stills, and starts the cache over with its tiles, as
 //! the encoder forgets its own.
 //!
+//! Each still is also counted by why it is sent: `fresh`, a tile that had not
+//! changed in the 0.8 s before; `warming`, one that had, but in fewer than 4
+//! of the 8 tenths; `small`, a moving tile in a group too small for a stream;
+//! and `stopped`, one a stream carried that stopped. `warming` and `small`
+//! are motion the stills carry, what a codec that sends a tile's difference
+//! from what the client holds, as RemoteFX Progressive's sub-band diffing
+//! does, would code instead. For every still the client holds exact pixels
+//! under — not one a stream drew — `delta` counts the tile's pixels, those
+//! that changed, and the change as a PNG of the per-channel difference modulo
+//! 256 beside the still's own PNG: what a held list's lossless difference
+//! would cost.
+//!
 //! One JSON object per capture on stdout.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -214,6 +226,11 @@ impl Churn {
         cell.last_slot = slot;
     }
 
+    /// In how many of the last 8 tenths `key` changed, as `moving` left it.
+    fn changes(&self, key: (u16, u16)) -> u32 {
+        self.churn.get(&key).map_or(0, |c| c.history.count_ones())
+    }
+
     fn moving(&mut self, now: Duration) -> HashSet<(u16, u16)> {
         let Some(origin) = self.origin else { return HashSet::new() };
         let slot = Self::slot(origin, now);
@@ -326,12 +343,44 @@ impl Count {
     }
 }
 
+/// Why a still is sent, as the module's doc says.
+#[derive(Clone, Copy)]
+enum Why {
+    Fresh,
+    Warming,
+    Small,
+    Stopped,
+}
+
+const WHY: [&str; 4] = ["fresh", "warming", "small", "stopped"];
+
+/// Stills against the exact pixels the client held under them.
+#[derive(Default, Clone, Copy)]
+struct Delta {
+    tiles: u64,
+    pixels: u64,
+    changed: u64,
+    png: u64,
+    png_delta: u64,
+}
+
+impl Delta {
+    fn json(&self) -> String {
+        format!(
+            "{{\"tiles\":{},\"pixels\":{},\"changed\":{},\"png\":{},\"png_delta\":{}}}",
+            self.tiles, self.pixels, self.changed, self.png, self.png_delta
+        )
+    }
+}
+
 #[derive(Default)]
 struct Stats {
     frames: u64,
     seconds: f64,
     whole_tiles: u64,
     stills: Count,
+    /// The stills by [`Why`], and of each those against exact pixels.
+    why: [(Count, Delta); 4],
     /// Per cache size, then unbounded last: hits on screen, hits off screen.
     hits: Vec<(Count, Count)>,
 }
@@ -343,9 +392,11 @@ impl Stats {
             let name = slots.get(i).map_or("unbounded".to_owned(), |n| n.to_string());
             caches.push(format!("\"{name}\":{{\"onscreen\":{},\"offscreen\":{}}}", on.json(), off.json()));
         }
+        let why: Vec<String> =
+            WHY.iter().zip(&self.why).map(|(name, (count, delta))| format!("\"{name}\":{{\"stills\":{},\"delta\":{}}}", count.json(), delta.json())).collect();
         format!(
-            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"cache\":{{{}}}}}",
-            capture, self.frames, self.seconds, self.whole_tiles, self.stills.json(), caches.join(",")
+            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"why\":{{{}}},\"cache\":{{{}}}}}",
+            capture, self.frames, self.seconds, self.whole_tiles, self.stills.json(), why.join(","), caches.join(",")
         )
     }
 }
@@ -356,6 +407,8 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
     let mut caches: Vec<Lru> = slots.iter().map(|&n| Lru::new(n)).chain(std::iter::once(Lru::new(usize::MAX))).collect();
     // What the client holds in each tile, exact: `None` under a stream.
     let mut held: HashMap<(u16, u16), Option<u64>> = HashMap::new();
+    // Its pixels, where they are exact.
+    let mut held_rgb: HashMap<(u16, u16), Vec<u8>> = HashMap::new();
     let mut refcount: HashMap<u64, u32> = HashMap::new();
     let mut streamed: HashSet<(u16, u16)> = HashSet::new();
     let mut churn = Churn::default();
@@ -381,6 +434,7 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
 
         if whole {
             held.clear();
+            held_rgb.clear();
             refcount.clear();
             streamed.clear();
             churn = Churn::default();
@@ -392,6 +446,7 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
                     let (x, y, w, h) = geometry(tx, ty);
                     let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
                     held.insert((tx, ty), Some(hash));
+                    held_rgb.insert((tx, ty), tile_rgb(pixels, width, x, y, w, h));
                     *refcount.entry(hash).or_default() += 1;
                     if !flat {
                         for cache in &mut caches {
@@ -441,9 +496,10 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
             churn.observe(key, frame.at);
             changed.push((key, hash, flat));
         }
-        let moving = carried(&churn.moving(frame.at));
+        let all_moving = churn.moving(frame.at);
+        let moving = carried(&all_moving);
 
-        let mut stills: Vec<((u16, u16), u64, bool)> = Vec::new();
+        let mut stills: Vec<((u16, u16), u64, bool, Why)> = Vec::new();
         for (key, hash, flat) in changed {
             if moving.contains(&key) {
                 if let Some(Some(old)) = held.insert(key, None)
@@ -454,10 +510,18 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
                         refcount.remove(&old);
                     }
                 }
+                held_rgb.remove(&key);
                 streamed.insert(key);
             } else {
                 streamed.remove(&key);
-                stills.push((key, hash, flat));
+                let why = if all_moving.contains(&key) {
+                    Why::Small
+                } else if churn.changes(key) > 1 {
+                    Why::Warming
+                } else {
+                    Why::Fresh
+                };
+                stills.push((key, hash, flat, why));
             }
         }
         // Tiles a stream carried that stopped and did not change this frame
@@ -467,21 +531,32 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
             streamed.remove(&key);
             let (x, y, w, h) = geometry(key.0, key.1);
             let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
-            stills.push((key, hash, flat));
+            stills.push((key, hash, flat, Why::Stopped));
         }
 
-        for (key, hash, flat) in stills {
+        for (key, hash, flat, why) in stills {
             let (x, y, w, h) = geometry(key.0, key.1);
+            let rgb = tile_rgb(pixels, width, x, y, w, h);
             let (png, webp) = match coded.get(&hash) {
                 Some(&b) => b,
                 None => {
-                    let rgb = tile_rgb(pixels, width, x, y, w, h);
                     let b = (png_bytes(w, h, &rgb)?, webp_bytes(w, h, &rgb, quality)?);
                     coded.insert(hash, b);
                     b
                 }
             };
             stats.stills.add(flat, png, webp);
+            let (count, delta) = &mut stats.why[why as usize];
+            count.add(flat, png, webp);
+            if let Some(old) = held_rgb.get(&key) {
+                let diff: Vec<u8> = rgb.iter().zip(old).map(|(new, old)| new.wrapping_sub(*old)).collect();
+                delta.tiles += 1;
+                delta.pixels += (w * h) as u64;
+                delta.changed += diff.as_chunks::<3>().0.iter().filter(|px| **px != [0, 0, 0]).count() as u64;
+                delta.png += png as u64;
+                delta.png_delta += png_bytes(w, h, &diff)? as u64;
+            }
+            held_rgb.insert(key, rgb);
             let onscreen = refcount.get(&hash).is_some_and(|&n| n > 0);
             if !flat {
                 for (cache, (on, off)) in caches.iter_mut().zip(&mut stats.hits) {

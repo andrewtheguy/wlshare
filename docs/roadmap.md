@@ -39,6 +39,18 @@ rows](tiles-performance.md#the-cache).
   they are 256 MiB in a tab. Kept as the PNG or WebP that was sent, about
   2.5 KB a tile, they are 40 MB, decoded again on a draw, which is a hit's
   cost in the page rather than a still's on the link.
+- **A tile's difference from what the client holds.** RemoteFX
+  Progressive codes a changed tile as the difference of its wavelet
+  coefficients from those the client holds, which is how it carries motion
+  without AVC. The stills of tiles that changed in the 0.8 s before but are
+  no stream's are about two thirds of the mixed session's still bytes, yet a
+  lossless difference of their pixels costs more than the still, 130 to 140%
+  ([measured](tiles-performance.md#the-motion-the-stills-carry)). The
+  difference would have to be lossy, of a transform's coefficients: the
+  wavelet codec of the progressive refinement below, measured with it on a
+  walked list, whose stills are lossy already. What a held list can try
+  without one is the rule: how many of those stills a stream would carry if
+  a tile were moving sooner, counted by `tile-recurrence` first.
 - **Progressive refinement of the stills.** RemoteFX's progressive codec
   sends a tile coarse in one round trip and refines it in idle time by
   sending only the coefficient bits it dropped, so coarse plus refinements

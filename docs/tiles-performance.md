@@ -304,3 +304,37 @@ more than held and the CPU falls further: a tile drawn from a slot is coded
 neither coarse nor again at the ceiling. The held CPU is within the 4% two
 runs of one build differ by on lab1. `check` passes 82 of 82: the held tiles
 settle exact and send nothing after.
+
+## The motion the stills carry
+
+How much of what the stills send is motion — what a codec that sends a
+tile's difference from what the client holds, as RemoteFX Progressive's
+sub-band diffing does, would code instead — was counted by
+`tile-recurrence` on lab1 on 2026-10-27, each still marked by why it is
+sent: *fresh*, a tile that had not changed in the 0.8 s before; *warming*,
+one that had, but in fewer than the 4 of 8 tenths that make it moving;
+*small*, a moving tile in a group too small for a stream; and *stopped*, a
+stream's tile owed its still. For every still sent over exact pixels it also
+coded the change from them, as a PNG of the per-channel difference modulo
+256: what a held list's lossless difference would cost. It sends no copies,
+so a scroll is stills here that the encoder sends as a copy. The run is
+`bench/motion-stills-20261027/` in the artifacts.
+
+| Capture | Stills | Warming | Small | Stopped | Warming's difference |
+|---|---|---|---|---|---|
+| mixed-1920x1080 | 67 MB as PNG, 19 MB as WebP | 60% of tiles, 65% of PNG, 62% of WebP | 2%, 2%, 2% | 1%, 0%, 1% | 48% of the pixels changed, a PNG 130% of the stills' |
+| mixed-2880x1800@2 | 129, 37 | 58%, 66%, 63% | 1%, 1%, 1% | 1%, 0%, 0% | 44%, 140% |
+
+So about two thirds of the mixed session's still bytes are tiles that
+changed in the 0.8 s before, nearly all of them short of Motion's 4 tenths
+rather than in a group too small for a stream. Of the scenarios' PNG bytes,
+warming is 87 to 94% on walk, 81 to 85% on video, 70 to 80% on the video in a window, 45 to
+74% on browser, drag and uncover, and 20 to 21% on terminal. A lossless
+difference does not shrink them: on the mixed session it is 130 to 140% of
+the still, and 117 to 127% for a fresh one. Only terminal's warming
+stills (26 and 75%), the few small groups' and the video in a window's
+(fresh 42 to 94%, warming 71 to 102%) come out about even or under. Most
+likely a difference of text or of antialiased edges has more colours than
+either tile, and its PNG loses the palette the still's had.
+What makes RDP's diffing pay is lossy: the difference of quantized wavelet
+coefficients, sent coarse first.
