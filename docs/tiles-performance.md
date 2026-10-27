@@ -157,11 +157,13 @@ of the tiles' updates on a slow link, by `examples/tiles-walk-sim.rs` in the
 daemon's crate: `walk-sim`'s model of the browser's link and the gateway
 ([The walk on a slow link](vp9-performance.md#the-walk-on-a-slow-link))
 played over the tiles, each update coded as the session codes it, the regions
-by libx264. Measured 2026-10-27 on the eight-core AMD EPYC (Milan) VM, idle
-and with no swap, with this machine's encode times, on the whole window and
-mixed captures at 1920×1080, 2880×1800@2 and 3840×2160@2, the dial's ceiling
-90, over links of 5, 10, 25 and 50 Mbit/s and one that falls from 50 to 5
-for 8 s, each walked and held, against `WLSV` on the same links.
+by libx264, and each of its rectangles a record of the gateway's own, its
+body taking its share of the budget. Measured 2026-10-27 on the eight-core
+AMD EPYC (Milan) VM, idle and with no swap, with this machine's encode
+times, on the whole window and mixed captures at 1920×1080, 2880×1800@2 and
+3840×2160@2, the dial's ceiling 90, over links of 5, 10, 25 and 50 Mbit/s
+and one that falls from 50 to 5 for 8 s, each walked and held, against
+`WLSV` on the same links.
 
 Two of the session's rules kept the walk from judging the tiles as it judges
 `WLSV`'s frames:
@@ -169,11 +171,11 @@ Two of the session's rules kept the walk from judging the tiles as it judges
 - **A stream's START was a keyframe.** An update that started a region's
   stream, or restarted it at a moved dial, held the walk's verdicts for 2 s.
   A window's video starts a stream about every half second, so over the
-  window capture the walk never left the ceiling: at 4K over 10 Mbit/s, 24
-  keyframes and no move, 95% of changes shown within 664 ms where `WLSV`
-  took 179. A START is now an ordinary verdict, and only the stills of a
+  window capture the walk never left the ceiling: at 4K over 10 Mbit/s, 23
+  keyframes and no move, 95% of changes shown within 719 ms where `WLSV`
+  took 211. A START is now an ordinary verdict, and only the stills of a
   picture the client holds nothing of are a keyframe: 2 or 3 a run, where
-  there were 17 to 74.
+  there were 15 to 78.
 - **A tick was a verdict.** In a pause, each update of the settle's tiles
   alone arrived on time, so the walk climbed through it (30, 33, 39, 51 over
   one pause of the mixed session) and the next burst walked it back down. Such
@@ -184,40 +186,42 @@ The walked tiles, before and after, and `WLSV` walked on the same link:
 
 | Capture | Link Mbit/s | Frames/s | Mean dial | Shown p95 ms | Moves | `WLSV`: frames/s · dial · p95 |
 |---|---|---:|---:|---:|---:|---:|
-| Window, 1920×1080 | 5 | 11.2 → 21.7 | 87 → 56 | 485 → 199 | 2 → 7 | 22.7 · 86 · 141 |
-| Window, 2880×1800@2 | 5 | 10.5 → 20.4 | 66 → 37 | 1,028 → 221 | 5 → 4 | 19.9 · 73 · 176 |
-| Window, 3840×2160@2 | 5 | 6.4 → 15.7 | 66 → 36 | 1,180 → 433 | 5 → 4 | 16.9 · 61 · 240 |
-| Mixed, 1920×1080 | 5 | 13.1 → 14.7 | 64 → 49 | 474 → 306 | 50 → 40 | 14.3 · 76 · 161 |
-| Mixed, 2880×1800@2 | 5 | 9.9 → 13.0 | 46 → 28 | 899 → 437 | 50 → 32 | 12.9 · 55 · 227 |
-| Window, 1920×1080 | 10 | 22.2 → 23.5 | 90 → 83 | 186 → 133 | 0 → 3 | 25.6 · 90 · 62 |
-| Window, 2880×1800@2 | 10 | 14.2 → 22.1 | 90 → 66 | 295 → 138 | 0 → 4 | 22.3 · 90 · 140 |
-| Window, 3840×2160@2 | 10 | 8.2 → 19.0 | 90 → 48 | 664 → 230 | 0 → 4 | 17.6 · 84 · 186 |
-| Mixed, 1920×1080 | 10 | 14.4 → 15.2 | 80 → 70 | 285 → 172 | 37 → 49 | 14.8 · 86 · 137 |
-| Mixed, 2880×1800@2 | 10 | 11.4 → 14.1 | 64 → 41 | 544 → 291 | 38 → 35 | 12.7 · 72 · 193 |
-| Window, 1920×1080 | 50 → 5 → 50 | 18.1 → 22.7 | 90 → 72 | 348 → 285 | 0 → 5 | 24.0 · 87 · 130 |
-| Window, 2880×1800@2 | 50 → 5 → 50 | 15.5 → 21.6 | 73 → 60 | 493 → 372 | 5 → 3 | 22.0 · 80 · 211 |
-| Window, 3840×2160@2 | 50 → 5 → 50 | 13.0 → 14.8 | 90 → 59 | 1,412 → 799 | 0 → 4 | 20.8 · 70 · 269 |
-| Mixed, 1920×1080 | 50 → 5 → 50 | 15.8, as before | 90, as before | 54, as before | 0, as before | 15.6 · 90 · 53 |
-| Mixed, 2880×1800@2 | 50 → 5 → 50 | 14.9 → 14.8 | 90, as before | 106 → 119 | 0 → 4 | 14.8 · 90 · 79 |
+| Window, 1920×1080 | 5 | 11.1 → 20.9 | 87 → 55 | 503 → 237 | 2 → 9 | 23.9 · 82 · 126 |
+| Window, 2880×1800@2 | 5 | 10.8 → 18.9 | 65 → 47 | 842 → 323 | 5 → 4 | 19.7 · 71 · 174 |
+| Window, 3840×2160@2 | 5 | 4.1 → 17.5 | 77 → 26 | 1,374 → 378 | 4, as before | 16.9 · 65 · 225 |
+| Mixed, 1920×1080 | 5 | 13.0 → 14.4 | 64 → 54 | 517 → 305 | 60 → 49 | 14.3 · 75 · 158 |
+| Mixed, 2880×1800@2 | 5 | 6.9 → 13.0 | 58 → 28 | 1,315 → 501 | 47 → 31 | 12.7 · 55 · 225 |
+| Window, 1920×1080 | 10 | 21.6 → 23.4 | 90 → 83 | 178 → 146 | 0 → 4 | 25.6 · 90 · 62 |
+| Window, 2880×1800@2 | 10 | 14.5 → 21.3 | 90 → 66 | 280 → 170 | 0 → 4 | 22.5 · 89 · 127 |
+| Window, 3840×2160@2 | 10 | 8.2 → 18.4 | 90 → 55 | 719 → 235 | 0 → 3 | 18.5 · 82 · 190 |
+| Mixed, 1920×1080 | 10 | 14.2 → 15.1 | 81 → 71 | 300 → 180 | 30 → 46 | 15.2 · 84 · 122 |
+| Mixed, 2880×1800@2 | 10 | 10.2 → 13.9 | 67 → 46 | 623 → 291 | 31 → 49 | 12.9 · 70 · 187 |
+| Window, 1920×1080 | 50 → 5 → 50 | 18.2 → 22.5 | 90 → 72 | 337 → 281 | 0 → 5 | 23.9 · 88 · 128 |
+| Window, 2880×1800@2 | 50 → 5 → 50 | 15.7 → 21.4 | 73 → 60 | 497 → 387 | 5 → 3 | 21.9 · 80 · 201 |
+| Window, 3840×2160@2 | 50 → 5 → 50 | 12.4 → 14.5 | 75 → 56 | 1,074 → 833 | 5 → 4 | 20.9 · 70 · 270 |
+| Mixed, 1920×1080 | 50 → 5 → 50 | 15.8, as before | 90, as before | 54, as before | 0 → 4 | 15.6 · 90 · 53 |
+| Mixed, 2880×1800@2 | 50 → 5 → 50 | 14.9, as before | 90, as before | 110 → 108 | 0, as before | 14.8 · 90 · 80 |
 
-At 25 Mbit/s and over the walk moves the dial now and then, 0 to 40 times a
-run where it moved 0 to 26, and every p95 is the same or better, the most
-the window at 4K over 25, 161 ms to 118. Held, the tiles are as they were,
-and `WLSV` too, within what two runs of measured encode times differ by,
-which on a link the held tiles fill is up to a third of the p95. The one
-figure that is worse is the longest wait over the mixed session at
-2880×1800@2 over 5 Mbit/s, 2.2 s where it was 1.6.
+At 25 Mbit/s and over the walk moves the dial now and then, 0 to 54 times a
+run where it moved 0 to 20, and every p95 is within a few milliseconds of
+what it was or better, the most the window at 4K over 25, 155 ms to 115.
+Held, the tiles are as they were, within what two runs of measured encode
+times differ by: `WLSV`, the same code in both, moved up to 15% at p95
+walked and 11% held, and the held tiles up to a fifth on a link they fill.
+The longest wait of a run moves as much between two such runs as between
+the rules: over the mixed session at 2880×1800@2 over 50 Mbit/s, where the
+dial moved in neither, it was 721 ms before and 1.1 s after.
 
-The window's video is now painted as often as `WLSV`'s over 5 and 10 Mbit/s,
-at a lower dial, its p95 within 75 ms of `WLSV`'s at 1080p and 2880×1800@2.
-What is left is the mixed session, and the window at 4K: the tiles' p95 is
-1.2 to 3 times `WLSV`'s, though their dial is lower and over a steady 5
-or 10 Mbit/s they send under three fifths of the link (1.86 Mbit/s of 5
-over the mixed session at 2880×1800@2). Those waits are the bursts of stills that change the picture
-outside the video, which the dial does not make smaller, so the walk walks
-the regions down for a delay they did not cause. A threshold of the tiles'
-own, or a burst that is no verdict, is what would address it, measured the
-same way.
+The tiles now paint about as many frames a second as `WLSV` over 5 and
+10 Mbit/s, within three, at a lower dial, and over a steady 5 or 10 they
+send under three fifths of the link (1.90 Mbit/s of 5 over the mixed session
+at 2880×1800@2). But 95% of their changes take 1.2 to 3.1 times as long to be
+shown as `WLSV`'s, the most on the falling link. Over the mixed session at
+5 and 10 Mbit/s, 1.5 to 2.2 times, the waits are the bursts of stills that
+change the picture outside the video, which the dial does not make smaller,
+so the walk walks the regions down for a delay they did not cause. A threshold of the
+tiles' own, or a burst that is no verdict, is what would address it,
+measured the same way.
 
 ## The regions' encoder
 
