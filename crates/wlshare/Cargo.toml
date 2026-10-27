@@ -56,7 +56,7 @@ sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.9
 # and for the zDesk gateway, each pinned to its release tag. libopus is linked
 # from a prebuilt static archive, so nothing of it is compiled here or looked
 # for at run time.
-sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.5" }
+sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.6" }
 # The tiles encoding's PNGs (src/rfb/tiles.rs), pure Rust; `fdeflate` is its
 # fast compression.
 png = "0.18"
