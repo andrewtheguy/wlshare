@@ -1409,8 +1409,8 @@ dependencies = [
 
 [[package]]
 name = "sound-opus"
-version = "0.0.4"
-source = "git+https://github.com/andrewtheguy/sound-opus?tag=v0.0.4#a7d8ec96b841c6fe5983eede045bddbe19b2928c"
+version = "0.0.5"
+source = "git+https://github.com/andrewtheguy/sound-opus?tag=v0.0.5#c77c16dacb0f6e5865213fedb35bae3d5fe2c559"
 dependencies = [
  "opus-prebuilt",
  "thiserror",
@@ -1823,7 +1823,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wlshare"
-version = "0.0.94"
+version = "0.0.95"
 dependencies = [
  "aes",
  "anyhow",
@@ -1880,7 +1880,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-vp9"
-version = "0.0.94"
+version = "0.0.95"
 dependencies = [
  "libvpx-prebuilt-sys",
  "log",
