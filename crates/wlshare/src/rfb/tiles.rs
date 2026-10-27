@@ -56,7 +56,9 @@
 //! **It settles.** Every tile a stream carried, or a walk sent below the
 //! ceiling, is owed a still at the ceiling — a PNG on a held list — once it
 //! has been still for half a second, looked for every quarter of a second
-//! ([`TilesEncoder::tick_at`]), at most 40 tiles at a time, and sent after the
+//! ([`TilesEncoder::tick_at`]), the longest owed first, at most 320 tiles or
+//! 256 KiB at a time — 40 tiles while the walk is below the ceiling, where
+//! the link is short of bytes — and sent after the
 //! stream's END, so a desktop that stops is exact on a held list and at the
 //! ceiling on a walked one. A picture that
 //! starts over — an encoder's first, or one a client asks for whole
@@ -260,8 +262,15 @@ pub const CLEANUP_TICK: Duration = Duration::from_millis(250);
 /// lossy. Longer than [`CLEANUP_IDLE`], so a pause in typing is not chased
 /// while the link is behind.
 const COARSE_QUIET: Duration = Duration::from_millis(2000);
-/// The most tiles a tick sends.
-const MAX_CLEANUPS_PER_TICK: usize = 40;
+/// The most tiles a tick codes on a held list or while the walk stands at the
+/// ceiling: about 40 ms of WebP.
+const SETTLE_TILES: usize = 320;
+/// The most tiles a tick sends while the walk is below the ceiling, where the
+/// link is short of bytes.
+const SETTLE_TILES_BELOW: usize = 40;
+/// The bytes after which a tick sends no more: 8 Mbit/s at a tick every
+/// quarter of a second.
+const SETTLE_BYTES: usize = 256 * 1024;
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
@@ -1507,9 +1516,11 @@ impl TilesEncoder {
         Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, restarting: false, carried: false, moving_at: now })
     }
 
-    /// The streams whose motion stopped ended, and up to
-    /// [`MAX_CLEANUPS_PER_TICK`] tiles still for [`CLEANUP_IDLE`] sent at
-    /// the ceiling, oldest first, as runs along a row — none while the walk is
+    /// The streams whose motion stopped ended, and the tiles still for
+    /// [`CLEANUP_IDLE`] sent at the ceiling as runs along a row, the oldest
+    /// runs first until [`SETTLE_BYTES`] are sent, of the [`SETTLE_TILES`]
+    /// longest owed, or [`SETTLE_TILES_BELOW`] while the walk is below the
+    /// ceiling — none while the walk is
     /// coarse, since the link is behind on what it has, until the desktop has
     /// been still for [`COARSE_QUIET`].
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
@@ -1528,17 +1539,26 @@ impl TilesEncoder {
 
         let mut ready: Vec<((u16, u16), Duration)> = self.debts.iter().filter(|(cell, at)| !self.covered.contains(*cell) && now.saturating_sub(**at) >= CLEANUP_IDLE).map(|(cell, at)| (*cell, *at)).collect();
         ready.sort_unstable_by_key(|((col, row), at)| (*at, *row, *col));
-        ready.truncate(MAX_CLEANUPS_PER_TICK);
-        let mut cells: Vec<(u16, u16)> = ready.into_iter().map(|(cell, _)| cell).collect();
-        cells.sort_unstable_by_key(|(col, row)| (*row, *col));
-        let mut runs: Vec<CellBox> = Vec::new();
-        for (col, row) in cells {
+        ready.truncate(if self.quality < self.ceiling { SETTLE_TILES_BELOW } else { SETTLE_TILES });
+        ready.sort_unstable_by_key(|((col, row), _)| (*row, *col));
+        // Each run with the time its oldest tile was owed from, and sent
+        // oldest first.
+        let mut runs: Vec<(CellBox, Duration)> = Vec::new();
+        for ((col, row), at) in ready {
             match runs.last_mut() {
-                Some(run) if run.r0 == row && run.c1.checked_add(1) == Some(col) => run.c1 = col,
-                _ => runs.push(CellBox::of((col, row))),
+                Some((run, oldest)) if run.r0 == row && run.c1.checked_add(1) == Some(col) => {
+                    run.c1 = col;
+                    *oldest = (*oldest).min(at);
+                }
+                _ => runs.push((CellBox::of((col, row)), at)),
             }
         }
-        for run in runs {
+        runs.sort_by_key(|(run, oldest)| (*oldest, run.r0, run.c0));
+        let from = out.out.len();
+        for (run, _) in runs {
+            if out.out.len() - from >= SETTLE_BYTES {
+                break;
+            }
             if let Some(area) = run.to_area(self.size) {
                 self.still(area, self.ceiling, now, out)?;
             }
@@ -1995,6 +2015,46 @@ mod tests {
         step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(5000));
         assert_eq!(page.webps, 7);
         assert!(!encoder.owed(), "at the ceiling a still owes nothing");
+    }
+
+    /// A tick sends the oldest runs owed: below the ceiling
+    /// [`SETTLE_TILES_BELOW`] tiles, at it until [`SETTLE_BYTES`] are sent.
+    #[test]
+    fn a_tick_sends_the_oldest_until_its_bytes_are_spent() {
+        let (w, h) = (512u16, 1024u16);
+        let mut pixels = noise(w, h, 16);
+        let mut encoder = TilesEncoder::new(w, h, walked(90), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        encoder.set_pace(20, false);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let row = Rect { x: 0, y: 0, width: w, height: 64 };
+        paint(&mut pixels, w, row, 17);
+        step(&mut encoder, &mut page, &pixels, Some(&[row]), ms(300));
+        assert_eq!(encoder.debts.len(), 128, "every tile owed, the top row from later");
+        let top = |encoder: &TilesEncoder| (0..8).all(|col| encoder.debts.contains_key(&(col, 0)));
+
+        let mut out = Vec::new();
+        let at = encoder.tick_at().unwrap();
+        assert!(at >= CLEANUP_IDLE, "the first owed once still: {at:?}");
+        encoder.encode(at, &mut out).unwrap();
+        assert_eq!(encoder.debts.len(), 128 - SETTLE_TILES_BELOW, "below the ceiling, {SETTLE_TILES_BELOW} tiles");
+        assert!(top(&encoder), "the oldest first");
+
+        encoder.set_pace(90, false);
+        let before = encoder.debts.len();
+        out.clear();
+        let at = encoder.tick_at().unwrap();
+        let tick = encoder.encode(at, &mut out).unwrap();
+        page.draw(tick.rects, &out);
+        let paid = before - encoder.debts.len();
+        assert!(paid > SETTLE_TILES_BELOW && encoder.owed(), "at the ceiling more, and not all: {paid} of {before}");
+        // Each run is a row of 8 tiles, and the last one is sent only while
+        // what came before it is under the bytes.
+        let run = out.len() / (paid / 8);
+        assert!(out.len() >= SETTLE_BYTES && out.len() < SETTLE_BYTES + 2 * run, "{} bytes, runs of {run}", out.len());
+        assert!(top(&encoder), "the oldest first");
+        settle(&mut encoder, &mut page, at);
+        assert!(!encoder.owed());
     }
 
     /// The damage is compared with what the client holds: a redraw of the same

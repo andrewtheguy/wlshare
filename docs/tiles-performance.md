@@ -101,6 +101,54 @@ the copying scenarios and none elsewhere; stopping there would take about 4%
 of the CPU off video and the walk for 3.6% more bytes on a drag at 2×, and
 the limit is 32.
 
+## What the settle sends again
+
+Out of the same walked runs, what is sent at the ceiling once the desktop has
+been still is 32 MB of the 361 sent walked to 20, 8.9%, and 20 MB of the 1,323
+walked at the ceiling, where it is what the streams carried and the copies
+drew: the stills owed for being sent below the ceiling are at most the 12 MB
+between the two, about 3% of what is sent walked to 20. A scrolled page's is
+7%, a drag's 4%, the mixed session's 7%, an uncovered window's 10% and a
+video in a window's 21%; only a terminal and the still desktop, which send
+little else, go above 40%. A still is owed again only while what it drew is
+on screen: a scrolled-away tile is sent again when it changes, at the dial,
+and the debt is the last one. So each pause of 2 s or more on a slow link
+sends one screen again at the ceiling, from 130 KB at 1280×800 to 520 KB at
+3456×2168 for a scrolled page, while nothing else is sent. Owing less, by a
+distance from the ceiling or a level the link decides, would buy at most that
+3% for a picture at rest below the ceiling, and the picture at rest stays the
+ceiling's.
+
+## The settle
+
+Measured 2026-10-27 on the same VM in the same way, the tiles alone against
+the build above, its settle 40 tiles a tick, once a tick sends the 320 tiles
+owed longest at most, the oldest runs first until 256 KiB have gone, and 40
+tiles while the walk is below the ceiling. From the last frame until nothing
+is owed, the longest of the 82 captures and the mean:
+
+| Picture | Longest | Mean | Longest tick | Bytes | CPU |
+|---|---:|---:|---:|---:|---:|
+| Tiles, held | 12.8 → 4.3 s | 2.5 → 1.0 s | 7 ms, as before | the same | +2.6% |
+| Tiles, walked, at the ceiling | 12.8 → 2.3 s | 3.1 → 0.7 s | 7 → 42 ms | +0.3% | +1.9% |
+| Tiles, walked to 20 | 13.2 s, as before | 4.9 s, as before | 10 ms | the same | +2.1% |
+
+The CPU is within the 4% two runs of the same build differ by, and the
+pictures end where they did; `check` passes on all 82, the longest settling
+in 4.3 s where it took 12.7. A tick of 40 tiles sent 8–13 KB of WebP walked,
+0.25–0.43 Mbit/s, and up to 130 KB of PNG held. The bytes bound a held tick,
+whose PNGs are large and cost little to code, and the tile count a walked
+one, whose WebPs are small and cost more: 160 tiles and 128 KiB took the
+longest to 7.8 s held and 3.8 walked at the ceiling, in ticks of up to 32 ms,
+and 320 and 256 KiB to 4.3 and 2.3, in ticks of up to 42 ms, under half the
+99 ms a whole 1080p desktop costs a WebP. Below the ceiling the settle was as fast at
+first, and sent 2.5–3.2% more bytes walked to 20, up to 5.9% on the mixed
+session: paid sooner in a pause, more tiles were sent at the ceiling before
+the next scroll changed them again. There the link is short of bytes, and
+256 KiB a tick is 8 Mbit/s that the next update waits behind, which the
+bench, with no link, does not show, so below the ceiling the settle keeps
+40 tiles a tick and sends the same bytes.
+
 ## The regions' encoder
 
 Measured 2026-10-21 on an Intel UHD 630's low-power encoder, in a container
