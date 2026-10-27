@@ -872,10 +872,15 @@ the picture.
   ceiling, is owed a still at the ceiling once it has been still for half a
   second: a PNG on a held list, a WebP at the ceiling on a walked one. What
   is owed is looked for every quarter of a
-  second, 40 tiles at most at a time, each look an update that waits for a
-  request and the fence as any other, and none while the walk is slowed
-  until the desktop has been still for two seconds, so a desktop that stops
-  is exact on the page on a held list and at the ceiling on a walked one,
+  second, each look an update that waits for a request and the fence as any
+  other: the 320 tiles owed longest at most, as runs along a row, the oldest
+  runs first until 256 KiB have gone — what bounds a held list's PNGs, where
+  the count bounds a walked one's WebPs, about 40 ms of coding — and 40 tiles
+  at most while the walk is below the ceiling, where the link is short of
+  bytes; none while the walk is slowed until the desktop has been still for
+  two seconds. So a desktop that stops is exact on the page on a held list
+  and at the ceiling on a walked one, at 4K within 4.3 s held and 2.3 s at
+  the ceiling where it took 13 ([measured](tiles-performance.md#the-settle)),
   and once it is nothing more is sent.
 - **Rounds as any other.** Each update ends with its fence, and one is in
   flight at a time. A new size ends every stream with no END — the size goes

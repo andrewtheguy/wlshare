@@ -64,7 +64,8 @@
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
 //! squared error over B, G and R averaged over every frame, and `exact_frames`,
 //! the frames it held exactly; where it ended, `end_off` pixels off and
-//! `end_mse`; and the tail, `settled`, `tail_s` and `tail_cpu_ms`. `--frames`
+//! `end_mse`; and the tail, `settled`, `tail_s`, `tail_cpu_ms`, and its longest
+//! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
 //! `tiles_bytes`, `png`, `webp`, `h264`, `streams` (live), `copies`, `tick_us` and
@@ -556,6 +557,9 @@ struct Tally {
     keyframes: u64,
     tail_cpu: Duration,
     tail: Duration,
+    /// The tail's longest tick and its largest, in bytes.
+    tail_tick: Duration,
+    tail_tick_bytes: u64,
     settled: bool,
     /// The page against the source after each frame: the squared error
     /// summed, and the frames it held exactly.
@@ -692,6 +696,8 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
     while let Some(at) = run.tiles.encoder.tick_at().filter(|at| *at <= last_at + TAIL) {
         let (cost, sent) = run.tiles.encode(at)?;
         tiles.tail_cpu += cost;
+        tiles.tail_tick = tiles.tail_tick.max(cost);
+        tiles.tail_tick_bytes = tiles.tail_tick_bytes.max(sent.bytes());
         tiles.sent.add(&sent);
         ended = at;
     }
@@ -800,7 +806,7 @@ fn row(name: &str, coder: &str, chroma: &str, args: &Args, ceiling: u8, tally: &
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     let walk_at = args.walk_at.map_or_else(|| "null".to_owned(), |q| q.to_string());
     println!(
-        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"walk_at\":{walk_at},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"webp\":{},\"video\":{},\"copies\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"walk_at\":{walk_at},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"webp\":{},\"video\":{},\"copies\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         tally.frames,
@@ -817,5 +823,7 @@ fn row(name: &str, coder: &str, chroma: &str, args: &Args, ceiling: u8, tally: &
         tally.settled,
         tally.tail.as_secs_f64(),
         ms(tally.tail_cpu),
+        ms(tally.tail_tick),
+        tally.tail_tick_bytes,
     );
 }
