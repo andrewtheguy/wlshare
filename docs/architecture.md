@@ -800,8 +800,9 @@ the picture.
   `WLSV`'s settle is none: the walk keeps its place through the quiet, its
   verdicts starting over at the first. Any other is a verdict, a START
   among it: a region's IDR is the load a desktop that moves keeps sending,
-  which the walk is there to judge, and held two seconds after each as a
-  keyframe holds it, the walk heard almost nothing of a video in a window
+  which the walk is there to judge, and were its verdicts held two seconds
+  after each, as a keyframe holds them, the walk would hear almost nothing
+  of a video in a window
   ([measured](tiles-performance.md#the-walks-verdicts)). Every region's
   stream follows the dial as it moves, from an IDR, since neither encoder
   takes a new constant quantizer on a running stream (below); and a slowed

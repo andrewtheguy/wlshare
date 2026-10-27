@@ -123,40 +123,29 @@ impl Link {
         self.free = t;
         t
     }
-
-    /// When the link, busy up to `end`, had `bytes` left to send.
-    fn before(&self, end: Duration, bytes: usize) -> Duration {
-        let mut t = end;
-        let mut left = bytes as f64;
-        loop {
-            let i = self.rates.iter().rposition(|(from, _)| *from < t).unwrap_or(0);
-            let (from, rate) = self.rates[i];
-            let need = Duration::from_secs_f64(left / rate);
-            if i == 0 || t.saturating_sub(need) >= from {
-                return t.saturating_sub(need);
-            }
-            left -= rate * (t - from).as_secs_f64();
-            t = from;
-        }
-    }
 }
 
 /// What the gateway queues for the browser before it reads no more of the
-/// session: zDesk's `QUEUE_BUDGET`.
+/// session: zDesk's `QUEUE_BUDGET`. Each record takes its body's bytes of it,
+/// the whole budget at most, so one larger goes through alone, and gives them
+/// back once it is written.
 const BUDGET: usize = 512 * 1024;
 
 /// The zDesk gateway between the session and the browser, as it passes a
 /// picture wlshare codes (zDesk's `VideoSink::fence_hold`), `WLSV`'s or the
-/// tiles': an update is handed to the browser's link as it arrives, as much
-/// of it as fits the gateway's budget ahead of the browser, the rest as the
-/// link drains; and its fence, read once the update is, is echoed at once
-/// when nothing handed before it is still unpainted, and otherwise once the
-/// oldest such has been owed past the link's ping round trip, held 500 ms at
-/// most.
+/// tiles': each record of an update is handed to the browser's link once its
+/// share of the gateway's budget is free, the records ahead of it on the link
+/// holding theirs until they are written; and its fence, read once the last
+/// record is handed, is echoed at once when nothing handed before it is still
+/// unpainted, and otherwise once the oldest such has been owed past the link's
+/// ping round trip, held 500 ms at most.
 pub struct Gateway {
     link: Link,
     /// The round trip between the session and the gateway.
     hop: Duration,
+    /// The records on the link holding a share of the budget: when each is
+    /// written, and its share.
+    queued: VecDeque<(Duration, usize)>,
     /// Updates handed over and not yet painted: when each was, and when its
     /// paint is acknowledged.
     owed: VecDeque<(Duration, Duration)>,
@@ -172,16 +161,30 @@ impl Gateway {
     /// of a round trip `rtt`, `hop` from the session.
     pub fn new(rates: Vec<(Duration, f64)>, rtt: Duration, hop: Duration) -> Self {
         let link = Link { rates, one_way: rtt / 2, free: Duration::ZERO };
-        Self { link, hop, owed: VecDeque::new(), echoed: Duration::ZERO, painted: Duration::ZERO }
+        Self { link, hop, queued: VecDeque::new(), owed: VecDeque::new(), echoed: Duration::ZERO, painted: Duration::ZERO }
     }
 
-    /// An update of `bytes` the session wrote at `sent`: when the browser has
-    /// painted it, and when its fence's echo is back at the session.
-    pub fn frame(&mut self, sent: Duration, bytes: usize, paint: Duration) -> (Duration, Duration) {
-        let arrived = sent + self.hop / 2;
-        let end = self.link.send(arrived, bytes);
-        // The last of it is read once no more than the budget is left queued.
-        let handed = self.link.before(end, BUDGET).max(arrived);
+    /// An update the session wrote at `sent`, its `records` in order, each its
+    /// bytes on the link and those of them the budget is taken for: when the
+    /// browser has painted it, and when its fence's echo is back at the session.
+    pub fn frame(&mut self, sent: Duration, records: &[(usize, usize)], paint: Duration) -> (Duration, Duration) {
+        let (mut handed, mut end) = (sent + self.hop / 2, Duration::ZERO);
+        for &(bytes, budgeted) in records {
+            let share = budgeted.min(BUDGET);
+            loop {
+                while self.queued.front().is_some_and(|(written, _)| *written <= handed) {
+                    self.queued.pop_front();
+                }
+                if self.queued.iter().map(|(_, share)| share).sum::<usize>() + share <= BUDGET {
+                    break;
+                }
+                handed = self.queued[0].0;
+            }
+            end = self.link.send(handed, bytes);
+            if share > 0 {
+                self.queued.push_back((end, share));
+            }
+        }
         let painted = (end + self.link.one_way).max(self.painted) + paint;
         self.painted = painted;
         while self.owed.front().is_some_and(|(_, acked)| *acked <= handed) {

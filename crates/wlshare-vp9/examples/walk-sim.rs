@@ -24,11 +24,10 @@
 //! Time is the simulation's own: an encode takes what it took on this
 //! machine, or `--encode` for a run that is the same every time; a frame
 //! crosses the link at its rate after any frame before it, the gateway reading
-//! it, and its fence, once no more than its 512 KiB is queued ahead of the
-//! browser; and the desktop is
-//! the capture's frames at the times they were captured, so a session that
-//! falls behind skips the frames it had no time for and carries their damage
-//! in the next. Several captures play one after the other in one session.
+//! it, and its fence, once the frame's share of its 512 KiB is free, the whole
+//! of it at most, ahead of the browser; and the desktop is the capture's frames
+//! at the times they were captured, so a session that falls behind skips the
+//! frames it had no time for and carries their damage in the next. Several captures play one after the other in one session.
 //! What it says of a run, one JSON object on stdout, is how long each change of
 //! the desktop took to be painted (`shown_mean_ms`, `shown_p50_ms`,
 //! `shown_p95_ms`, `shown_max_ms`), the frames a second (`fps`, of `frames`,
@@ -187,7 +186,7 @@ fn main() -> Result<(), Error> {
         // rectangle, and the thirty this model counts for the framing around
         // that.
         let size = out.len() + 35;
-        let (painted, back) = gateway.frame(sent, size, paint + jitter());
+        let (painted, back) = gateway.frame(sent, &[(size, out.len())], paint + jitter());
         if keyframe {
             walk.keyframe(base + sent);
         }

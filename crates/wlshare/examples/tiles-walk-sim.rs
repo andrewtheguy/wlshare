@@ -32,17 +32,18 @@
 //! session that falls behind skips the frames it had no time for and reads
 //! their damage with the next; and what the encoder owes once the desktop
 //! stops goes out on its tick, as an update that waits for the fence and the
-//! walk's interval as any other. Each update is the walk's to judge as the
-//! session judges it: a keyframe or the tick's alone is no verdict, and the
-//! first of the tick's settles the walk where it stands. What it says of a run, one JSON object on
-//! stdout, is `walk-sim`'s, `picture` `tiles`, with `ticks` in place of its
+//! walk's interval as any other. The gateway passes each rectangle as a record
+//! of its own, its body taking its share of the budget. Each update is the
+//! walk's to judge as the session judges it: a keyframe or the tick's alone is
+//! no verdict, and the first of the tick's settles the walk where it stands.
+//! What it says of a run, one JSON object on stdout, is `walk-sim`'s, `picture` `tiles`, with `ticks` in place of its
 //! `settles`, and `keyframes` the updates that crossed the link as one.
 
 use std::fs::File;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use wlshare_proto::tiles::TilesPicture;
+use wlshare_proto::tiles::{TileHeader, TilesPicture};
 use wlshare_vp9::walk::QualityWalk;
 
 use crate::rfb::tiles::TilesEncoder;
@@ -50,7 +51,11 @@ use crate::rfb::vp9::Rect;
 use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 
 // The daemon's own modules, of which the simulation uses the encoders and
-// nothing more, and `walk-sim`'s model of the link.
+// nothing more, the decoder the H.264 encoder's tests read it back with, and
+// `walk-sim`'s model of the link.
+#[cfg(test)]
+#[path = "../src/decode.rs"]
+mod decode;
 #[allow(dead_code)]
 #[path = "../src/h264.rs"]
 mod h264;
@@ -63,6 +68,31 @@ mod sim;
 /// What the session writes around the encoder's rectangles: the update's
 /// header and its fence.
 const FRAMING: usize = 4 + 13;
+
+/// An RFB rectangle's header, ahead of each tiles body.
+const RECT_HEADER: usize = 12;
+
+/// The records the gateway passes of an update the encoder wrote as `out`:
+/// each rectangle, its bytes on the link and those of its body, which a
+/// rectangle takes of the gateway's budget, a COPY and an END none. The
+/// update's framing goes with the first.
+fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
+    let mut records = Vec::new();
+    let mut at = 0;
+    while at < out.len() {
+        let Some((header, used)) = TileHeader::parse(&out[at + RECT_HEADER..])? else {
+            return Err("a tiles rectangle cut short".into());
+        };
+        let body = match header {
+            TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Webp { len } => len,
+            TileHeader::End { .. } | TileHeader::Copy { .. } => 0,
+        };
+        let bytes = RECT_HEADER + used + body;
+        records.push((bytes + if at == 0 { FRAMING } else { 0 }, body));
+        at += bytes;
+    }
+    Ok(records)
+}
 
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
@@ -197,7 +227,7 @@ fn main() -> Result<(), Error> {
         let sent = now + encode;
         let coded_at = encoder.quality();
         let size = out.len() + FRAMING;
-        let (painted, back) = gateway.frame(sent, size, paint + jitter());
+        let (painted, back) = gateway.frame(sent, &records(&out)?, paint + jitter());
         if update.keyframe {
             walk.keyframe(base + sent);
         }
