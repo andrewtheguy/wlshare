@@ -109,7 +109,8 @@ def main(paths):
                 if r["coder"] == "wlsv" and key not in seen:
                     seen.add(key)
                     wlsv.append((f"{r['chroma'][0]}:{r['chroma'][1]}:{r['chroma'][2]} q{r['quality']}", {x["capture"]: x for x in rows if x["coder"] == "wlsv"}))
-        sections.append(across("WLSV, by chroma and ceiling", wlsv))
+        if wlsv:
+            sections.append(across("WLSV, by chroma and ceiling", wlsv))
     print("\n\n".join("\n".join(s) for s in sections))
 
 
