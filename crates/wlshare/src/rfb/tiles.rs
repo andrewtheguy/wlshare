@@ -541,6 +541,9 @@ fn encode_png(w: u16, h: u16, rgb: &[u8], indexed: Option<(Vec<u8>, Vec<u8>)>, o
 /// coded on the update's way out.
 const WEBP_METHOD: i32 = 0;
 
+/// The widest a WebP is, in pixels: a still wider is sent in pieces.
+const WEBP_MAX_WIDTH: u16 = 16_383;
+
 /// `rgb`, `w`×`h` packed, appended to `out` as a lossy WebP at `quality`, the
 /// 1–100 dial being libwebp's own scale: a VP8 keyframe in a RIFF container,
 /// 4:2:0, which every browser decodes. libwebp is linked statically, built
@@ -928,6 +931,19 @@ impl TilesEncoder {
     /// WebP below the ceiling owes every tile it touches a still at the
     /// ceiling from now.
     fn still(&mut self, area: Area, quality: u8, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        // A run wider than a WebP goes as pieces cut where tiles meet, so that
+        // each tile is in one of them whole as it was in the run.
+        if self.adaptive && area.w() > WEBP_MAX_WIDTH {
+            let mut left = area.left;
+            loop {
+                let right = (left / TILE + WEBP_MAX_WIDTH / TILE).saturating_mul(TILE).saturating_sub(1).min(area.right);
+                self.still(Area { left, right, ..area }, quality, now, out)?;
+                if right == area.right {
+                    return Ok(());
+                }
+                left = right + 1;
+            }
+        }
         crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let from = out.out.len();
         let header = if self.adaptive { TileHeader::Webp { len: 0 } } else { TileHeader::Png { len: 0 } };
@@ -1485,6 +1501,20 @@ mod tests {
         let flat = Rect { x: 0, y: 64, width: 64, height: 64 };
         step(&mut encoder, &mut page, &pixels, Some(&[text, flat]), ms(100));
         assert_eq!((page.pngs, page.webps), (0, 4), "text and a flat tile go lossy too");
+        assert!(!encoder.owed());
+    }
+
+    /// A walked run wider than a WebP is sent as pieces of whole tiles, each
+    /// a WebP libwebp codes, and owes nothing at the ceiling.
+    #[test]
+    fn a_walked_run_wider_than_a_webp_goes_in_pieces() {
+        let (w, h) = (16_448u16, 64u16);
+        let pixels = noise(w, h, 13);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert_eq!((page.pngs, page.webps), (0, 2), "16,320 pixels, 255 tiles, and the 128 after");
+        assert!(page.distance(&pixels) > 0);
         assert!(!encoder.owed());
     }
 

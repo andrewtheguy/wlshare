@@ -163,6 +163,9 @@ fn parse_args() -> Result<Args, String> {
     if parsed.check && (parsed.frames.is_some() || parsed.wlsv_chroma != Chroma::Yuv444 || parsed.tiles_only) {
         return Err("check codes no WLSV and writes no frames".into());
     }
+    if parsed.check && parsed.walk_at.is_some() {
+        return Err("check holds the dial: a walked picture ends lossy".into());
+    }
     if parsed.tiles_only && parsed.wlsv_chroma != Chroma::Yuv444 {
         return Err("--tiles-only codes no WLSV".into());
     }

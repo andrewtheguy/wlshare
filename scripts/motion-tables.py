@@ -102,13 +102,13 @@ def main(paths):
     if len(benches) > 1:
         tiles = [(name, {r["capture"]: r for r in rows if r["coder"] == "tiles"}) for name, rows in benches]
         sections.append(across("The tiles, log by log", tiles))
-        wlsv, seen = [], set()
+        # A column per chroma and ceiling, each capture's first row coded so.
+        by_key = {}
         for _, rows in benches:
             for r in rows:
-                key = (r["chroma"], r["quality"])
-                if r["coder"] == "wlsv" and key not in seen:
-                    seen.add(key)
-                    wlsv.append((f"{r['chroma'][0]}:{r['chroma'][1]}:{r['chroma'][2]} q{r['quality']}", {x["capture"]: x for x in rows if x["coder"] == "wlsv"}))
+                if r["coder"] == "wlsv":
+                    by_key.setdefault((r["chroma"], r["quality"]), {}).setdefault(r["capture"], r)
+        wlsv = [(f"{chroma[0]}:{chroma[1]}:{chroma[2]} q{quality}", by) for (chroma, quality), by in by_key.items()]
         if wlsv:
             sections.append(across("WLSV, by chroma and ceiling", wlsv))
     print("\n\n".join("\n".join(s) for s in sections))

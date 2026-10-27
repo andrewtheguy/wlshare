@@ -4,7 +4,7 @@
 
 > **不保证向后兼容。** 任何版本都可能更改或移除某个配置项、某个私有 RFB 扩展的线路格式或某项功能，且不再读取旧的写法。升级时请对照 [`wlshare.example.toml`](wlshare.example.toml) 检查你的配置；如果 `wlshare --version` 给出的协议版本有变化，请同时升级 zDesk 网关。
 
-一个面向基于 wlroots 的 Wayland 合成器的 VNC 服务器，为 [zDesk](https://github.com/andrewtheguy/zdesk/blob/main/README.zh-CN.md) 网关而构建。它通过 wlr-screencopy 捕获一个输出，以 RFB 3.8 的 Raw 或 ZRLE 提供；或者，对于提出请求的客户端（zDesk 就为它的浏览器这样请求），以一路质量随链路变化的 VP9 流提供；在链路带宽充裕时，则以精确的 PNG 图块提供，并为每个运动区域提供一路视频流，即由主机硬件或 libx264 编码的 H.264。它通过虚拟键盘和虚拟指针协议注入输入，通过 wlr-data-control 共享剪贴板，把桌面来自 PipeWire 的声音经同一连接传输；它还会告诉客户端帧缓冲是以什么像素密度绘制的，而这是标准 RFB 做不到的，因此 `scale 2` 的输出会以 2x 清晰显示，客户端自己的密度也会成为输出的密度。有多个显示器的桌面会把列表发给客户端，由客户端选择共享哪一个；该客户端的第二个连接会在旁边显示另一个输出，从而同时看到两个。合成器的指针不包含在捕获的帧中，因此 wlshare 自行捕获光标图像（即指针下方的应用所选择的任何形状，按输出的像素密度），并通过 RFB 的 Cursor 伪编码发送；对于列出 Cursor With Alpha 的客户端，还会带上透明度。客户端移动光标时无需等待帧缓冲更新。
+一个面向基于 wlroots 的 Wayland 合成器的 VNC 服务器，为 [zDesk](https://github.com/andrewtheguy/zdesk/blob/main/README.zh-CN.md) 网关而构建。它通过 wlr-screencopy 捕获一个输出，以 RFB 3.8 的 Raw 或 ZRLE 提供；或者，对于提出请求的客户端（zDesk 就为它的浏览器这样请求），以一路质量随链路变化的 VP9 流提供；在链路带宽充裕时，则以精确的 PNG 图块提供，并为每个运动区域提供一路视频流，即由主机硬件或 libx264 编码的 H.264；或者以同样的图块随链路调整，静止部分为有损的 WebP。它通过虚拟键盘和虚拟指针协议注入输入，通过 wlr-data-control 共享剪贴板，把桌面来自 PipeWire 的声音经同一连接传输；它还会告诉客户端帧缓冲是以什么像素密度绘制的，而这是标准 RFB 做不到的，因此 `scale 2` 的输出会以 2x 清晰显示，客户端自己的密度也会成为输出的密度。有多个显示器的桌面会把列表发给客户端，由客户端选择共享哪一个；该客户端的第二个连接会在旁边显示另一个输出，从而同时看到两个。合成器的指针不包含在捕获的帧中，因此 wlshare 自行捕获光标图像（即指针下方的应用所选择的任何形状，按输出的像素密度），并通过 RFB 的 Cursor 伪编码发送；对于列出 Cursor With Alpha 的客户端，还会带上透明度。客户端移动光标时无需等待帧缓冲更新。
 
 在 zDesk 的演示中观看：
 [Mac -> Linux（Sway 上的 wlshare），Retina/HiDPI 密度并带声音](https://zdesk.dev/zh-CN/demo#mac-to-linux)。
