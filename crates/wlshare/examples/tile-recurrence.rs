@@ -8,18 +8,21 @@
 //!
 //! Each capture is played as the tiles encoder reads it, with Motion's rule
 //! for what moves: a 64×64 tile that changed in 4 of the last 8 tenths of a
-//! second is a stream's while it moves and is owed a still when it stops;
-//! every other changed tile is a still at once. Each still's content is
-//! hashed and looked for in a cache of every still the client was sent, kept
-//! by least recent use at each of `--slots` sizes and unbounded. A hit is
-//! `onscreen` where the same content stands in another tile of the picture
-//! the client holds — what a COPY could draw — and `offscreen` where it does
-//! not, which only a cache serves. Flat tiles, of one colour, are counted
-//! apart, since they are cheap anyway. Bytes are each still coded alone, a
+//! second is moving, a 4-connected group of at least 5 moving tiles is a
+//! stream's while it moves and each of its tiles is owed a still when it
+//! stops, and every other changed tile is a still at once. Each still's
+//! content is hashed and looked for in a cache of every still the client was
+//! sent, kept by least recent use at each of `--slots` sizes and unbounded. A
+//! hit is `onscreen` where the same content stands in another tile of the
+//! picture the client holds — what a COPY could draw — and `offscreen` where
+//! it does not, which only a cache serves. Flat tiles, of one colour, are
+//! never cached, as the encoder stores none, and are counted apart among the
+//! stills, since they are cheap anyway. Bytes are each still coded alone, a
 //! fast PNG as a held list's and a WebP at `--quality` (90) as a walked one's,
 //! so they overstate the per-image overhead of a run of tiles coded as one.
 //! A whole picture — the first frame, or a keyframe asked — is counted as
-//! `whole` and not as stills, and refreshes the cache.
+//! `whole` and not as stills, and starts the cache over with its tiles, as
+//! the encoder forgets its own.
 //!
 //! One JSON object per capture on stdout.
 
@@ -39,6 +42,8 @@ const TILE: usize = 64;
 const CHURN_SLOT_MS: u128 = 100;
 const CHURN_WINDOW: u64 = 8;
 const CHURN_MOVING: u32 = 4;
+/// The fewest moving tiles a 4-connected group needs to be a stream's.
+const MIN_STREAM_CELLS: usize = 5;
 
 fn main() {
     if let Err(e) = run() {
@@ -226,6 +231,32 @@ impl Churn {
     }
 }
 
+/// The moving tiles a stream carries: those in a 4-connected group of at
+/// least [`MIN_STREAM_CELLS`]; a smaller group is left to the stills.
+fn carried(moving: &HashSet<(u16, u16)>) -> HashSet<(u16, u16)> {
+    let mut out = HashSet::new();
+    let mut seen = HashSet::new();
+    for &start in moving {
+        if !seen.insert(start) {
+            continue;
+        }
+        let mut group = vec![start];
+        let mut stack = vec![start];
+        while let Some((c, r)) = stack.pop() {
+            for next in [(c.wrapping_sub(1), r), (c + 1, r), (c, r.wrapping_sub(1)), (c, r + 1)] {
+                if moving.contains(&next) && seen.insert(next) {
+                    group.push(next);
+                    stack.push(next);
+                }
+            }
+        }
+        if group.len() >= MIN_STREAM_CELLS {
+            out.extend(group);
+        }
+    }
+    out
+}
+
 /// A cache of tile contents by least recent use, at most `slots` of them.
 struct Lru {
     slots: usize,
@@ -237,6 +268,11 @@ struct Lru {
 impl Lru {
     fn new(slots: usize) -> Self {
         Self { slots, stamp: 0, by_hash: HashMap::new(), by_use: BTreeSet::new() }
+    }
+
+    fn clear(&mut self) {
+        self.by_hash.clear();
+        self.by_use.clear();
     }
 
     /// Whether `hash` was held; held after either way, as the most recent.
@@ -348,14 +384,19 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
             refcount.clear();
             streamed.clear();
             churn = Churn::default();
+            for cache in &mut caches {
+                cache.clear();
+            }
             for ty in 0..tiles_y as u16 {
                 for tx in 0..tiles_x as u16 {
                     let (x, y, w, h) = geometry(tx, ty);
-                    let (hash, _) = tile_hash(pixels, width, x, y, w, h);
+                    let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
                     held.insert((tx, ty), Some(hash));
                     *refcount.entry(hash).or_default() += 1;
-                    for cache in &mut caches {
-                        cache.touch(hash);
+                    if !flat {
+                        for cache in &mut caches {
+                            cache.touch(hash);
+                        }
                     }
                     stats.whole_tiles += 1;
                 }
@@ -400,7 +441,7 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
             churn.observe(key, frame.at);
             changed.push((key, hash, flat));
         }
-        let moving = churn.moving(frame.at);
+        let moving = carried(&churn.moving(frame.at));
 
         let mut stills: Vec<((u16, u16), u64, bool)> = Vec::new();
         for (key, hash, flat) in changed {
@@ -415,10 +456,12 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
                 }
                 streamed.insert(key);
             } else {
+                streamed.remove(&key);
                 stills.push((key, hash, flat));
             }
         }
-        // Tiles a stream carried that stopped are owed a still of what they show.
+        // Tiles a stream carried that stopped and did not change this frame
+        // are owed a still of what they show.
         let stopped: Vec<(u16, u16)> = streamed.iter().filter(|k| !moving.contains(k)).copied().collect();
         for key in stopped {
             streamed.remove(&key);
@@ -440,9 +483,11 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
             };
             stats.stills.add(flat, png, webp);
             let onscreen = refcount.get(&hash).is_some_and(|&n| n > 0);
-            for (cache, (on, off)) in caches.iter_mut().zip(&mut stats.hits) {
-                if cache.touch(hash) {
-                    if onscreen { on.add(flat, png, webp) } else { off.add(flat, png, webp) }
+            if !flat {
+                for (cache, (on, off)) in caches.iter_mut().zip(&mut stats.hits) {
+                    if cache.touch(hash) {
+                        if onscreen { on.add(flat, png, webp) } else { off.add(flat, png, webp) }
+                    }
                 }
             }
             if let Some(Some(old)) = held.insert(key, Some(hash))

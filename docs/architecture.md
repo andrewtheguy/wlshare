@@ -796,7 +796,7 @@ the picture.
   what it is told to and draws only what it is told, so the record decides
   everything and the two agree by construction; a picture that starts over
   forgets the record, and the client's slots are written over from then on.
-  Over a session at the desk it serves about an eighth of the stills
+  Over a session at the desk it serves about a seventh of the stills
   ([measured](tiles-performance.md#the-cache)).
 - **What moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
