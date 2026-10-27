@@ -73,13 +73,13 @@
 //! The dial the list names is a ceiling the same walk of the link moves the
 //! encoder below, unless the list holds it: each update's fence is the
 //! walk's verdict as a VP9 frame's is, a START, a picture sent whole or a
-//! stream starting over at the moved dial counting as a keyframe, and below
-//! the ceiling the stills go lossy, owed exact once the
-
-//! link has room ([`TilesEncoder::set_pace`]). A slowed walk paces the
+//! stream starting over at the moved dial counting as a keyframe, and each
+//! still a WebP at the dial, owed again at the ceiling where it is below it
+//! ([`TilesEncoder::set_pace`]); a list that
+//! holds the dial is sent every still exact. A slowed walk paces the
 //! updates as it paces VP9's frames. What the encoder still owes once the
 //! desktop stops — a stream to end, a tile a stream carried or a still sent
-//! lossy to send exact — is
+//! below the ceiling to send at it — is
 //! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
 //! waits for a request and the fence as any other. A new size starts it over,
 //! and so does a non-incremental request, which ends every stream; a list that
@@ -944,13 +944,13 @@ impl Session {
                     if !self.use_tiles {
                         self.tiles = None;
                         self.seen = 0;
-                    } else if picture.quality != self.tiles_picture.quality {
-                        // A new ceiling is a new picture: what the client
-                        // holds was coded against the old one, so it starts
-                        // over whole at the next update, whether or not the
-                        // desktop changed, every live stream ended first.
+                    } else if picture != self.tiles_picture {
+                        // A new ceiling or walk is a new picture: what the
+                        // client holds was coded against the old one, so it
+                        // starts over whole at the next update, whether or not
+                        // the desktop changed, every live stream ended first.
                         if let Some(encoder) = &mut self.tiles {
-                            encoder.set_ceiling(picture.quality);
+                            encoder.set_picture(picture);
                         }
                         self.seen = 0;
                     }
@@ -1482,7 +1482,7 @@ impl Session {
                     }
                     drop(fb);
                     let coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
-                    let mut encoder = TilesEncoder::new(width, height, self.tiles_picture.quality, Box::new(coder))
+                    let mut encoder = TilesEncoder::new(width, height, self.tiles_picture, Box::new(coder))
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
                     let (quality, coarse) = self.tiles_pace();
                     encoder.set_pace(quality, coarse);

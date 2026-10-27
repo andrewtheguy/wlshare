@@ -1,7 +1,8 @@
 //! The tiles encoding: the desktop as exact PNG tiles where it is still, and a
 //! video stream of its own for each region that moves, for a client on a link
-//! with room to spare — or, on a list that lets the dial walk, a lossy WebP
-//! where the link has fallen behind, made exact once it has room again.
+//! with room to spare — or, on a list that lets the dial walk, every still a
+//! lossy WebP at the dial, for a client that wants the walk more than a
+//! picture that ends exact.
 //!
 //! A private encoding, [`crate::ENCODING_TILES`], beside the VP9 encoding
 //! ([`crate::vp9`]) rather than in place of it: a client lists one or the
@@ -24,9 +25,10 @@
 //!   a palette of it, and the picture there until a later rectangle draws
 //!   over it. It depends on nothing before it.
 //! - A **WEBP** is the same rectangle lossy, a WebP of its pixels at the dial
-//!   the walk stands at, and depends on nothing before it either. The server
-//!   owes the rectangle exact, as a PNG, once the link has room; it is sent
-//!   only on a list whose dial walks.
+//!   the walk stands at, and depends on nothing before it either. It is every
+//!   still of a list whose dial walks, and nothing else's: one below the
+//!   ceiling is owed again at the ceiling once the link has room, and nothing
+//!   is owed exact. A list whose dial walks is sent no PNG.
 //! - A **START** begins a stream on `stream`, over its rectangle: an H.264
 //!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
 //!   4:2:0, BT.601 at studio swing, of the rectangle's size rounded up to even
@@ -55,14 +57,15 @@ pub const KIND_START: u8 = 1;
 pub const KIND_FRAME: u8 = 2;
 /// A region's stream is over.
 pub const KIND_END: u8 = 3;
-/// A lossy WebP of the rectangle's pixels, owed exact later.
+/// A lossy WebP of the rectangle's pixels, on a list whose dial walks.
 pub const KIND_WEBP: u8 = 4;
 
 /// What a client's list asks the tiles picture to be: the dial, the VP9
 /// encoding's `WLQ` and the value ([`ENCODING_VP9_QUALITY_BASE`]) beside
 /// [`crate::ENCODING_TILES`], and whether it walks — the ceiling the streams
 /// and the stills are coded at while the link keeps up, walked down while it
-/// does not, with the stills then lossy WebP owed exact — or is held there,
+/// does not, every still a lossy WebP at the dial, nothing owed exact — or is
+/// held there,
 /// `WLSD` ([`ENCODING_VP9_HELD`]) beside it, every still exact and the
 /// streams at the dial whatever the link does, as the VP9 encoding reads
 /// the same two.

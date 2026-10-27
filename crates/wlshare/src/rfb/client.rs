@@ -252,7 +252,7 @@ pub enum RectBody {
 pub enum TileBody {
     /// A PNG of the rectangle's pixels, exact.
     Png(Vec<u8>),
-    /// A lossy WebP of the rectangle's pixels, owed exact later.
+    /// A lossy WebP of the rectangle's pixels, on a list whose dial walks.
     Webp(Vec<u8>),
     /// The first frame of a region's stream on `stream`, a keyframe.
     Start { stream: u8, frame: Vec<u8> },
