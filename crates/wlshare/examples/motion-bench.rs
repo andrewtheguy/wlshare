@@ -59,14 +59,15 @@
 //! held picture), `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
 //! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `webp` and
-//! `video` (the regions' H.264, or `WLSV`'s VP9), `streams` started and
+//! `video` (the regions' H.264, or `WLSV`'s VP9), the tiles' `copies`, which
+//! carry no payload, `streams` started and
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
 //! squared error over B, G and R averaged over every frame, and `exact_frames`,
 //! the frames it held exactly; where it ended, `end_off` pixels off and
 //! `end_mse`; and the tail, `settled`, `tail_s` and `tail_cpu_ms`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
-//! `tiles_bytes`, `png`, `webp`, `h264`, `streams` (live), `tick_us` and
+//! `tiles_bytes`, `png`, `webp`, `h264`, `streams` (live), `copies`, `tick_us` and
 //! `tick_bytes`, a tick's what the ticks since the frame before cost.
 //!
 //! **`check`** holds the tiles to what a picture that stops owes, on any
@@ -281,6 +282,8 @@ struct Sent {
     /// The frames of the streams: the tiles' regions' H.264, or `WLSV`'s VP9.
     video: u64,
     starts: u64,
+    /// The tiles' copies, which carry no payload.
+    copies: u64,
 }
 
 impl Sent {
@@ -293,6 +296,7 @@ impl Sent {
         self.webp += other.webp;
         self.video += other.video;
         self.starts += other.starts;
+        self.copies += other.copies;
     }
 }
 
@@ -301,7 +305,8 @@ struct Page {
     stride: usize,
     canvas: Vec<u8>,
     decoders: HashMap<u8, decode::Decoder>,
-    /// A decoded region's planes, and its picture as `B, G, R, A`.
+    /// A decoded region's planes, and its picture as `B, G, R, A`, or a
+    /// copy's source.
     planes: Vec<u8>,
     scratch: Vec<u8>,
 }
@@ -364,6 +369,21 @@ impl Page {
                 }
                 TileBody::End { stream } => {
                     self.decoders.remove(&stream).ok_or_else(|| format!("stream {stream} ended while not live"))?;
+                }
+                TileBody::Copy { x: from_x, y: from_y } => {
+                    sent.copies += 1;
+                    let (from_x, from_y) = (usize::from(from_x), usize::from(from_y));
+                    if (from_x + w) * 4 > self.stride || (from_y + h) * self.stride > self.canvas.len() {
+                        return Err(format!("a copy from {from_x},{from_y} of {w}x{h}, past the desktop").into());
+                    }
+                    // Copied out first, so a source the rectangle overlaps is read whole.
+                    self.scratch.clear();
+                    for row in from_y..from_y + h {
+                        self.scratch.extend_from_slice(&self.canvas[row * self.stride + from_x * 4..][..w * 4]);
+                    }
+                    for (row, from) in (y..y + h).zip(self.scratch.chunks_exact(w * 4)) {
+                        self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
+                    }
                 }
             }
         }
@@ -630,7 +650,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"webp\":{},\"h264\":{},\"streams\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
+                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"webp\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
                 json(&name),
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
@@ -643,6 +663,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 sent.webp,
                 sent.video,
                 run.tiles.page.decoders.len(),
+                sent.copies,
                 tick_cpu.as_micros(),
                 tick_sent.bytes(),
             )?;
@@ -779,7 +800,7 @@ fn row(name: &str, coder: &str, chroma: &str, args: &Args, ceiling: u8, tally: &
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     let walk_at = args.walk_at.map_or_else(|| "null".to_owned(), |q| q.to_string());
     println!(
-        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"walk_at\":{walk_at},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"webp\":{},\"video\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"walk_at\":{walk_at},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"webp\":{},\"video\":{},\"copies\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{}}}",
         json(name),
         json(coder),
         tally.frames,
@@ -789,6 +810,7 @@ fn row(name: &str, coder: &str, chroma: &str, args: &Args, ceiling: u8, tally: &
         tally.sent.png,
         tally.sent.webp,
         tally.sent.video,
+        tally.sent.copies,
         tally.sent.starts,
         tally.keyframes,
         tally.exact,

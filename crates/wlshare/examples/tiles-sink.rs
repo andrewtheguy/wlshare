@@ -16,7 +16,8 @@
 //! `--size` can be sent as a SetDesktopSize before the first picture,
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
-//! client's parser; a PNG and a region's START are counted, and with
+//! client's parser; a PNG, a WebP, a copy and a region's START are counted,
+//! a copy's source checked to be inside the desktop, and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -154,7 +155,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut pngs, mut png_bytes, mut webps, mut webp_bytes, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut pngs, mut png_bytes, mut webps, mut webp_bytes, mut copies, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -204,6 +205,12 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             RectBody::Tiles(TileBody::Webp(webp)) => {
                                 webps += 1;
                                 webp_bytes += webp.len() as u64;
+                            }
+                            RectBody::Tiles(TileBody::Copy { x, y }) => {
+                                if u32::from(x) + u32::from(rect.width) > u32::from(width) || u32::from(y) + u32::from(rect.height) > u32::from(height) {
+                                    return Err(format!("a copy from {x},{y} of {}x{}, past the {width}x{height} desktop", rect.width, rect.height).into());
+                                }
+                                copies += 1;
                             }
                             RectBody::Tiles(TileBody::Start { stream, frame }) => {
                                 if live.contains_key(&stream) {
@@ -257,7 +264,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
+            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
         }
     }
     done.extend(live.drain().map(|(_, stream)| stream));
@@ -269,7 +276,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let (x, y, w, h) = stream.rect;
         eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
     }
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
+    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
 
     Ok(())
 }

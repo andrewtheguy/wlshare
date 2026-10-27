@@ -19,6 +19,7 @@
 //! 2 FRAME   u8 stream | u32 length | u8[length]  a region's next frame
 //! 3 END     u8 stream                            the region's stream is over
 //! 4 WEBP    u32 length | u8[length]  a lossy WebP of the rectangle's pixels
+//! 5 COPY    u16 x | u16 y        the picture at (x, y) the rectangle's size
 //! ```
 //!
 //! - A **PNG** is the desktop's pixels in the rectangle exactly, 8-bit RGB or
@@ -38,12 +39,20 @@
 //! - An **END** says the stream on `stream` is over: its last picture stays
 //!   until something draws over it, and no frame follows on the id until a
 //!   START begins another. The rectangle is the stream's.
+//! - A **COPY** draws at the rectangle what the client holds, as the
+//!   rectangles before it left it, at the same size from `(x, y)`, which is
+//!   inside the desktop: a scroll, or a window moved, as RFB's CopyRect draws
+//!   one. The two may overlap, and the picture is then as if the source were
+//!   copied out before any of it was drawn. Whatever the source held — exact,
+//!   lossy, a stream's picture — the rectangle holds the same, and is owed
+//!   what the source was owed. It has no body past its header.
 //!
 //! A PNG over a stream's rectangle only ever follows the stream's END, so a
 //! client draws every rectangle where it says, in order, and the picture is
 //! right. A change of the desktop's size, which is sent first as an update of
 //! its own, ends every stream with no END, and the next update sends the
-//! picture again whole. Every body is 1 to [`crate::MAX_BODY`] bytes.
+//! picture again whole. Every body a length names is 1 to [`crate::MAX_BODY`]
+//! bytes.
 
 use thiserror::Error;
 
@@ -59,6 +68,8 @@ pub const KIND_FRAME: u8 = 2;
 pub const KIND_END: u8 = 3;
 /// A lossy WebP of the rectangle's pixels, on a list whose dial walks.
 pub const KIND_WEBP: u8 = 4;
+/// What the client holds elsewhere, drawn at the rectangle.
+pub const KIND_COPY: u8 = 5;
 
 /// What a client's list asks the tiles picture to be: the dial, the VP9
 /// encoding's `WLQ` and the value ([`ENCODING_VP9_QUALITY_BASE`]) beside
@@ -119,14 +130,14 @@ pub enum TilesListError {
 /// Why a tiles rectangle's body is not one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
-    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END and WEBP")]
+    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, WEBP and COPY")]
     UnknownKind(u8),
     #[error("a tiles rectangle of {0} bytes, where one is 1 to {max} bytes", max = crate::MAX_BODY)]
     Length(usize),
 }
 
 /// The head of a tiles rectangle's body: its kind, its stream where it has one,
-/// and the length of what follows where anything does.
+/// the length of what follows where anything does, and a copy's source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileHeader {
     /// A PNG of `len` bytes follows.
@@ -139,20 +150,24 @@ pub enum TileHeader {
     End { stream: u8 },
     /// A lossy WebP of `len` bytes follows.
     Webp { len: usize },
+    /// The picture at `(x, y)`, the rectangle's size, drawn at the rectangle;
+    /// nothing follows.
+    Copy { x: u16, y: u16 },
 }
 
 impl TileHeader {
     /// The bytes of a header that begins with `kind`, the kind included.
     pub fn len_of(kind: u8) -> Result<usize, TilesParseError> {
         match kind {
-            KIND_PNG | KIND_WEBP => Ok(5),
+            KIND_PNG | KIND_WEBP | KIND_COPY => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
             other => Err(TilesParseError::UnknownKind(other)),
         }
     }
 
-    /// The same header naming a body of `len` bytes; an END names none. What
+    /// The same header naming a body of `len` bytes; an END or a COPY names
+    /// none. What
     /// a server that writes the body before it knows its length fills its
     /// header in again with, [`Self::to_bytes`] being as long either way.
     pub fn with_len(self, len: usize) -> Self {
@@ -162,6 +177,7 @@ impl TileHeader {
             Self::Frame { stream, .. } => Self::Frame { stream, len },
             Self::End { stream } => Self::End { stream },
             Self::Webp { .. } => Self::Webp { len },
+            Self::Copy { x, y } => Self::Copy { x, y },
         }
     }
 
@@ -175,6 +191,7 @@ impl TileHeader {
             Self::Frame { stream, len } => [&[KIND_FRAME, stream][..], &length(len)].concat(),
             Self::End { stream } => vec![KIND_END, stream],
             Self::Webp { len } => [&[KIND_WEBP][..], &length(len)].concat(),
+            Self::Copy { x, y } => [&[KIND_COPY][..], &x.to_be_bytes(), &y.to_be_bytes()].concat(),
         }
     }
 
@@ -196,6 +213,7 @@ impl TileHeader {
             KIND_START => Self::Start { stream: buf[1], len: len(2)? },
             KIND_FRAME => Self::Frame { stream: buf[1], len: len(2)? },
             KIND_WEBP => Self::Webp { len: len(1)? },
+            KIND_COPY => Self::Copy { x: u16::from_be_bytes([buf[1], buf[2]]), y: u16::from_be_bytes([buf[3], buf[4]]) },
             _ => Self::End { stream: buf[1] },
         };
         Ok(Some((header, used)))
@@ -233,6 +251,7 @@ mod tests {
             (TileHeader::Frame { stream: 3, len: 9 }, vec![2, 3, 0, 0, 0, 9]),
             (TileHeader::End { stream: 3 }, vec![3, 3]),
             (TileHeader::Webp { len: 0x0102 }, vec![4, 0, 0, 1, 2]),
+            (TileHeader::Copy { x: 0x0102, y: 0x0304 }, vec![5, 1, 2, 3, 4]),
         ] {
             assert_eq!(header.to_bytes(), bytes);
             assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -243,18 +262,19 @@ mod tests {
 
     #[test]
     fn a_length_filled_in_keeps_the_header_its_size() {
-        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Webp { len: 0 }] {
+        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Webp { len: 0 }, TileHeader::Copy { x: 1, y: 2 }] {
             let filled = header.with_len(9);
             assert_eq!(filled.to_bytes().len(), header.to_bytes().len());
             assert_eq!(filled.to_bytes()[0], header.to_bytes()[0], "the kind is kept");
         }
         assert_eq!(TileHeader::Frame { stream: 2, len: 0 }.with_len(9), TileHeader::Frame { stream: 2, len: 9 });
         assert_eq!(TileHeader::End { stream: 2 }.with_len(9), TileHeader::End { stream: 2 });
+        assert_eq!(TileHeader::Copy { x: 1, y: 2 }.with_len(9), TileHeader::Copy { x: 1, y: 2 }, "a copy's source is no length");
     }
 
     #[test]
     fn a_bad_kind_or_length_is_fatal() {
-        assert_eq!(TileHeader::parse(&[5]), Err(TilesParseError::UnknownKind(5)));
+        assert_eq!(TileHeader::parse(&[6]), Err(TilesParseError::UnknownKind(6)));
         assert_eq!(TileHeader::parse(&[0, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
         assert_eq!(TileHeader::parse(&[4, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
 

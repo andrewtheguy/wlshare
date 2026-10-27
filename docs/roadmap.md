@@ -19,14 +19,6 @@ performance](tiles-performance.md#the-three-pictures), flood left out.
   code the bands of a whole picture on several threads: that costs the
   processor no less, but the update goes out sooner, which is what a walked
   picture is for.
-- **A scroll and a drag are a copy.** Walked to 20, a scroll and a drag still
-  send 3 to 11 times `WLSV`'s bytes, nearly all of them stills: the same
-  pixels moved are coded again, a region only starts once its tiles have
-  changed in 4 of 8 tenths, and what it carried is owed again at the ceiling.
-  A kind that copies a rectangle the client holds to another place, as RFB's
-  CopyRect does, would send a scroll for a few bytes and the strip it
-  uncovered. It is a new kind in `wlshare-proto`, a new `proto-v` tag, and
-  zDesk's page drawing it; the held tiles gain from it too.
 - **Fewer stills sent twice.** A still sent below the ceiling is owed again at
   the ceiling, so walked to 20 most of a scroll's still bytes are sent twice.
   Owing it only below some distance from the ceiling, or settling at a level

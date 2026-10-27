@@ -35,6 +35,14 @@
 //! 500 ms: one that shrinks keeps its stream, one that grows starts another,
 //! one with no motion for a second ends.
 //!
+//! **What moved is a copy.** Where the damage moved pixels the client holds
+//! — a scroll, a window dragged — the rectangle they now fill goes as a copy
+//! of where they were ([`wlshare_proto::tiles::KIND_COPY`]), found by looking
+//! for runs of the changed tiles in the picture before, ahead of the stills,
+//! and none of its tiles is a still or churn. A copy reads only what the
+//! client holds by then, and every tile it draws on is owed what its source
+//! is.
+//!
 //! **What a stream codes.** A region is an encoder over its rectangle alone,
 //! told the damage inside it as the VP9 encoding's whole-desktop stream is, so
 //! the encoder's time follows the area that moves. It is 4:2:0 at the dial the
@@ -302,6 +310,13 @@ impl Churn {
         });
         moving.sort_unstable();
         moving
+    }
+
+    /// In how many of the last [`CHURN_WINDOW`] slots `key` changed, as of `now`.
+    fn recent(&self, key: (u16, u16), now: Duration) -> u32 {
+        let (Some(origin), Some(cell)) = (self.origin, self.churn.get(&key)) else { return 0 };
+        let elapsed = Self::slot(origin, now).saturating_sub(cell.last_slot);
+        if elapsed >= CHURN_WINDOW { 0 } else { (cell.history << elapsed).count_ones() }
     }
 
     fn clear(&mut self) {
@@ -597,6 +612,103 @@ pub struct Update {
     pub keyframe: bool,
 }
 
+// ── What moved ───────────────────────────────────────────────────────────────
+
+/// The fewest changed tiles no stream carries that a read looks among for
+/// pixels the client holds elsewhere: below it a copy saves less than the
+/// looking costs.
+const COPY_MIN_TILES: usize = 4;
+/// The fewest pixels a copy is sent for.
+const COPY_MIN_PIXELS: u32 = 4096;
+/// The churn at which a tile is not looked for elsewhere: what a copy draws is
+/// no churn, so a tile that changed in place this often is a video or an
+/// animation, which nothing was copied to, and the looking would be for
+/// nothing every frame.
+const COPY_CHURN: u32 = 2;
+/// A probe's pixels: a run along a row of the new picture, looked for in the
+/// old one.
+const PROBE: u16 = 16;
+/// The most probes a read takes.
+const MAX_PROBES: usize = 64;
+/// The most offsets a read tries, the one the most probes found first.
+const MAX_OFFSETS: usize = 3;
+/// The most places a probe is found at and still counted: one found at more
+/// is in something that repeats, a texture or a flat fill with an edge, and
+/// says nothing of where anything moved. A run of text is found on many of a
+/// page's lines and still counts, its places spread over offsets the scroll's
+/// gathers more probes than.
+const MAX_PROBE_HITS: usize = 32;
+/// The most copies a read sends.
+const MAX_COPIES: usize = 8;
+/// How far from the tiles it looks among a read looks for where they were, in
+/// pixels: further than a window is dragged or a page scrolled between two
+/// updates, short of the whole of a large desktop.
+const COPY_REACH: u16 = 512;
+/// The rows a rectangle's widening is checked on: every this many, and the
+/// probe's and the last.
+const GROW_SAMPLE: usize = 16;
+/// How much larger than the tiles looked among the old picture they are looked
+/// for in may be: past it, a few tiles changed across a large desktop, beside
+/// a stream, and the looking would cost more than a copy of them could save.
+const COPY_WINDOW_RATIO: u32 = 32;
+/// The most rows apart the old picture is looked in: a probe is found only on
+/// a row looked in, so each sits on a row a probe before it did not, and
+/// every offset has probes of its own on rows looked in. Only as many apart
+/// as there are probes for two of them on each.
+const MAX_SCAN_STEP: u16 = 4;
+/// The base of a run's rolling hash: odd, and wide enough to spread a pixel's
+/// bits over the hash.
+const HASH_BASE: u64 = 0x0000_0100_0000_01b3;
+
+/// A rectangle the client draws from what it holds: `dst` from the same size
+/// at `src`, and whether it is owed a still at the ceiling: where its source
+/// is, and on a walked list always, as what it draws is a lossy still coded
+/// elsewhere, a patchwork of the runs that were sent, and a still sent where
+/// it now is codes it better.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CopyRect {
+    dst: Area,
+    src: (u16, u16),
+    owed: bool,
+}
+
+impl CopyRect {
+    /// The source as a rectangle of the desktop.
+    fn source(self) -> Area {
+        Area { left: self.src.0, top: self.src.1, right: self.src.0 + (self.dst.right - self.dst.left), bottom: self.src.1 + (self.dst.bottom - self.dst.top) }
+    }
+}
+
+/// A run of the new picture looked for in the old: where it starts, the area
+/// of the damage it is in, and its hash.
+struct Probe {
+    x: u16,
+    y: u16,
+    area: usize,
+    hash: u64,
+}
+
+/// A pixel of a `B, G, R, X` picture, as one word.
+fn pixel(pixels: &[u8], stride: usize, x: u16, y: u16) -> u32 {
+    let at = usize::from(y) * stride + usize::from(x) * 4;
+    u32::from_le_bytes(pixels[at..at + 4].try_into().expect("four bytes"))
+}
+
+/// Which of a filter's 65,536 bits a run's hash sets: its top 16 bits once
+/// mixed, since a run's last pixels are only in the low bits of [`run_hash`],
+/// and a probe one pixel off a page's background would otherwise share the
+/// background's bit.
+fn filter_bit(hash: u64) -> usize {
+    (hash.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 48) as usize
+}
+
+/// The hash of the [`PROBE`] pixels from `(x, y)`, each pixel a digit of base
+/// [`HASH_BASE`], the first the most significant, so that the next run's is
+/// this one's with a digit taken off the front and one put on the end.
+fn run_hash(pixels: &[u8], stride: usize, x: u16, y: u16) -> u64 {
+    (x..x + PROBE).fold(0, |hash, x| hash.wrapping_mul(HASH_BASE).wrapping_add(u64::from(pixel(pixels, stride, x, y))))
+}
+
 // ── The encoder ──────────────────────────────────────────────────────────────
 
 /// One live region stream.
@@ -606,7 +718,7 @@ struct Live {
     area: Area,
     cells: Vec<(u16, u16)>,
     stream: Box<dyn RegionStream>,
-    /// The damage inside the region since its last frame, from its top-left.
+    /// The damage inside the region no frame has carried, from its top-left.
     pending: Vec<Rect>,
     dirty: bool,
     /// Its START went out, and so its END is owed when it ends.
@@ -615,6 +727,15 @@ struct Live {
     restarting: bool,
     carried: bool,
     moving_at: Duration,
+}
+
+impl Live {
+    /// The damage no frame carried, on the desktop: what the client holds of
+    /// it is the stream's last frame from before it.
+    fn unsent(&self) -> impl Iterator<Item = Area> + '_ {
+        let Area { left, top, .. } = self.area;
+        self.pending.iter().map(move |r| Area { left: left + r.x, top: top + r.y, right: left + r.x + r.width - 1, bottom: top + r.y + r.height - 1 })
+    }
 }
 
 /// The rectangles of one update as they are appended, and how many.
@@ -684,6 +805,9 @@ pub struct TilesEncoder {
     retuned_at: Option<Duration>,
     /// The stills the reads since the last encode owe.
     stills: Vec<Area>,
+    /// The copies the reads since the last encode found, which go ahead of
+    /// the stills, in the order they were found.
+    copies: Vec<CopyRect>,
     /// Streams that ended outside an encode, owed their END.
     ended: Vec<(u8, Area)>,
     /// A read came since the last encode, which owes a round of the streams.
@@ -728,6 +852,7 @@ impl TilesEncoder {
             debts: HashMap::new(),
             retuned_at: None,
             stills: Vec::new(),
+            copies: Vec::new(),
             ended: Vec::new(),
             read: false,
             next_tick: Duration::ZERO,
@@ -795,6 +920,7 @@ impl TilesEncoder {
         self.retuned_at = None;
         self.churn.clear();
         self.stills.clear();
+        self.copies.clear();
         self.restarting = true;
         self.unknown = tiles_of(Area::whole(self.size)).map(|(cell, _)| cell).collect();
     }
@@ -807,6 +933,10 @@ impl TilesEncoder {
     /// framebuffer itself, for as long as the copy takes. Nothing is coded: the
     /// next [`Self::encode`] codes what this owes. The first read of an encoder
     /// made or forgotten is the whole picture whatever `changed` says.
+    ///
+    /// Where the damage moved pixels the client holds — a scroll, a window
+    /// dragged — the rectangle they now fill is a copy of where they were
+    /// ([`Self::find_copies`]), and none of its tiles is a still.
     pub fn read(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>, now: Duration) -> Result<(), TilesError> {
         let (w, h) = self.size;
         if stride < usize::from(w) * 4 || pixels.len() < (usize::from(h) - 1) * stride + usize::from(w) * 4 {
@@ -817,19 +947,270 @@ impl TilesEncoder {
             Some(rects) => rects.iter().filter_map(|r| Area::clipped(*r, self.size)).collect(),
             None => whole.to_vec(),
         };
-        for area in areas {
-            self.damage(pixels, stride, area, now);
+        // The tiles of each area that differ from the picture before any of
+        // them, compared once: what copies are looked among, and what each
+        // area's damage takes as changed.
+        let differ: Vec<HashSet<(u16, u16)>> = areas.iter().map(|area| tiles_of(*area).filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part)).map(|(cell, _)| cell).collect()).collect();
+        let copies = self.find_copies(pixels, stride, &areas, &differ, now);
+        // A copy draws what the client holds of its source over every tile it
+        // touches, changed or not: each is owed what the source is owed, and
+        // is paid where the copy draws it whole from a source owed nothing.
+        for copy in &copies {
+            for (cell, _) in tiles_of(copy.dst) {
+                if copy.owed {
+                    self.debts.insert(cell, now);
+                } else if copy.dst.contains(self.cell_area(cell)) {
+                    self.debts.remove(&cell);
+                }
+            }
         }
+        for (i, area) in areas.iter().enumerate() {
+            self.damage(pixels, stride, *area, &differ[i], &areas[..i], &copies, now);
+        }
+        self.copies.extend(copies);
         self.read = true;
         Ok(())
+    }
+
+    /// The rectangles of `pixels`, the damage `areas` of the new picture, that
+    /// are the client's own pixels from elsewhere, each the largest such
+    /// rectangle around a run of pixels found there, at most
+    /// [`MAX_COPIES`]; `differ`, each area's tiles that changed.
+    ///
+    /// Only where enough tiles changed that no stream carries and that have not
+    /// been changing in place ([`COPY_CHURN`]): up to [`MAX_PROBES`] runs of
+    /// those tiles, none of one colour, are looked for along the rows of the
+    /// old picture within the damage and [`COPY_REACH`] of them, every
+    /// [`MAX_SCAN_STEP`]th at most, by a rolling hash; of those found at
+    /// [`MAX_PROBE_HITS`] places at most, the offsets the most were found at
+    /// are grown, from each run, into the rectangle whose rows are the old
+    /// picture's at that offset, kept where it draws a changed tile whole. A
+    /// copy goes out ahead of the update's stills, so it reads only what the
+    /// client holds by then: never a tile a stream carries, or one a still not yet sent is
+    /// owed for, or the rectangle of a copy before it in the same read, since
+    /// it is matched against the picture before any of them; nor does it draw
+    /// over a tile a stream carries.
+    fn find_copies(&self, pixels: &[u8], stride: usize, areas: &[Area], differ: &[HashSet<(u16, u16)>], now: Duration) -> Vec<CopyRect> {
+        if !self.unknown.is_empty() || areas.iter().map(|area| tiles_of(*area).count()).sum::<usize>() < COPY_MIN_TILES {
+            return Vec::new();
+        }
+        let (old, old_stride) = (&self.mirror[..], self.stride);
+        let parts: Vec<(usize, Area)> = areas
+            .iter()
+            .enumerate()
+            .flat_map(|(i, area)| tiles_of(*area).map(move |(cell, part)| (i, cell, part)))
+            .filter(|(i, cell, _)| !self.covered.contains(cell) && self.churn.recent(*cell, now) < COPY_CHURN && differ[*i].contains(cell))
+            .map(|(i, _, part)| (i, part))
+            .collect();
+        if parts.len() < COPY_MIN_TILES {
+            return Vec::new();
+        }
+
+        // The probes, spread over the changed tiles: in each, the first of
+        // four rows whose run across its middle is not one colour, each a row
+        // on from the one before's, so that they fall on rows of every residue
+        // of the scan's step.
+        let mut probes = Vec::new();
+        for &(area, part) in parts.iter().step_by(parts.len().div_ceil(MAX_PROBES)) {
+            if part.w() < PROBE {
+                continue;
+            }
+            let x = part.left + (part.w() - PROBE) / 2;
+            let busy = |y: u16| (x + 1..x + PROBE).any(|at| pixel(pixels, stride, at, y) != pixel(pixels, stride, x, y));
+            let shift = (probes.len() % usize::from(MAX_SCAN_STEP)) as u16;
+            if let Some(y) = (0..4).map(|k| (part.top + part.h() * k / 4 + shift).min(part.bottom)).find(|y| busy(*y)) {
+                probes.push(Probe { x, y, area, hash: run_hash(pixels, stride, x, y) });
+            }
+        }
+        // Within the damage, which what moved left too, and within reach of the
+        // tiles looked among.
+        let union = |a: Area, b: Area| Area { left: a.left.min(b.left), top: a.top.min(b.top), right: a.right.max(b.right), bottom: a.bottom.max(b.bottom) };
+        let damage = areas.iter().copied().reduce(union).expect("some damage");
+        let looked = parts.iter().map(|(_, part)| *part).reduce(union).expect("some parts");
+        let reach = Area { left: looked.left.saturating_sub(COPY_REACH), top: looked.top.saturating_sub(COPY_REACH), right: looked.right.saturating_add(COPY_REACH), bottom: looked.bottom.saturating_add(COPY_REACH) };
+        let window = damage.intersect(reach).expect("the parts are in the damage");
+        let looked_at: u32 = parts.iter().map(|(_, part)| u32::from(part.w()) * u32::from(part.h())).sum();
+        if probes.is_empty() || window.w() < PROBE || u32::from(window.w()) * u32::from(window.h()) > COPY_WINDOW_RATIO * looked_at {
+            return Vec::new();
+        }
+        let step = (probes.len() / 8).clamp(1, usize::from(MAX_SCAN_STEP)) as u16;
+
+        // Every run of the old picture looked in, against the probes: a bit
+        // per probe of 65,536 passes over nearly every run that is none of
+        // them.
+        let mut filter = vec![0u64; 1 << 10];
+        for probe in &probes {
+            let bit = filter_bit(probe.hash);
+            filter[bit / 64] |= 1 << (bit % 64);
+        }
+        let first = (1..PROBE).fold(1u64, |power, _| power.wrapping_mul(HASH_BASE));
+        let mut hits: Vec<Vec<(i32, i32)>> = vec![Vec::new(); probes.len()];
+        let mut row: Vec<u64> = Vec::with_capacity(usize::from(window.w()));
+        for y in (window.top..=window.bottom).filter(|y| y % step == 0) {
+            let at = usize::from(y) * old_stride + usize::from(window.left) * 4;
+            row.clear();
+            row.extend(old[at..at + usize::from(window.w()) * 4].as_chunks::<4>().0.iter().map(|px| u64::from(u32::from_le_bytes(*px))));
+            let mut hash = row[..usize::from(PROBE)].iter().fold(0u64, |hash, px| hash.wrapping_mul(HASH_BASE).wrapping_add(*px));
+            let last = row.len() - usize::from(PROBE);
+            for dx in 0..=last {
+                if dx > 0 {
+                    // The run before, its first pixel dropped and the next taken on.
+                    hash = hash.wrapping_sub(row[dx - 1].wrapping_mul(first)).wrapping_mul(HASH_BASE).wrapping_add(row[dx + usize::from(PROBE) - 1]);
+                }
+                let bit = filter_bit(hash);
+                if filter[bit / 64] & (1 << (bit % 64)) != 0 {
+                    let x = window.left + dx as u16;
+                    for (probe, hits) in probes.iter().zip(&mut hits).filter(|(probe, hits)| probe.hash == hash && hits.len() <= MAX_PROBE_HITS) {
+                        let offset = (i32::from(x) - i32::from(probe.x), i32::from(y) - i32::from(probe.y));
+                        if offset != (0, 0) {
+                            hits.push(offset);
+                        }
+                    }
+                }
+            }
+        }
+        let mut found: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, offsets) in hits.iter().enumerate().filter(|(_, offsets)| offsets.len() <= MAX_PROBE_HITS) {
+            for offset in offsets {
+                found.entry(*offset).or_default().push(i);
+            }
+        }
+        let mut offsets: Vec<((i32, i32), Vec<usize>)> = found.into_iter().filter(|(_, seeds)| seeds.len() >= 2).collect();
+        offsets.sort_unstable_by_key(|(offset, seeds)| (Reverse(seeds.len()), *offset));
+        let most = offsets.first().map_or(0, |(_, seeds)| seeds.len());
+        offsets.retain(|(_, seeds)| seeds.len() * 4 >= most);
+        offsets.truncate(MAX_OFFSETS);
+
+        // Each offset grown from its probes, one not inside a copy already.
+        let pending: HashSet<(u16, u16)> = self.stills.iter().flat_map(|still| tiles_of(*still).map(|(cell, _)| cell)).collect();
+        let mut copies: Vec<CopyRect> = Vec::new();
+        for (offset, seeds) in offsets {
+            for probe in seeds.into_iter().map(|i| &probes[i]) {
+                if copies.len() == MAX_COPIES {
+                    return copies;
+                }
+                let at = Area { left: probe.x, top: probe.y, right: probe.x, bottom: probe.y };
+                if copies.iter().any(|copy| copy.dst.contains(at)) {
+                    continue;
+                }
+                let Some(dst) = self.grow(pixels, stride, areas[probe.area], offset, probe, &pending, &copies) else { continue };
+                if u32::from(dst.w()) * u32::from(dst.h()) < COPY_MIN_PIXELS {
+                    continue;
+                }
+                // Where it draws only some of a tile, the tile is a still
+                // anyway: a copy that draws no changed tile whole saves
+                // nothing, and cuts the stills' runs short.
+                if !parts.iter().any(|(_, part)| dst.contains(*part)) {
+                    continue;
+                }
+                let src = ((i32::from(dst.left) + offset.0) as u16, (i32::from(dst.top) + offset.1) as u16);
+                let copy = CopyRect { dst, src, owed: false };
+                let owed = self.adaptive || tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
+                copies.push(CopyRect { owed, ..copy });
+            }
+        }
+        copies
+    }
+
+    /// The largest rectangle within `area` around `probe` whose pixels are the
+    /// old picture's at `offset`, every row of it and of its source clear of
+    /// the tiles [`Self::find_copies`] keeps a copy from: grown up and down
+    /// along the probe's run, then a column at a time to either side, each
+    /// column checked on a sample of those rows ([`GROW_SAMPLE`]), so that a
+    /// pixel that happens to match beside an edge does not widen it past the
+    /// edge, then up and down from the probe's row at that width, every row
+    /// of it checked whole. `None` where the
+    /// probe's own run is not the old picture's, a hash's collision, or is in
+    /// a tile it may not touch.
+    #[allow(clippy::too_many_arguments)]
+    fn grow(&self, pixels: &[u8], stride: usize, area: Area, (dx, dy): (i32, i32), probe: &Probe, pending: &HashSet<(u16, u16)>, copies: &[CopyRect]) -> Option<Area> {
+        let (w, h) = self.size;
+        let (old, old_stride) = (&self.mirror[..], self.stride);
+        let from_x = |x: u16| u16::try_from(i32::from(x) + dx).ok().filter(|x| *x < w);
+        let from_y = |y: u16| u16::try_from(i32::from(y) + dy).ok().filter(|y| *y < h);
+        // Where a copy may draw, and where it may read from: no stream's tile,
+        // no tile owed a still not yet sent, nothing an earlier copy draws.
+        let drawable = |cell: (u16, u16)| !self.covered.contains(&cell);
+        let readable = |cell: (u16, u16)| !self.covered.contains(&cell) && !pending.contains(&cell);
+        let clear = |source: Area| copies.iter().all(|copy| copy.dst.intersect(source).is_none());
+        let source = |dst: Area| {
+            let (Some(left), Some(top), Some(right), Some(bottom)) = (from_x(dst.left), from_y(dst.top), from_x(dst.right), from_y(dst.bottom)) else { return None };
+            Some(Area { left, top, right, bottom })
+        };
+        let cells = |dst: Area, source: Area| tiles_of(dst).all(|(cell, _)| drawable(cell)) && tiles_of(source).all(|(cell, _)| readable(cell));
+        let fits = |dst: Area| source(dst).is_some_and(|source| cells(dst, source) && clear(source));
+        // A row's tiles, and its source's, are those of every row of the same
+        // band and the same band of the source: the last band's answer, for
+        // the width it was asked for.
+        let fitted = std::cell::Cell::new(None);
+        let row = |y: u16, left: u16, right: u16| {
+            let dst = Area { left, top: y, right, bottom: y };
+            let Some(from) = source(dst) else { return false };
+            let key = (y / TILE, from.top / TILE, left, right);
+            let fit = match fitted.get() {
+                Some((cached, fit)) if cached == key => fit,
+                _ => {
+                    let fit = cells(dst, from);
+                    fitted.set(Some((key, fit)));
+                    fit
+                }
+            };
+            fit && clear(from) && {
+                let (oy, ol, or) = (from_y(y).expect("fits"), from_x(left).expect("fits"), from_x(right).expect("fits"));
+                let new = &pixels[usize::from(y) * stride + usize::from(left) * 4..usize::from(y) * stride + (usize::from(right) + 1) * 4];
+                let was = &old[usize::from(oy) * old_stride + usize::from(ol) * 4..usize::from(oy) * old_stride + (usize::from(or) + 1) * 4];
+                new == was
+            }
+        };
+        let column = |x: u16, top: u16, bottom: u16, sample: &[u16]| {
+            let dst = Area { left: x, top, right: x, bottom };
+            fits(dst) && {
+                let ox = from_x(x).expect("fits");
+                sample.iter().all(|y| pixel(pixels, stride, x, *y) == pixel(old, old_stride, ox, from_y(*y).expect("fits")))
+            }
+        };
+        let (x, y) = (probe.x, probe.y);
+        let (mut left, mut right) = (x, x + PROBE - 1);
+        if !row(y, left, right) {
+            return None;
+        }
+        let (mut top, mut bottom) = (y, y);
+        let rows = |top: &mut u16, bottom: &mut u16, left: u16, right: u16| {
+            while *top > area.top && row(*top - 1, left, right) {
+                *top -= 1;
+            }
+            while *bottom < area.bottom && row(*bottom + 1, left, right) {
+                *bottom += 1;
+            }
+        };
+        rows(&mut top, &mut bottom, left, right);
+        let sample: Vec<u16> = (top..=bottom).step_by(GROW_SAMPLE).chain([y, bottom]).collect();
+        while left > area.left && column(left - 1, top, bottom, &sample) {
+            left -= 1;
+        }
+        while right < area.right && column(right + 1, top, bottom, &sample) {
+            right += 1;
+        }
+        let (mut top, mut bottom) = (y, y);
+        rows(&mut top, &mut bottom, left, right);
+        Some(Area { left, top, right, bottom })
     }
 
     /// One rectangle of damage: into the picture, the streams told where it
     /// changed what they carry, the churn of the tiles it changed, and the runs
     /// of those no stream carries owed as stills, band by band. A tile it
-    /// names whose pixels are what the client holds is no change to anything.
-    fn damage(&mut self, pixels: &[u8], stride: usize, area: Area, now: Duration) {
-        let mut changed: HashSet<(u16, u16)> = tiles_of(area).filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part)).map(|(cell, _)| cell).collect();
+    /// names whose pixels are what the client holds is no change to anything,
+    /// and one whose part of it a copy draws is no still: what it is owed
+    /// [`Self::read`] said. No tile a copy draws on or reads from is churn.
+    ///
+    /// The tiles that changed are `differ`, but where an area `before` it
+    /// reached, which went into the picture first and is compared again.
+    #[allow(clippy::too_many_arguments)]
+    fn damage(&mut self, pixels: &[u8], stride: usize, area: Area, differ: &HashSet<(u16, u16)>, before: &[Area], copies: &[CopyRect], now: Duration) {
+        let mut changed: HashSet<(u16, u16)> = tiles_of(area)
+            .filter(|(cell, part)| if before.iter().any(|b| b.intersect(*part).is_some()) { differs(&self.mirror, self.stride, pixels, stride, *part) } else { differ.contains(cell) })
+            .map(|(cell, _)| cell)
+            .collect();
         if !changed.is_empty() {
             self.changed_at = now;
         }
@@ -854,7 +1235,14 @@ impl TilesEncoder {
                 if !changed.contains(&cell) {
                     continue;
                 }
-                self.churn.observe(cell, now);
+                if copies.iter().any(|copy| copy.dst.contains(part)) {
+                    continue;
+                }
+                // What a scroll uncovered, or a window moved off, is a still
+                // and not motion, or the band it keeps changing would stream.
+                if !copies.iter().any(|copy| copy.dst.intersect(part).is_some() || copy.source().intersect(part).is_some()) {
+                    self.churn.observe(cell, now);
+                }
                 extend(&mut changes, part);
                 if !self.covered.contains(&cell) {
                     extend(&mut runs, part);
@@ -871,12 +1259,13 @@ impl TilesEncoder {
     }
 
     /// Append to `out` the rectangles of what is owed at `now`, and return how
-    /// many: the ENDs of streams [`Self::forget`] ended, the stills the reads
-    /// owe, a round of the streams after a read — the regions laid out again
-    /// and every stream the damage fell on coded — and, at its time
-    /// ([`Self::tick_at`]), the streams whose motion stopped ended and the
-    /// tiles still long enough sent at the ceiling. None when nothing is owed, which is
-    /// no update to send.
+    /// many: the ENDs of streams [`Self::forget`] ended, the copies and the
+    /// stills the reads owe, a round of the streams after a read — the
+    /// regions laid out again and every stream the damage fell on coded —
+    /// and, at its time ([`Self::tick_at`]), the streams whose motion stopped
+    /// ended and the tiles still long enough sent at the ceiling; last, as
+    /// stills, what changed under a stream that ended here that no frame of it
+    /// carried. None when nothing is owed, which is no update to send.
     ///
     /// Tens of milliseconds for a desktop that changed all over. An error
     /// takes back the rectangle it was in, and leaves the ones before it.
@@ -884,6 +1273,9 @@ impl TilesEncoder {
         let mut out = Out { out, count: 0, keyframe: false };
         for (id, area) in std::mem::take(&mut self.ended) {
             out.end(id, area);
+        }
+        for copy in std::mem::take(&mut self.copies) {
+            out.header(copy.dst, TileHeader::Copy { x: copy.src.0, y: copy.src.1 });
         }
         let stills = std::mem::take(&mut self.stills);
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
@@ -898,6 +1290,10 @@ impl TilesEncoder {
         if now >= self.next_tick {
             self.next_tick = now + CLEANUP_TICK;
             self.tick(now, &mut out)?;
+        }
+        // What the streams that ended here had not carried, after their ENDs.
+        for area in std::mem::take(&mut self.stills) {
+            self.still(area, self.quality, now, &mut out)?;
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
         Ok(Update { rects, keyframe: out.keyframe })
@@ -988,7 +1384,6 @@ impl TilesEncoder {
             let header = if live.started { TileHeader::Frame { stream: live.id, len: 0 } } else { TileHeader::Start { stream: live.id, len: 0 } };
 
             let coded = live.stream.read_bgrx(&self.mirror[at..], stride, Some(&live.pending)).and_then(|()| {
-                live.pending.clear();
                 headed = true;
                 let header_at = out.header(live.area, header);
                 Ok((live.stream.encode(!live.started, out.out)?, header_at))
@@ -996,6 +1391,7 @@ impl TilesEncoder {
             match coded {
                 Ok((true, header_at)) => {
                     out.length(from, header_at, header)?;
+                    live.pending.clear();
                     out.keyframe |= !live.started || live.restarting;
                     live.restarting = false;
                     live.dirty = false;
@@ -1052,6 +1448,7 @@ impl TilesEncoder {
         for live in &mut next {
             live.moving_at = now;
         }
+        let mut unsent = Vec::new();
         for area in wanted {
             if next.iter().any(|live| live.area.contains(area)) {
                 continue;
@@ -1061,6 +1458,7 @@ impl TilesEncoder {
                     if live.started {
                         out.end(live.id, live.area);
                     }
+                    unsent.extend(live.unsent());
                 }
                 let id = (0..=u8::MAX).find(|id| !next.iter().chain(&old).any(|live| live.id == *id)).expect("at most a few streams live");
                 next.push(self.build(id, area, now)?);
@@ -1071,13 +1469,32 @@ impl TilesEncoder {
             let overlaps = next.iter().any(|kept| kept.area.intersect(live.area).is_some());
             if !idle && !overlaps && next.len() < MAX_STREAMS {
                 next.push(live);
-            } else if live.started {
-                out.end(live.id, live.area);
+            } else {
+                if live.started {
+                    out.end(live.id, live.area);
+                }
+                unsent.extend(live.unsent());
             }
         }
         self.live = next;
         self.cover();
+        self.owe(&unsent);
         Ok(())
+    }
+
+    /// What streams that ended did not carry, owed as stills where no stream
+    /// live from here does, as runs along a row.
+    fn owe(&mut self, unsent: &[Area]) {
+        for area in unsent {
+            let mut runs: Vec<Area> = Vec::new();
+            for (_, part) in tiles_of(*area).filter(|(cell, _)| !self.covered.contains(cell)) {
+                match runs.last_mut() {
+                    Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => run.right = part.right,
+                    _ => runs.push(part),
+                }
+            }
+            self.stills.extend(runs);
+        }
     }
 
     /// A stream of the region coder over `area`, every tile of it owed from now.
@@ -1096,15 +1513,15 @@ impl TilesEncoder {
     /// coarse, since the link is behind on what it has, until the desktop has
     /// been still for [`COARSE_QUIET`].
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
-        let before = self.live.len();
+        let mut unsent = Vec::new();
         for live in self.live.extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE) {
             if live.started {
                 out.end(live.id, live.area);
             }
+            unsent.extend(live.unsent());
         }
-        if self.live.len() != before {
-            self.cover();
-        }
+        self.cover();
+        self.owe(&unsent);
         if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
             return Ok(());
         }
@@ -1218,12 +1635,13 @@ mod tests {
         starts: usize,
         frames: usize,
         ends: usize,
+        copies: usize,
         bytes: usize,
     }
 
     impl Page {
         fn new(w: u16, h: u16) -> Self {
-            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), pngs: 0, webps: 0, starts: 0, frames: 0, ends: 0, bytes: 0 }
+            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), pngs: 0, webps: 0, starts: 0, frames: 0, ends: 0, copies: 0, bytes: 0 }
         }
 
         /// Packed RGB drawn at the rectangle.
@@ -1279,6 +1697,20 @@ mod tests {
                     TileBody::End { stream } => {
                         self.ends += 1;
                         assert_eq!(self.streams.remove(&stream), Some((x, y, w, h)), "the end of a stream live over its rectangle");
+                    }
+                    TileBody::Copy { x: from_x, y: from_y } => {
+                        self.copies += 1;
+                        let line = usize::from(w) * 4;
+                        assert!(usize::from(from_x) * 4 + line <= self.w * 4 && (usize::from(from_y) + usize::from(h)) * self.w * 4 <= self.canvas.len(), "a copy from inside the desktop");
+                        // Copied out first, so a source the rectangle overlaps is read whole.
+                        let source: Vec<u8> = (0..usize::from(h)).flat_map(|row| {
+                            let at = ((usize::from(from_y) + row) * self.w + usize::from(from_x)) * 4;
+                            self.canvas[at..at + line].to_vec()
+                        }).collect();
+                        for (row, pixels) in source.chunks_exact(line).enumerate() {
+                            let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+                            self.canvas[at..at + line].copy_from_slice(pixels);
+                        }
                     }
                 }
             }
@@ -1620,6 +2052,42 @@ mod tests {
         assert!(page.streams.is_empty());
     }
 
+    /// A stream that ends with damage no frame of it carried leaves that
+    /// damage as stills in the same update, not the stream's last frame from
+    /// before it.
+    #[test]
+    fn a_stream_that_ends_sends_what_it_did_not_carry() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = noise(w, h, 5);
+        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let video = Rect { x: 128, y: 64, width: 192, height: 128 };
+        for n in 1..=40u32 {
+            paint(&mut pixels, w, video, 300 + n);
+            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
+        // Its motion last seen at 1.8 s. A tile of it redrawn twice once that
+        // stopped, which is no motion but is carried, its tiles owed the
+        // ceiling from then; then one change under it in the round that ends
+        // it, idle, before any frame of it carries the change, and before its
+        // tiles are owed their stills.
+        let now_and_then = Rect { x: 128, y: 64, width: 64, height: 64 };
+        for (n, at) in [(1, 2600), (2, 2750)] {
+            paint(&mut pixels, w, now_and_then, 900 + n);
+            step(&mut encoder, &mut page, &pixels, Some(&[now_and_then]), ms(at));
+        }
+        assert_eq!(page.ends, 0, "the stream still live");
+        let change = Rect { x: 256, y: 128, width: 64, height: 64 };
+        paint(&mut pixels, w, change, 999);
+        step(&mut encoder, &mut page, &pixels, Some(&[change]), ms(3100));
+        assert_eq!(page.ends, 1, "the stream ended");
+        let row = |y: usize| (y * usize::from(w) + usize::from(change.x)) * 4..(y * usize::from(w) + usize::from(change.x + change.width)) * 4;
+        let held = (usize::from(change.y)..usize::from(change.y + change.height)).all(|y| page.canvas[row(y)].as_chunks::<4>().0.iter().zip(pixels[row(y)].as_chunks::<4>().0).all(|(a, b)| a[..3] == b[..3]));
+        assert!(held, "the change is held exact, not the stream's last frame");
+    }
+
     /// A dial move restarts each live stream at its next frame, which is
     /// when the update counts as a keyframe: not an update before it that
     /// codes none of them.
@@ -1785,5 +2253,236 @@ mod tests {
             assert!(matches!(failed, Some(TilesError::Region(_))), "{failed:?}");
             assert_eq!((page.starts, page.frames, page.ends), (1, 3, 0), "the stream's four frames, then the failure");
         }
+    }
+
+    /// Rows `top` on of a `w`-wide document, `h` of them: a page scrolled to `top`.
+    fn scrolled(document: &[u8], w: u16, top: usize, h: u16) -> Vec<u8> {
+        let line = usize::from(w) * 4;
+        document[top * line..(top + usize::from(h)) * line].to_vec()
+    }
+
+    /// A page scrolled is a copy of what the client holds, and only the rows
+    /// it uncovered go as stills, a band of tiles: the page exact after it,
+    /// for a fraction of the picture's bytes.
+    #[test]
+    fn a_scroll_is_a_copy() {
+        let (w, h) = (256u16, 256u16);
+        let document = noise(w, 3 * h, 21);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let whole = page.bytes;
+        let pixels = scrolled(&document, w, 40, h);
+        let scroll = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!((page.copies, page.pngs), (1, 4 + 1), "a copy, and the band the rows uncovered are in, a still");
+        assert!(!scroll.keyframe);
+        assert_eq!(page.off(&pixels), 0, "the page exact");
+        assert!(page.bytes - whole < whole / 3, "{} bytes for a scroll, {whole} for the picture", page.bytes - whole);
+        assert!(!encoder.owed(), "a copy of exact pixels owes nothing");
+    }
+
+    /// A scroll that goes on stays copies, the tiles it moves no churn, so it
+    /// never becomes a region's stream, and up as well as down.
+    #[test]
+    fn a_scroll_that_goes_on_is_no_stream() {
+        let (w, h) = (320u16, 192u16);
+        let document = noise(w, 4 * h, 22);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let tops = (1..=12).map(|n| n * 24).chain((0..12).rev().map(|n| n * 24));
+        for (n, top) in tops.enumerate() {
+            let pixels = scrolled(&document, w, top, h);
+            let copies = page.copies;
+            step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(50 * (n as u64 + 1)));
+            assert_eq!(page.copies, copies + 1, "a copy at row {top}");
+            let bad: Vec<usize> = (0..usize::from(h)).filter(|y| page.canvas[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4].as_chunks::<4>().0.iter().zip(pixels[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4].as_chunks::<4>().0).any(|(a, b)| a[..3] != b[..3])).collect();
+            assert_eq!(page.off(&pixels), 0, "the page exact at row {top}: rows {bad:?} pngs {}", page.pngs);
+        }
+        assert_eq!(page.starts, 0, "no stream");
+    }
+
+    /// A window dragged over text is a copy of where it was: what it
+    /// uncovered and the tiles its edges cut go as stills.
+    #[test]
+    fn a_window_dragged_is_a_copy() {
+        let (w, h) = (384u16, 256u16);
+        let mut desktop = vec![0; usize::from(w) * usize::from(h) * 4];
+        glyphs(&mut desktop, w, Rect { x: 0, y: 0, width: w, height: h });
+        let window = noise(160, 112, 23);
+        let place = |at: (u16, u16)| {
+            let mut pixels = desktop.clone();
+            for row in 0..112 {
+                let to = ((usize::from(at.1) + row) * usize::from(w) + usize::from(at.0)) * 4;
+                pixels[to..to + 160 * 4].copy_from_slice(&window[row * 160 * 4..(row + 1) * 160 * 4]);
+            }
+            pixels
+        };
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
+        let pixels = place((110, 90));
+        let moved = Rect { x: 40, y: 30, width: 160 + 70, height: 112 + 60 };
+        step(&mut encoder, &mut page, &pixels, Some(&[moved]), ms(100));
+        assert_eq!(page.copies, 1, "the window");
+        assert_eq!(page.off(&pixels), 0);
+        assert!(!encoder.owed());
+    }
+
+    /// Two reads before an encode, a scroll each: the second's copy reads
+    /// none of the rows the first uncovered, whose still is not sent yet, so
+    /// the page is exact after the one update that carries both.
+    #[test]
+    fn a_copy_reads_only_what_the_client_holds() {
+        let (w, h) = (256u16, 256u16);
+        let document = noise(w, 3 * h, 24);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let stride = usize::from(w) * 4;
+        let all = [Rect { x: 0, y: 0, width: w, height: h }];
+        encoder.read(&scrolled(&document, w, 40, h), stride, Some(&all), ms(100)).unwrap();
+        let pixels = scrolled(&document, w, 100, h);
+        encoder.read(&pixels, stride, Some(&all), ms(110)).unwrap();
+        let mut out = Vec::new();
+        let update = encoder.encode(ms(110), &mut out).unwrap();
+        page.draw(update.rects, &out);
+        assert_eq!(page.copies, 2, "both scrolls");
+        assert_eq!(page.off(&pixels), 0, "the page exact");
+    }
+
+    /// A picture with no edge that repeats, which a WebP at 20 blurs far
+    /// more than one at 80: three smooth ramps, one of them a product.
+    fn ramps(w: u16, h: u16) -> Vec<u8> {
+        (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).flat_map(move |x| [((x + 2 * y) / 3 % 256) as u8, (x * y / 40 % 256) as u8, ((3 * x + y) / 5 % 256) as u8, 0])).collect()
+    }
+
+    /// A copy of a still the walk sent below the ceiling is owed the ceiling
+    /// as its source is, and the settle pays it.
+    #[test]
+    fn a_copy_of_a_coarse_still_is_owed_the_ceiling() {
+        let (w, h) = (256u16, 256u16);
+        let document = ramps(w, 3 * h);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        encoder.set_pace(20, false);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let pixels = scrolled(&document, w, 40, h);
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!(page.copies, 1);
+        let coarse = page.distance(&pixels);
+        encoder.set_pace(80, false);
+        assert!(encoder.owed(), "the copied tiles are owed the ceiling");
+        let webps = page.webps;
+        settle(&mut encoder, &mut page, ms(100));
+        assert!(page.webps - webps >= 4, "the copied rows of tiles sent again: {}", page.webps - webps);
+        let mut fresh = Page::new(w, h);
+        step(&mut TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap(), &mut fresh, &pixels, None, ms(0));
+        let (settled, ceiling) = (page.distance(&pixels), fresh.distance(&pixels));
+        assert!(settled < coarse && settled <= ceiling + ceiling / 20, "settled {settled}, against {coarse} at 20 and {ceiling} for the picture sent at 80");
+    }
+
+    /// On a walked list a copy is owed the ceiling even from a still sent
+    /// at it, and the settle sends its tiles again where they now are.
+    #[test]
+    fn a_walked_copy_is_owed_the_ceiling() {
+        let (w, h) = (256u16, 256u16);
+        let document = ramps(w, 3 * h);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        assert!(!encoder.owed(), "the first picture, at the ceiling, owes nothing");
+        let pixels = scrolled(&document, w, 40, h);
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!(page.copies, 1);
+        assert!(encoder.owed(), "the copied tiles are owed the ceiling");
+        let webps = page.webps;
+        settle(&mut encoder, &mut page, ms(100));
+        assert!(page.webps > webps, "the copied tiles sent again");
+        assert!(!encoder.owed());
+    }
+
+    /// Beside a region's stream, a scroll's copy neither draws on the tiles
+    /// the stream carries nor reads them, and the page is exact outside it.
+    #[test]
+    fn a_copy_keeps_off_a_stream() {
+        let (w, h) = (512u16, 256u16);
+        let document = noise(256, 3 * h, 26);
+        let mut pixels = noise(w, h, 27);
+        let page_at = |pixels: &mut [u8], top: usize| {
+            for row in 0..usize::from(h) {
+                let to = (row * usize::from(w) + 256) * 4;
+                pixels[to..to + 256 * 4].copy_from_slice(&document[(top + row) * 256 * 4..(top + row + 1) * 256 * 4]);
+            }
+        };
+        page_at(&mut pixels, 0);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        let outside = |page: &Page, pixels: &[u8]| {
+            (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).map(move |x| (x, y))).filter(|(x, y)| *x >= 256 || *y >= 192).filter(|(x, y)| page.canvas[(y * usize::from(w) + x) * 4..][..3] != pixels[(y * usize::from(w) + x) * 4..][..3]).count()
+        };
+        for n in 1..=20u32 {
+            paint(&mut pixels, w, video, 600 + n);
+            let mut damage = vec![video];
+            if n > 12 {
+                page_at(&mut pixels, (n as usize - 12) * 24);
+                damage.push(Rect { x: 256, y: 0, width: 256, height: h });
+            }
+            step(&mut encoder, &mut page, &pixels, Some(&damage), ms(u64::from(n) * 50));
+            assert_eq!(outside(&page, &pixels), 0, "the page exact outside the stream at frame {n}");
+        }
+        assert_eq!(page.starts, 1, "the video streams");
+        assert!(page.copies >= 8, "the page beside it scrolls by copies: {}", page.copies);
+    }
+
+    /// A copy draws what the client holds of its source, so where that is lossy
+    /// — the tiles a stream carried, owed their still — every tile the copy
+    /// draws on is owed it too, one that did not change included, and the
+    /// settle leaves the page exact.
+    #[test]
+    fn a_copy_from_a_lossy_source_owes_every_tile_it_draws() {
+        let (w, h) = (256u16, 320u16);
+        // Noise, but for 192 rows of grey from row 64 of the document.
+        let mut document = noise(w, 3 * h, 30);
+        let line = usize::from(w) * 4;
+        for row in 64..256 {
+            document[row * line..(row + 1) * line].copy_from_slice(&[0x81, 0x81, 0x81, 0].repeat(usize::from(w)));
+        }
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        // The third row of tiles as a stream leaves it: lossy, and owed.
+        for row in 128..192 {
+            for sample in &mut page.canvas[row * line..(row + 1) * line] {
+                *sample &= !1;
+            }
+        }
+        for col in 0..4 {
+            encoder.debts.insert((col, 2), ms(0));
+        }
+        // Scrolled 64 rows: the grey moves up a row of tiles, and the second row
+        // of tiles, grey before and after, is drawn from the lossy third.
+        let pixels = scrolled(&document, w, 64, h);
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!(page.copies, 1);
+        assert!((0..4).all(|col| encoder.debts.contains_key(&(col, 1))), "the tiles the copy drew that did not change are owed");
+        settle(&mut encoder, &mut page, ms(100));
+        assert_eq!(page.off(&pixels), 0, "the page exact once settled");
+    }
+
+    /// A picture that changed without anything in it moving finds no copy.
+    #[test]
+    fn a_new_picture_is_no_copy() {
+        let (w, h) = (256u16, 256u16);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &noise(w, h, 28), None, ms(0));
+        let pixels = noise(w, h, 29);
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!(page.copies, 0);
+        assert_eq!(page.off(&pixels), 0);
     }
 }
