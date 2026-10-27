@@ -1,6 +1,8 @@
 //! The walk on a modelled link: captures played through the encoder and the
 //! walk as a session plays them, one frame in flight, through the zDesk
-//! gateway to a browser on a link of a given rate and round trip.
+//! gateway to a browser on a link of a given rate and round trip. The model of
+//! the link and the gateway is `sim`, which the daemon's `tiles-walk-sim`
+//! plays the tiles picture over.
 //!
 //! ```text
 //! walk-sim CAPTURE [CAPTURE...] [--link MBPS[,MBPS@SECS...]] [--rtt MS]
@@ -21,190 +23,29 @@
 //!
 //! Time is the simulation's own: an encode takes what it took on this
 //! machine, or `--encode` for a run that is the same every time; a frame
-//! crosses the link at its rate after any frame before it; and the desktop is
-//! the capture's frames at the times they were captured, so a session that
-//! falls behind skips the frames it had no time for and carries their damage
-//! in the next. Several captures play one after the other in one session.
+//! crosses the link at its rate after any frame before it, the gateway reading
+//! it, and its fence, once the frame's share of its 512 KiB is free, the whole
+//! of it at most, ahead of the browser; and the desktop is the capture's frames
+//! at the times they were captured, so a session that falls behind skips the
+//! frames it had no time for and carries their damage in the next. Several captures play one after the other in one session.
 //! What it says of a run, one JSON object on stdout, is how long each change of
 //! the desktop took to be painted (`shown_mean_ms`, `shown_p50_ms`,
 //! `shown_p95_ms`, `shown_max_ms`), the frames a second (`fps`, of `frames`,
 //! `motion_frames`, `keyframes` and `settles`), the dial the motion was coded
 //! at (`motion_q_mean`, `motion_q_p10`), the link it used (`mbps`, and
 //! `delivery_p50_ms`, `delivery_p95_ms`) and how often the dial moved (`moves`,
-//! `downs`), beside what it was run with: `capture`, `link` (each rate in
+//! `downs`), beside what it was run with: `capture`, `picture` (`wlsv`), `link` (each rate in
 //! Mbit/s and the second it starts at), `rtt_ms`, `ceiling` and `held`.
 
+mod sim;
+
 use std::fs::File;
-use std::io::{BufReader, Read, Write as _};
-use std::process::{Command, Stdio};
+use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use wlshare_vp9::capture::Reader;
+use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 use wlshare_vp9::walk::QualityWalk;
 use wlshare_vp9::{Chroma, Rect, Stream};
-
-type Error = Box<dyn std::error::Error>;
-
-struct Desk {
-    at: Duration,
-    size: (u16, u16),
-    keyframe: bool,
-    changed: Option<Vec<Rect>>,
-    pixels: Vec<u8>,
-}
-
-/// The captures, one after the other, each's times after the one before.
-struct Source {
-    paths: Vec<String>,
-    reader: Option<Reader<BufReader<Box<dyn Read>>>>,
-    offset: Duration,
-    last: Duration,
-    peeked: Option<Desk>,
-}
-
-impl Source {
-    fn open(path: &str) -> Result<Reader<BufReader<Box<dyn Read>>>, Error> {
-        let input: Box<dyn Read> = if path.ends_with(".zst") {
-            let mut child = Command::new("zstd").arg("-dc").arg(path).stdout(Stdio::piped()).spawn()?;
-            Box::new(child.stdout.take().unwrap())
-        } else {
-            Box::new(File::open(path)?)
-        };
-        Ok(Reader::new(BufReader::with_capacity(1 << 20, input))?)
-    }
-
-    fn peek(&mut self) -> Result<Option<&Desk>, Error> {
-        while self.peeked.is_none() {
-            if self.reader.is_none() {
-                if self.paths.is_empty() {
-                    return Ok(None);
-                }
-                let path = self.paths.remove(0);
-                self.reader = Some(Self::open(&path)?);
-                // A frame interval after the last capture's end.
-                self.offset = self.last + Duration::from_millis(33);
-            }
-            let reader = self.reader.as_mut().unwrap();
-            match reader.next()? {
-                Some(f) => {
-                    let at = self.offset + f.at;
-                    self.last = at;
-                    // A capture after the first starts on its own picture: the
-                    // whole of it changed, though no keyframe is asked.
-                    let first = f.index == 0;
-                    self.peeked = Some(Desk {
-                        at,
-                        size: f.size,
-                        keyframe: f.keyframe && !(first && self.offset > Duration::ZERO),
-                        changed: if first { None } else { f.changed.map(<[Rect]>::to_vec) },
-                        pixels: f.pixels.to_vec(),
-                    });
-                }
-                None => self.reader = None,
-            }
-        }
-        Ok(self.peeked.as_ref())
-    }
-
-    fn next_at(&mut self) -> Result<Option<Duration>, Error> {
-        Ok(self.peek()?.map(|d| d.at))
-    }
-
-    fn take(&mut self) -> Desk {
-        self.peeked.take().unwrap()
-    }
-}
-
-/// A link of a rate that changes at given times, in bytes a second.
-struct Link {
-    rates: Vec<(Duration, f64)>,
-    one_way: Duration,
-    /// When the link is next idle.
-    free: Duration,
-}
-
-impl Link {
-    fn rate_at(&self, t: Duration) -> (f64, Option<Duration>) {
-        let i = self.rates.iter().rposition(|(from, _)| *from <= t).unwrap_or(0);
-        (self.rates[i].1, self.rates.get(i + 1).map(|(from, _)| *from))
-    }
-
-    /// When `bytes` written at `at` have all left the bottleneck.
-    fn send(&mut self, at: Duration, bytes: usize) -> Duration {
-        let mut t = at.max(self.free);
-        let mut left = bytes as f64;
-        loop {
-            let (rate, until) = self.rate_at(t);
-            let need = Duration::from_secs_f64(left / rate);
-            match until {
-                Some(until) if t + need > until => {
-                    left -= rate * (until - t).as_secs_f64();
-                    t = until;
-                }
-                _ => {
-                    t += need;
-                    break;
-                }
-            }
-        }
-        self.free = t;
-        t
-    }
-}
-
-/// The zDesk gateway between the session and the browser, as it passes a
-/// `WLSV` stream (zDesk's `VideoSink::fence_hold`): a frame is handed to the
-/// browser's link as it arrives, and its fence is echoed at once when nothing
-/// handed before it is still unpainted, and otherwise once the oldest such
-/// has been owed past the link's ping round trip, held 500 ms at most.
-struct Gateway {
-    link: Link,
-    /// The round trip between the session and the gateway.
-    hop: Duration,
-    /// Frames handed over and not yet painted: when each was, and when its
-    /// paint is acknowledged.
-    owed: std::collections::VecDeque<(Duration, Duration)>,
-    /// When the last echo went, which the next cannot overtake.
-    echoed: Duration,
-    /// When the browser has painted the last frame, which it paints one at a
-    /// time, in order.
-    painted: Duration,
-}
-
-impl Gateway {
-    /// A frame of `bytes` the session wrote at `sent`: when the browser has
-    /// painted it, and when its fence's echo is back at the session.
-    fn frame(&mut self, sent: Duration, bytes: usize, paint: Duration) -> (Duration, Duration) {
-        let handed = sent + self.hop / 2;
-        let painted = (self.link.send(handed, bytes) + self.link.one_way).max(self.painted) + paint;
-        self.painted = painted;
-        while self.owed.front().is_some_and(|(_, acked)| *acked <= handed) {
-            self.owed.pop_front();
-        }
-        let hold = self.owed.front().map_or(Duration::ZERO, |(at, _)| (handed - *at).saturating_sub(self.link.one_way * 2));
-        self.owed.push_back((handed, painted + self.link.one_way));
-        self.echoed = (handed + hold.min(Duration::from_millis(500))).max(self.echoed);
-        (painted, self.echoed + self.hop / 2)
-    }
-}
-
-fn pct(v: &[f64], p: f64) -> f64 {
-    if v.is_empty() {
-        return 0.0;
-    }
-    let mut v = v.to_vec();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[((v.len() - 1) as f64 * p).round() as usize]
-}
-
-/// A flag's time in milliseconds, which is zero or more.
-fn millis(flag: &str, value: String) -> Result<f64, Error> {
-    let ms: f64 = value.parse()?;
-    if !(ms.is_finite() && ms >= 0.0) {
-        return Err(format!("{flag} {value}: a time of zero or more").into());
-    }
-    Ok(ms)
-}
 
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
@@ -216,22 +57,7 @@ fn main() -> Result<(), Error> {
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
-            "--link" => {
-                rates = value()?
-                    .split(',')
-                    .map(|step| {
-                        let (rate, from) = step.split_once('@').unwrap_or((step, "0"));
-                        let (rate, from) = (rate.parse::<f64>()?, from.parse::<f64>()?);
-                        if !(rate.is_finite() && rate > 0.0 && from.is_finite() && from >= 0.0) {
-                            return Err(format!("--link step {step}: a rate above zero and a time of zero or more").into());
-                        }
-                        Ok((Duration::from_secs_f64(from), rate * 1e6 / 8.0))
-                    })
-                    .collect::<Result<_, Error>>()?;
-                if rates.windows(2).any(|pair| pair[1].0 < pair[0].0) {
-                    return Err("--link steps go in order of their times".into());
-                }
-            }
+            "--link" => rates = sim::link_steps(&value()?)?,
             "--rtt" => rtt = millis(&arg, value()?)?,
             "--hop" => hop = millis(&arg, value()?)?,
             "--held" => held = true,
@@ -248,20 +74,12 @@ fn main() -> Result<(), Error> {
     if paths.is_empty() {
         return Err("walk-sim takes a capture to play".into());
     }
-    let name = paths.iter().map(|p| p.rsplit('/').next().unwrap().trim_end_matches(".wlcap.zst").to_string()).collect::<Vec<_>>().join("+");
-    let link_steps: Vec<(f64, f64)> = rates.iter().map(|(from, rate)| (rate * 8.0 / 1e6, from.as_secs_f64())).collect();
-    let mut source = Source { paths, reader: None, offset: Duration::ZERO, last: Duration::ZERO, peeked: None };
-    let one_way = Duration::from_secs_f64(rtt / 2e3);
-    let link = Link { rates, one_way, free: Duration::ZERO };
-    let mut gateway = Gateway { link, hop: Duration::from_secs_f64(hop / 1e3), owed: Default::default(), echoed: Duration::ZERO, painted: Duration::ZERO };
+    let name = sim::run_name(&paths);
+    let link_json = sim::rates_json(&rates);
+    let mut source = Source::new(paths);
+    let mut gateway = Gateway::new(rates, Duration::from_secs_f64(rtt / 1e3), Duration::from_secs_f64(hop / 1e3));
     let paint = Duration::from_secs_f64(paint / 1e3);
-    let mut seed = 0x2545_f491_4f6c_dd1du64;
-    let mut jitter = move || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        Duration::from_secs_f64((seed >> 11) as f64 / (1u64 << 53) as f64 * jitter / 1e3)
-    };
+    let mut jitter = sim::jitter(jitter);
 
     // A 60 Hz capture, the daemon's default.
     let base = Instant::now();
@@ -368,7 +186,7 @@ fn main() -> Result<(), Error> {
         // rectangle, and the thirty this model counts for the framing around
         // that.
         let size = out.len() + 35;
-        let (painted, back) = gateway.frame(sent, size, paint + jitter());
+        let (painted, back) = gateway.frame(sent, &[(size, out.len())], paint + jitter());
         if keyframe {
             walk.keyframe(base + sent);
         }
@@ -414,9 +232,8 @@ fn main() -> Result<(), Error> {
     }
     // Through the last frame's paint, which its own fence can come back before.
     let span = now.max(gateway.painted).as_secs_f64();
-    let link_json = rates_json(&link_steps);
     println!(
-        "{{\"capture\":{},\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"settles\":{settles},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs}}}",
+        "{{\"capture\":{},\"picture\":\"wlsv\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"settles\":{settles},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs}}}",
         json(&name),
         f64::from(frames) / span,
         qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,
@@ -430,26 +247,4 @@ fn main() -> Result<(), Error> {
         bytes as f64 * 8.0 / span / 1e6,
     );
     Ok(())
-}
-
-/// A string as JSON.
-fn json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// The link's steps as JSON: each rate in Mbit/s and the second it starts at.
-fn rates_json(steps: &[(f64, f64)]) -> String {
-    let steps: Vec<String> = steps.iter().map(|(mbps, from)| format!("{{\"mbps\":{mbps},\"from_s\":{from}}}")).collect();
-    format!("[{}]", steps.join(","))
 }

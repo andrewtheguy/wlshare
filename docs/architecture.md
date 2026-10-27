@@ -794,13 +794,19 @@ the picture.
   ceiling, and the session's walk of the link — the same one, with the same
   thresholds and steps, that moves `WLSV`'s dial ([above](#the-vp9-encoding))
   — moves this picture's below it on each update's fence, and on how long
-  its write blocked where there is no fence. An update that carries a START,
-  or the picture whole, crosses the link as a keyframe does and is no
-  verdict; any other is one. Every region's stream follows the dial as it
-  moves, from an IDR, since neither encoder takes a new constant quantizer
-  on a running stream (below), which the update that carries it counts as a
-  keyframe too; and a slowed walk paces the updates as it paces `WLSV`'s
-  frames. The stills
+  its write blocked where there is no fence. An update that carries the
+  picture whole crosses the link as a keyframe does and is no verdict, and
+  nor is one of the tick's alone, what the desktop stopping owes, as
+  `WLSV`'s settle is none: the walk keeps its place through the quiet, its
+  verdicts starting over at the first. Any other is a verdict, a START
+  among it: a region's IDR is the load a desktop that moves keeps sending,
+  which the walk is there to judge, and were its verdicts held two seconds
+  after each, as a keyframe holds them, the walk would hear almost nothing
+  of a video in a window
+  ([measured](tiles-performance.md#the-walks-verdicts)). Every region's
+  stream follows the dial as it moves, from an IDR, since neither encoder
+  takes a new constant quantizer on a running stream (below); and a slowed
+  walk paces the updates as it paces `WLSV`'s frames. The stills
   follow it too: every one is a lossy WebP at the dial — libwebp's VP8 at its
   fastest method, 4:2:0, which every browser decodes, linked statically for
   the target's baseline — at the ceiling as below it, text and panels
@@ -905,6 +911,13 @@ through 5 s of quiet and 10 redraws of the pixels the page already has, and
 to ending exact; the `still` captures are for it and no measurement. What
 it measured, and what the rules beyond Motion's were chosen by, is in
 [Tiles performance](tiles-performance.md).
+
+`examples/tiles-walk-sim.rs`, beside it, plays the captures through this
+encoder and the walk over `walk-sim`'s model of the gateway and the
+browser's link (`crates/wlshare-vp9/examples/sim`), one update in flight,
+as a session does on a walked list or one that holds its dial, and says of
+a run what `walk-sim` says; what it found is in [Tiles
+performance](tiles-performance.md#the-walks-verdicts).
 
 ## The density extension
 

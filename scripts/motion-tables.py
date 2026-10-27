@@ -1,16 +1,17 @@
-"""Markdown tables from the logs of motion-bench and walk-sim, a JSON object a
-line (JSONL):
+"""Markdown tables from the logs of motion-bench, walk-sim and tiles-walk-sim, a
+JSON object a line (JSONL):
 
     motion-bench --quality 90 CAPTURE... > q90-held.jsonl
     motion-bench --quality 90 --walk-at 50 CAPTURE... > q90-walk50.jsonl
     motion-bench check --quality 90 CAPTURE... > check.jsonl
     walk-sim CAPTURE --link 10 > window-10.jsonl
+    tiles-walk-sim CAPTURE --link 10 > tiles-window-10.jsonl
     uv run --python 3.13 python -I scripts/motion-tables.py LOG.jsonl...
 
 Each log is named by its file name, less `.jsonl`, and is a section of its
 own: a bench's a row per capture per coder, as the bench measured it; a
-check's a row per capture; walk-sim's a row per run, its lines gathered from
-every log given. Given more than one bench's log, the tiles of each capture
+check's a row per capture; walk-sim's and tiles-walk-sim's a row per run, its
+lines gathered from every log given, the picture it played named. Given more than one bench's log, the tiles of each capture
 come last in one table, a column per log, and so does `WLSV`, a column per
 chroma and ceiling it was coded at: what each cost the processor, the link,
 and where the picture ended.
@@ -59,10 +60,10 @@ def check_section(name, rows):
 
 
 def walk_section(rows):
-    out = ["## walk-sim", "", "| capture | link Mbit/s | rtt | ceiling | walk | frames/s | motion q mean | p10 | shown mean ms | p50 | p95 | max | delivery p50 ms | p95 | Mbit/s | moves | down |", "|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    out = ["## walk-sim", "", "| capture | picture | link Mbit/s | rtt | ceiling | walk | frames/s | motion q mean | p10 | shown mean ms | p50 | p95 | max | delivery p50 ms | p95 | Mbit/s | moves | down |", "|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in rows:
         link = ", ".join(f"{s['mbps']:g}" + (f" from {s['from_s']:g} s" if s["from_s"] else "") for s in r["link"])
-        out.append(f"| {r['capture']} | {link} | {r['rtt_ms']:g} | {r['ceiling']} | {'held' if r['held'] else 'walked'} | {r['fps']:.1f} | {r['motion_q_mean']:.1f} | {r['motion_q_p10']:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
+        out.append(f"| {r['capture']} | {'WLSV' if r['picture'] == 'wlsv' else 'tiles'} | {link} | {r['rtt_ms']:g} | {r['ceiling']} | {'held' if r['held'] else 'walked'} | {r['fps']:.1f} | {r['motion_q_mean']:.1f} | {r['motion_q_p10']:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
     return out
 
 
