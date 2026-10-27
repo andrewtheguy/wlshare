@@ -249,3 +249,33 @@ costs what moves; a first picture as PNG rather than a stream took 1–15% off
 the CPU over a capture, and nine tenths off a terminal's; a band no stream
 touches sent as its changed tiles rather than whole sent 3–15% fewer bytes
 where the damage is loose.
+
+## The cache
+
+What a client-side cache of tiles would serve was counted before it was
+built, by `examples/tile-recurrence.rs` in the daemon's crate, on lab1 on
+2026-10-27: each capture played as the encoder reads it, Motion's churn rule
+deciding what a stream carries, every other changed 64×64 tile a still, and
+each still's pixels hashed and looked for among every still the client was
+sent, kept by least recent use at 1024, 4096 and 16384 slots and unbounded.
+A hit is *off screen* where the same pixels stand in no tile of the picture
+the client holds, which only a cache serves, and *on screen* where they do,
+which a copy could draw. Its per-tile PNG total for the mixed session is
+within 8% of what the encoder sent in the baseline.
+
+Over the mixed sessions, 225 s of desk work, the stills and what the cache
+serves off screen, as a share of the stills' tiles and of their bytes coded as
+a fast PNG and as a WebP at 90, each tile alone:
+
+| Capture | Stills | PNG | 1024 slots | 4096 | 16384 | unbounded |
+|---|---:|---:|---|---|---|---|
+| mixed-1920x1080 | 36,424 tiles | 72 MB | 8% of tiles, 8% of PNG, 11% of WebP | 13%, 12%, 20% | 15%, 14%, 22% | 15%, 15%, 23% |
+| mixed-2880x1800@2 | 88,565 | 143 MB | 4%, 4%, 6% | 13%, 13%, 22% | 18%, 19%, 31% | 20%, 20%, 34% |
+
+Nearly none of the off-screen hits are flat tiles, which is why a flat tile
+is not stored. On-screen hits are 32 to 36% of the mixed session's tiles, but
+mostly flat, and a copy's domain. Of the scenarios, uncover — a window moved
+aside and closed — serves 9% of its still bytes at 1280×800 and 36% at
+2880x1800@2; browser, drag, terminal, video, walk and the video in a window
+serve 0 to 7%. Unbounded adds little over 16384 slots, 1024 halves the gain,
+so the cache is 4096 slots, 64 MiB of pixels on the page.

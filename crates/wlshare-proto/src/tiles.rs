@@ -20,6 +20,8 @@
 //! 3 END     u8 stream                            the region's stream is over
 //! 4 WEBP    u32 length | u8[length]  a lossy WebP of the rectangle's pixels
 //! 5 COPY    u16 x | u16 y        the picture at (x, y) the rectangle's size
+//! 6 CACHED  u16 slot             the tile kept in slot N, drawn at the rectangle
+//! 7 STORE   u16 slot             what the client holds at the rectangle, kept in slot N
 //! ```
 //!
 //! - A **PNG** is the desktop's pixels in the rectangle exactly, 8-bit RGB or
@@ -46,6 +48,19 @@
 //!   copied out before any of it was drawn. Whatever the source held — exact,
 //!   lossy, a stream's picture — the rectangle holds the same, and is owed
 //!   what the source was owed. It has no body past its header.
+//! - A **STORE** keeps what the client holds at the rectangle, as the
+//!   rectangles before it left it, in slot `slot` of its cache of tiles,
+//!   over whatever the slot held: the rectangle is one tile, [`TILE`] square
+//!   and on the tile grid from the desktop's top-left, and the slot one of
+//!   [`CACHE_SLOTS`]. A **CACHED** draws the tile slot `slot` keeps at the
+//!   rectangle, the same size, and the rectangle is owed what that tile was
+//!   owed when it was stored: a tile stored exact, or at the ceiling, is
+//!   settled, and one stored below it is owed the ceiling, as a copy's is.
+//!   A slot nothing was stored in is fatal to draw from. Neither has a body
+//!   past its header. What is stored, and when, is the server's to decide:
+//!   the cache is the server's record of what the client was shown, kept so
+//!   that a tile shown again — a window switched back to, a menu opened
+//!   again, a page scrolled back — is a few bytes and not a still.
 //!
 //! A PNG over a stream's rectangle only ever follows the stream's END, so a
 //! client draws every rectangle where it says, in order, and the picture is
@@ -70,6 +85,17 @@ pub const KIND_END: u8 = 3;
 pub const KIND_WEBP: u8 = 4;
 /// What the client holds elsewhere, drawn at the rectangle.
 pub const KIND_COPY: u8 = 5;
+/// The tile a cache slot keeps, drawn at the rectangle.
+pub const KIND_CACHED: u8 = 6;
+/// What the client holds at the rectangle, kept in a cache slot.
+pub const KIND_STORE: u8 = 7;
+
+/// A tile's side: the desktop is in tiles this square from its top-left, and
+/// a STORE or a CACHED rectangle is one of them.
+pub const TILE: u16 = 64;
+/// The tiles a client's cache keeps, numbered from 0: 64 MiB of pixels, as
+/// many as serve nearly every tile a long session shows again.
+pub const CACHE_SLOTS: u16 = 4096;
 
 /// What a client's list asks the tiles picture to be: the dial, the VP9
 /// encoding's `WLQ` and the value ([`ENCODING_VP9_QUALITY_BASE`]) beside
@@ -130,8 +156,10 @@ pub enum TilesListError {
 /// Why a tiles rectangle's body is not one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
-    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, WEBP and COPY")]
+    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, WEBP, COPY, CACHED and STORE")]
     UnknownKind(u8),
+    #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
+    Slot(u16),
     #[error("a tiles rectangle of {0} bytes, where one is 1 to {max} bytes", max = crate::MAX_BODY)]
     Length(usize),
 }
@@ -153,6 +181,12 @@ pub enum TileHeader {
     /// The picture at `(x, y)`, the rectangle's size, drawn at the rectangle;
     /// nothing follows.
     Copy { x: u16, y: u16 },
+    /// The tile the client keeps in `slot`, drawn at the rectangle; nothing
+    /// follows.
+    Cached { slot: u16 },
+    /// What the client holds at the rectangle, kept in `slot`; nothing
+    /// follows.
+    Store { slot: u16 },
 }
 
 impl TileHeader {
@@ -162,12 +196,13 @@ impl TileHeader {
             KIND_PNG | KIND_WEBP | KIND_COPY => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
+            KIND_CACHED | KIND_STORE => Ok(3),
             other => Err(TilesParseError::UnknownKind(other)),
         }
     }
 
-    /// The same header naming a body of `len` bytes; an END or a COPY names
-    /// none. What
+    /// The same header naming a body of `len` bytes; an END, a COPY, a
+    /// CACHED or a STORE names none. What
     /// a server that writes the body before it knows its length fills its
     /// header in again with, [`Self::to_bytes`] being as long either way.
     pub fn with_len(self, len: usize) -> Self {
@@ -178,6 +213,8 @@ impl TileHeader {
             Self::End { stream } => Self::End { stream },
             Self::Webp { .. } => Self::Webp { len },
             Self::Copy { x, y } => Self::Copy { x, y },
+            Self::Cached { slot } => Self::Cached { slot },
+            Self::Store { slot } => Self::Store { slot },
         }
     }
 
@@ -192,12 +229,15 @@ impl TileHeader {
             Self::End { stream } => vec![KIND_END, stream],
             Self::Webp { len } => [&[KIND_WEBP][..], &length(len)].concat(),
             Self::Copy { x, y } => [&[KIND_COPY][..], &x.to_be_bytes(), &y.to_be_bytes()].concat(),
+            Self::Cached { slot } => [&[KIND_CACHED][..], &slot.to_be_bytes()].concat(),
+            Self::Store { slot } => [&[KIND_STORE][..], &slot.to_be_bytes()].concat(),
         }
     }
 
     /// The header at the front of `buf`, a rectangle's body, and its length,
-    /// or `Ok(None)` while it is not all there. An unknown kind, or a body
-    /// of none or past [`crate::MAX_BODY`] bytes, is an error.
+    /// or `Ok(None)` while it is not all there. An unknown kind, a body
+    /// of none or past [`crate::MAX_BODY`] bytes, or a cache slot past
+    /// [`CACHE_SLOTS`], is an error.
     pub fn parse(buf: &[u8]) -> Result<Option<(Self, usize)>, TilesParseError> {
         let Some(&kind) = buf.first() else { return Ok(None) };
         let used = Self::len_of(kind)?;
@@ -214,6 +254,13 @@ impl TileHeader {
             KIND_FRAME => Self::Frame { stream: buf[1], len: len(2)? },
             KIND_WEBP => Self::Webp { len: len(1)? },
             KIND_COPY => Self::Copy { x: u16::from_be_bytes([buf[1], buf[2]]), y: u16::from_be_bytes([buf[3], buf[4]]) },
+            KIND_CACHED | KIND_STORE => {
+                let slot = u16::from_be_bytes([buf[1], buf[2]]);
+                if slot >= CACHE_SLOTS {
+                    return Err(TilesParseError::Slot(slot));
+                }
+                if kind == KIND_CACHED { Self::Cached { slot } } else { Self::Store { slot } }
+            }
             _ => Self::End { stream: buf[1] },
         };
         Ok(Some((header, used)))
@@ -252,6 +299,8 @@ mod tests {
             (TileHeader::End { stream: 3 }, vec![3, 3]),
             (TileHeader::Webp { len: 0x0102 }, vec![4, 0, 0, 1, 2]),
             (TileHeader::Copy { x: 0x0102, y: 0x0304 }, vec![5, 1, 2, 3, 4]),
+            (TileHeader::Cached { slot: 0x0102 }, vec![6, 1, 2]),
+            (TileHeader::Store { slot: 0x0FFF }, vec![7, 0x0F, 0xFF]),
         ] {
             assert_eq!(header.to_bytes(), bytes);
             assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -262,7 +311,7 @@ mod tests {
 
     #[test]
     fn a_length_filled_in_keeps_the_header_its_size() {
-        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Webp { len: 0 }, TileHeader::Copy { x: 1, y: 2 }] {
+        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Webp { len: 0 }, TileHeader::Copy { x: 1, y: 2 }, TileHeader::Cached { slot: 3 }, TileHeader::Store { slot: 4 }] {
             let filled = header.with_len(9);
             assert_eq!(filled.to_bytes().len(), header.to_bytes().len());
             assert_eq!(filled.to_bytes()[0], header.to_bytes()[0], "the kind is kept");
@@ -270,11 +319,15 @@ mod tests {
         assert_eq!(TileHeader::Frame { stream: 2, len: 0 }.with_len(9), TileHeader::Frame { stream: 2, len: 9 });
         assert_eq!(TileHeader::End { stream: 2 }.with_len(9), TileHeader::End { stream: 2 });
         assert_eq!(TileHeader::Copy { x: 1, y: 2 }.with_len(9), TileHeader::Copy { x: 1, y: 2 }, "a copy's source is no length");
+        assert_eq!(TileHeader::Store { slot: 4 }.with_len(9), TileHeader::Store { slot: 4 }, "a slot is no length");
     }
 
     #[test]
-    fn a_bad_kind_or_length_is_fatal() {
-        assert_eq!(TileHeader::parse(&[6]), Err(TilesParseError::UnknownKind(6)));
+    fn a_bad_kind_length_or_slot_is_fatal() {
+        assert_eq!(TileHeader::parse(&[8]), Err(TilesParseError::UnknownKind(8)));
+        assert_eq!(TileHeader::parse(&[6, 0x10, 0]), Err(TilesParseError::Slot(4096)));
+        assert_eq!(TileHeader::parse(&[7, 0xFF, 0xFF]), Err(TilesParseError::Slot(65535)));
+        assert_eq!(TileHeader::parse(&[6, 0x0F, 0xFF, 9]), Ok(Some((TileHeader::Cached { slot: 4095 }, 3))), "the last slot");
         assert_eq!(TileHeader::parse(&[0, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
         assert_eq!(TileHeader::parse(&[4, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
 

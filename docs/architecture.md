@@ -717,6 +717,8 @@ u8 kind
 3 END     u8 stream                                        the stream is over
 4 WEBP    u32 length | u8[length]                          a lossy WebP of the rectangle's pixels
 5 COPY    u16 x | u16 y                                    what the client holds at (x, y), drawn here
+6 CACHED  u16 slot                                         the tile kept in slot N, drawn here
+7 STORE   u16 slot                                         what the client holds here, kept in slot N
 ```
 
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
@@ -730,6 +732,10 @@ staying until something draws over it. A COPY draws at its rectangle what
 the client holds at `(x, y)`, the same size, as the rectangles before it left
 it: a scroll, or a window moved, as RFB's CopyRect draws one, the two
 overlapping as a picture drawn onto itself does, its source read whole first.
+A STORE keeps what the client holds at its rectangle, one 64×64 tile on the
+grid from (0,0), in slot `N` of the client's cache of 4096, over whatever the
+slot held; a CACHED draws the tile slot `N` keeps at its rectangle, the same
+size, and drawing from a slot nothing was stored in is fatal.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
@@ -740,7 +746,8 @@ the picture.
   what the client holds, so a compositor redrawing what it shows sends
   nothing. A tile that changed and that no stream carries goes as a still —
   a PNG, or on a walked list a WebP, below — a row's
-  run of them, cut into bands of 64 rows, one image. A picture that
+  run of them, cut where the tile rows meet into bands of at most 64 rows,
+  one image, so that a tile the damage covers is in one still whole. A picture that
   starts over — the encoding newly listed, a new size, a non-incremental
   request — goes the same way at once, whole, where Motion streamed it first
   and sent every tile as a still after it anyway: on a link with room that stream
@@ -772,6 +779,25 @@ the picture.
   alike: a scroll sends a few bytes and the strip it uncovered, a page
   scrolled a third of the bytes it did held and a fifth walked at the ceiling
   ([measured](tiles-performance.md#copies)).
+- **What it was shown is a cached tile.** The client keeps a cache of 4096
+  tiles, 64 MiB of pixels, and wlshare the record of it: after every still
+  goes out, each whole 64×64 tile of it that is not one colour is stored in a
+  slot (`STORE`), the least recently used once all are full, and the record
+  keeps the hash of its pixels. A changed tile whose whole pixels the record
+  finds in a slot goes as a draw of that slot (`CACHED`), 15 bytes, and the
+  still's run is coded around it: a window switched back to, a menu opened
+  again, a page scrolled back a whole tile, text moved between windows. What
+  it draws is what the slot was stored as, so it is owed what that still was
+  owed: a tile stored exact or at the ceiling is settled, and one stored
+  below the ceiling, on a walked list, is owed the ceiling as a copy of a
+  coarse still is, and is not drawn in place of a still at the ceiling, which
+  stores the tile again in its slot, settled. A flat tile is never stored:
+  its PNG is a few bytes and a slot is worth more. The client keeps only
+  what it is told to and draws only what it is told, so the record decides
+  everything and the two agree by construction; a picture that starts over
+  forgets the record, and the client's slots are written over from then on.
+  Over a session at the desk it serves about an eighth of the stills
+  ([measured](tiles-performance.md#the-cache)).
 - **What moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
   components, one under 5 tiles is left to PNG, boxes merge unless the merged

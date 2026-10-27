@@ -46,6 +46,19 @@
 //! client holds by then, and every tile it draws on is owed what its source
 //! is.
 //!
+//! **What it was shown is a cached tile.** The client keeps a cache of
+//! [`CACHE_SLOTS`] tiles ([`wlshare_proto::tiles::KIND_STORE`]), and the
+//! encoder the record of it ([`Cache`]): every whole tile of a still that
+//! goes out, flat ones apart, is stored in a slot — the least recently used
+//! once all are full — and a still whose whole tile the cache keeps, by the
+//! hash of its pixels, goes as a draw of that slot
+//! ([`wlshare_proto::tiles::KIND_CACHED`]) instead, the run coded around it.
+//! A window switched back to, a menu opened again or a page scrolled back is
+//! then a few bytes a tile. A tile stored below the ceiling is owed it when
+//! drawn, as a copy of a coarse still is, and is not drawn in place of a
+//! still at the ceiling; sent there, it is stored again in its slot. A
+//! picture that starts over ([`TilesEncoder::forget`]) forgets the cache.
+//!
 //! **What a stream codes.** A region is an encoder over its rectangle alone,
 //! told the damage inside it as the VP9 encoding's whole-desktop stream is, so
 //! the encoder's time follows the area that moves. It is 4:2:0 at the dial the
@@ -73,12 +86,13 @@
 //! encoder, on the daemon's H.264, and through the VP9 encoding's.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::hash::Hasher;
 use std::time::Duration;
 
 use thiserror::Error;
 
-use wlshare_proto::tiles::{TileHeader, TilesPicture};
+use wlshare_proto::tiles::{CACHE_SLOTS, TileHeader, TilesPicture};
 
 use crate::rfb::vp9::Rect;
 
@@ -138,8 +152,8 @@ pub enum TilesError {
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
 
-/// A tile's side, ZRLE's, from the desktop's top-left.
-const TILE: u16 = 64;
+/// A tile's side, ZRLE's, from the desktop's top-left: the encoding's.
+const TILE: u16 = wlshare_proto::tiles::TILE;
 
 /// A rectangle of the desktop, its edges inclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,6 +501,21 @@ fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: 
     }
 }
 
+/// A whole tile's pixels as a cache keys them: a hash of `area` of a
+/// `B, G, R, X` picture, and whether it is one colour, which is never stored.
+fn tile_key(pixels: &[u8], stride: usize, area: Area) -> (u64, bool) {
+    let (from, to) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let first = &pixels[usize::from(area.top) * stride + from..usize::from(area.top) * stride + to];
+    let mut flat = first.as_chunks::<4>().0.iter().all(|px| px == first.first_chunk::<4>().expect("a pixel"));
+    for y in area.top..=area.bottom {
+        let row = &pixels[usize::from(y) * stride + from..usize::from(y) * stride + to];
+        hasher.write(row);
+        flat &= row == first;
+    }
+    (hasher.finish(), flat)
+}
+
 /// `area` of a `B, G, R, X` picture as packed RGB.
 fn crop_rgb(pixels: &[u8], stride: usize, area: Area, out: &mut Vec<u8>) {
     out.clear();
@@ -723,7 +752,87 @@ fn run_hash(pixels: &[u8], stride: usize, x: u16, y: u16) -> u64 {
     (x..x + PROBE).fold(0, |hash, x| hash.wrapping_mul(HASH_BASE).wrapping_add(u64::from(pixel(pixels, stride, x, y))))
 }
 
+// ── What the client keeps ────────────────────────────────────────────────────
+
+/// One slot of the client's cache of tiles, as the encoder records it.
+#[derive(Clone, Copy)]
+struct Kept {
+    hash: u64,
+    /// Stored exact, or at the ceiling: a tile drawn from it is owed nothing.
+    settled: bool,
+    /// When it was last stored or drawn from; the least recent is evicted first.
+    used: u64,
+}
+
+/// The encoder's record of the client's cache of tiles
+/// ([`wlshare_proto::tiles::KIND_STORE`]): which tile each slot keeps, by
+/// the hash of its pixels, and which slot a tile is in. [`CACHE_SLOTS`]
+/// slots, filled in order and then the least recently used over again. The
+/// client keeps only what it is told to, so this record decides everything
+/// and the client agrees with it by construction.
+#[derive(Default)]
+struct Cache {
+    slots: HashMap<u16, Kept>,
+    by_hash: HashMap<u64, u16>,
+    /// Every slot by when it was last used, the least recent first.
+    by_use: BTreeSet<(u64, u16)>,
+    stamp: u64,
+}
+
+impl Cache {
+    fn clear(&mut self) {
+        self.slots.clear();
+        self.by_hash.clear();
+        self.by_use.clear();
+    }
+
+    /// The slot that keeps the tile hashed `hash`, and whether it is settled.
+    fn find(&self, hash: u64) -> Option<(u16, bool)> {
+        let slot = *self.by_hash.get(&hash)?;
+        Some((slot, self.slots[&slot].settled))
+    }
+
+    /// `slot` was drawn from: it is the most recently used.
+    fn touch(&mut self, slot: u16) {
+        self.stamp += 1;
+        if let Some(kept) = self.slots.get_mut(&slot) {
+            self.by_use.remove(&(kept.used, slot));
+            kept.used = self.stamp;
+            self.by_use.insert((kept.used, slot));
+        }
+    }
+
+    /// Keep the tile hashed `hash`, `settled` or not, in a slot: the one it is
+    /// in already, else the first never filled, else the least recently used,
+    /// whose tile is forgotten. The slot, which the client is told to store it in.
+    fn store(&mut self, hash: u64, settled: bool) -> u16 {
+        self.stamp += 1;
+        let slot = match self.by_hash.get(&hash) {
+            Some(&slot) => slot,
+            None if self.slots.len() < usize::from(CACHE_SLOTS) => self.slots.len() as u16,
+            None => {
+                let &(used, slot) = self.by_use.iter().next().expect("a full cache has a least recently used slot");
+                self.by_use.remove(&(used, slot));
+                let evicted = self.slots.remove(&slot).expect("the slot it keeps");
+                self.by_hash.remove(&evicted.hash);
+                slot
+            }
+        };
+        if let Some(kept) = self.slots.get(&slot) {
+            self.by_use.remove(&(kept.used, slot));
+        }
+        self.slots.insert(slot, Kept { hash, settled, used: self.stamp });
+        self.by_hash.insert(hash, slot);
+        self.by_use.insert((self.stamp, slot));
+        slot
+    }
+}
+
 // ── The encoder ──────────────────────────────────────────────────────────────
+
+/// One tile of a still's run: the tile, the part of it the still covers, and
+/// where that is the whole tile, its key for the cache ([`tile_key`]).
+type StillTile = ((u16, u16), Area, Option<(u64, bool)>);
 
 /// One live region stream.
 struct Live {
@@ -814,6 +923,8 @@ pub struct TilesEncoder {
     /// Tile → when a stream last carried it, or a walk sent its still below
     /// the ceiling, which is owed a still at the ceiling.
     debts: HashMap<(u16, u16), Duration>,
+    /// What the client keeps of the tiles it was shown.
+    cache: Cache,
     retuned_at: Option<Duration>,
     /// The stills the reads since the last encode owe.
     stills: Vec<Area>,
@@ -862,6 +973,7 @@ impl TilesEncoder {
             live: Vec::new(),
             covered: HashSet::new(),
             debts: HashMap::new(),
+            cache: Cache::default(),
             retuned_at: None,
             stills: Vec::new(),
             copies: Vec::new(),
@@ -919,7 +1031,8 @@ impl TilesEncoder {
     }
 
     /// The client holds nothing: every stream ends, with its END at the next
-    /// encode, nothing is owed, and the next read is sent whole.
+    /// encode, nothing is owed, the cache is forgotten, and the next read is
+    /// sent whole.
     pub fn forget(&mut self) {
         for live in self.live.drain(..) {
             if live.started {
@@ -928,6 +1041,7 @@ impl TilesEncoder {
         }
         self.covered.clear();
         self.debts.clear();
+        self.cache.clear();
         self.retuned_at = None;
         self.churn.clear();
         self.stills.clear();
@@ -1233,8 +1347,12 @@ impl TilesEncoder {
                 }
             }
         }
-        for top in (area.top..=area.bottom).step_by(usize::from(BAND_ROWS)) {
-            let band = Area { top, bottom: top.saturating_add(BAND_ROWS - 1).min(area.bottom), ..area };
+        // Bands cut where the tile rows meet, so that a tile the damage covers
+        // is in one still whole, which the cache keeps.
+        let mut top = area.top;
+        while top <= area.bottom {
+            let band = Area { top, bottom: (top / BAND_ROWS + 1).saturating_mul(BAND_ROWS).saturating_sub(1).min(area.bottom), ..area };
+            top = band.bottom.saturating_add(1);
             blit(&mut self.mirror, self.stride, pixels, stride, band);
             // The runs of changed tiles, and of those the ones no stream carries.
             let (mut changes, mut runs): (Vec<Area>, Vec<Area>) = (Vec::new(), Vec::new());
@@ -1333,24 +1451,63 @@ impl TilesEncoder {
         CellBox::of(cell).to_area(self.size).expect("a tile of the desktop")
     }
 
-    /// Send `area` of the picture as a still coded at `quality`: on a held list
-    /// a PNG, exact; on a walked one a lossy WebP at `quality`. A PNG, or a
-    /// WebP at the ceiling, pays the debt of every tile it covers whole; a
-    /// WebP below the ceiling owes every tile it touches a still at the
-    /// ceiling from now.
+    /// Send `area` of the picture, a run of tiles along one row, as a still
+    /// coded at `quality`: on a held list a PNG, exact; on a walked one a
+    /// lossy WebP at `quality`. A whole tile of it the client's cache keeps
+    /// goes as a draw of its slot instead, and the run is coded around it
+    /// ([`Self::coded`]); a slot stored below the ceiling is drawn from only
+    /// below it, and owes the tile the ceiling as a copy of a coarse still
+    /// does. A PNG, or a WebP at the ceiling, pays the debt of every tile it
+    /// covers whole; a WebP below the ceiling owes every tile it touches a
+    /// still at the ceiling from now.
     fn still(&mut self, area: Area, quality: u8, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        let settled = !self.adaptive || quality >= self.ceiling;
+        let tiles: Vec<StillTile> = tiles_of(area)
+            .map(|(cell, part)| {
+                let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
+                (cell, part, whole.then(|| tile_key(&self.mirror, self.stride, part)))
+            })
+            .collect();
+        // Every slot drawn from is touched before any of the run is coded:
+        // the stores of the pieces coded ahead of a draw take the least
+        // recently used slots, which the drawn one must not be among, or the
+        // client would have written it over before the draw.
+        let hits: Vec<Option<(u16, bool)>> = tiles.iter().map(|(_, _, key)| key.and_then(|(hash, _)| self.cache.find(hash)).filter(|(_, kept)| *kept || !settled)).collect();
+        for (slot, _) in hits.iter().flatten() {
+            self.cache.touch(*slot);
+        }
+        let mut run = 0;
+        for (i, hit) in hits.into_iter().enumerate() {
+            let Some((slot, kept)) = hit else { continue };
+            let (cell, part, _) = tiles[i];
+            self.coded(&tiles[run..i], quality, settled, now, out)?;
+            run = i + 1;
+            out.header(part, TileHeader::Cached { slot });
+            if kept {
+                self.debts.remove(&cell);
+            } else {
+                self.debts.insert(cell, now);
+            }
+        }
+        self.coded(&tiles[run..], quality, settled, now, out)
+    }
+
+    /// Code `tiles`, a run of parts of tiles along one row with each whole
+    /// tile's key, as one still at `quality`, and store every whole tile of
+    /// it that is not one colour in the client's cache, after it.
+    fn coded(&mut self, tiles: &[StillTile], quality: u8, settled: bool, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else { return Ok(()) };
+        let area = Area { right: last.1.right, ..first.1 };
         // A run wider than a WebP goes as pieces cut where tiles meet, so that
         // each tile is in one of them whole as it was in the run.
         if self.adaptive && area.w() > WEBP_MAX_WIDTH {
-            let mut left = area.left;
-            loop {
-                let right = (left / TILE + WEBP_MAX_WIDTH / TILE).saturating_mul(TILE).saturating_sub(1).min(area.right);
-                self.still(Area { left, right, ..area }, quality, now, out)?;
-                if right == area.right {
-                    return Ok(());
-                }
-                left = right + 1;
+            let mut from = 0;
+            while from < tiles.len() {
+                let to = tiles[from..].iter().position(|(_, part, _)| part.right > tiles[from].1.left.saturating_add(WEBP_MAX_WIDTH - 1)).map_or(tiles.len(), |n| from + n.max(1));
+                self.coded(&tiles[from..to], quality, settled, now, out)?;
+                from = to;
             }
+            return Ok(());
         }
         crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let from = out.out.len();
@@ -1367,12 +1524,15 @@ impl TilesEncoder {
             return Err(e);
         }
         out.length(from, at, header)?;
-        let settled = !self.adaptive || quality >= self.ceiling;
-        for (cell, _) in tiles_of(area) {
+        for (cell, part, key) in tiles {
             if !settled {
-                self.debts.insert(cell, now);
-            } else if area.contains(self.cell_area(cell)) {
-                self.debts.remove(&cell);
+                self.debts.insert(*cell, now);
+            } else if area.contains(self.cell_area(*cell)) {
+                self.debts.remove(cell);
+            }
+            if let Some((hash, false)) = key {
+                let slot = self.cache.store(*hash, settled);
+                out.header(*part, TileHeader::Store { slot });
             }
         }
         Ok(())
@@ -1651,18 +1811,22 @@ mod tests {
         canvas: Vec<u8>,
         /// The live streams' rectangles.
         streams: HashMap<u8, Place>,
+        /// The cache of tiles, each slot a tile's `B, G, R, X` rows.
+        slots: HashMap<u16, Vec<u8>>,
         pngs: usize,
         webps: usize,
         starts: usize,
         frames: usize,
         ends: usize,
         copies: usize,
+        cached: usize,
+        stored: usize,
         bytes: usize,
     }
 
     impl Page {
         fn new(w: u16, h: u16) -> Self {
-            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), pngs: 0, webps: 0, starts: 0, frames: 0, ends: 0, copies: 0, bytes: 0 }
+            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), pngs: 0, webps: 0, starts: 0, frames: 0, ends: 0, copies: 0, cached: 0, stored: 0, bytes: 0 }
         }
 
         /// Packed RGB drawn at the rectangle.
@@ -1729,6 +1893,23 @@ mod tests {
                             self.canvas[at..at + line].to_vec()
                         }).collect();
                         for (row, pixels) in source.chunks_exact(line).enumerate() {
+                            let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+                            self.canvas[at..at + line].copy_from_slice(pixels);
+                        }
+                    }
+                    TileBody::Store { slot } => {
+                        self.stored += 1;
+                        assert!((w, h) == (TILE, TILE) && x % TILE == 0 && y % TILE == 0, "a store of one tile on the grid, not {w}x{h}+{x}+{y}");
+                        let line = usize::from(TILE) * 4;
+                        let tile: Vec<u8> = (0..usize::from(TILE)).flat_map(|row| self.canvas[((usize::from(y) + row) * self.w + usize::from(x)) * 4..][..line].to_vec()).collect();
+                        self.slots.insert(slot, tile);
+                    }
+                    TileBody::Cached { slot } => {
+                        self.cached += 1;
+                        assert_eq!((w, h), (TILE, TILE), "a cached draw of one tile");
+                        let tile = self.slots.get(&slot).unwrap_or_else(|| panic!("slot {slot} drawn from before it was stored"));
+                        let line = usize::from(TILE) * 4;
+                        for (row, pixels) in tile.chunks_exact(line).enumerate() {
                             let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
                             self.canvas[at..at + line].copy_from_slice(pixels);
                         }
@@ -1924,7 +2105,7 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 5, y: 5, width: 1, height: 1 }]), ms(0));
-        assert_eq!((first.rects, page.pngs), (3, 3), "the whole picture in three bands, whatever the read was told");
+        assert_eq!((first.rects, page.pngs, page.stored), (9, 3, 6), "the whole picture in three bands, whatever the read was told, and its six whole tiles stored");
         assert!(first.keyframe, "a picture sent whole crosses the link as a keyframe");
         assert_eq!(page.off(&pixels), 0);
         assert!(encoder.tick_at().is_none(), "a picture sent exact owes nothing");
@@ -1987,7 +2168,7 @@ mod tests {
         let busy = Rect { x: 64, y: 0, width: 64, height: 64 };
         paint(&mut pixels, w, busy, 13);
         let lossy = update(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100));
-        assert_eq!((lossy.rects, lossy.keyframe, page.webps), (1, false, 3), "one tile that changed, at the walk's dial, no keyframe");
+        assert_eq!((lossy.rects, lossy.keyframe, page.webps, page.stored), (2, false, 3, 9), "one tile that changed, at the walk's dial, no keyframe, and stored");
         assert!(encoder.owed() && encoder.tick_at().is_some(), "a still below the ceiling is owed");
         let coarse = page.distance(&pixels);
         settle(&mut encoder, &mut page, ms(100));
@@ -2071,7 +2252,7 @@ mod tests {
         assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&whole), ms(100)), 0, "a redraw of what the client holds");
         paint(&mut pixels, w, Rect { x: 70, y: 70, width: 10, height: 10 }, 9);
         let bytes = page.bytes;
-        assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&whole), ms(200)), 1, "one tile changed");
+        assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&whole), ms(200)), 2, "one tile changed: its PNG and its store");
         assert!(page.bytes - bytes < 64 * 64 * 3 + 200, "more than one tile was sent");
         assert_eq!(page.off(&pixels), 0);
         // The framebuffer's rows may be farther apart than the picture's.
@@ -2192,7 +2373,7 @@ mod tests {
         let busy = Rect { x: 64, y: 0, width: 64, height: 64 };
         paint(&mut pixels, w, busy, 22);
         let lossy = update(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100));
-        assert!(lossy.rects == 1 && !lossy.tick, "what the read brought: {lossy:?}");
+        assert!(lossy.rects == 2 && !lossy.tick, "what the read brought, and its store: {lossy:?}");
         // The read the session makes with nothing changed, as it does at a
         // tick, until the debt is old enough to be paid.
         let paid = loop {
@@ -2304,6 +2485,214 @@ mod tests {
         assert_eq!(page.pngs - pngs, 4, "the picture again in its bands");
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed(), "a picture sent whole owes nothing");
+    }
+
+    /// Copy the tile at `from` of a `w`-wide picture to the tile at `to`.
+    fn same_tile(pixels: &mut [u8], w: u16, from: (u16, u16), to: (u16, u16)) {
+        let line = usize::from(TILE) * 4;
+        for row in 0..usize::from(TILE) {
+            let src = ((usize::from(from.1) + row) * usize::from(w) + usize::from(from.0)) * 4;
+            let dst = ((usize::from(to.1) + row) * usize::from(w) + usize::from(to.0)) * 4;
+            pixels.copy_within(src..src + line, dst);
+        }
+    }
+
+    /// A whole tile the client was shown, shown again elsewhere, is a draw
+    /// of the slot it was stored in and no still: text moved to another
+    /// window, a page scrolled back by a whole tile. Shown a third time it
+    /// is the same slot again, and the page holds it exactly.
+    #[test]
+    fn a_tile_shown_again_is_drawn_from_the_cache() {
+        let (w, h) = (256u16, 128u16);
+        let mut pixels = noise(w, h, 31);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert_eq!(page.stored, 8, "every whole tile of the first picture stored");
+
+        let text = Rect { x: 64, y: 0, width: 64, height: 64 };
+        glyphs(&mut pixels, w, text);
+        let (pngs, stored) = (page.pngs, page.stored);
+        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        assert_eq!((page.pngs - pngs, page.stored - stored, page.cached), (1, 1, 0), "a tile of text: a PNG, stored");
+
+        same_tile(&mut pixels, w, (64, 0), (192, 64));
+        let (pngs, stored) = (page.pngs, page.stored);
+        let shown = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 192, y: 64, width: 64, height: 64 }]), ms(200));
+        assert_eq!((shown.rects, page.pngs - pngs, page.stored - stored, page.cached), (1, 0, 0, 1), "the same text elsewhere: drawn from the cache, no still, nothing stored");
+        assert_eq!(page.off(&pixels), 0);
+        assert!(!encoder.owed(), "a tile stored exact is owed nothing");
+
+        // Painted over and shown again: the slot still has it.
+        paint(&mut pixels, w, text, 32);
+        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(300));
+        glyphs(&mut pixels, w, text);
+        let pngs = page.pngs;
+        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(400));
+        assert_eq!((page.pngs - pngs, page.cached), (0, 2), "shown a third time, from the cache again");
+        assert_eq!(page.off(&pixels), 0);
+
+        // A tile the damage covers in part is a still of that part, which
+        // the cache neither keeps nor draws: the client's tile is not whole
+        // in it.
+        let part = Rect { x: 200, y: 70, width: 10, height: 10 };
+        paint(&mut pixels, w, part, 33);
+        let (pngs, stored) = (page.pngs, page.stored);
+        step(&mut encoder, &mut page, &pixels, Some(&[part]), ms(500));
+        assert_eq!((page.pngs - pngs, page.stored - stored, page.cached), (1, 0, 2), "a part of a tile: a PNG of it, not stored");
+        assert_eq!(page.off(&pixels), 0);
+    }
+
+    /// A tile of one colour is never stored: a PNG of it is a few bytes,
+    /// and a slot is worth more than that.
+    #[test]
+    fn a_flat_tile_is_not_stored() {
+        let (w, h) = (128u16, 64u16);
+        let mut pixels = noise(w, h, 41);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert_eq!(page.stored, 2);
+        let flat = Rect { x: 0, y: 0, width: 64, height: 64 };
+        for row in 0..64 {
+            pixels[row * usize::from(w) * 4..][..64 * 4].copy_from_slice(&[10, 20, 30, 0].repeat(64));
+        }
+        step(&mut encoder, &mut page, &pixels, Some(&[flat]), ms(100));
+        assert_eq!((page.pngs, page.stored), (2, 2), "the flat tile's PNG, and no store");
+        same_tile(&mut pixels, w, (0, 0), (64, 0));
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(200));
+        assert_eq!((page.pngs, page.stored, page.cached), (3, 2, 0), "the same flat tile elsewhere: a PNG again, and no cache");
+        assert_eq!(page.off(&pixels), 0);
+    }
+
+    /// On a walked list a tile stored below the ceiling is drawn from the
+    /// cache only below it, and the tile it draws is owed the ceiling, as a
+    /// copy of a coarse still is; the settle sends the stored tile at the
+    /// ceiling and stores it again in its slot, settled, so the other is
+    /// then a draw of that slot, at the ceiling, and nothing is owed.
+    #[test]
+    fn a_tile_cached_below_the_ceiling_is_owed_it() {
+        let (w, h) = (256u16, 128u16);
+        let mut pixels = noise(w, h, 51);
+        let mut encoder = TilesEncoder::new(w, h, walked(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        assert_eq!(page.stored, 8);
+
+        encoder.set_pace(30, false);
+        let text = Rect { x: 64, y: 0, width: 64, height: 64 };
+        glyphs(&mut pixels, w, text);
+        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        assert_eq!((page.webps, page.stored), (3, 9), "a WebP at 30, stored");
+        same_tile(&mut pixels, w, (64, 0), (192, 64));
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 192, y: 64, width: 64, height: 64 }]), ms(200));
+        assert_eq!((page.webps, page.stored, page.cached), (3, 9, 1), "the same text elsewhere, below the ceiling: drawn from the cache");
+        assert!(encoder.owed(), "both tiles are owed the ceiling");
+        let coarse = page.distance(&pixels);
+
+        encoder.set_pace(80, false);
+        settle(&mut encoder, &mut page, ms(200));
+        assert_eq!((page.webps, page.stored, page.cached), (4, 10, 2), "the first at the ceiling, stored again; the second a draw of that slot");
+        assert!(page.distance(&pixels) < coarse, "finer at the ceiling");
+        assert!(!encoder.owed());
+
+        // Below the ceiling again, a tile stored at it is drawn from the cache
+        // and owed nothing: it is the ceiling's picture.
+        encoder.set_pace(30, false);
+        same_tile(&mut pixels, w, (64, 0), (0, 64));
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 64, width: 64, height: 64 }]), ms(1000));
+        assert_eq!((page.webps, page.cached), (4, 3));
+        assert!(!encoder.owed(), "a tile drawn from a settled slot is owed nothing");
+    }
+
+    /// A picture that starts over forgets the cache: what the client was
+    /// shown before is sent as a still again, and stored again.
+    #[test]
+    fn a_picture_forgotten_forgets_the_cache() {
+        let (w, h) = (128u16, 64u16);
+        let mut pixels = noise(w, h, 61);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let text = Rect { x: 0, y: 0, width: 64, height: 64 };
+        glyphs(&mut pixels, w, text);
+        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        encoder.forget();
+        step(&mut encoder, &mut page, &pixels, None, ms(200));
+        assert_eq!((page.pngs, page.stored, page.cached), (3, 5, 0), "the picture again, whole, every whole tile stored anew");
+        same_tile(&mut pixels, w, (0, 0), (64, 0));
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(300));
+        assert_eq!((page.pngs, page.cached), (3, 1), "and from then on the cache serves again");
+        assert_eq!(page.off(&pixels), 0);
+    }
+
+    /// A picture of a dot in each tile, every tile its own, `cols`×`rows`
+    /// tiles: cheap to code as a palette, and more tiles than the cache has
+    /// slots where it is big enough.
+    fn dots(cols: u16, rows: u16) -> Vec<u8> {
+        let w = usize::from(cols) * usize::from(TILE);
+        let mut pixels = vec![0xE0; w * usize::from(rows) * usize::from(TILE) * 4];
+        for i in 0..usize::from(cols) * usize::from(rows) {
+            let (col, row) = (i % usize::from(cols), i / usize::from(cols));
+            let (x, y) = (col * usize::from(TILE) + i % 64, row * usize::from(TILE) + (i / 64) % 64);
+            pixels[(y * w + x) * 4..][..4].copy_from_slice(&[(i / 4096) as u8 + 1, 7, 9, 0]);
+        }
+        pixels
+    }
+
+    /// A tile drawn from a slot that the stores of the run ahead of it would
+    /// take as the least recently used: the draw names the slot first, so
+    /// the stores take others, and the page holds the picture exactly. The
+    /// picture has 64 tiles more than the cache has slots, so its first 64
+    /// tiles' slots were taken again by its last 64, and the slot of the
+    /// first tile of the second row is the least recently used.
+    #[test]
+    fn a_draw_keeps_its_slot_from_the_stores_ahead_of_it() {
+        let (cols, rows) = (64u16, 65u16);
+        let (w, h) = (cols * TILE, rows * TILE);
+        let mut pixels = dots(cols, rows);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert_eq!(page.stored, usize::from(cols) * usize::from(rows));
+        // The second row painted over: 63 tiles new, which take 63 slots, and
+        // the last the first tile's old content, in the slot they would take first.
+        let second = Rect { x: 0, y: TILE, width: w, height: TILE };
+        let old: Vec<u8> = (0..usize::from(TILE)).flat_map(|row| pixels[((usize::from(TILE) + row) * usize::from(w)) * 4..][..usize::from(TILE) * 4].to_vec()).collect();
+        paint(&mut pixels, w, Rect { width: w - TILE, ..second }, 71);
+        for (row, line) in old.chunks_exact(usize::from(TILE) * 4).enumerate() {
+            let at = ((usize::from(TILE) + row) * usize::from(w) + usize::from(w - TILE)) * 4;
+            pixels[at..at + line.len()].copy_from_slice(line);
+        }
+        let (pngs, stored) = (page.pngs, page.stored);
+        step(&mut encoder, &mut page, &pixels, Some(&[second]), ms(100));
+        assert_eq!((page.pngs - pngs, page.stored - stored, page.cached), (1, 63, 1), "63 tiles stored and the last drawn from its slot");
+        assert_eq!(page.off(&pixels), 0, "the drawn tile is what the slot held when it was named");
+    }
+
+    /// The record of the cache fills its slots in order, keeps a tile stored
+    /// again in its slot, and once full takes the least recently used slot —
+    /// used by a store or a draw — for a new tile, forgetting the one it kept.
+    #[test]
+    fn the_cache_fills_then_evicts_the_least_recently_used() {
+        let mut cache = Cache::default();
+        for hash in 0..u64::from(CACHE_SLOTS) {
+            assert_eq!(cache.store(hash, true), hash as u16);
+        }
+        assert_eq!(cache.find(5), Some((5, true)));
+        assert_eq!(cache.store(5, false), 5, "stored again, in its slot");
+        assert_eq!(cache.find(5), Some((5, false)), "as it was last stored");
+        cache.touch(0);
+        cache.touch(1);
+        assert_eq!(cache.store(1_000_000, true), 2, "slot 2 is the least recently used");
+        assert_eq!(cache.find(2), None, "the tile it kept is forgotten");
+        assert_eq!(cache.find(1_000_000), Some((2, true)));
+        assert_eq!(cache.store(1_000_001, true), 3);
+        assert_eq!(cache.store(1_000_002, true), 4);
+        cache.clear();
+        assert_eq!(cache.find(0), None);
+        assert_eq!(cache.store(7, true), 0, "filled from the first slot again");
     }
 
     /// Play a video in the corner for `frames` frames of 50 ms from `from`,
