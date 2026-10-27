@@ -249,3 +249,58 @@ costs what moves; a first picture as PNG rather than a stream took 1–15% off
 the CPU over a capture, and nine tenths off a terminal's; a band no stream
 touches sent as its changed tiles rather than whole sent 3–15% fewer bytes
 where the damage is loose.
+
+## The cache
+
+What a client-side cache of tiles would serve was counted before it was
+built, by `examples/tile-recurrence.rs` in the daemon's crate, on lab1 on
+2026-10-27: each capture played as the encoder reads it, Motion's churn rule
+deciding what moves and a 4-connected group of fewer than 5 moving tiles
+left to the stills, as the encoder leaves it, every other changed 64×64 tile
+a still, and each still's pixels hashed and looked for among every still the
+client was sent, kept by least recent use at 1024, 4096 and 16384 slots and
+unbounded, flat tiles never kept and the cache started over with each whole
+picture, as the encoder's is. A hit is *off screen* where the same pixels
+stand in no tile of the picture the client holds, which only a cache serves,
+and *on screen* where they do, which a copy could draw. Its per-tile PNG
+total for the mixed session is an eighth under what the encoder sent in the
+baseline, each still coded alone.
+
+Over the mixed sessions, 225 s of desk work, the stills and what the cache
+serves off screen, as a share of the stills' tiles and of their bytes coded as
+a fast PNG and as a WebP at 90, each tile alone:
+
+| Capture | Stills | PNG | 1024 slots | 4096 | 16384 | unbounded |
+|---|---:|---:|---|---|---|---|
+| mixed-1920x1080 | 33,774 tiles | 67 MB | 9% of tiles, 9% of PNG, 12% of WebP | 15%, 14%, 22% | 17%, 16%, 25% | 18%, 16%, 26% |
+| mixed-2880x1800@2 | 80,663 | 129 MB | 5%, 5%, 7% | 14%, 15%, 24% | 20%, 21%, 35% | 22%, 23%, 37% |
+
+A first count that kept flat tiles too found nearly none of the off-screen
+hits among them, which is why a flat tile is not stored. On-screen hits of
+tiles that are not flat are 6% of the mixed session's, a copy's domain. Of
+the scenarios, uncover — a window moved aside and closed — serves 11% of its
+still bytes at 1920×1080 and 37% at 2880x1800@2; browser, drag, terminal,
+video, walk and the video in a window serve 0 to 6%. Unbounded adds little
+over 16384 slots, and 1024 keeps little more than half the gain at 1920×1080
+and a third at 2880x1800@2, so the cache is 4096 slots, 64 MiB of pixels on
+the page.
+
+Built, it was run on every sample on lab1 on 2026-10-27 at `69d2d3e`
+(protocol 5), the tiles alone held at ceiling 90 and walked at 90 to 90, to
+50 and to 20, read against the settle's run before it
+(`bench/settle-20261027/final/` in the artifacts; this run is
+`bench/tiles-cache-20261027/`). Summed over the scenarios, flood out:
+
+| Pass | Bytes | CPU | Tiles drawn from the cache | At the end |
+|---|---|---|---:|---|
+| held at 90 | 2,174 MB → 2,085, −4% | 161 s → 156, −3% | 60,870 | exact, 82 of 82, as before |
+| walked at 90 to 90 | 1,327 → 1,265, −5% | 237 → 218, −8% | 66,941 | 46.35 dB, as before |
+| walked to 20 | 361 → 323, −11% | 189 → 174, −8% | 65,407 | 46.35 dB, as before |
+
+By scenario, held: uncover −20% of the bytes, browser −15%, drag −9%, mixed
+−4%, the rest within 2%; walked to 20: uncover −22%, browser −17%, mixed
+−15%, drag −7%, the video in a window −5%. Walked, the cache serves a little
+more than held and the CPU falls further: a tile drawn from a slot is coded
+neither coarse nor again at the ceiling. The held CPU is within the 4% two
+runs of one build differ by on lab1. `check` passes 82 of 82: the held tiles
+settle exact and send nothing after.

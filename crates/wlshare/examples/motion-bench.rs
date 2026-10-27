@@ -285,6 +285,8 @@ struct Sent {
     starts: u64,
     /// The tiles' copies, which carry no payload.
     copies: u64,
+    /// The tiles drawn from the page's cache, which carry no payload either.
+    cached: u64,
 }
 
 impl Sent {
@@ -298,6 +300,7 @@ impl Sent {
         self.video += other.video;
         self.starts += other.starts;
         self.copies += other.copies;
+        self.cached += other.cached;
     }
 }
 
@@ -306,6 +309,8 @@ struct Page {
     stride: usize,
     canvas: Vec<u8>,
     decoders: HashMap<u8, decode::Decoder>,
+    /// The cache of tiles, each slot a tile's `B, G, R, A` rows.
+    slots: HashMap<u16, Vec<u8>>,
     /// A decoded region's planes, and its picture as `B, G, R, A`, or a
     /// copy's source.
     planes: Vec<u8>,
@@ -315,7 +320,7 @@ struct Page {
 impl Page {
     fn new((w, h): (u16, u16)) -> Self {
         let stride = usize::from(w) * 4;
-        Self { stride, canvas: vec![0; stride * usize::from(h)], decoders: HashMap::new(), planes: Vec::new(), scratch: Vec::new() }
+        Self { stride, canvas: vec![0; stride * usize::from(h)], decoders: HashMap::new(), slots: HashMap::new(), planes: Vec::new(), scratch: Vec::new() }
     }
 
     /// One update of `count` rectangles, parsed as a client parses it and drawn.
@@ -383,6 +388,25 @@ impl Page {
                         self.scratch.extend_from_slice(&self.canvas[row * self.stride + from_x * 4..][..w * 4]);
                     }
                     for (row, from) in (y..y + h).zip(self.scratch.chunks_exact(w * 4)) {
+                        self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
+                    }
+                }
+                TileBody::Store { slot } => {
+                    let tile = usize::from(wlshare_proto::tiles::TILE);
+                    if (w, h) != (tile, tile) || x % tile != 0 || y % tile != 0 {
+                        return Err(format!("a store of {w}x{h}+{x}+{y}, not one tile on the grid").into());
+                    }
+                    let kept: Vec<u8> = (y..y + h).flat_map(|row| self.canvas[row * self.stride + x * 4..][..w * 4].to_vec()).collect();
+                    self.slots.insert(slot, kept);
+                }
+                TileBody::Cached { slot } => {
+                    sent.cached += 1;
+                    let tile = usize::from(wlshare_proto::tiles::TILE);
+                    if (w, h) != (tile, tile) {
+                        return Err(format!("a cached draw of {w}x{h}, not one tile").into());
+                    }
+                    let kept = self.slots.get(&slot).ok_or_else(|| format!("slot {slot} drawn from before it was stored"))?;
+                    for (row, from) in (y..y + h).zip(kept.chunks_exact(w * 4)) {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
                     }
                 }
@@ -654,7 +678,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"webp\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
+                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"webp\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
                 json(&name),
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
@@ -668,6 +692,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 sent.video,
                 run.tiles.page.decoders.len(),
                 sent.copies,
+                sent.cached,
                 tick_cpu.as_micros(),
                 tick_sent.bytes(),
             )?;
@@ -806,7 +831,7 @@ fn row(name: &str, coder: &str, chroma: &str, args: &Args, ceiling: u8, tally: &
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     let walk_at = args.walk_at.map_or_else(|| "null".to_owned(), |q| q.to_string());
     println!(
-        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"walk_at\":{walk_at},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"webp\":{},\"video\":{},\"copies\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"walk_at\":{walk_at},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"webp\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         tally.frames,
@@ -817,6 +842,7 @@ fn row(name: &str, coder: &str, chroma: &str, args: &Args, ceiling: u8, tally: &
         tally.sent.webp,
         tally.sent.video,
         tally.sent.copies,
+        tally.sent.cached,
         tally.sent.starts,
         tally.keyframes,
         tally.exact,

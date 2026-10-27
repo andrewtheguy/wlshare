@@ -1,0 +1,506 @@
+//! How often a still the tiles encoding sends is a tile the client was shown
+//! before: what a client-side tile cache, as RDP's EGFX keeps one, would save
+//! on a session.
+//!
+//! ```text
+//! tile-recurrence [--quality Q] [--slots N,N,...] CAPTURE...
+//! ```
+//!
+//! Each capture is played as the tiles encoder reads it, with Motion's rule
+//! for what moves: a 64×64 tile that changed in 4 of the last 8 tenths of a
+//! second is moving, a 4-connected group of at least 5 moving tiles is a
+//! stream's while it moves and each of its tiles is owed a still when it
+//! stops, and every other changed tile is a still at once. Each still's
+//! content is hashed and looked for in a cache of every still the client was
+//! sent, kept by least recent use at each of `--slots` sizes and unbounded. A
+//! hit is `onscreen` where the same content stands in another tile of the
+//! picture the client holds — what a COPY could draw — and `offscreen` where
+//! it does not, which only a cache serves. Flat tiles, of one colour, are
+//! never cached, as the encoder stores none, and are counted apart among the
+//! stills, since they are cheap anyway. Bytes are each still coded alone, a
+//! fast PNG as a held list's and a WebP at `--quality` (90) as a walked one's,
+//! so they overstate the per-image overhead of a run of tiles coded as one.
+//! A whole picture — the first frame, or a keyframe asked — is counted as
+//! `whole` and not as stills, and starts the cache over with its tiles, as
+//! the encoder forgets its own.
+//!
+//! One JSON object per capture on stdout.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs::File;
+use std::hash::{Hash, Hasher};
+use std::io::{BufReader, Read};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use wlshare_vp9::capture::Reader;
+
+type Error = Box<dyn std::error::Error>;
+
+const TILE: usize = 64;
+const CHURN_SLOT_MS: u128 = 100;
+const CHURN_WINDOW: u64 = 8;
+const CHURN_MOVING: u32 = 4;
+/// The fewest moving tiles a 4-connected group needs to be a stream's.
+const MIN_STREAM_CELLS: usize = 5;
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("tile-recurrence: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Error> {
+    let mut quality = 90u8;
+    let mut slots = vec![1024usize, 4096, 16384];
+    let mut captures = Vec::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--quality" => quality = args.next().ok_or("--quality needs a value")?.parse()?,
+            "--slots" => slots = args.next().ok_or("--slots needs a value")?.split(',').map(|s| s.parse()).collect::<Result<_, _>>()?,
+            _ => captures.push(arg),
+        }
+    }
+    if captures.is_empty() {
+        return Err("usage: tile-recurrence [--quality Q] [--slots N,N,...] CAPTURE...".into());
+    }
+    for capture in captures {
+        let stats = play(Path::new(&capture), quality, &slots)?;
+        println!("{}", stats.json(&capture, &slots));
+    }
+    Ok(())
+}
+
+fn open(path: &Path) -> Result<Reader<Box<dyn Read>>, Error> {
+    let input: Box<dyn Read> = if path.extension().is_some_and(|e| e == "zst") {
+        let file = File::open(path)?;
+        let child = Command::new("zstd").arg("-dc").stdin(file).stdout(Stdio::piped()).spawn().map_err(|e| format!("running zstd: {e}"))?;
+        Box::new(child.stdout.ok_or("zstd has no stdout")?)
+    } else {
+        Box::new(File::open(path)?)
+    };
+    Ok(Reader::new(Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>)?)
+}
+
+/// A tile's content, hashed over B, G and R, and whether it is one colour.
+fn tile_hash(pixels: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize) -> (u64, bool) {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut first = None;
+    let mut flat = true;
+    for row in y..y + h {
+        let start = (row * width + x) * 4;
+        for px in pixels[start..start + w * 4].as_chunks::<4>().0 {
+            let word = u32::from_le_bytes(*px) & 0x00ff_ffff;
+            word.hash(&mut hasher);
+            match first {
+                None => first = Some(word),
+                Some(f) if f != word => flat = false,
+                _ => {}
+            }
+        }
+    }
+    (hasher.finish(), flat)
+}
+
+fn tile_rgb(pixels: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize) -> Vec<u8> {
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    for row in y..y + h {
+        let start = (row * width + x) * 4;
+        for px in pixels[start..start + w * 4].as_chunks::<4>().0 {
+            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+    }
+    rgb
+}
+
+/// The still's bytes as a fast PNG, palette where it has at most 256 colours,
+/// as the encoder codes one.
+fn png_bytes(w: usize, h: usize, rgb: &[u8]) -> Result<usize, Error> {
+    let mut colours: Vec<[u8; 3]> = Vec::new();
+    let mut indices = Vec::with_capacity(w * h);
+    let mut indexed = true;
+    for px in rgb.as_chunks::<3>().0 {
+        match colours.iter().position(|c| c == px) {
+            Some(i) => indices.push(i as u8),
+            None if colours.len() < 256 => {
+                colours.push(*px);
+                indices.push((colours.len() - 1) as u8);
+            }
+            None => {
+                indexed = false;
+                break;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, w as u32, h as u32);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    if indexed {
+        encoder.set_color(png::ColorType::Indexed);
+        encoder.set_palette(colours.concat());
+        encoder.set_filter(png::Filter::NoFilter);
+    } else {
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_filter(png::Filter::Adaptive);
+    }
+    let mut writer = encoder.write_header()?;
+    if indexed { writer.write_image_data(&indices)? } else { writer.write_image_data(rgb)? }
+    writer.finish()?;
+    Ok(out.len())
+}
+
+/// The still's bytes as a lossy WebP at `quality`, libwebp's fastest method.
+fn webp_bytes(w: usize, h: usize, rgb: &[u8], quality: u8) -> Result<usize, Error> {
+    use libwebp_sys as webp;
+    let mut config = webp::WebPConfig::new().map_err(|()| "libwebp refused its configuration")?;
+    config.quality = f32::from(quality);
+    config.method = 0;
+    config.thread_level = 0;
+    let mut picture = webp::WebPPicture::new().map_err(|()| "libwebp refused its picture")?;
+    picture.width = w as i32;
+    picture.height = h as i32;
+    picture.use_argb = 0;
+    // SAFETY: as the encoder's own `encode_webp`: `rgb` is `w`×`h` packed,
+    // the planes are libwebp's and freed below, the writer this call's.
+    unsafe {
+        if webp::WebPPictureImportRGB(&mut picture, rgb.as_ptr(), (w * 3) as i32) == 0 {
+            webp::WebPPictureFree(&mut picture);
+            return Err("libwebp could not take the picture".into());
+        }
+        let mut writer = std::mem::MaybeUninit::<webp::WebPMemoryWriter>::uninit();
+        webp::WebPMemoryWriterInit(writer.as_mut_ptr());
+        let mut writer = writer.assume_init();
+        picture.writer = Some(webp::WebPMemoryWrite);
+        picture.custom_ptr = (&raw mut writer).cast();
+        let coded = webp::WebPEncode(&config, &mut picture) != 0;
+        let size = writer.size;
+        webp::WebPMemoryWriterClear(&mut writer);
+        webp::WebPPictureFree(&mut picture);
+        if !coded {
+            return Err("libwebp could not code the tile".into());
+        }
+        Ok(size)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChurnCell {
+    history: u8,
+    last_slot: u64,
+}
+
+#[derive(Default)]
+struct Churn {
+    origin: Option<Duration>,
+    churn: HashMap<(u16, u16), ChurnCell>,
+}
+
+impl Churn {
+    fn slot(origin: Duration, now: Duration) -> u64 {
+        (now.saturating_sub(origin).as_millis() / CHURN_SLOT_MS) as u64
+    }
+
+    fn observe(&mut self, key: (u16, u16), now: Duration) {
+        let origin = *self.origin.get_or_insert(now);
+        let slot = Self::slot(origin, now);
+        let cell = self.churn.entry(key).or_insert(ChurnCell { history: 0, last_slot: slot });
+        let elapsed = slot.saturating_sub(cell.last_slot);
+        cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+        cell.history |= 1;
+        cell.last_slot = slot;
+    }
+
+    fn moving(&mut self, now: Duration) -> HashSet<(u16, u16)> {
+        let Some(origin) = self.origin else { return HashSet::new() };
+        let slot = Self::slot(origin, now);
+        let mut moving = HashSet::new();
+        self.churn.retain(|key, cell| {
+            let elapsed = slot.saturating_sub(cell.last_slot);
+            cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+            cell.last_slot = slot;
+            if cell.history.count_ones() >= CHURN_MOVING {
+                moving.insert(*key);
+            }
+            cell.history != 0
+        });
+        moving
+    }
+}
+
+/// The moving tiles a stream carries: those in a 4-connected group of at
+/// least [`MIN_STREAM_CELLS`]; a smaller group is left to the stills.
+fn carried(moving: &HashSet<(u16, u16)>) -> HashSet<(u16, u16)> {
+    let mut out = HashSet::new();
+    let mut seen = HashSet::new();
+    for &start in moving {
+        if !seen.insert(start) {
+            continue;
+        }
+        let mut group = vec![start];
+        let mut stack = vec![start];
+        while let Some((c, r)) = stack.pop() {
+            for next in [(c.wrapping_sub(1), r), (c + 1, r), (c, r.wrapping_sub(1)), (c, r + 1)] {
+                if moving.contains(&next) && seen.insert(next) {
+                    group.push(next);
+                    stack.push(next);
+                }
+            }
+        }
+        if group.len() >= MIN_STREAM_CELLS {
+            out.extend(group);
+        }
+    }
+    out
+}
+
+/// A cache of tile contents by least recent use, at most `slots` of them.
+struct Lru {
+    slots: usize,
+    stamp: u64,
+    by_hash: HashMap<u64, u64>,
+    by_use: BTreeSet<(u64, u64)>,
+}
+
+impl Lru {
+    fn new(slots: usize) -> Self {
+        Self { slots, stamp: 0, by_hash: HashMap::new(), by_use: BTreeSet::new() }
+    }
+
+    fn clear(&mut self) {
+        self.by_hash.clear();
+        self.by_use.clear();
+    }
+
+    /// Whether `hash` was held; held after either way, as the most recent.
+    fn touch(&mut self, hash: u64) -> bool {
+        self.stamp += 1;
+        if let Some(old) = self.by_hash.insert(hash, self.stamp) {
+            self.by_use.remove(&(old, hash));
+            self.by_use.insert((self.stamp, hash));
+            return true;
+        }
+        self.by_use.insert((self.stamp, hash));
+        if self.by_hash.len() > self.slots
+            && let Some(&oldest) = self.by_use.iter().next()
+        {
+            self.by_use.remove(&oldest);
+            self.by_hash.remove(&oldest.1);
+        }
+        false
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct Count {
+    tiles: u64,
+    flat: u64,
+    png: u64,
+    webp: u64,
+    /// Bytes of the tiles that are not flat.
+    png_nonflat: u64,
+    webp_nonflat: u64,
+}
+
+impl Count {
+    fn add(&mut self, flat: bool, png: usize, webp: usize) {
+        self.tiles += 1;
+        self.png += png as u64;
+        self.webp += webp as u64;
+        if flat {
+            self.flat += 1;
+        } else {
+            self.png_nonflat += png as u64;
+            self.webp_nonflat += webp as u64;
+        }
+    }
+
+    fn json(&self) -> String {
+        format!(
+            "{{\"tiles\":{},\"flat\":{},\"png\":{},\"webp\":{},\"png_nonflat\":{},\"webp_nonflat\":{}}}",
+            self.tiles, self.flat, self.png, self.webp, self.png_nonflat, self.webp_nonflat
+        )
+    }
+}
+
+#[derive(Default)]
+struct Stats {
+    frames: u64,
+    seconds: f64,
+    whole_tiles: u64,
+    stills: Count,
+    /// Per cache size, then unbounded last: hits on screen, hits off screen.
+    hits: Vec<(Count, Count)>,
+}
+
+impl Stats {
+    fn json(&self, capture: &str, slots: &[usize]) -> String {
+        let mut caches = Vec::new();
+        for (i, (on, off)) in self.hits.iter().enumerate() {
+            let name = slots.get(i).map_or("unbounded".to_owned(), |n| n.to_string());
+            caches.push(format!("\"{name}\":{{\"onscreen\":{},\"offscreen\":{}}}", on.json(), off.json()));
+        }
+        format!(
+            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"cache\":{{{}}}}}",
+            capture, self.frames, self.seconds, self.whole_tiles, self.stills.json(), caches.join(",")
+        )
+    }
+}
+
+fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
+    let mut reader = open(path)?;
+    let mut stats = Stats { hits: vec![(Count::default(), Count::default()); slots.len() + 1], ..Stats::default() };
+    let mut caches: Vec<Lru> = slots.iter().map(|&n| Lru::new(n)).chain(std::iter::once(Lru::new(usize::MAX))).collect();
+    // What the client holds in each tile, exact: `None` under a stream.
+    let mut held: HashMap<(u16, u16), Option<u64>> = HashMap::new();
+    let mut refcount: HashMap<u64, u32> = HashMap::new();
+    let mut streamed: HashSet<(u16, u16)> = HashSet::new();
+    let mut churn = Churn::default();
+    // Each distinct content's bytes, coded once.
+    let mut coded: HashMap<u64, (usize, usize)> = HashMap::new();
+    let mut size = (0u16, 0u16);
+    let mut last_at = Duration::ZERO;
+
+    while let Some(frame) = reader.next()? {
+        stats.frames += 1;
+        last_at = frame.at;
+        let (width, height) = (usize::from(frame.size.0), usize::from(frame.size.1));
+        let pixels = frame.pixels;
+        let whole = frame.keyframe || frame.size != size || stats.frames == 1;
+        size = frame.size;
+        let tiles_x = width.div_ceil(TILE);
+        let tiles_y = height.div_ceil(TILE);
+        let geometry = |tx: u16, ty: u16| {
+            let x = usize::from(tx) * TILE;
+            let y = usize::from(ty) * TILE;
+            (x, y, (width - x).min(TILE), (height - y).min(TILE))
+        };
+
+        if whole {
+            held.clear();
+            refcount.clear();
+            streamed.clear();
+            churn = Churn::default();
+            for cache in &mut caches {
+                cache.clear();
+            }
+            for ty in 0..tiles_y as u16 {
+                for tx in 0..tiles_x as u16 {
+                    let (x, y, w, h) = geometry(tx, ty);
+                    let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
+                    held.insert((tx, ty), Some(hash));
+                    *refcount.entry(hash).or_default() += 1;
+                    if !flat {
+                        for cache in &mut caches {
+                            cache.touch(hash);
+                        }
+                    }
+                    stats.whole_tiles += 1;
+                }
+            }
+            continue;
+        }
+
+        // The tiles the damage touches, each hashed once.
+        let mut candidates: HashSet<(u16, u16)> = HashSet::new();
+        match frame.changed {
+            None => {
+                for ty in 0..tiles_y as u16 {
+                    for tx in 0..tiles_x as u16 {
+                        candidates.insert((tx, ty));
+                    }
+                }
+            }
+            Some(rects) => {
+                for r in rects {
+                    let x0 = usize::from(r.x).min(width);
+                    let y0 = usize::from(r.y).min(height);
+                    let x1 = (x0 + usize::from(r.width)).min(width);
+                    let y1 = (y0 + usize::from(r.height)).min(height);
+                    if x0 >= x1 || y0 >= y1 {
+                        continue;
+                    }
+                    for ty in y0 / TILE..(y1 - 1) / TILE + 1 {
+                        for tx in x0 / TILE..(x1 - 1) / TILE + 1 {
+                            candidates.insert((tx as u16, ty as u16));
+                        }
+                    }
+                }
+            }
+        }
+        let mut changed: Vec<((u16, u16), u64, bool)> = Vec::new();
+        for &key in &candidates {
+            let (x, y, w, h) = geometry(key.0, key.1);
+            let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
+            if held.get(&key).copied().flatten() == Some(hash) {
+                continue;
+            }
+            churn.observe(key, frame.at);
+            changed.push((key, hash, flat));
+        }
+        let moving = carried(&churn.moving(frame.at));
+
+        let mut stills: Vec<((u16, u16), u64, bool)> = Vec::new();
+        for (key, hash, flat) in changed {
+            if moving.contains(&key) {
+                if let Some(Some(old)) = held.insert(key, None)
+                    && let Some(n) = refcount.get_mut(&old)
+                {
+                    *n -= 1;
+                    if *n == 0 {
+                        refcount.remove(&old);
+                    }
+                }
+                streamed.insert(key);
+            } else {
+                streamed.remove(&key);
+                stills.push((key, hash, flat));
+            }
+        }
+        // Tiles a stream carried that stopped and did not change this frame
+        // are owed a still of what they show.
+        let stopped: Vec<(u16, u16)> = streamed.iter().filter(|k| !moving.contains(k)).copied().collect();
+        for key in stopped {
+            streamed.remove(&key);
+            let (x, y, w, h) = geometry(key.0, key.1);
+            let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
+            stills.push((key, hash, flat));
+        }
+
+        for (key, hash, flat) in stills {
+            let (x, y, w, h) = geometry(key.0, key.1);
+            let (png, webp) = match coded.get(&hash) {
+                Some(&b) => b,
+                None => {
+                    let rgb = tile_rgb(pixels, width, x, y, w, h);
+                    let b = (png_bytes(w, h, &rgb)?, webp_bytes(w, h, &rgb, quality)?);
+                    coded.insert(hash, b);
+                    b
+                }
+            };
+            stats.stills.add(flat, png, webp);
+            let onscreen = refcount.get(&hash).is_some_and(|&n| n > 0);
+            if !flat {
+                for (cache, (on, off)) in caches.iter_mut().zip(&mut stats.hits) {
+                    if cache.touch(hash) {
+                        if onscreen { on.add(flat, png, webp) } else { off.add(flat, png, webp) }
+                    }
+                }
+            }
+            if let Some(Some(old)) = held.insert(key, Some(hash))
+                && let Some(n) = refcount.get_mut(&old)
+            {
+                *n -= 1;
+                if *n == 0 {
+                    refcount.remove(&old);
+                }
+            }
+            *refcount.entry(hash).or_default() += 1;
+        }
+    }
+    stats.seconds = last_at.as_secs_f64();
+    Ok(stats)
+}

@@ -85,7 +85,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
         };
         let body = match header {
             TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Webp { len } => len,
-            TileHeader::End { .. } | TileHeader::Copy { .. } => 0,
+            TileHeader::End { .. } | TileHeader::Copy { .. } | TileHeader::Cached { .. } | TileHeader::Store { .. } => 0,
         };
         let bytes = RECT_HEADER + used + body;
         records.push((bytes + if at == 0 { FRAMING } else { 0 }, body));

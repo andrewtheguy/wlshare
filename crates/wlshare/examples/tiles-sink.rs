@@ -155,7 +155,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut pngs, mut png_bytes, mut webps, mut webp_bytes, mut copies, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut pngs, mut png_bytes, mut webps, mut webp_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -212,6 +212,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 copies += 1;
                             }
+                            RectBody::Tiles(TileBody::Cached { .. }) => cached += 1,
+                            RectBody::Tiles(TileBody::Store { .. }) => {}
                             RectBody::Tiles(TileBody::Start { stream, frame }) => {
                                 if live.contains_key(&stream) {
                                     return Err(format!("stream {stream} started while live").into());
@@ -264,7 +266,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
+            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
         }
     }
     done.extend(live.drain().map(|(_, stream)| stream));
@@ -276,7 +278,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let (x, y, w, h) = stream.rect;
         eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
     }
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
+    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
 
     Ok(())
 }
