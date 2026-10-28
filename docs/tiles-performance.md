@@ -235,9 +235,23 @@ at 2880×1800@2). But 95% of their changes take 1.2 to 3.1 times as long to be
 shown as `WLSV`'s, the most on the falling link. Over the mixed session at
 5 and 10 Mbit/s, 1.5 to 2.2 times, the waits are the bursts of stills that
 change the picture outside the video, which the dial does not make smaller,
-so the walk walks the regions down for a delay they did not cause. A threshold of the
-tiles' own, or a burst that is no verdict, is what would address it,
-measured the same way.
+so the walk walks the regions down for a delay they did not cause.
+
+That was tried on lab1 on 2026-10-28, the same captures and links walked,
+with each update's stills and streams counted (`bench/verdicts-20261028/` in
+the artifacts). The first descent of each mixed session, 90 to 20 or 30, is
+judged on updates of 90 to 100% stills, 50 to 200 KB each, and the later
+steps on the streams' frames. But an update with no stream frame made no
+verdict, or one whose stills outweighed its streams' frames, helped
+nothing: over the mixed session at 5 and 10 Mbit/s the p95 was the same or
+worse (295 ms to 290 and 329 at 1920×1080 over 5, 257 to 275 and 287 at
+2880×1800@2 over 10) and the mean dial lower, and elsewhere within what two
+runs differ by. What makes the slowest changes slow is the bursts' own
+bytes: at 2880×1800@2 two thirds of the slowest updates are mostly stills,
+of about 100 KB at a dial of 20 to 37, and a WebP of text at 20 is still
+62 to 67% of its bytes at 90 (browser and the mixed session, the updates'
+own stills; 34 to 51% on video and the walk), where the regions' H.264 is
+11 to 13%. Judged or not, the stills are what does not shrink.
 
 ## The regions' encoder
 

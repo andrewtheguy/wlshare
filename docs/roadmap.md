@@ -10,13 +10,19 @@ list whose dial walks. Each is measured with `tiles-walk-sim` against the runs
 in [Tiles performance](tiles-performance.md#the-walks-verdicts), `WLSV`
 beside it on the same links.
 
-- **The walk's verdicts on the bursts of stills.** Over the mixed session at
+- **Bursts of stills that shrink with the dial.** Over the mixed session at
   5 and 10 Mbit/s, 95% of the walked tiles' changes are shown 1.5 to 2.2
   times later than `WLSV`'s, though their dial is lower and they send under
-  three fifths of the link. The delay comes from the bursts of stills, which a
-  lower dial does not shrink, so the walk lowers the regions' quality for
-  delays they did not cause. A threshold of the tiles' own, or a burst of
-  stills that is no verdict, is what to try.
+  three fifths of the link. The waits are bursts of stills, mostly text,
+  which a lower dial barely shrinks: a WebP of text at 20 is 62 to 67% of
+  its bytes at 90, where a region's H.264 is 11 to 13%, and judging them no
+  verdict changed nothing ([measured](tiles-performance.md#the-walks-verdicts)).
+  What to try is a burst coded so that it does shrink: one past a size
+  coded coarse below the dial, or as one H.264 picture of its box at the
+  dial, and either owed the ceiling as a coarse still is, the settle
+  sharpening it in the pause that follows, as RDP's progressive first pass
+  is refined. A cap on a burst's bytes in one update, the rest owed to the
+  next, would let the streams' frames go ahead of it.
 - **A stream that settles itself.** A walked list's stream leaves its
   tiles owed a WebP at the ceiling once they are still. RDP's H.264 refines
   a still region inside the stream instead, at QP 33 and then 25 after 41
