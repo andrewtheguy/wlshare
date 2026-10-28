@@ -17,6 +17,24 @@ beside it on the same links.
   lower dial does not shrink, so the walk lowers the regions' quality for
   delays they did not cause. A threshold of the tiles' own, or a burst of
   stills that is no verdict, is what to try.
+- **A stream that settles itself.** A walked list's stream leaves its
+  tiles owed a WebP at the ceiling once they are still. RDP's H.264 refines
+  a still region inside the stream instead, at QP 33 and then 25 after 41
+  for what moves ([zDesk's
+  measurements](https://github.com/andrewtheguy/zdesk/blob/main/docs/rdp-client.md#the-connection-sequence)),
+  with no second codec. Here a stream whose motion stops would end with a
+  frame at the ceiling in place of the WebPs: an IDR, since a region's
+  quantizer is its encoder's for life, or a P-frame where a quantizer per
+  frame can be had — libavcodec's regions of interest, which libx264 and
+  `h264_vaapi` take where the driver does, not yet tried on the UHD 630.
+  Leaving a stream at the ceiling owed nothing saved 1% of the bytes and
+  ended a video about 2 dB below the WebPs
+  ([measured](tiles-performance.md#what-the-settle-sends-again)), so the
+  frame has to reach the WebP's picture rather than the stream's quantizer
+  at the dial, and what is left to save is the settle below the ceiling and
+  the WebPs' coding. It is measured against the WebP settle with
+  motion-bench `--walk-at` and `tiles-walk-sim`: the bytes, the time to
+  settle, the end dB and the CPU.
 
 ## The tiles' cache
 

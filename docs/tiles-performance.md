@@ -120,6 +120,22 @@ distance from the ceiling or a level the link decides, would buy at most that
 3% for a picture at rest below the ceiling, and the picture at rest stays the
 ceiling's.
 
+Nor is a stream's frame at the ceiling worth leaving owed nothing, as RDP
+leaves its H.264: that was measured on lab1 on 2026-10-27, a walked list's
+stream at the ceiling paying its tiles' debts, against main at `6ebb6cb`,
+both in one session (`bench/settle-ceiling-20261027/` in the artifacts).
+Walked at 90, summed over the scenarios, flood out, it sent 1,253 MB where
+main sent 1,265, 1% less, for 2% less CPU, inside the 4% two runs differ
+by, and the settle's tail fell from 58.5 s to 44.4. But the picture ends at
+45.38 dB where it ended at 46.35: video at 42.74 where it was 44.57, the walk
+41.91 where it was 44.51, a video in a window 45.12 where it was 45.99, while
+drag (49.37 from 48.59) and uncover (48.48 from 47.69) end higher. At the same
+dial the region's H.264 is not the WebP's picture: on a video the settle's
+WebPs are about 2 dB better, for 1% of the bytes. Over the walks of
+`tiles-walk-sim` nothing moved beyond what two runs of one build differ by,
+and where the dial stays at 90, over 25 and 50 Mbit/s, the bytes moved 1% at
+most. So the stream's tiles stay owed.
+
 ## The settle
 
 Measured 2026-10-27 on the same VM in the same way, the tiles alone against
