@@ -548,6 +548,61 @@ moved and copying it 30%, and the rest of the update 7%. Of the coding,
 the coefficients' loop of a first pass was a third, the wavelet 18%, the
 coding of runs and bits 15% and the colour conversion 11%.
 
+**The scroll.** With those and the capture at 30 frames a second
+(0.0.104), a live session scrolling a news page back and forth fast still
+cost about as much as before. It was played again on lab1, alone: headless
+sway 1.11 at 2880x1800@2 and 1920x1080, Chromium 156 fullscreen on Google
+News, the daemon built from the branch, `tiles-sink` a walked client
+turning the wheel 15 clicks one way and 15 back, 20 ms apart, for 20 s, and
+the daemon's processor read each second; Chromium drawing in software holds
+it to 18 to 20 updates a second. Such a scroll moves the page 500 to 850
+pixels between updates at 2880x1800, so every update brings half a screen
+the client never held, about 215 tiles that no copy or cache can draw. Two
+faults made it cost more. The search for copies left out a tile that changed
+in place twice in 0.8 s, and a scroll the search missed changes every tile
+in place: two misses, and no copy was found for the rest of the scroll, the
+page coded whole each update, half again as many tiles or more. A tile
+that churns is now looked among while a copy was found within those 0.8 s.
+And the scan along every fourth row of the old picture finds a probe only
+where its row lands on one, so a fast scroll, whose new rows hold most of
+the rest, was left with fewer than two to agree on an offset; each offset
+found is now checked against every probe, and the rows stepped over are
+scanned where the first scan found nothing. Of the misses that left, about 1
+in 13 updates, none is found by any probe at any offset. The coder took 87
+µs a tile, on one core, over 60 frames of the browser capture at 2880x1800
+at the stage of 75, and takes 41.5, the same bytes: the signs in a loop of
+their own that SSE2 does in eight lanes (LLVM's `signum` it does a lane at
+a time), the trailing zeros found sixteen at a time, a row's even and odd
+samples split without a branch, the colour conversion without the clamps
+eight bits never reach, a tile's buffers kept for the next rather than
+allocated, the whole coder compiled a second time for AVX2 and chosen at
+run time, and the entropy coder's fields put together into one write of up
+to 32 bits. A rule that held the update after one that copied and coded
+three rows of tiles across the picture, to halve a fast scroll's frames,
+was tried and dropped: a scroll's coding is the page it uncovers, however
+many frames it is shown in, and the rule saved 6% of the processor at
+2880x1800 for 28% fewer frames. The runs are `bench/scroll-cpu-20261028/`
+in the artifacts. The daemon's processor while scrolling, main (0.0.104)
+then the branch, two runs each:
+
+| Desktop | Processor | Tiles sent |
+|---|---|---|
+| 2880x1800@2 | 79–106% → 58–59% | 101–128k → 78–81k |
+| 1920x1080 | 32% → 24–25% | 32k → 32–33k |
+
+`tiles-walk-sim` on lab1 with its own encode times and a link of 100
+Mbit/s, the capture at 30 Hz in both, main then the branch: the frame rates
+and the pictures as they were, and the scrolls' bytes 10 to 16% fewer for
+the copies the search no longer misses.
+
+| Capture | Session | Busiest second | Mbit/s |
+|---|---|---|---|
+| browser-1920x1080 | 17.3 → 12.5% | 31 → 18% | 3.40 → 3.05 |
+| browser-2880x1800@2 | 42.4 → 31.0% | 83 → 53% | 7.46 → 6.29 |
+| window-1920x1080 | 26.0 → 15.3% | 38 → 24% | 5.76 → 5.77 |
+| window-2880x1800@2 | 37.2 → 25.8% | 53 → 40% | 9.01 → 9.01 |
+| mixed-1920x1080 | 23.2 → 15.9% | 110 → 84% | 5.55 → 5.38 |
+
 **In the browser.** zDesk's end-to-end test reads a progressive session's
 tiles from wlshare in a container, through the gateway, with the page's
 decoder, against the exact picture of the tiles with motion; headless

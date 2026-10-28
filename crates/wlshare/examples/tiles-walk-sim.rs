@@ -40,7 +40,8 @@
 //! session that falls behind skips the frames it had no time for and reads
 //! their damage with the next; and what the encoder owes once the desktop
 //! stops goes out on its tick, as an update that waits for the fence and the
-//! walk's interval as any other. The gateway passes each rectangle as a record
+//! walk's interval as any other. The capture is the daemon's default, 30 Hz.
+//! The gateway passes each rectangle as a record
 //! of its own, its body taking its share of the budget. Each update is the
 //! walk's to judge as the session judges it: a keyframe or the tick's alone is
 //! no verdict, and the first of the tick's settles the walk where it stands.
@@ -339,10 +340,10 @@ fn main() -> Result<(), Error> {
     let paint = Duration::from_secs_f64(paint / 1e3);
     let mut jitter = sim::jitter(jitter);
 
-    // A 60 Hz capture, `max_fps = 60`.
+    // A 30 Hz capture, the daemon's default.
     let base = Instant::now();
     let picture = TilesPicture { quality: ceiling, progressive: !held };
-    let mut walk = QualityWalk::new(ceiling, Duration::from_micros(16_667), !held);
+    let mut walk = QualityWalk::new(ceiling, Duration::from_micros(33_333), !held);
     // Where the walk stands, as the session hands it the encoder.
     let pace = |walk: &QualityWalk| if held { (ceiling, false) } else { (walk.quality(), walk.slowed()) };
     let mut encoder: Option<TilesEncoder> = None;
