@@ -253,6 +253,19 @@ of about 100 KB at a dial of 20 to 37, and a WebP of text at 20 is still
 own stills; 34 to 51% on video and the walk), where the regions' H.264 is
 11 to 13%. Judged or not, the stills are what does not shrink.
 
+Nor does a burst coded as a region's picture shrink. A burst of at least 32
+tiles no stream carries, boxed as a region is, coded as one H.264 picture of
+the box at the dial — a stream of one frame — and owed the ceiling after,
+was measured the same way (`bench/bursts-20261028/` in the artifacts). It
+sent more, not less: walked to 50 15% more, to 20 16%, and at 90 13%, the
+browser's walk to 20 trading 32 MB of WebP for 57 MB of H.264, with the
+settle the same; and over the mixed session the waits grew, at 2880×1800@2
+from 456 ms at p95 to 634 over 5 Mbit/s and from 262 to 330 over 10. A
+region's H.264 shrinks with the dial because its frames code what changed
+since the last; a burst is one intra picture of text, which libx264 at
+`ultrafast` codes worse than WebP at any dial, and its box codes the tiles in
+it that did not change again.
+
 ## The regions' encoder
 
 Measured 2026-10-21 on an Intel UHD 630's low-power encoder, in a container

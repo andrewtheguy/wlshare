@@ -15,14 +15,15 @@ beside it on the same links.
   times later than `WLSV`'s, though their dial is lower and they send under
   three fifths of the link. The waits are bursts of stills, mostly text,
   which a lower dial barely shrinks: a WebP of text at 20 is 62 to 67% of
-  its bytes at 90, where a region's H.264 is 11 to 13%, and judging them no
-  verdict changed nothing ([measured](tiles-performance.md#the-walks-verdicts)).
-  What to try is a burst coded so that it does shrink: one past a size
-  coded coarse below the dial, or as one H.264 picture of its box at the
-  dial, and either owed the ceiling as a coarse still is, the settle
-  sharpening it in the pause that follows, as RDP's progressive first pass
-  is refined. A cap on a burst's bytes in one update, the rest owed to the
-  next, would let the streams' frames go ahead of it.
+  its bytes at 90. Judging them no verdict changed nothing, and coding a
+  burst as one H.264 picture at the dial sent more, since a picture of
+  text coded from nothing is no region's frame
+  ([measured](tiles-performance.md#the-walks-verdicts)). What is left to try
+  is a first pass that does shrink, a burst past a size sent downscaled and
+  owed the ceiling, the settle sharpening it in the pause after, as RDP's
+  progressive first pass is refined; or a cap on a burst's bytes in one
+  update, the rest owed to the next, which leaves the stills as late but
+  lets the streams' frames go ahead of them.
 - **A stream that settles itself.** A walked list's stream leaves its
   tiles owed a WebP at the ceiling once they are still. RDP's H.264 refines
   a still region inside the stream instead, at QP 33 and then 25 after 41

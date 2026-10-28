@@ -24,7 +24,9 @@
 //! exact. `--timeline` writes every update as a JSON object a line: `t_ms`,
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,
-//! `interval_ms`, `bytes`, `encode_ms`, `delivery_ms` and `latency_ms`.
+//! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs and
+//! WebPs, and of its streams' frames), `encode_ms`, `delivery_ms`,
+//! `latency_ms` and, where its fence moved the dial, `moved_to`.
 //!
 //! Time is the simulation's own, as `walk-sim`'s is: an encode, the read of
 //! what changed with it, takes what it took on this machine, or `--encode`;
@@ -71,6 +73,29 @@ const FRAMING: usize = 4 + 13;
 
 /// An RFB rectangle's header, ahead of each tiles body.
 const RECT_HEADER: usize = 12;
+
+/// The bodies of an update's stills, PNG and WebP, and of its streams' frames.
+fn split(out: &[u8]) -> Result<(usize, usize), Error> {
+    let (mut stills, mut streams, mut at) = (0, 0, 0);
+    while at < out.len() {
+        let Some((header, used)) = TileHeader::parse(&out[at + RECT_HEADER..])? else {
+            return Err("a tiles rectangle cut short".into());
+        };
+        let body = match header {
+            TileHeader::Png { len } | TileHeader::Webp { len } => {
+                stills += len;
+                len
+            }
+            TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } => {
+                streams += len;
+                len
+            }
+            TileHeader::End { .. } | TileHeader::Copy { .. } | TileHeader::Cached { .. } | TileHeader::Store { .. } => 0,
+        };
+        at += RECT_HEADER + used + body;
+    }
+    Ok((stills, streams))
+}
 
 /// The records the gateway passes of an update the encoder wrote as `out`:
 /// each rectangle, its bytes on the link and those of its body, which a
@@ -249,22 +274,25 @@ fn main() -> Result<(), Error> {
             qualities.push(f64::from(coded_at));
             deliveries.push(delivery.as_secs_f64() * 1e3);
         }
+        let interval = walk.interval();
+        // The fence comes back; the next update waits for it.
+        now = back;
+        let moved = walk.fenced(delivery, verdict, base + now);
+        walk.delivered(base + now);
         if let Some(t) = &mut timeline {
             let kind = if update.keyframe { "key" } else if update.tick { "tick" } else { "frame" };
+            let (stills, streams) = split(&out)?;
+            let moved_to = moved.map_or_else(String::new, |moved| format!(",\"moved_to\":{}", moved.quality));
             writeln!(
                 t,
-                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"encode_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}}}",
+                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}{moved_to}}}",
                 sent.as_secs_f64() * 1e3,
-                walk.interval().as_secs_f64() * 1e3,
+                interval.as_secs_f64() * 1e3,
                 encode.as_secs_f64() * 1e3,
                 delivery.as_secs_f64() * 1e3,
                 latency.as_secs_f64() * 1e3,
             )?;
         }
-        // The fence comes back; the next update waits for it.
-        now = back;
-        let moved = walk.fenced(delivery, verdict, base + now);
-        walk.delivered(base + now);
         if let Some(moved) = moved {
             let (quality, coarse) = pace(&walk);
             encoder.set_pace(quality, coarse);
