@@ -58,6 +58,12 @@ sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.7
 # The tiles encoding's PNGs (src/rfb/tiles.rs), pure Rust; `fdeflate` is its
 # fast compression.
 png = "0.18"
+# The progressive tiles' first passes (src/rfb/progressive.rs), coded ahead on
+# its pool: a thread per core, kept for the process and shared by every
+# session, not spawned for each update.
+rayon = "1"
+# The hash the tiles' cache keys a tile by (src/rfb/tiles.rs).
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # The Wayland side. wayland-client speaks the protocol in its own Rust, with no
 # libwayland linked or loaded.

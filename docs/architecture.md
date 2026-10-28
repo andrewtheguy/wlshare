@@ -783,9 +783,12 @@ the picture.
   not yet sent, nothing another copy of the read draws — and draws on no
   tile a stream carries; every tile it draws on is owed what its source is
   owed, so a copy of a stream's picture settles as the stream does. On a
-  walked list every copy is owed: what it draws is pixels the client holds
-  no progressive coefficients of, and its tiles go again as first passes
-  where they now are, so the picture ends as it would have without the copy.
+  walked list a copy from a settled source is settled too, as a cached tile
+  stored at the full stage is: what it draws is the full stage's pixels,
+  moved, though the client holds no progressive coefficients of them where
+  they now are, so the next change to one of its tiles is a first pass that
+  is no difference. A page scrolled and left goes again only where the
+  scroll uncovered it, not whole at the full stage.
   It is looked for on a held list and a walked one alike: a scroll sends a
   few bytes and the strip it uncovered, a page scrolled a third of the bytes
   it did held ([measured](tiles-performance.md#copies)).
