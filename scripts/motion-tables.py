@@ -2,7 +2,6 @@
 JSON object a line (JSONL):
 
     motion-bench --quality 90 CAPTURE... > q90-held.jsonl
-    motion-bench --quality 90 --walk-at 50 CAPTURE... > q90-walk50.jsonl
     motion-bench check --quality 90 CAPTURE... > check.jsonl
     walk-sim CAPTURE --link 10 > window-10.jsonl
     tiles-walk-sim CAPTURE --link 10 > tiles-window-10.jsonl
@@ -45,7 +44,7 @@ def bench_section(name, rows):
         if r["coder"] == "wlsv":
             detail = f"{r['keyframes']} keyframes" + (f", settled at {r['quality']} for {r['tail_cpu_ms']:.1f} ms" if r["tail_cpu_ms"] > 0 else "")
         else:
-            detail = f"PNG {mb(r['png']):.2f} MB, WebP {mb(r['webp']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
+            detail = f"PNG {mb(r['png']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
         out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {exact:.0f}% | {ends} | {detail} |")
     return out
 

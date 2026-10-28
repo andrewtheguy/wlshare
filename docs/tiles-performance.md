@@ -8,6 +8,13 @@ what the encoder is handed](architecture.md#capturing-what-the-encoder-is-handed
 and `examples/tiles-walk-sim.rs` the walk on a slow link, over whole sessions.
 Flood is in the figures for reference and is not a target.
 
+The walked picture of every section before [Progressive
+tiles](#progressive-tiles) is the one wlshare sent until 2026-10-28, zDesk's
+Adaptive tiles: every still a lossy WebP at the dial, and a region that
+moves an H.264 stream walked with it. Progressive tiles replaced it, and
+its figures stay as what they were measured against; motion-bench's
+`--walk-at`, which coded it, went with it.
+
 ## The three pictures
 
 Measured 2026-10-26 on an eight-core AMD EPYC (Milan) VM, idle and with no
@@ -138,8 +145,8 @@ most. So the stream's tiles stay owed. That is not what RDP does with its
 H.264 either: it never leaves a still region at the quantizer it moved at,
 nor sends it again in another codec, but refines it inside the stream, to QP
 33 and then 25 after 41, and leaves it there. A stream that refines itself
-that way, below the ceiling where its frames are coarse, is on the
-[roadmap](roadmap.md#the-walked-tiles).
+that way, below the ceiling where its frames are coarse, was on the roadmap
+until the walked picture's streams went.
 
 ## The settle
 
@@ -389,11 +396,11 @@ coefficients, sent coarse first.
 
 ## Progressive tiles
 
-The progressive picture ([Or every tile
+The progressive picture ([On a walked list, every tile
 progressive](architecture.md#the-tiles-encoding)) was measured from
 2026-10-27 to 2026-10-28 as a replacement for the walked list's WebP and
-H.264: every tile RemoteFX Progressive, still or moving, as a Windows host
-draws its desktop without H.264. The run is `bench/progressive-20261028/` in
+H.264, which it then replaced: every tile RemoteFX Progressive, still or
+moving, as a Windows host draws its desktop without H.264. The run is `bench/progressive-20261028/` in
 the artifacts.
 
 **What the host does.** zDesk's link probe (`examples/rdp_link_probe.rs`)

@@ -693,8 +693,10 @@ moves, H.264 — the host's hardware, or libx264. It is a choice the gateway mak
 picture for a slow link, where a lossy stream in fewer bytes is what the link
 bears. This one spends bytes the link has, for less of the encoder's time and
 a picture that ends exact, on a list that holds its dial; and on a list
-that lets its dial walk, it follows the link as `WLSV` does, every still a
-lossy WebP at the dial and nothing owed exact, so a client that wants the walk more than a picture that ends exact gets that too. It is zDesk's Motion, which that gateway dropped
+that lets its dial walk, it follows the link as `WLSV` does, every tile a
+RemoteFX Progressive tile, still or moving, with no stream and nothing owed
+exact, so a client that wants the walk more than a picture that ends exact
+gets that too. It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
@@ -704,11 +706,9 @@ coded once. `crates/wlshare/src/rfb/tiles.rs` is the encoder, and
 A client that lists it, with a quality beside it (`WLQ` and the value, as
 VP9's) and `WLSD` where it wants the dial held rather than walked, as VP9's
 list says it, gets it instead of a standard pixel encoding, wherever in the
-list it is; a walked list that names `WLSP` (`0x574c5350`) beside it gets
-every tile progressive, below. Listed without a quality it is fatal, and so
-is a list that names both it and `WLSV`: they are two pictures, of which a
-client wants one; so is one that names `WLSP` beside `WLSD`, since
-progressive tiles never settle exact. A
+list it is; a walked list gets every tile progressive, below. Listed
+without a quality it is fatal, and so is a list that names both it and
+`WLSV`: they are two pictures, of which a client wants one. A
 pixel update is then any number of rectangles of the encoding, drawn in
 order, each a rectangle of the desktop whose body begins with a kind:
 
@@ -718,17 +718,15 @@ u8 kind
 1 START   u8 stream | u32 length | u8[length]              a region stream's first frame
 2 FRAME   u8 stream | u32 length | u8[length]              the stream's next frame
 3 END     u8 stream                                        the stream is over
-4 WEBP    u32 length | u8[length]                          a lossy WebP of the rectangle's pixels
-5 COPY    u16 x | u16 y                                    what the client holds at (x, y), drawn here
-6 CACHED  u16 slot                                         the tile kept in slot N, drawn here
-7 STORE   u16 slot                                         what the client holds here, kept in slot N
-8 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
+4 COPY    u16 x | u16 y                                    what the client holds at (x, y), drawn here
+5 CACHED  u16 slot                                         the tile kept in slot N, drawn here
+6 STORE   u16 slot                                         what the client holds here, kept in slot N
+7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
 ```
 
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
-depending on nothing before it. A WEBP is the same rectangle lossy, a WebP of
-its pixels at the dial the walk stands at, depending on nothing before it
-either; it is every still of a list whose dial walks, and sent on no other. A START begins a stream on its id over its
+depending on nothing before it; it is every still of a list that holds its
+dial, and sent on no other. A START begins a stream on its id over its
 rectangle, an H.264 keyframe of that size rounded up to even sides, a picture
 a client cuts to the rectangle from its top-left; each FRAME on the id is the
 next frame of that stream over the same rectangle; an END says it is over, its last picture
@@ -747,7 +745,8 @@ the tile or as the difference from it, or an upgrade, the bits the stage
 before held back. The tables it is coded with are the protocol's and never
 sent — `wlshare-proto`'s `progressive` module holds them, and the stream a
 standard decoder reads a block from — and the client decodes every block in
-order, keeping each tile's coefficients from one to the next.
+order, keeping each tile's coefficients from one to the next. It is every
+rectangle of a walked list but a COPY, a CACHED and a STORE.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
@@ -757,7 +756,7 @@ the picture.
   lock into a picture the encoder keeps, and compared there tile by tile with
   what the client holds, so a compositor redrawing what it shows sends
   nothing. A tile that changed and that no stream carries goes as a still —
-  a PNG, or on a walked list a WebP, below — a row's
+  on a held list a PNG, on a walked one each tile progressive, below — a row's
   run of them, cut where the tile rows meet into bands of at most 64 rows,
   one image, so that a tile the damage covers is in one still whole. A picture that
   starts over — the encoding newly listed, a new size, a non-incremental
@@ -783,14 +782,13 @@ the picture.
   what the client holds by then — no tile a stream carries, none owed a still
   not yet sent, nothing another copy of the read draws — and draws on no
   tile a stream carries; every tile it draws on is owed what its source is
-  owed, so a copy of a stream's picture or of a still below the ceiling
-  settles as they do. On a walked list every copy is owed the ceiling: what
-  it draws is lossy, a patchwork of the runs once coded elsewhere, and a
-  still where it now is codes it better, so the picture ends as it would
-  have without the copy. It is looked for on a held list and a walked one
-  alike: a scroll sends a few bytes and the strip it uncovered, a page
-  scrolled a third of the bytes it did held and a fifth walked at the ceiling
-  ([measured](tiles-performance.md#copies)).
+  owed, so a copy of a stream's picture settles as the stream does. On a
+  walked list every copy is owed: what it draws is pixels the client holds
+  no progressive coefficients of, and its tiles go again as first passes
+  where they now are, so the picture ends as it would have without the copy.
+  It is looked for on a held list and a walked one alike: a scroll sends a
+  few bytes and the strip it uncovered, a page scrolled a third of the bytes
+  it did held ([measured](tiles-performance.md#copies)).
 - **What it was shown is a cached tile.** The client keeps a cache of 4096
   tiles, 64 MiB of pixels, and wlshare the record of it: after every still
   goes out, each whole 64×64 tile of it that is not one colour is stored in a
@@ -800,17 +798,17 @@ the picture.
   still's run is coded around it: a window switched back to, a menu opened
   again, a page scrolled back a whole tile, text moved between windows. What
   it draws is what the slot was stored as, so it is owed what that still was
-  owed: a tile stored exact or at the ceiling is settled, and one stored
-  below the ceiling, on a walked list, is owed the ceiling as a copy of a
-  coarse still is, and is not drawn in place of a still at the ceiling, which
-  stores the tile again in its slot, settled. A flat tile is never stored:
+  owed: a tile stored exact, or at the full stage, is settled, and a
+  progressive tile stored below the full stage is owed it, as a copy of one
+  is; once its upgrades settle it, it is stored again in its slot, settled.
+  A flat tile is never stored:
   its PNG is a few bytes and a slot is worth more. The client keeps only
   what it is told to and draws only what it is told, so the record decides
   everything and the two agree by construction; a picture that starts over
   forgets the record, and the client's slots are written over from then on.
   Over a session at the desk it serves about a seventh of the stills
   ([measured](tiles-performance.md#the-cache)).
-- **What moves is video.** Motion's rules: a tile is moving when it changed in
+- **On a held list, what moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
   components, one under 5 tiles is left to PNG, boxes merge unless the merged
   box would be more than twice the moving tiles, and at most 4 regions stream
@@ -827,7 +825,8 @@ the picture.
   `WLSV`'s is, so the encoder's time follows the area that moves rather than
   the desktop. It is H.264 at 4:2:0, below, which every browser decodes, its
   hardware decoders included; what it loses lasts only while the region
-  moves, since the settle sends it again as a still. Its dial is the walk's, below.
+  moves, since the settle sends it again as a still. Its dial is the list's,
+  held: a walked list streams nothing.
 - **The dial walks, unless the list holds it.** The dial the list names is a
   ceiling, and the session's walk of the link — the same one, with the same
   thresholds and steps, that moves `WLSV`'s dial ([above](#the-vp9-encoding))
@@ -841,32 +840,24 @@ the picture.
   which the walk is there to judge, and were its verdicts held two seconds
   after each, as a keyframe holds them, the walk would hear almost nothing
   of a video in a window
-  ([measured](tiles-performance.md#the-walks-verdicts)). Every region's
-  stream follows the dial as it moves, from an IDR, since neither encoder
-  takes a new constant quantizer on a running stream (below); and a slowed
-  walk paces the updates as it paces `WLSV`'s frames. The stills
-  follow it too: every one is a lossy WebP at the dial — libwebp's VP8 at its
-  fastest method, 4:2:0, which every browser decodes, linked statically for
-  the target's baseline — at the ceiling as below it, text and panels
-  included, and none a PNG. A WebP is smaller than the fast PNG on nearly every
-  tile, a flat one and two-colour stripes included, so coding each still both
-  ways to keep the smaller cost the WebP's time and the PNG's for the bytes of
-  a few text tiles. Nothing is owed exact: a client that lists the walk wants
-  it more than a picture that ends exact. A still sent below the ceiling is
-  owed again at the ceiling, as a tile a stream carried is, and the
-  debts wait while the walk is slowed: a link that is behind is not handed
-  finer pictures of what it already has. They wait until the desktop has been
-  still for two seconds, and no longer: a still desktop sends no update whose
-  verdict could lift the walk. With `WLSD` beside the list the dial is held,
-  every still is exact, the streams stay at the dial, and a walk moved by
+  ([measured](tiles-performance.md#the-walks-verdicts)). A slowed walk paces
+  the updates as it paces `WLSV`'s frames, and the dial is what a
+  progressive tile's first pass follows, below. Nothing is owed exact: a
+  client that lists the walk wants it more than a picture that ends exact.
+  A first pass below the full stage is owed its upgrades, and the debts
+  wait while the walk is slowed: a link that is behind is not handed finer
+  pictures of what it already has. They wait until the desktop has been
+  still for two seconds, and no longer: a still desktop sends no update
+  whose verdict could lift the walk. With `WLSD` beside the list the dial
+  is held, every still is exact, the streams stay at the dial, and a walk moved by
   blocked writes only paces the updates: for a link with room, where a walk
   would only ever stand at the ceiling, and a picture that ends exact. The
   walk is `WLSV`'s rather than one of its own because the verdict is the same
   — an update's queueing on the link — and a second set of thresholds would
   be a second thing to measure.
 
-- **Or every tile progressive.** A walked list that names `WLSP` gets no
-  PNG, WebP or stream: every tile that changed, still or moving, is a
+- **On a walked list, every tile progressive.** A list whose dial walks
+  gets no PNG or stream: every tile that changed, still or moving, is a
   PROGRESSIVE, as a Windows host draws its desktop where it has no H.264,
   and copies and the cache as above. `crates/wlshare/src/rfb/progressive.rs`
   is the encoder: a tile to YCbCr in 11.5 fixed point, three levels of the
@@ -887,11 +878,11 @@ the picture.
   What is owed is the stages after: the settle sends a tile's upgrade, one
   stage at a time, the bits the stage before held back, until it stands at
   full, and nothing is owed after. Its tests read every pass back with a
-  decoder of their own, and `examples/tiles-walk-sim.rs --progressive`
-  walks it ([measured](tiles-performance.md#progressive-tiles)).
+  decoder of their own, and `examples/tiles-walk-sim.rs` walks it
+  ([measured](tiles-performance.md#progressive-tiles)).
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
-  region is H.264, by an encoder found once at startup; the client has no
+  region of a held list is H.264, by an encoder found once at startup; the client has no
   say, and a START names no codec. On a host whose GPU has an H.264 encoder a VA-API
   driver reaches — looked for with `hardware_h264 = true` in the
   configuration, the default — it is that one, which is what this picture is
@@ -910,10 +901,7 @@ the picture.
   side, as one at the edge of an odd desktop is, is coded a pixel larger, its
   last row again below it and black to its right, which the gateway clips; each frame one Annex B access
   unit, the parameter sets ahead of every IDR, and an IDR at the stream's
-  START and again after the dial moves, since a VA-API quantizer is its
-  encoder's for life, and x264's reconfiguration carries a rate factor and
-  no constant quantizer, so libx264's encoder is made again the same way. The
-
+  START; the dial is the stream's for its life. The
   hardware's is High profile with CABAC; libx264's is Constrained Baseline,
   which `ultrafast` comes to, tuned `zerolatency` — no lookahead, the
   picture sliced among the VP9 encoder's count of threads — with no scene
@@ -937,21 +925,19 @@ the picture.
   tests code frames on libx264, on every machine, and on the hardware, and
   decode them with libavcodec's software decoder; the hardware's passes with
   a word on a machine with no encoder.
-- **It settles.** Every tile a stream carried, or a still sent below the
-  ceiling, is owed a still at the ceiling once it has been still for half a
-  second: a PNG on a held list, a WebP at the ceiling on a walked one, the
-  next stage's upgrade on a progressive one. What
+- **It settles.** Every tile a stream carried is owed a PNG, and every
+  progressive tile below the full stage its next stage's upgrade, once it
+  has been still for half a second. What
   is owed is looked for every quarter of a
   second, each look an update that waits for a request and the fence as any
   other: the 320 tiles owed longest at most, as runs along a row, the oldest
-  runs first until 256 KiB have gone — what bounds a held list's PNGs, where
-  the count bounds a walked one's WebPs, about 40 ms of coding — and 40 tiles
-  at most while the walk is below the ceiling, where the link is short of
-  bytes; none while the walk is slowed until the desktop has been still for
-  two seconds. So a desktop that stops is exact on the page on a held list
-  and at the ceiling on a walked one, at 4K within 4.3 s held and 2.3 s at
-  the ceiling where it took 13 ([measured](tiles-performance.md#the-settle)),
-  and once it is nothing more is sent.
+  runs first until 256 KiB have gone, and 40 tiles at most while the walk
+  is below the ceiling, where the link is short of bytes; none while the
+  walk is slowed until the desktop has been still for two seconds. So a
+  desktop that stops is exact on the page on a held list and at the full
+  stage on a walked one, at 4K within 4.3 s held where it took 13
+  ([measured](tiles-performance.md#the-settle)), and once it is nothing
+  more is sent.
 - **Rounds as any other.** Each update ends with its fence, and one is in
   flight at a time. A new size ends every stream with no END — the size goes
   out first, and the picture whole after it — and a non-incremental request
@@ -960,17 +946,14 @@ the picture.
 
 `examples/motion-bench.rs` in the daemon's crate plays the kept captures
 through this encoder and through `WLSV`, both decoded as a page would, the
-tiles' updates through the client's parser, a WebP by `image-webp`'s pure
-Rust decoder, a copy from the page's own picture, and each region by libavcodec's
-software H.264 decoder; `--walk-at` codes the picture a walked list asks
-for, its walk held at the dial it names, every still a WebP; without it the
-dial is held and every still exact. It writes JSON lines as `walk-sim` does,
+tiles' updates through the client's parser, a copy from the page's own
+picture, and each region by libavcodec's software H.264 decoder, the dial
+held and every still exact. It writes JSON lines as `walk-sim` does,
 and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
 regions are the daemon's own H.264 — `h264.rs`, found as the daemon finds
 it, or libx264 with `--libx264` — so it runs where the daemon builds.
-`--tiles-only` codes no `WLSV`: both tile pictures carry their motion as
-H.264, so a change to the tiles is measured against the `WLSV` of a run
-before. Its `check` holds the encoder to sending nothing once settled,
+`--tiles-only` codes no `WLSV`, so a change to the tiles is measured
+against the `WLSV` of a run before. Its `check` holds the encoder to sending nothing once settled,
 through 5 s of quiet and 10 redraws of the pixels the page already has, and
 to ending exact; the `still` captures are for it and no measurement. What
 it measured, and what the rules beyond Motion's were chosen by, is in
@@ -979,8 +962,8 @@ it measured, and what the rules beyond Motion's were chosen by, is in
 `examples/tiles-walk-sim.rs`, beside it, plays the captures through this
 encoder and the walk over `walk-sim`'s model of the gateway and the
 browser's link (`crates/wlshare-vp9/examples/sim`), one update in flight,
-as a session does on a walked list, one that holds its dial or a
-progressive one, and says of a run what `walk-sim` says; what it found is in [Tiles
+as a session does on a walked list, every tile progressive, or one that
+holds its dial, and says of a run what `walk-sim` says; what it found is in [Tiles
 performance](tiles-performance.md#the-walks-verdicts).
 
 ## The density extension

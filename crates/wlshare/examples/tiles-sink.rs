@@ -3,7 +3,7 @@
 //! gateway, the way `vp9-sink` checks the VP9 encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--quality 1..100] [--held | --progressive]
+//! tiles-sink ADDR --size WxH [--quality 1..100] [--held]
 //!            [--seconds N] [--streams DIR] [--keys]
 //! ```
 //!
@@ -16,9 +16,10 @@
 //! `--size` can be sent as a SetDesktopSize before the first picture,
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
-//! client's parser; a PNG, a WebP, a progressive tile (`--progressive` asks
-//! for nothing else, `WLSP` in the list), a copy and a region's START are
-//! counted, a copy's source and a progressive tile's tile checked, and with
+//! client's parser; a PNG, a progressive tile (all a list whose dial walks
+//! is sent; `--held` holds it, for PNGs and streams), a copy and a region's
+//! START are counted, a copy's source and a progressive tile's tile checked,
+//! and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -52,10 +53,8 @@ struct Args {
     seconds: u64,
     streams: Option<String>,
     keys: bool,
-    /// The dial held, not walked.
+    /// The dial held, not walked: PNGs and streams, not progressive tiles.
     held: bool,
-    /// Every tile progressive.
-    progressive: bool,
 }
 
 /// One region stream as it came: its rectangle, frames and bytes, and the
@@ -82,8 +81,8 @@ fn size(s: &str) -> Result<(u16, u16), String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--quality Q] [--held | --progressive] [--seconds N] [--streams DIR] [--keys]")?;
-    let mut parsed = Args { addr, size: (0, 0), quality: 90, seconds: 10, streams: None, keys: false, held: false, progressive: false };
+    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--quality Q] [--held] [--seconds N] [--streams DIR] [--keys]")?;
+    let mut parsed = Args { addr, size: (0, 0), quality: 90, seconds: 10, streams: None, keys: false, held: false };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -93,7 +92,6 @@ fn parse_args() -> Result<Args, String> {
             "--streams" => parsed.streams = Some(value()?),
             "--keys" => parsed.keys = true,
             "--held" => parsed.held = true,
-            "--progressive" => parsed.progressive = true,
             other => return Err(format!("{other}: unknown flag")),
         }
     }
@@ -138,7 +136,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let init = client::read_server_init(&mut reader).await?;
     eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
 
-    let mut encodings = wlshare_proto::tiles::TilesPicture { quality: args.quality, adaptive: !args.held, progressive: args.progressive }.encodings();
+    let mut encodings = wlshare_proto::tiles::TilesPicture { quality: args.quality, progressive: !args.held }.encodings();
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
     out.write_all(&client::set_encodings(&encodings)).await?;
@@ -160,7 +158,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
     let (mut progressives, mut progressive_bytes) = (0u64, 0u64);
-    let (mut pngs, mut png_bytes, mut webps, mut webp_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut pngs, mut png_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -206,10 +204,6 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                             RectBody::Tiles(TileBody::Png(png)) => {
                                 pngs += 1;
                                 png_bytes += png.len() as u64;
-                            }
-                            RectBody::Tiles(TileBody::Webp(webp)) => {
-                                webps += 1;
-                                webp_bytes += webp.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Copy { x, y }) => {
                                 if u32::from(x) + u32::from(rect.width) > u32::from(width) || u32::from(y) + u32::from(rect.height) > u32::from(height) {
@@ -279,7 +273,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
+            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
         }
     }
     done.extend(live.drain().map(|(_, stream)| stream));
@@ -291,7 +285,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let (x, y, w, h) = stream.rect;
         eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
     }
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
+    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
 
     Ok(())
 }

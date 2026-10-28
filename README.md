@@ -15,7 +15,7 @@ output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, t
 a client that asks, as zDesk does for its browsers, as one VP9 stream at a
 quality that follows the link, or for a link with room to spare as exact PNG
 tiles with a video stream for each region that moves, H.264 by the host's hardware or libx264,
-or as the same tiles following the link, what is still as lossy WebP — injects input through the virtual keyboard and pointer protocols,
+or, following the link, as RemoteFX Progressive tiles, still or moving — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
@@ -47,7 +47,7 @@ tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; zDesk asks for both,
-and for the VP9 stream, or with the picker's *Tiles with motion* or *Adaptive
+and for the VP9 stream, or with the picker's *Tiles with motion* or *Progressive
 tiles* the tiles, on a
 `vnc` target with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension

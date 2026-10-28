@@ -1,9 +1,8 @@
 //! What the stills and the motion of a session would cost coded as RemoteFX
 //! Progressive tiles ([`progressive`]), beside what they cost as the tiles
-//! encoding's PNGs and WebPs: whether a first pass that holds bits back
-//! shrinks where a WebP at a low dial does not, what the refinement to full
-//! costs after it, and what a changed tile costs as a difference from what
-//! the client holds.
+//! encoding's PNGs: what a first pass that holds bits back costs, what the
+//! refinement to full costs after it, and what a changed tile costs as a
+//! difference from what the client holds.
 //!
 //! ```text
 //! progressive-stills [--quant HEX] [--stages HEX,...] CAPTURE...
@@ -14,8 +13,7 @@
 //! second is moving, a 4-connected group of at least 5 moving tiles is a
 //! stream's, and every other changed tile is a still, counted by why it is
 //! sent (`fresh`, `warming`, `small`, `stopped`). Every still is coded alone
-//! as a fast PNG and as a WebP at 90, 50 and 20, and the stills of a frame
-//! along one tile row also as one WebP a run, as the encoder sends them.
+//! as a fast PNG, as a held list's.
 //!
 //! Then the session is played through three progressive encoders, one per
 //! first stage — the host's stage of quality 50, of 75, and full — each
@@ -28,8 +26,8 @@
 //! name others.
 //!
 //! Each still's and each moving tile's picture is compared with the capture's
-//! after the first pass and after the last: the PSNR over B, G and R, as the
-//! WebPs' is. The time is each coder's own, this machine's.
+//! after the first pass and after the last: the PSNR over B, G and R. The
+//! time is each coder's own, this machine's.
 //!
 //! One JSON object per capture on stdout.
 
@@ -205,64 +203,6 @@ fn png_bytes(w: usize, h: usize, rgb: &[u8]) -> Result<usize, Error> {
     Ok(out.len())
 }
 
-/// A lossy WebP at `quality`, libwebp's fastest method, as the encoder codes
-/// one; the bytes, and the picture it decodes to as `R, G, B`.
-fn webp(w: usize, h: usize, rgb: &[u8], quality: u8) -> Result<Vec<u8>, Error> {
-    use libwebp_sys as webp;
-    let mut config = webp::WebPConfig::new().map_err(|()| "libwebp refused its configuration")?;
-    config.quality = f32::from(quality);
-    config.method = 0;
-    config.thread_level = 0;
-    let mut picture = webp::WebPPicture::new().map_err(|()| "libwebp refused its picture")?;
-    picture.width = w as i32;
-    picture.height = h as i32;
-    picture.use_argb = 0;
-    // SAFETY: as the encoder's own `encode_webp`: `rgb` is `w`×`h` packed,
-    // the planes are libwebp's and freed below, the writer this call's.
-    unsafe {
-        if webp::WebPPictureImportRGB(&mut picture, rgb.as_ptr(), (w * 3) as i32) == 0 {
-            webp::WebPPictureFree(&mut picture);
-            return Err("libwebp could not take the picture".into());
-        }
-        let mut writer = std::mem::MaybeUninit::<webp::WebPMemoryWriter>::uninit();
-        webp::WebPMemoryWriterInit(writer.as_mut_ptr());
-        let mut writer = writer.assume_init();
-        picture.writer = Some(webp::WebPMemoryWrite);
-        picture.custom_ptr = (&raw mut writer).cast();
-        let coded = webp::WebPEncode(&config, &mut picture) != 0;
-        let bytes = std::slice::from_raw_parts(writer.mem, writer.size).to_vec();
-        webp::WebPMemoryWriterClear(&mut writer);
-        webp::WebPPictureFree(&mut picture);
-        if !coded {
-            return Err("libwebp could not code the tile".into());
-        }
-        Ok(bytes)
-    }
-}
-
-fn webp_decode(bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))?;
-    let mut rgb = vec![0; decoder.output_buffer_size().ok_or("a WebP too large")?];
-    decoder.read_image(&mut rgb)?;
-    Ok(rgb)
-}
-
-/// The squared error between the capture's tile and an `R, G, B` picture of it.
-fn rgb_se(pixels: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize, rgb: &[u8]) -> f64 {
-    let mut se = 0f64;
-    for row in 0..h {
-        let src = &pixels[((y + row) * width + x) * 4..][..w * 4];
-        let dst = &rgb[row * w * 3..][..w * 3];
-        for (a, b) in src.chunks(4).zip(dst.chunks(3)) {
-            for (c, d) in [(2, 0), (1, 1), (0, 2)] {
-                let e = f64::from(a[c]) - f64::from(b[d]);
-                se += e * e;
-            }
-        }
-    }
-    se
-}
-
 #[derive(Clone, Copy)]
 struct ChurnCell {
     history: u8,
@@ -363,32 +303,17 @@ impl Fidelity {
     }
 }
 
-/// The stills' bytes by the tiles encoding's coders.
+/// The stills' bytes as a held list's PNGs.
 #[derive(Default, Clone, Copy)]
 struct Classic {
     tiles: u64,
     flat: u64,
     png: u64,
-    webp: [u64; 3],
-    psnr: [Fidelity; 3],
 }
-
-const DIALS: [u8; 3] = [90, 50, 20];
 
 impl Classic {
     fn json(&self) -> String {
-        format!(
-            "{{\"tiles\":{},\"flat\":{},\"png\":{},\"webp90\":{},\"webp50\":{},\"webp20\":{},\"psnr_webp90\":{:.2},\"psnr_webp50\":{:.2},\"psnr_webp20\":{:.2}}}",
-            self.tiles,
-            self.flat,
-            self.png,
-            self.webp[0],
-            self.webp[1],
-            self.webp[2],
-            self.psnr[0].psnr(),
-            self.psnr[1].psnr(),
-            self.psnr[2].psnr()
-        )
+        format!("{{\"tiles\":{},\"flat\":{},\"png\":{}}}", self.tiles, self.flat, self.png)
     }
 }
 
@@ -451,11 +376,7 @@ struct Stats {
     whole_tiles: u64,
     stills: Classic,
     why: [Classic; 4],
-    /// The frames' stills coded as one WebP a run along a tile row.
-    run_webp: [u64; 3],
-    runs: u64,
     cpu_png: Duration,
-    cpu_webp: [Duration; 3],
     progressive: Vec<Progressive>,
 }
 
@@ -464,21 +385,14 @@ impl Stats {
         let why: Vec<String> = WHY.iter().zip(&self.why).map(|(name, c)| format!("\"{name}\":{}", c.json())).collect();
         let progressive: Vec<String> = self.progressive.iter().map(|p| p.json(tables)).collect();
         format!(
-            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"why\":{{{}}},\"runs\":{},\"run_webp90\":{},\"run_webp50\":{},\"run_webp20\":{},\"cpu_ms\":{{\"png\":{:.0},\"webp90\":{:.0},\"webp50\":{:.0},\"webp20\":{:.0}}},\"progressive\":[{}]}}",
+            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"why\":{{{}}},\"cpu_ms\":{{\"png\":{:.0}}},\"progressive\":[{}]}}",
             capture,
             self.frames,
             self.seconds,
             self.whole_tiles,
             self.stills.json(),
             why.join(","),
-            self.runs,
-            self.run_webp[0],
-            self.run_webp[1],
-            self.run_webp[2],
             self.cpu_png.as_secs_f64() * 1e3,
-            self.cpu_webp[0].as_secs_f64() * 1e3,
-            self.cpu_webp[1].as_secs_f64() * 1e3,
-            self.cpu_webp[2].as_secs_f64() * 1e3,
             progressive.join(",")
         )
     }
@@ -664,23 +578,10 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
             let started = Instant::now();
             let png = png_bytes(w, h, &rgb)?;
             stats.cpu_png += started.elapsed();
-            let mut webps = [0u64; 3];
-            let mut ses = [0f64; 3];
-            for (i, dial) in DIALS.iter().enumerate() {
-                let started = Instant::now();
-                let bytes = webp(w, h, &rgb, *dial)?;
-                stats.cpu_webp[i] += started.elapsed();
-                webps[i] = bytes.len() as u64;
-                ses[i] = rgb_se(pixels, width, x, y, w, h, &webp_decode(&bytes)?);
-            }
             for c in [&mut stats.stills, &mut stats.why[why as usize]] {
                 c.tiles += 1;
                 c.flat += u64::from(flat);
                 c.png += png as u64;
-                for i in 0..3 {
-                    c.webp[i] += webps[i];
-                    c.psnr[i].add(ses[i], w, h);
-                }
             }
             for p in &mut stats.progressive {
                 if matches!(why, Why::Stopped) {
@@ -692,24 +593,6 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
                 p.stills = all;
                 p.why[why as usize] = this;
             }
-        }
-        // The same stills as runs along a row, one WebP each.
-        let mut i = 0;
-        while i < stills.len() {
-            let ((tx, ty), _, _) = stills[i];
-            let mut j = i + 1;
-            while j < stills.len() && stills[j].0.1 == ty && stills[j].0.0 == stills[j - 1].0.0 + 1 {
-                j += 1;
-            }
-            let (x, y, _, h) = geometry(tx, ty);
-            let w = (usize::from(stills[j - 1].0.0) + 1) * TILE - x;
-            let w = w.min(width - x);
-            let rgb = crop_rgb(pixels, width, x, y, w, h);
-            for (k, dial) in DIALS.iter().enumerate() {
-                stats.run_webp[k] += webp(w, h, &rgb, *dial)?.len() as u64;
-            }
-            stats.runs += 1;
-            i = j;
         }
     }
     stats.seconds = last_at.as_secs_f64();

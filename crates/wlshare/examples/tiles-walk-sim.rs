@@ -8,7 +8,7 @@
 //! ```text
 //! tiles-walk-sim CAPTURE [CAPTURE...] [--link MBPS[,MBPS@SECS...]] [--rtt MS]
 //!                [--hop MS] [--paint MS] [--jitter MS] [--ceiling Q]
-//!                [--held | --progressive] [--libx264] [--encode MS]
+//!                [--held] [--libx264] [--encode MS]
 //!                [--timeline FILE]
 //! ```
 //!
@@ -20,15 +20,16 @@
 //! the round trip between the session and the gateway, 1 ms; `--paint` how
 //! long the browser takes to paint an update once it has it and the one before
 //! is painted, 5 ms, and `--jitter` up to how much more, at random.
-//! `--ceiling` is the dial the walk starts at and never passes, 90; `--held`
-//! holds it there, as a client that lists `WLSD` beside the tiles, every still
-//! exact; `--progressive` lets it walk with every tile progressive, as a
-//! client that lists `WLSP`, and counts the passes by kind on stderr.
+//! `--ceiling` is the dial the walk starts at and never passes, 90. The walk
+//! is over every tile progressive, as a client that lists the tiles with no
+//! `WLSD` is sent them, and the passes are counted by kind on stderr;
+//! `--held` holds the dial there instead, as a client that lists `WLSD`
+//! beside the tiles, every still exact and the regions streamed.
 //! `--timeline` writes every update as a JSON object a line: `t_ms`,
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,
-//! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs,
-//! WebPs and progressive tiles, and of its streams' frames), `encode_ms`, `delivery_ms`,
+//! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs
+//! and progressive tiles, and of its streams' frames), `encode_ms`, `delivery_ms`,
 //! `latency_ms` and, where its fence moved the dial, `moved_to`.
 //!
 //! Time is the simulation's own, as `walk-sim`'s is: an encode, the read of
@@ -81,7 +82,7 @@ const FRAMING: usize = 4 + 13;
 /// An RFB rectangle's header, ahead of each tiles body.
 const RECT_HEADER: usize = 12;
 
-/// The bodies of an update's stills, PNG and WebP, and of its streams' frames.
+/// The bodies of an update's stills, PNG and progressive, and of its streams' frames.
 fn split(out: &[u8]) -> Result<(usize, usize), Error> {
     let (mut stills, mut streams, mut at) = (0, 0, 0);
     while at < out.len() {
@@ -89,7 +90,7 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len } | TileHeader::Webp { len } | TileHeader::Progressive { len } => {
+            TileHeader::Png { len } | TileHeader::Progressive { len } => {
                 stills += len;
                 len
             }
@@ -116,7 +117,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Webp { len } | TileHeader::Progressive { len } => len,
+            TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Progressive { len } => len,
             TileHeader::End { .. } | TileHeader::Copy { .. } | TileHeader::Cached { .. } | TileHeader::Store { .. } => 0,
         };
         let bytes = RECT_HEADER + used + body;
@@ -129,7 +130,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
 /// A rectangle: left, top, width, height.
 type Bounds = (u16, u16, u16, u16);
 
-/// What the page draws of the updates: each PNG and WebP, each region's
+/// What the page draws of the updates: each PNG, each region's
 /// H.264 by libavcodec, each copy and cached tile, and each progressive tile
 /// as the encoder's model of zDesk's decoder shows it.
 struct Page {
@@ -215,13 +216,6 @@ impl Page {
                     }
                     passes.add(&block);
                 }
-                TileBody::Webp(webp) => {
-                    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&webp))?;
-                    let mut rgb = vec![0; decoder.output_buffer_size().ok_or("a WebP too large")?];
-                    decoder.read_image(&mut rgb)?;
-                    let bgrx = Self::rgb(&rgb);
-                    self.paste(place, &bgrx, w);
-                }
                 TileBody::Start { stream, frame } => {
                     self.streams.insert(stream, (place, decode::Decoder::new().map_err(|e| format!("{e:#}"))?));
                     self.region(stream, &frame)?;
@@ -290,7 +284,7 @@ fn psnr(mse: f64) -> f64 {
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
-    let (mut hop, mut held, mut progressive, mut libx264, mut encode_ms) = (1.0, false, false, false, None::<f64>);
+    let (mut hop, mut held, mut libx264, mut encode_ms) = (1.0, false, false, None::<f64>);
     let (mut rtt, mut paint, mut jitter, mut ceiling) = (40.0, 5.0, 0.0, 90u8);
     let mut timeline = None;
     let mut args = std::env::args().skip(1);
@@ -301,7 +295,6 @@ fn main() -> Result<(), Error> {
             "--rtt" => rtt = millis(&arg, value()?)?,
             "--hop" => hop = millis(&arg, value()?)?,
             "--held" => held = true,
-            "--progressive" => progressive = true,
             "--libx264" => libx264 = true,
             "--encode" => encode_ms = Some(millis(&arg, value()?)?),
             "--paint" => paint = millis(&arg, value()?)?,
@@ -314,9 +307,6 @@ fn main() -> Result<(), Error> {
     }
     if paths.is_empty() {
         return Err("tiles-walk-sim takes a capture to play".into());
-    }
-    if held && progressive {
-        return Err("progressive tiles walk: --held and --progressive are two pictures".into());
     }
     // libavcodec's own log at warnings, as the daemon sets it: what it says at
     // its default level is libx264's summary of every region's stream.
@@ -333,7 +323,7 @@ fn main() -> Result<(), Error> {
 
     // A 60 Hz capture, the daemon's default.
     let base = Instant::now();
-    let picture = TilesPicture { quality: ceiling, adaptive: !held, progressive };
+    let picture = TilesPicture { quality: ceiling, progressive: !held };
     let mut walk = QualityWalk::new(ceiling, Duration::from_micros(16_667), !held);
     // Where the walk stands, as the session hands it the encoder.
     let pace = |walk: &QualityWalk| if held { (ceiling, false) } else { (walk.quality(), walk.slowed()) };
@@ -491,7 +481,7 @@ fn main() -> Result<(), Error> {
     println!(
         "{{\"capture\":{},\"picture\":\"{}\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2}}}",
         json(&name),
-        if progressive { "progressive" } else { "tiles" },
+        if held { "tiles" } else { "progressive" },
         f64::from(frames) / span,
         qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,
         pct(&qualities, 0.1),
@@ -505,7 +495,7 @@ fn main() -> Result<(), Error> {
         psnrs.iter().sum::<f64>() / psnrs.len().max(1) as f64,
         pct(&psnrs, 0.1),
     );
-    if progressive {
+    if !held {
         let Passes { first: [f25, f50, f75], whole, differences, upgrades } = passes;
         eprintln!("progressive tiles, count and bytes: first at 25 {f25:?}, first at 50 {f50:?}, first at 75 {f75:?}, whole {whole:?}, differences {differences:?}, upgrades {upgrades:?}");
     }

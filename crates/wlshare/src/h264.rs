@@ -25,13 +25,9 @@
 //! below: a region of an odd width or height is coded a pixel larger, its last
 //! row again below it and black to its right, and the gateway clips it to the
 //! region. Each frame is one Annex B access unit, the parameter sets ahead of
-//! every IDR, and the first frame of a stream is one; so is the first after
-//! the dial moves, since a VA-API quantizer is the encoder's for its life and
-//! a new one is a new encoder, and x264 takes no new constant quantizer on a
-//! running one either — its reconfiguration carries a rate factor and not a
-//! QP, so libavcodec's `qp` is read once, at the open — so libx264's is made
-//! again the same way. The tiles encoder counts the update that carries such
-//! a frame as a keyframe for the walk. No AUD; no SEI from
+//! every IDR, and the first frame of a stream is one. The dial is the
+//! stream's for its life: a held tiles picture's streams are at the dial its
+//! list names whatever the link does. No AUD; no SEI from
 //! the hardware, and from libx264 the one naming its version and options,
 //! ahead of a stream's first IDR, which a decoder passes over.
 //!
@@ -230,7 +226,6 @@ impl Coder {
             uv: vec![128; stride * (h.div_ceil(2) + 1)],
             filled: false,
             quality,
-            coded_at: quality,
             backend: self.backend,
             pts: 0,
         };
@@ -295,10 +290,8 @@ pub struct Stream {
     uv: Vec<u8>,
     /// The planes hold a picture: one was read whole.
     filled: bool,
-    /// The dial as last set.
+    /// The dial the stream is coded at.
     quality: u8,
-    /// The dial the open encoder was made for.
-    coded_at: u8,
     backend: Backend,
     pts: i64,
 }
@@ -318,7 +311,7 @@ fn qp(quality: u8) -> i32 {
 const FPS: i32 = 60;
 
 impl Stream {
-    /// Open the encoder at the current dial: for the hardware, the frames
+    /// Open the encoder at the stream's dial: for the hardware, the frames
     /// context on the device at the region's size and the codec context over
     /// it; for libx264, the codec context over the planes.
     unsafe fn open(&mut self) -> anyhow::Result<()> {
@@ -370,8 +363,8 @@ impl Stream {
             ctx.pix_fmt = pix_fmt;
             ctx.time_base = ff::AVRational { num: 1, den: FPS };
             ctx.framerate = ff::AVRational { num: FPS, den: 1 };
-            // Keyframes only where asked: the stream's first, and one after the
-            // dial moves. 2^30 is libx264's infinite interval.
+            // Keyframes only where asked, the stream's first among them. 2^30
+            // is libx264's infinite interval.
             ctx.gop_size = 1 << 30;
             ctx.max_b_frames = 0;
             ctx.colorspace = ff::AVColorSpace::AVCOL_SPC_SMPTE170M;
@@ -393,7 +386,6 @@ impl Stream {
             let opened = ff::avcodec_open2(self.context, codec, &mut dict);
             ff::av_dict_free(&mut dict);
             check(opened, &format!("opening the {} encoder", name.to_string_lossy()))?;
-            self.coded_at = self.quality;
             Ok(())
         }
     }
@@ -451,10 +443,6 @@ impl Stream {
         // frame, which owns no buffer, for libx264; and the packet's bytes are
         // read within its size.
         unsafe {
-            if self.coded_at != self.quality {
-                self.open().context("reopening the encoder at the new dial")?;
-            }
-
             let frame = match self.backend {
                 Backend::Vaapi { .. } => {
                     check(ff::av_hwframe_get_buffer(self.frames, self.hw_frame, 0), "taking a VA-API surface")?;
@@ -494,10 +482,6 @@ impl Stream {
 }
 
 impl RegionStream for Stream {
-    fn set_quality(&mut self, quality: u8) {
-        self.quality = quality;
-    }
-
     fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError> {
         let (w, h) = self.size;
         match changed.filter(|_| self.filled) {
@@ -636,8 +620,9 @@ mod tests {
 
     /// Frames `encoder` codes decode with libavcodec's software decoder to
     /// the picture they were coded from: the first an IDR with its parameter
-    /// sets, the next a P frame of the damage alone, the first after the dial
-    /// moves an IDR again, and a keyframe asked for one. Within a few levels
+    /// sets, the next a P frame of the damage alone, and a keyframe asked for
+    /// one; and a stream at the dial's coarse end codes noise in far fewer
+    /// bytes than one at its fine end. Within a few levels
     /// of the picture, and `slack` more: the hardware's pixels are not held
     /// to libx264's, only to a rectangle's being coded where it changed.
     fn frames_decode_to_the_picture(encoder: &Encoder, (w, h): (usize, usize), slack: u8) {
@@ -678,18 +663,16 @@ mod tests {
         assert!(stream.encode(false, &mut unit).unwrap());
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
 
-        // The dial moves: the encoder is made again and the next frame is an IDR.
-        stream.set_quality(60);
-        stream.read_bgrx(&pixels, w * 4, Some(&[])).unwrap();
+        // A keyframe asked for is one, with its parameter sets.
         unit.clear();
-        assert!(stream.encode(false, &mut unit).unwrap());
+        assert!(stream.encode(true, &mut unit).unwrap());
         let types = nal_types(&unit);
-        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets after the dial moved: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 12 + slack);
+        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets where one was asked: {types:?}");
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
 
-        // A picture of noise, which no prediction codes for free, at the
-        // dial's two ends: the coarser quantizer codes it in well under half
-        // the bytes, so the dial did move the quantizer.
+        // A picture of noise, which no prediction codes for free, on streams
+        // at the dial's two ends: the coarser quantizer codes it in well
+        // under half the bytes, so the dial does set the quantizer.
         let mut state = 0x9E37_79B9u32;
         let noise: Vec<u8> = (0..w * h)
             .flat_map(|_| {
@@ -702,24 +685,13 @@ mod tests {
             .collect();
         let mut sizes = Vec::new();
         for quality in [100, 1] {
-            stream.set_quality(quality);
+            let mut stream = coder.open(w as u16, h as u16, quality).unwrap();
             stream.read_bgrx(&noise, w * 4, None).unwrap();
             unit.clear();
             assert!(stream.encode(true, &mut unit).unwrap());
             sizes.push(unit.len());
         }
         assert!(sizes[1] * 2 < sizes[0], "the dial at 1 codes noise in under half the bytes of 100: {sizes:?}");
-        stream.set_quality(60);
-        stream.read_bgrx(&pixels, w * 4, None).unwrap();
-
-
-
-        // A keyframe asked for is one, with its parameter sets.
-        unit.clear();
-        assert!(stream.encode(true, &mut unit).unwrap());
-        let types = nal_types(&unit);
-        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets where one was asked: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 12 + slack);
     }
 
     /// The hardware's frames decode to the picture, near enough. Passes with a
