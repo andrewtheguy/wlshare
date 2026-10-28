@@ -773,7 +773,7 @@ the picture.
   of the new picture, up to 64 of them, none of one colour, are looked for in
   the old one, along every fourth of its rows within the damage and 512
   pixels of the tiles, by a rolling hash, and along the rest of them where
-  that found nothing. A run found at more than 32 places, in a texture or a flat
+  nothing that found grew into a copy. A run found at more than 32 places, in a texture or a flat
   fill with an edge, says nothing and is dropped, where one in a line of text,
   found on many of a page's lines, still counts. Each offset a run was found
   at is checked against every run, its 16 pixels against the old picture's

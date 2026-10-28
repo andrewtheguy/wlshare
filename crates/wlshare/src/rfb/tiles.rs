@@ -1174,7 +1174,8 @@ impl TilesEncoder {
     /// [`MAX_PROBES`] runs of those tiles, none of one colour, are looked for
     /// along the rows of the old picture within the damage and [`COPY_REACH`]
     /// of them, every [`MAX_SCAN_STEP`]th at most, by a rolling hash, and
-    /// along the rows it stepped over where that found nothing; each offset
+    /// along the rows it stepped over where nothing that found grew into a
+    /// copy; each offset
     /// one of them was found at, of those found at [`MAX_PROBE_HITS`] places
     /// at most, is checked against every such probe, and the offsets the most
     /// match at are grown, from each run, into the rectangle whose rows are
@@ -1285,10 +1286,10 @@ impl TilesEncoder {
             let was = usize::from(y) * old_stride + usize::from(x) * 4;
             pixels[new..new + usize::from(PROBE) * 4] == old[was..was + usize::from(PROBE) * 4]
         };
-        let tally = |hits: &[Vec<(i32, i32)>]| {
+        let tally = |hits: &[Vec<(i32, i32)>], tried: &HashSet<(i32, i32)>| {
             let mut found: HashMap<(i32, i32), usize> = HashMap::new();
             for offsets in hits.iter().filter(|offsets| offsets.len() <= MAX_PROBE_HITS) {
-                for offset in offsets {
+                for offset in offsets.iter().filter(|offset| !tried.contains(offset)) {
                     *found.entry(*offset).or_default() += 1;
                 }
             }
@@ -1306,48 +1307,53 @@ impl TilesEncoder {
             offsets.truncate(MAX_OFFSETS);
             offsets
         };
+        // Each offset grown from its probes, one not inside a copy already.
+        let pending: HashSet<(u16, u16)> = self.stills.iter().flat_map(|still| tiles_of(*still).map(|(cell, _)| cell)).collect();
+        let grow_all = |offsets: Vec<((i32, i32), Vec<usize>)>| {
+            let mut copies: Vec<CopyRect> = Vec::new();
+            for (offset, seeds) in offsets {
+                for probe in seeds.into_iter().map(|i| &probes[i]) {
+                    if copies.len() == MAX_COPIES {
+                        return copies;
+                    }
+                    let at = Area { left: probe.x, top: probe.y, right: probe.x, bottom: probe.y };
+                    if copies.iter().any(|copy| copy.dst.contains(at)) {
+                        continue;
+                    }
+                    let Some(dst) = self.grow(pixels, stride, areas[probe.area], offset, probe, &pending, &copies) else { continue };
+                    if u32::from(dst.w()) * u32::from(dst.h()) < COPY_MIN_PIXELS {
+                        continue;
+                    }
+                    // Where it draws only some of a tile, the tile is a still
+                    // anyway: a copy that draws no changed tile whole saves
+                    // nothing, and cuts the stills' runs short.
+                    if !parts.iter().any(|(_, part)| dst.contains(*part)) {
+                        continue;
+                    }
+                    let src = ((i32::from(dst.left) + offset.0) as u16, (i32::from(dst.top) + offset.1) as u16);
+                    let copy = CopyRect { dst, src, owed: false };
+                    let owed = tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
+                    copies.push(CopyRect { owed, ..copy });
+                }
+            }
+            copies
+        };
         for y in (window.top..=window.bottom).filter(|y| y % step == 0) {
             scan(y, &mut hits);
         }
-        let mut offsets = tally(&hits);
-        // Where that found nothing, the rows stepped over: a miss is the whole
-        // page coded again, many times the scan's cost.
-        if offsets.is_empty() && step > 1 {
-            for y in (window.top..=window.bottom).filter(|y| y % step != 0) {
-                scan(y, &mut hits);
-            }
-            offsets = tally(&hits);
+        let offsets = tally(&hits, &HashSet::new());
+        let tried: HashSet<(i32, i32)> = offsets.iter().map(|(offset, _)| *offset).collect();
+        let copies = grow_all(offsets);
+        // Where that found nothing to copy, the rows stepped over, the
+        // offsets already grown left out: a miss is the whole page coded
+        // again, many times the scan's cost.
+        if !copies.is_empty() || step == 1 {
+            return copies;
         }
-
-        // Each offset grown from its probes, one not inside a copy already.
-        let pending: HashSet<(u16, u16)> = self.stills.iter().flat_map(|still| tiles_of(*still).map(|(cell, _)| cell)).collect();
-        let mut copies: Vec<CopyRect> = Vec::new();
-        for (offset, seeds) in offsets {
-            for probe in seeds.into_iter().map(|i| &probes[i]) {
-                if copies.len() == MAX_COPIES {
-                    return copies;
-                }
-                let at = Area { left: probe.x, top: probe.y, right: probe.x, bottom: probe.y };
-                if copies.iter().any(|copy| copy.dst.contains(at)) {
-                    continue;
-                }
-                let Some(dst) = self.grow(pixels, stride, areas[probe.area], offset, probe, &pending, &copies) else { continue };
-                if u32::from(dst.w()) * u32::from(dst.h()) < COPY_MIN_PIXELS {
-                    continue;
-                }
-                // Where it draws only some of a tile, the tile is a still
-                // anyway: a copy that draws no changed tile whole saves
-                // nothing, and cuts the stills' runs short.
-                if !parts.iter().any(|(_, part)| dst.contains(*part)) {
-                    continue;
-                }
-                let src = ((i32::from(dst.left) + offset.0) as u16, (i32::from(dst.top) + offset.1) as u16);
-                let copy = CopyRect { dst, src, owed: false };
-                let owed = tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
-                copies.push(CopyRect { owed, ..copy });
-            }
+        for y in (window.top..=window.bottom).filter(|y| y % step != 0) {
+            scan(y, &mut hits);
         }
-        copies
+        grow_all(tally(&hits, &tried))
     }
 
     /// The largest rectangle within `area` around `probe` whose pixels are the
@@ -3138,6 +3144,34 @@ mod tests {
         };
         assert_eq!(scroll(true), 2, "looked among while scrolling");
         assert_eq!(scroll(false), 1, "churn left out otherwise");
+    }
+
+    /// An offset the scan found that grows into no copy is no reason to stop
+    /// looking: the rows it stepped over are scanned, and the scroll is a
+    /// copy. Thirty-two tiles, a probe each on the row of its column's
+    /// residue, scanned every fourth row: the page scrolls 24 rows but for
+    /// its first column, new, the only probes the scan would find at that
+    /// offset, and two of whose runs the old picture holds 100 rows down,
+    /// alone.
+    #[test]
+    fn an_offset_that_grows_no_copy_is_looked_past() {
+        let (w, h) = (256u16, 512u16);
+        let line = usize::from(w) * 4;
+        let mut old = noise(w, h, 35);
+        let mut new = noise(w, h, 36);
+        for y in 0..usize::from(h) - 24 {
+            new[y * line + 64 * 4..(y + 1) * line].copy_from_slice(&old[(y + 24) * line + 64 * 4..(y + 25) * line]);
+        }
+        for top in [0, 64] {
+            let at = |y: usize| y * line + 24 * 4;
+            old[at(top + 100)..at(top + 100) + 16 * 4].copy_from_slice(&new[at(top)..at(top) + 16 * 4]);
+        }
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &old, None, ms(0));
+        let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
+        step(&mut encoder, &mut page, &new, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now);
+        assert_eq!(page.copies, 1, "the scroll a copy");
     }
 
     /// Beside a region's stream, a scroll's copy neither draws on the tiles
