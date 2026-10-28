@@ -91,10 +91,10 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
-use std::hash::Hasher;
 use std::time::Duration;
 
 use thiserror::Error;
+use xxhash_rust::xxh3::Xxh3Default;
 
 use wlshare_proto::tiles::{CACHE_SLOTS, TileHeader, TilesPicture};
 
@@ -525,15 +525,15 @@ fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: 
 /// `B, G, R, X` picture, and whether it is one colour, which is never stored.
 fn tile_key(pixels: &[u8], stride: usize, area: Area) -> (u64, bool) {
     let (from, to) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = Xxh3Default::new();
     let first = &pixels[usize::from(area.top) * stride + from..usize::from(area.top) * stride + to];
     let mut flat = first.as_chunks::<4>().0.iter().all(|px| px == first.first_chunk::<4>().expect("a pixel"));
     for y in area.top..=area.bottom {
         let row = &pixels[usize::from(y) * stride + from..usize::from(y) * stride + to];
-        hasher.write(row);
+        hasher.update(row);
         flat &= row == first;
     }
-    (hasher.finish(), flat)
+    (hasher.digest(), flat)
 }
 
 /// `area` of a `B, G, R, X` picture as packed RGB.
@@ -674,10 +674,12 @@ const MAX_SCAN_STEP: u16 = 4;
 const HASH_BASE: u64 = 0x0000_0100_0000_01b3;
 
 /// A rectangle the client draws from what it holds: `dst` from the same size
-/// at `src`, and whether it is owed what settles it: where its source is,
-/// and on a walked list always, as what it draws is pixels the client holds
-/// no progressive coefficients of, which a first pass where they now are
-/// codes again.
+/// at `src`, and whether it is owed what settles it: where its source is. On
+/// a walked list a copy from a settled source is settled too, as a cached
+/// tile stored at the full stage is: what it draws is the full stage's
+/// pixels, though the client holds no progressive coefficients of them where
+/// they now are, so the next change to one of its tiles is a first pass that
+/// is no difference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CopyRect {
     dst: Area,
@@ -921,9 +923,6 @@ pub struct TilesEncoder {
     /// The progressive encoder, where the list walks and every tile is a
     /// progressive tile; where it holds, every still is a PNG.
     progressive: Option<progressive::Encoder>,
-    /// How many threads code an update's progressive first passes: every
-    /// core.
-    progressive_threads: usize,
 }
 
 impl TilesEncoder {
@@ -960,7 +959,6 @@ impl TilesEncoder {
             coder,
             scratch: Vec::new(),
             progressive: picture.progressive.then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
-            progressive_threads: std::thread::available_parallelism().map_or(1, usize::from),
         };
         encoder.forget();
         Ok(encoder)
@@ -1037,11 +1035,11 @@ impl TilesEncoder {
     }
 
     /// Code the first passes of the progressive tiles of `stills` ahead, on
-    /// [`Self::progressive_threads`] threads, each tile the client's cache
-    /// does not hold now; [`Self::progressive_tile`] takes each as it comes
+    /// rayon's threads where there are two or more, each tile the client's
+    /// cache does not hold now; [`Self::progressive_tile`] takes each as it comes
     /// to it, in order, where nothing has touched the tile since.
     fn precode(&mut self, stills: &[Area]) {
-        if self.progressive.is_none() || self.progressive_threads < 2 {
+        if self.progressive.is_none() || rayon::current_num_threads() < 2 {
             return;
         }
         let mut seen = HashSet::new();
@@ -1058,7 +1056,7 @@ impl TilesEncoder {
             })
             .collect();
         let stage = self.first_stage();
-        self.progressive.as_mut().expect("progressive").precode(&jobs, &self.mirror, self.stride, stage, PROGRESSIVE_SLACK, self.progressive_threads);
+        self.progressive.as_mut().expect("progressive").precode(&jobs, &self.mirror, self.stride, stage, PROGRESSIVE_SLACK);
     }
 
     /// Send tile `cell` as a progressive tile: a first pass at
@@ -1287,7 +1285,7 @@ impl TilesEncoder {
                 }
                 let src = ((i32::from(dst.left) + offset.0) as u16, (i32::from(dst.top) + offset.1) as u16);
                 let copy = CopyRect { dst, src, owed: false };
-                let owed = self.progressive.is_some() || tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
+                let owed = tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
                 copies.push(CopyRect { owed, ..copy });
             }
         }
@@ -2302,6 +2300,34 @@ mod tests {
         assert!(page.psnr(&pixels) > 40.0, "settled close again: {:.1} dB", page.psnr(&pixels));
     }
 
+    /// A settled page scrolled is copies of settled tiles, which are settled
+    /// where they land: only the strip the scroll uncovered is owed its
+    /// upgrades, and the settle ends at the picture a client sent it fresh
+    /// would hold.
+    #[test]
+    fn a_progressive_copy_of_a_settled_page_is_not_sent_again() {
+        let (w, h) = (256u16, 256u16);
+        let document = noise(w, 3 * h, 21);
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let now = settle(&mut encoder, &mut page, ms(0));
+        assert!(!encoder.owed());
+        let pixels = scrolled(&document, w, 24, h);
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now + ms(100));
+        assert_eq!(page.copies, 1, "scrolled as a copy");
+        // The tiles the copy draws whole are settled; the strip it uncovered,
+        // the last row of tiles, is owed its upgrades.
+        assert!(encoder.debts.keys().all(|&(_, row)| row == 3), "owed {:?}", encoder.debts.keys().collect::<Vec<_>>());
+        settle(&mut encoder, &mut page, now + ms(200));
+        let mut fresh = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut sent = Page::new(w, h);
+        step(&mut fresh, &mut sent, &pixels, None, ms(0));
+        settle(&mut fresh, &mut sent, ms(0));
+        let (scrolled_db, fresh_db) = (page.psnr(&pixels), sent.psnr(&pixels));
+        assert!(scrolled_db > fresh_db - 0.5, "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}");
+    }
+
     /// A page scrolled below the ceiling is copies of tiles owed their
     /// upgrades: each tile a copy draws over is sent again from what the
     /// desktop shows there, as a first pass, and the settle ends at the
@@ -3002,10 +3028,10 @@ mod tests {
         (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).flat_map(move |x| [((x + 2 * y) / 3 % 256) as u8, (x * y / 40 % 256) as u8, ((3 * x + y) / 5 % 256) as u8, 0])).collect()
     }
 
-    /// On a walked list a copy is owed even from a tile settled, and the
-    /// settle sends its tiles again where they now are.
+    /// On a walked list a copy from a settled source is settled: only the
+    /// strip the scroll uncovered is owed, and the settle sends that alone.
     #[test]
-    fn a_walked_copy_is_owed_from_a_settled_source() {
+    fn a_walked_copy_from_a_settled_source_owes_only_the_uncovered_strip() {
         let (w, h) = (256u16, 256u16);
         let document = ramps(w, 3 * h);
         let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
@@ -3016,10 +3042,13 @@ mod tests {
         let pixels = scrolled(&document, w, 40, h);
         step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now);
         assert_eq!(page.copies, 1);
-        assert!(encoder.owed(), "the copied tiles are owed");
+        // 40 rows uncovered, all in the last row of tiles.
+        let mut owed: Vec<_> = encoder.debts.keys().copied().collect();
+        owed.sort_unstable();
+        assert_eq!(owed, [(0, 3), (1, 3), (2, 3), (3, 3)], "the uncovered strip alone is owed");
         let sent = page.progressives;
         settle(&mut encoder, &mut page, now);
-        assert!(page.progressives > sent, "the copied tiles sent again");
+        assert!(page.progressives > sent, "the uncovered strip sent");
         assert!(!encoder.owed());
     }
 

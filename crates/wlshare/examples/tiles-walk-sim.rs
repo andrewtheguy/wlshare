@@ -29,7 +29,9 @@
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,
 //! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs
-//! and progressive tiles, and of its streams' frames), `encode_ms`, `delivery_ms`,
+//! and progressive tiles, and of its streams' frames), `encode_ms`, `cpu_ms` (the
+//! processor time of that encode, on every thread, which `encoder_cpu_pct`
+//! sums), `delivery_ms`,
 //! `latency_ms` and, where its fence moved the dial, `moved_to`.
 //!
 //! Time is the simulation's own, as `walk-sim`'s is: an encode, the read of
@@ -47,6 +49,10 @@
 //! Every update is drawn as the page draws it ([`Page`]), and `psnr_mean_db`
 //! and `psnr_p10_db` are how close each update left the page to the desktop
 //! it was coded from, `psnr_end_db` the page once nothing more is owed.
+//! `encoder_cpu_pct` is the processor time the encoder took, on every thread
+//! of its own, read from the process's clock around each read and encode, as
+//! a share of one core over the session: what a daemon spends coding it,
+//! allocating through the daemon's jemalloc.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -74,6 +80,18 @@ mod h264;
 mod rfb;
 #[path = "../../wlshare-vp9/examples/sim/mod.rs"]
 mod sim;
+
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// The processor time the process has taken, on all of its threads.
+fn process_cpu() -> Duration {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `ts` is a valid `timespec` for the call to write.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "the process's processor clock");
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
 
 /// What the session writes around the encoder's rectangles: the update's
 /// header and its fence.
@@ -328,6 +346,7 @@ fn main() -> Result<(), Error> {
     // Where the walk stands, as the session hands it the encoder.
     let pace = |walk: &QualityWalk| if held { (ceiling, false) } else { (walk.quality(), walk.slowed()) };
     let mut encoder: Option<TilesEncoder> = None;
+    let mut encoder_cpu = Duration::ZERO;
     let mut page: Option<Page> = None;
     let mut passes = Passes::default();
     let mut psnrs = Vec::new();
@@ -389,6 +408,7 @@ fn main() -> Result<(), Error> {
         let d = desk.as_ref().unwrap();
         let (w, h) = d.size;
         let started = Instant::now();
+        let cpu_started = process_cpu();
         if encoder.as_ref().is_none_or(|e| e.size() != d.size) {
             let mut made = TilesEncoder::new(w, h, picture, Box::new(coders.coder()?))?;
             let (quality, coarse) = pace(&walk);
@@ -407,6 +427,8 @@ fn main() -> Result<(), Error> {
             encoder.read(&d.pixels, usize::from(w) * 4, damage.as_deref(), now)?;
         }
         let update = encoder.encode(now, &mut out)?;
+        let cpu = process_cpu() - cpu_started;
+        encoder_cpu += cpu;
         let encode = encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
         dirty = false;
         damage = Some(Vec::new());
@@ -454,10 +476,11 @@ fn main() -> Result<(), Error> {
             let moved_to = moved.map_or_else(String::new, |moved| format!(",\"moved_to\":{}", moved.quality));
             writeln!(
                 t,
-                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}{moved_to}}}",
+                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}{moved_to}}}",
                 sent.as_secs_f64() * 1e3,
                 interval.as_secs_f64() * 1e3,
                 encode.as_secs_f64() * 1e3,
+                cpu.as_secs_f64() * 1e3,
                 delivery.as_secs_f64() * 1e3,
                 latency.as_secs_f64() * 1e3,
             )?;
@@ -479,7 +502,7 @@ fn main() -> Result<(), Error> {
         _ => 0.0,
     };
     println!(
-        "{{\"capture\":{},\"picture\":\"{}\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2}}}",
+        "{{\"capture\":{},\"picture\":\"{}\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2},\"encoder_cpu_pct\":{:.1}}}",
         json(&name),
         if held { "tiles" } else { "progressive" },
         f64::from(frames) / span,
@@ -494,6 +517,7 @@ fn main() -> Result<(), Error> {
         bytes as f64 * 8.0 / span / 1e6,
         psnrs.iter().sum::<f64>() / psnrs.len().max(1) as f64,
         pct(&psnrs, 0.1),
+        encoder_cpu.as_secs_f64() / span * 100.0,
     );
     if !held {
         let Passes { first: [f25, f50, f75], whole, differences, upgrades } = passes;
