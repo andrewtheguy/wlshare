@@ -40,7 +40,11 @@
 //! no verdict, and the first of the tick's settles the walk where it stands.
 //! What it says of a run, one JSON object on stdout, is `walk-sim`'s, `picture` `tiles`, with `ticks` in place of its
 //! `settles`, and `keyframes` the updates that crossed the link as one.
+//! Every update is drawn as the page draws it ([`Page`]), and `psnr_mean_db`
+//! and `psnr_p10_db` are how close each update left the page to the desktop
+//! it was coded from, `psnr_end_db` the page once nothing more is owed.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
@@ -48,6 +52,7 @@ use std::time::{Duration, Instant};
 use wlshare_proto::tiles::{TileHeader, TilesPicture};
 use wlshare_vp9::walk::QualityWalk;
 
+use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::tiles::TilesEncoder;
 use crate::rfb::vp9::Rect;
 use sim::{Desk, Error, Gateway, Source, json, millis, pct};
@@ -55,7 +60,6 @@ use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 // The daemon's own modules, of which the simulation uses the encoders and
 // nothing more, the decoder the H.264 encoder's tests read it back with, and
 // `walk-sim`'s model of the link.
-#[cfg(test)]
 #[path = "../src/decode.rs"]
 mod decode;
 #[allow(dead_code)]
@@ -119,6 +123,133 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
     Ok(records)
 }
 
+/// What the page draws of the updates: each PNG and WebP, each region's
+/// H.264 by libavcodec, each copy and cached tile, and each progressive tile
+/// as the encoder's model of zDesk's decoder shows it.
+struct Page {
+    w: usize,
+    canvas: Vec<u8>,
+    /// Each live stream's rectangle and decoder.
+    streams: HashMap<u8, ((u16, u16, u16, u16), decode::Decoder)>,
+    slots: HashMap<u16, Vec<u8>>,
+    planes: Vec<u8>,
+}
+
+impl Page {
+    fn new(w: u16, h: u16) -> Self {
+        Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), planes: Vec::new() }
+    }
+
+    /// `B, G, R, X` rows `line` pixels apart drawn at the rectangle.
+    fn paste(&mut self, (x, y, w, h): (u16, u16, u16, u16), bgrx: &[u8], line: usize) {
+        let row_bytes = usize::from(w) * 4;
+        for row in 0..usize::from(h) {
+            let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+            self.canvas[at..at + row_bytes].copy_from_slice(&bgrx[row * line * 4..][..row_bytes]);
+        }
+    }
+
+    fn rgb(rgb: &[u8]) -> Vec<u8> {
+        rgb.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0], 0]).collect()
+    }
+
+    fn draw(&mut self, count: u16, rects: &[u8], encoder: &mut TilesEncoder, progressive: bool) -> Result<(), Error> {
+        let mut wire = crate::rfb::msg::update_header(count).to_vec();
+        wire.extend_from_slice(rects);
+        let Some((ServerMsg::Update(rects), _)) = client::parse(&wire)? else {
+            return Err("an update the client cannot read".into());
+        };
+        for rect in rects {
+            let RectBody::Tiles(body) = rect.body else { return Err("a rectangle not of the tiles".into()) };
+            let place = (rect.x, rect.y, rect.width, rect.height);
+            let (w, h) = (usize::from(rect.width), usize::from(rect.height));
+            match body {
+                TileBody::Png(png) => {
+                    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+                    decoder.set_transformations(png::Transformations::EXPAND);
+                    let mut reader = decoder.read_info()?;
+                    let mut buf = vec![0; reader.output_buffer_size().ok_or("a PNG too large")?];
+                    let info = reader.next_frame(&mut buf)?;
+                    let bgrx = Self::rgb(&buf[..info.buffer_size()]);
+                    self.paste(place, &bgrx, w);
+                }
+                TileBody::Webp(_) if progressive => {
+                    let cell = (rect.x / 64, rect.y / 64);
+                    let shown = encoder.progressive_shown(cell).ok_or("a progressive tile the encoder holds nothing of")?;
+                    self.paste(place, &shown, 64);
+                }
+                TileBody::Webp(webp) => {
+                    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&webp))?;
+                    let mut rgb = vec![0; decoder.output_buffer_size().ok_or("a WebP too large")?];
+                    decoder.read_image(&mut rgb)?;
+                    let bgrx = Self::rgb(&rgb);
+                    self.paste(place, &bgrx, w);
+                }
+                TileBody::Start { stream, frame } => {
+                    self.streams.insert(stream, (place, decode::Decoder::new().map_err(|e| format!("{e:#}"))?));
+                    self.region(stream, &frame)?;
+                }
+                TileBody::Frame { stream, frame } => self.region(stream, &frame)?,
+                TileBody::End { stream } => {
+                    self.streams.remove(&stream);
+                }
+                TileBody::Copy { x, y } => {
+                    let line = w * 4;
+                    let source: Vec<u8> = (0..h).flat_map(|row| {
+                        let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+                        self.canvas[at..at + line].to_vec()
+                    }).collect();
+                    self.paste(place, &source, w);
+                }
+                TileBody::Store { slot } => {
+                    let tile: Vec<u8> = (0..h).flat_map(|row| self.canvas[((usize::from(rect.y) + row) * self.w + usize::from(rect.x)) * 4..][..w * 4].to_vec()).collect();
+                    self.slots.insert(slot, tile);
+                }
+                TileBody::Cached { slot } => {
+                    let tile = self.slots.get(&slot).ok_or("a slot drawn before it was stored")?.clone();
+                    self.paste(place, &tile, w);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A frame of a stream, decoded and drawn over its rectangle: BT.601 at
+    /// studio swing, as the stream's VUI says.
+    fn region(&mut self, stream: u8, frame: &[u8]) -> Result<(), Error> {
+        let (place, decoder) = self.streams.get_mut(&stream).ok_or("a frame of no live stream")?;
+        let place = *place;
+        let Some(picture) = decoder.decode(frame, &mut self.planes).map_err(|e| format!("{e:#}"))? else { return Ok(()) };
+        let (pw, ph) = (picture.width, picture.height);
+        let (cw, ch) = picture.chroma();
+        let (y, rest) = self.planes.split_at(pw * ph);
+        let (u, v) = rest.split_at(cw * ch);
+        let mut bgrx = vec![0u8; pw * ph * 4];
+        for row in 0..ph {
+            for col in 0..pw {
+                let l = 1.164 * (f32::from(y[row * pw + col]) - 16.0);
+                let (cb, cr) = (f32::from(u[row / 2 * cw + col / 2]) - 128.0, f32::from(v[row / 2 * cw + col / 2]) - 128.0);
+                let at = (row * pw + col) * 4;
+                bgrx[at] = (l + 2.017 * cb).round().clamp(0.0, 255.0) as u8;
+                bgrx[at + 1] = (l - 0.392 * cb - 0.813 * cr).round().clamp(0.0, 255.0) as u8;
+                bgrx[at + 2] = (l + 1.596 * cr).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        self.paste(place, &bgrx, pw);
+        Ok(())
+    }
+
+    /// The mean squared error over B, G and R from `pixels`.
+    fn mse(&self, pixels: &[u8]) -> f64 {
+        let sum: u64 = self.canvas.chunks_exact(4).zip(pixels.chunks_exact(4)).map(|(a, b)| (0..3).map(|i| u64::from(a[i].abs_diff(b[i])).pow(2)).sum::<u64>()).sum();
+        sum as f64 / (self.canvas.len() / 4 * 3) as f64
+    }
+}
+
+fn psnr(mse: f64) -> f64 {
+    if mse == 0.0 { 99.0 } else { (10.0 * (255.0f64.powi(2) / mse).log10()).min(99.0) }
+}
+
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
@@ -166,6 +297,9 @@ fn main() -> Result<(), Error> {
     // Where the walk stands, as the session hands it the encoder.
     let pace = |walk: &QualityWalk| if held { (ceiling, false) } else { (walk.quality(), walk.slowed()) };
     let mut encoder: Option<TilesEncoder> = None;
+    let progressive = std::env::var("WLSHARE_TILES_PROGRESSIVE").as_deref() == Ok("1");
+    let mut page: Option<Page> = None;
+    let mut psnrs = Vec::new();
     let mut now = Duration::ZERO;
     // The desktop as it stands and what changed since the client's last update.
     let mut desk: Option<Desk> = None;
@@ -229,6 +363,7 @@ fn main() -> Result<(), Error> {
             let (quality, coarse) = pace(&walk);
             made.set_pace(quality, coarse);
             encoder = Some(made);
+            page = Some(Page::new(w, h));
             damage = None;
         } else if whole {
             // A picture the client asks for whole.
@@ -249,6 +384,9 @@ fn main() -> Result<(), Error> {
         if update.rects == 0 {
             continue;
         }
+        let page = page.as_mut().unwrap();
+        page.draw(update.rects, &out, encoder, progressive)?;
+        psnrs.push(psnr(page.mse(&d.pixels)));
         let sent = now + encode;
         let coded_at = encoder.quality();
         let size = out.len() + FRAMING;
@@ -305,8 +443,12 @@ fn main() -> Result<(), Error> {
     }
     // Through the last update's paint, which its own fence can come back before.
     let span = now.max(gateway.painted).as_secs_f64();
+    let end = match (&page, &desk) {
+        (Some(page), Some(desk)) => psnr(page.mse(&desk.pixels)),
+        _ => 0.0,
+    };
     println!(
-        "{{\"capture\":{},\"picture\":\"tiles\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs}}}",
+        "{{\"capture\":{},\"picture\":\"tiles\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2}}}",
         json(&name),
         f64::from(frames) / span,
         qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,
@@ -318,6 +460,8 @@ fn main() -> Result<(), Error> {
         pct(&deliveries, 0.5),
         pct(&deliveries, 0.95),
         bytes as f64 * 8.0 / span / 1e6,
+        psnrs.iter().sum::<f64>() / psnrs.len().max(1) as f64,
+        pct(&psnrs, 0.1),
     );
     Ok(())
 }

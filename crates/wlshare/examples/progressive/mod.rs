@@ -1,0 +1,863 @@
+//! A RemoteFX Progressive encoder: the codec a Windows host draws its
+//! desktop with where it has no H.264 ([MS-RDPEGFX] 2.2.4 and 3.2.8.1), as
+//! an encoder of this repository's own, written to the decoder the zDesk
+//! page runs (`zdesk-rdp-graphics`, `proto/progressive.rs`), which is what
+//! it is checked against.
+//!
+//! A 64×64 tile is converted to YCbCr in 11.5 fixed point, transformed by
+//! three levels of the reduce-extrapolate 5/3 wavelet, quantized by a table
+//! of shifts per sub-band, and sent in *passes*: a first pass at a
+//! progressive stage, which holds back the low bits of every coefficient by
+//! a second table of shifts, and upgrade passes that each send the bits the
+//! stage before held back, for the coefficients the decoder already has as
+//! raw bits and for the ones it has as zero in a run-length code. A changed
+//! tile the decoder holds already is sent as the difference of its quantized
+//! coefficients from what the decoder holds, where that has more zeros.
+//!
+//! The encoder keeps, for every tile, what the decoder holds — the
+//! coefficients as sent so far, the sign the decoder has learnt of each, and
+//! the stage each band stands at — so that each pass is coded against it,
+//! and so that the picture the decoder shows can be had here without a
+//! decoder ([`Encoder::shown`]).
+
+use std::collections::HashMap;
+
+pub const TILE: usize = 64;
+pub const COEFFS: usize = TILE * TILE;
+
+pub const WBT_SYNC: u16 = 0xCCC0;
+pub const WBT_FRAME_BEGIN: u16 = 0xCCC1;
+pub const WBT_FRAME_END: u16 = 0xCCC2;
+pub const WBT_CONTEXT: u16 = 0xCCC3;
+pub const WBT_REGION: u16 = 0xCCC4;
+pub const WBT_TILE_SIMPLE: u16 = 0xCCC5;
+pub const WBT_TILE_FIRST: u16 = 0xCCC6;
+pub const WBT_TILE_UPGRADE: u16 = 0xCCC7;
+
+const DWT_REDUCE_EXTRAPOLATE: u8 = 0x01;
+const TILE_DIFFERENCE: u8 = 0x01;
+/// Context flag: sub-band diffing is in use.
+const CONTEXT_SUBBAND_DIFFING: u8 = 0x01;
+
+/// Where each sub-band sits in a component's 4096 coefficients, as
+/// `(offset, count)`, in the order the quantization values are kept: HL1,
+/// LH1, HH1, HL2, LH2, HH2, HL3, LH3, HH3, LL3.
+pub const BANDS: [(usize, usize); 10] = [
+    (0, 1023),
+    (1023, 1023),
+    (2046, 961),
+    (3007, 272),
+    (3279, 272),
+    (3551, 256),
+    (3807, 72),
+    (3879, 72),
+    (3951, 64),
+    (4015, 81),
+];
+pub const LL3: usize = 9;
+
+/// One shift per sub-band, in [`BANDS`] order: a quantization table, or a
+/// stage's extra shifts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Quant(pub [u8; 10]);
+
+impl Quant {
+    /// The five packed bytes of an `RFX_COMPONENT_CODEC_QUANT`.
+    pub fn to_bytes(self) -> [u8; 5] {
+        let q = self.0;
+        [q[9] | (q[6] << 4), q[7] | (q[8] << 4), q[3] | (q[4] << 4), q[5] | (q[0] << 4), q[1] | (q[2] << 4)]
+    }
+
+    pub fn from_bytes(b: [u8; 5]) -> Self {
+        Self([b[3] >> 4, b[4] & 0xF, b[4] >> 4, b[2] & 0xF, b[2] >> 4, b[3] & 0xF, b[0] >> 4, b[1] & 0xF, b[1] >> 4, b[0] & 0xF])
+    }
+}
+
+/// A progressive stage: the quality it is labelled with on the wire and the
+/// bits each component's bands hold back at it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Stage {
+    pub quality: u8,
+    pub shifts: [Quant; 3],
+}
+
+impl Stage {
+    /// The full stage: nothing held back.
+    pub const FULL: Stage = Stage { quality: 100, shifts: [Quant([0; 10]); 3] };
+
+    pub fn to_bytes(self) -> [u8; 16] {
+        let mut out = [0u8; 16];
+        out[0] = self.quality;
+        for (c, q) in self.shifts.iter().enumerate() {
+            out[1 + c * 5..6 + c * 5].copy_from_slice(&q.to_bytes());
+        }
+        out
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Self {
+        let q = |at: usize| Quant::from_bytes(b[at..at + 5].try_into().unwrap());
+        Self { quality: b[0], shifts: [q(1), q(6), q(11)] }
+    }
+}
+
+/// The tables an encoder codes with: one quantization table per component,
+/// and the stages a tile is sent through, coarsest first, each holding back
+/// no more than the one before in any band, the last of them full.
+#[derive(Clone, Debug)]
+pub struct Tables {
+    pub quant: [Quant; 3],
+    pub stages: Vec<Stage>,
+}
+
+impl Tables {
+    /// Index of the full stage in the region's table, which the tile's
+    /// quality byte names, or 0xFF for a stage holding nothing back.
+    fn quality_byte(&self, stage: usize) -> u8 {
+        if self.stages[stage].shifts == [Quant([0; 10]); 3] { 0xFF } else { stage as u8 }
+    }
+}
+
+/// One tile as the decoder holds it, kept by the encoder.
+#[derive(Clone)]
+pub struct Held {
+    /// The quantized coefficients the tile was last coded from: what the
+    /// passes drive the decoder towards. Y, Cb, Cr, 4096 each.
+    target: Vec<i16>,
+    /// What the decoder holds of them, in the same units.
+    held: Vec<i16>,
+    /// The sign the decoder has learnt of each coefficient: what the first
+    /// pass gave it, or an upgrade's run-length value.
+    sign: Vec<i8>,
+    /// The stage each component's bands stand at: the extra bits held back.
+    shifts: [Quant; 3],
+    /// Whether every band is at the full stage.
+    pub full: bool,
+}
+
+/// One pass as coded: its tile block for the wire, and what it was.
+pub struct Pass {
+    pub block: Vec<u8>,
+    /// A first pass coded as a difference from what the decoder held.
+    pub diff: bool,
+}
+
+pub struct Encoder {
+    pub tables: Tables,
+    cols: usize,
+    tiles: HashMap<(u16, u16), Held>,
+    /// Scratch: the tile's YCbCr, transformed in place.
+    work: Vec<i32>,
+    temp: Vec<i32>,
+}
+
+impl Encoder {
+    pub fn new(width: u16, tables: Tables) -> Self {
+        assert!(!tables.stages.is_empty(), "a stage to code at");
+        Self { tables, cols: usize::from(width).div_ceil(TILE), tiles: HashMap::new(), work: vec![0; COEFFS * 3], temp: vec![0; COEFFS * 2] }
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// The decoder holds nothing.
+    pub fn forget(&mut self) {
+        self.tiles.clear();
+    }
+
+    pub fn forget_tile(&mut self, cell: (u16, u16)) {
+        self.tiles.remove(&cell);
+    }
+
+    /// Whether the decoder holds tile `cell`.
+    pub fn holds(&self, cell: (u16, u16)) -> bool {
+        self.tiles.contains_key(&cell)
+    }
+
+    pub fn held(&self, cell: (u16, u16)) -> Option<&Held> {
+        self.tiles.get(&cell)
+    }
+
+    /// Code tile `cell` of the picture — `B, G, R, X` pixels, `stride` bytes a
+    /// row, `w`×`h` of them under the tile where it is cut by the picture's
+    /// edge, the rest padded by the last pixel — as a first pass at
+    /// `stage`, a difference from what the decoder holds where it holds the
+    /// tile and the difference has more zeros, and leave the tile owed the
+    /// stages after.
+    #[allow(clippy::too_many_arguments)]
+    pub fn first(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize) -> Pass {
+        let target = self.analyse(pixels, stride, w, h);
+        self.code_first(cell, target, stage)
+    }
+
+    /// Code tile `cell` as [`Self::first`] does, at the full stage where its
+    /// first pass there costs at most `slack` times the one at `stage`, or
+    /// 64 bytes more, as a flat tile's does: refining it would cost more
+    /// than the difference. Otherwise at `stage`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn first_or_full(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: f32) -> Pass {
+        let full = self.tables.stages.len() - 1;
+        let target = self.analyse(pixels, stride, w, h);
+        if stage == full {
+            return self.code_first(cell, target, full);
+        }
+        let before = self.tiles.get(&cell).cloned();
+        let whole = self.code_first(cell, target.clone(), full);
+        let whole_held = self.tiles.remove(&cell);
+        if let Some(before) = before {
+            self.tiles.insert(cell, before);
+        }
+        let coarse = self.code_first(cell, target, stage);
+        if whole.block.len() as f32 <= (coarse.block.len() as f32 * slack).max(coarse.block.len() as f32 + 64.0) {
+            if let Some(held) = whole_held {
+                self.tiles.insert(cell, held);
+            }
+            return whole;
+        }
+        coarse
+    }
+
+    /// The stage tile `cell` stands at, where the decoder holds it.
+    pub fn stage_of(&self, cell: (u16, u16)) -> Option<usize> {
+        let held = self.tiles.get(&cell)?;
+        Some(self.tables.stages.iter().position(|stage| stage.shifts == held.shifts).unwrap_or(0))
+    }
+
+    /// The tile's quantized coefficients: YCbCr, the wavelet, the quantizer.
+    fn analyse(&mut self, pixels: &[u8], stride: usize, w: usize, h: usize) -> Vec<i16> {
+        to_ycbcr(pixels, stride, w, h, &mut self.work);
+        for c in 0..3 {
+            let comp = &mut self.work[c * COEFFS..(c + 1) * COEFFS];
+            dwt(comp, &mut self.temp);
+            quantize(comp, self.tables.quant[c]);
+        }
+        self.work.iter().map(|&v| v.clamp(i16::MIN.into(), i16::MAX.into()) as i16).collect()
+    }
+
+    fn code_first(&mut self, cell: (u16, u16), target: Vec<i16>, stage: usize) -> Pass {
+        let shifts = self.tables.stages[stage].shifts;
+        let diff = self.tiles.get(&cell).is_some_and(|held| prefer_diff(&target, &held.held));
+        let held = self.tiles.entry(cell).or_insert_with(|| Held { target: vec![0; COEFFS * 3], held: vec![0; COEFFS * 3], sign: vec![0; COEFFS * 3], shifts, full: false });
+        if !diff {
+            held.held.fill(0);
+        }
+        held.target = target;
+        held.shifts = shifts;
+        let mut data = [Vec::new(), Vec::new(), Vec::new()];
+        let mut coded = vec![0i16; COEFFS];
+        for c in 0..3 {
+            let target = &held.target[c * COEFFS..(c + 1) * COEFFS];
+            let have = &mut held.held[c * COEFFS..(c + 1) * COEFFS];
+            let sign = &mut held.sign[c * COEFFS..(c + 1) * COEFFS];
+            for (band, &(at, len)) in BANDS.iter().enumerate() {
+                let p = u32::from(shifts[c].0[band]);
+                for i in at..at + len {
+                    let sb = i32::from(target[i]) - i32::from(have[i]);
+                    let q = if band == LL3 { sb >> p } else { toward_zero(sb, p) };
+                    have[i] = (i32::from(have[i]) + (q << p)) as i16;
+                    sign[i] = q.signum() as i8;
+                    coded[i] = q as i16;
+                }
+            }
+            let (ll, len) = BANDS[LL3];
+            for i in (ll + 1..ll + len).rev() {
+                coded[i] = coded[i].wrapping_sub(coded[i - 1]);
+            }
+            data[c] = rlgr1_encode(&coded);
+        }
+        held.full = shifts == [Quant([0; 10]); 3];
+        let mut b = vec![0u8, 1, 2];
+        b.extend_from_slice(&cell.0.to_le_bytes());
+        b.extend_from_slice(&cell.1.to_le_bytes());
+        b.push(if diff { TILE_DIFFERENCE } else { 0 });
+        b.push(self.tables.quality_byte(stage));
+        for len in [data[0].len(), data[1].len(), data[2].len(), 0] {
+            b.extend_from_slice(&(len as u16).to_le_bytes());
+        }
+        for d in &data {
+            b.extend_from_slice(d);
+        }
+        Pass { block: block(WBT_TILE_FIRST, &b), diff }
+    }
+
+    /// Send tile `cell` the bits between the stage it stands at and `stage`,
+    /// which holds back no more than it in any band; `None` where it stands
+    /// there already, or the decoder does not hold it.
+    pub fn upgrade(&mut self, cell: (u16, u16), stage: usize) -> Option<Vec<u8>> {
+        let to = self.tables.stages[stage].shifts;
+        let held = self.tiles.get_mut(&cell)?;
+        if held.shifts == to {
+            return None;
+        }
+        let mut streams: [Vec<u8>; 6] = Default::default();
+        for c in 0..3 {
+            let target = &held.target[c * COEFFS..(c + 1) * COEFFS];
+            let have = &mut held.held[c * COEFFS..(c + 1) * COEFFS];
+            let sign = &mut held.sign[c * COEFFS..(c + 1) * COEFFS];
+            let mut srl = SrlWriter::new();
+            let mut raw = BitWriter::new();
+            for (band, &(at, len)) in BANDS.iter().enumerate() {
+                let (from, p) = (u32::from(held.shifts[c].0[band]), u32::from(to[c].0[band]));
+                assert!(from >= p, "an upgrade holds back no more than the pass before it");
+                let bits = from - p;
+                if bits == 0 {
+                    continue;
+                }
+                for i in at..at + len {
+                    let rem = i32::from(target[i]) - i32::from(have[i]);
+                    if band == LL3 {
+                        let v = rem >> p;
+                        debug_assert!((0..1 << bits).contains(&v));
+                        raw.put(v as u32, bits);
+                        have[i] = (i32::from(have[i]) + (v << p)) as i16;
+                    } else if sign[i] == 0 {
+                        let v = toward_zero(rem, p);
+                        debug_assert!(v.unsigned_abs() < 1 << bits);
+                        srl.put(v, bits);
+                        sign[i] = v.signum() as i8;
+                        have[i] = (i32::from(have[i]) + (v << p)) as i16;
+                    } else {
+                        debug_assert!(rem == 0 || rem.signum() == i32::from(sign[i]));
+                        let v = rem.unsigned_abs() >> p;
+                        debug_assert!(v < 1 << bits);
+                        raw.put(v, bits);
+                        let v = (v as i32) << p;
+                        have[i] = (i32::from(have[i]) + if sign[i] < 0 { -v } else { v }) as i16;
+                    }
+                }
+            }
+            streams[c * 2] = srl.finish();
+            streams[c * 2 + 1] = raw.finish();
+        }
+        held.shifts = to;
+        held.full = to == [Quant([0; 10]); 3];
+        let mut b = vec![0u8, 1, 2];
+        b.extend_from_slice(&cell.0.to_le_bytes());
+        b.extend_from_slice(&cell.1.to_le_bytes());
+        b.push(self.tables.quality_byte(stage));
+        for s in &streams {
+            b.extend_from_slice(&(s.len() as u16).to_le_bytes());
+        }
+        for s in &streams {
+            b.extend_from_slice(s);
+        }
+        Some(block(WBT_TILE_UPGRADE, &b))
+    }
+
+    /// The tile as the decoder shows it from what it holds: 64×64 pixels,
+    /// `B, G, R, X`, or none where it holds nothing.
+    pub fn shown(&mut self, cell: (u16, u16)) -> Option<Vec<u8>> {
+        let held = self.tiles.get(&cell)?;
+        for c in 0..3 {
+            let comp = &mut self.work[c * COEFFS..(c + 1) * COEFFS];
+            for (band, &(at, len)) in BANDS.iter().enumerate() {
+                let s = u32::from(self.tables.quant[c].0[band]) - 1;
+                let held = &held.held[c * COEFFS + at..c * COEFFS + at + len];
+                for (v, &h) in comp[at..at + len].iter_mut().zip(held) {
+                    *v = i32::from((i32::from(h) << s) as i16);
+                }
+            }
+            idwt(comp, &mut self.temp);
+        }
+        let mut pixels = vec![0u8; COEFFS * 4];
+        to_bgrx(&self.work, &mut pixels);
+        Some(pixels)
+    }
+
+    /// A region block over `rects` (x, y, w, h in pixels) carrying `tiles`,
+    /// with this encoder's tables.
+    pub fn region(&self, rects: &[(u16, u16, u16, u16)], tiles: &[Vec<u8>]) -> Vec<u8> {
+        let mut b = vec![TILE as u8];
+        b.extend_from_slice(&(rects.len() as u16).to_le_bytes());
+        b.push(3);
+        b.push(self.tables.stages.len() as u8);
+        b.push(DWT_REDUCE_EXTRAPOLATE);
+        b.extend_from_slice(&(tiles.len() as u16).to_le_bytes());
+        let data = tiles.concat();
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        for r in rects {
+            for v in [r.0, r.1, r.2, r.3] {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for q in self.tables.quant {
+            b.extend_from_slice(&q.to_bytes());
+        }
+        for stage in &self.tables.stages {
+            b.extend_from_slice(&stage.to_bytes());
+        }
+        b.extend_from_slice(&data);
+        block(WBT_REGION, &b)
+    }
+
+    /// The bytes a region's header costs around its tiles.
+    pub fn region_overhead(&self, rects: usize) -> usize {
+        6 + 11 + rects * 8 + 15 + self.tables.stages.len() * 16
+    }
+}
+
+/// A whole bitmap stream: sync, frame begin, context, the regions, frame end.
+pub fn pdu(frame: u32, regions: &[Vec<u8>]) -> Vec<u8> {
+    let mut v = block(WBT_SYNC, &[0xCA, 0xAC, 0xCC, 0xCA, 0x00, 0x01]);
+    let mut begin = frame.to_le_bytes().to_vec();
+    begin.extend_from_slice(&(regions.len() as u16).to_le_bytes());
+    v.extend(block(WBT_FRAME_BEGIN, &begin));
+    v.extend(block(WBT_CONTEXT, &[0, TILE as u8, 0, CONTEXT_SUBBAND_DIFFING]));
+    for r in regions {
+        v.extend_from_slice(r);
+    }
+    v.extend(block(WBT_FRAME_END, &[]));
+    v
+}
+
+fn block(kind: u16, body: &[u8]) -> Vec<u8> {
+    let mut v = kind.to_le_bytes().to_vec();
+    v.extend_from_slice(&(body.len() as u32 + 6).to_le_bytes());
+    v.extend_from_slice(body);
+    v
+}
+
+/// `v / 2^p` rounded toward zero.
+fn toward_zero(v: i32, p: u32) -> i32 {
+    if v < 0 { -((-v) >> p) } else { v >> p }
+}
+
+/// Whether to send the difference: it has more zeros among Y's non-LL
+/// coefficients than the tile itself, [MS-RDPEGFX] 3.2.8.1.4.
+fn prefer_diff(target: &[i16], held: &[i16]) -> bool {
+    let (ll, _) = BANDS[LL3];
+    let (mut original, mut difference) = (0usize, 0usize);
+    for i in 0..ll {
+        original += usize::from(target[i] == 0);
+        difference += usize::from(target[i] == held[i]);
+    }
+    difference > original
+}
+
+// ── Colour ───────────────────────────────────────────────────────────────────
+
+/// The tile's pixels to Y, Cb, Cr in 11.5 fixed point, the reference's
+/// constants, each component 4096 values; a tile cut by the picture's edge is
+/// padded with its last row and column.
+fn to_ycbcr(pixels: &[u8], stride: usize, w: usize, h: usize, out: &mut [i32]) {
+    for y in 0..TILE {
+        let row = y.min(h - 1);
+        for x in 0..TILE {
+            let col = x.min(w - 1);
+            let px = &pixels[row * stride + col * 4..][..4];
+            let (b, g, r) = (i32::from(px[0]), i32::from(px[1]), i32::from(px[2]));
+            let cy = (r * 9798 + g * 19235 + b * 3735) >> 10;
+            let cb = (r * -5535 + g * -10868 + b * 16403) >> 10;
+            let cr = (r * 16377 + g * -13714 + b * -2663) >> 10;
+            let i = y * TILE + x;
+            out[i] = (cy - 4096).clamp(-4096, 4095);
+            out[COEFFS + i] = cb.clamp(-4096, 4095);
+            out[2 * COEFFS + i] = cr.clamp(-4096, 4095);
+        }
+    }
+}
+
+/// The decoder's conversion back, [MS-RDPEGFX]'s reference fixed point.
+fn to_bgrx(work: &[i32], pixels: &mut [u8]) {
+    for i in 0..COEFFS {
+        let y = i64::from(work[i]) + 4096;
+        let (cb, cr) = (i64::from(work[COEFFS + i]), i64::from(work[2 * COEFFS + i]));
+        let r = ((y << 16) + cr * 91916) >> 21;
+        let g = ((y << 16) - cb * 22527 - cr * 46819) >> 21;
+        let b = ((y << 16) + cb * 115992) >> 21;
+        let px = &mut pixels[i * 4..i * 4 + 4];
+        px[0] = b.clamp(0, 255) as u8;
+        px[1] = g.clamp(0, 255) as u8;
+        px[2] = r.clamp(0, 255) as u8;
+        px[3] = 0;
+    }
+}
+
+// ── The wavelet ──────────────────────────────────────────────────────────────
+
+/// `v / 2` towards zero, as the decoder halves.
+fn half(v: i32) -> i32 {
+    (v + ((v >> 31) & 1)) >> 1
+}
+
+fn band_l(n: usize) -> usize {
+    n / 2 + 1
+}
+
+fn band_h(n: usize) -> usize {
+    if n.is_multiple_of(2) { n / 2 - 1 } else { n / 2 }
+}
+
+/// One line of `n` samples to its `band_l(n)` low and `band_h(n)` high
+/// coefficients, [MS-RDPEGFX] 3.2.8.1.2.2: a line of 64 is extrapolated to
+/// 65 and its last high coefficient, zero, dropped; a line of 33 or 17 is
+/// mirrored at both ends.
+fn dwt_line(x: &[i32], low: &mut [i32], high: &mut [i32]) {
+    let n = x.len();
+    let (nl, nh) = (band_l(n), band_h(n));
+    let at = |i: usize| if i < n { x[i] } else { 2 * x[n - 1] - x[n - 2] };
+    for k in 0..nh {
+        high[k] = (x[2 * k + 1] - half(x[2 * k] + at(2 * k + 2))) >> 1;
+    }
+    low[0] = x[0] + high[0];
+    for k in 1..nh {
+        low[k] = x[2 * k] + half(high[k - 1] + high[k]);
+    }
+    if n.is_multiple_of(2) {
+        low[nh] = x[2 * nh] + half(high[nh - 1]);
+        low[nl - 1] = at(n);
+    } else {
+        low[nh] = x[2 * nh] + high[nh - 1];
+    }
+}
+
+/// The inverse of [`dwt_line`], as the decoder runs it.
+fn idwt_line(low: &[i32], high: &[i32], x: &mut [i32]) {
+    let n = x.len();
+    let (nl, nh) = (band_l(n), band_h(n));
+    x[0] = low[0] - high[0];
+    for k in 1..nh {
+        x[2 * k] = low[k] - half(high[k - 1] + high[k]);
+    }
+    if nl == nh + 1 {
+        x[2 * nh] = low[nh] - high[nh - 1];
+    } else {
+        x[2 * nh] = low[nh] - half(high[nh - 1]);
+    }
+    for k in 0..nh {
+        x[2 * k + 1] = half(x[2 * k] + x[2 * k + 2]) + 2 * high[k];
+    }
+    if nl > nh + 1 {
+        x[2 * nh + 1] = half(x[2 * nh] + low[nh + 1]);
+    }
+}
+
+/// One level over the `n`×`n` picture at the front of `buf`: its four bands
+/// written over it, HL, LH, HH, then LL, the next level's input.
+fn dwt_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
+    let (nl, nh) = (band_l(n), band_h(n));
+    let (input, rest) = temp.split_at_mut(n * n);
+    input.copy_from_slice(&buf[..n * n]);
+    // Vertical: each column to a low and a high column, as rows of `rows`.
+    let rows = &mut rest[..n * n];
+    let (mut line, mut low, mut high) = (vec![0; n], vec![0; nl], vec![0; nh]);
+    for x in 0..n {
+        for y in 0..n {
+            line[y] = input[y * n + x];
+        }
+        dwt_line(&line, &mut low, &mut high);
+        for k in 0..nl {
+            rows[k * n + x] = low[k];
+        }
+        for k in 0..nh {
+            rows[(nl + k) * n + x] = high[k];
+        }
+    }
+    // Horizontal: each low row to LL and HL, each high row to LH and HH.
+    let (hl, lh, hh, ll) = (0, nl * nh, nl * nh + nh * nl, nl * nh + nh * nl + nh * nh);
+    for r in 0..nl {
+        dwt_line(&rows[r * n..(r + 1) * n], &mut low, &mut high);
+        buf[ll + r * nl..ll + (r + 1) * nl].copy_from_slice(&low);
+        buf[hl + r * nh..hl + (r + 1) * nh].copy_from_slice(&high);
+    }
+    for r in 0..nh {
+        dwt_line(&rows[(nl + r) * n..(nl + r + 1) * n], &mut low, &mut high);
+        buf[lh + r * nl..lh + (r + 1) * nl].copy_from_slice(&low);
+        buf[hh + r * nh..hh + (r + 1) * nh].copy_from_slice(&high);
+    }
+}
+
+fn idwt_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
+    let (nl, nh) = (band_l(n), band_h(n));
+    let (hl, lh, hh, ll) = (0, nl * nh, nl * nh + nh * nl, nl * nh + nh * nl + nh * nh);
+    let rows = &mut temp[..n * n];
+    let mut line = vec![0; n];
+    for r in 0..nl {
+        idwt_line(&buf[ll + r * nl..ll + (r + 1) * nl], &buf[hl + r * nh..hl + (r + 1) * nh], &mut line);
+        rows[r * n..(r + 1) * n].copy_from_slice(&line);
+    }
+    for r in 0..nh {
+        idwt_line(&buf[lh + r * nl..lh + (r + 1) * nl], &buf[hh + r * nh..hh + (r + 1) * nh], &mut line);
+        rows[(nl + r) * n..(nl + r + 1) * n].copy_from_slice(&line);
+    }
+    let (mut low, mut high) = (vec![0; nl], vec![0; nh]);
+    for x in 0..n {
+        for k in 0..nl {
+            low[k] = rows[k * n + x];
+        }
+        for k in 0..nh {
+            high[k] = rows[(nl + k) * n + x];
+        }
+        idwt_line(&low, &high, &mut line);
+        for y in 0..n {
+            buf[y * n + x] = line[y];
+        }
+    }
+}
+
+/// Three levels over a component, into the [`BANDS`] layout.
+fn dwt(comp: &mut [i32], temp: &mut [i32]) {
+    dwt_level(comp, temp, 64);
+    dwt_level(&mut comp[3007..], temp, 33);
+    dwt_level(&mut comp[3807..], temp, 17);
+}
+
+fn idwt(comp: &mut [i32], temp: &mut [i32]) {
+    idwt_level(&mut comp[3807..], temp, 17);
+    idwt_level(&mut comp[3007..], temp, 33);
+    idwt_level(comp, temp, 64);
+}
+
+/// Each band divided by its quantization scale, rounded to nearest, the
+/// 11.5 fixed point's five bits going with it: a shift of the value less one.
+fn quantize(comp: &mut [i32], quant: Quant) {
+    for (band, &(at, len)) in BANDS.iter().enumerate() {
+        let s = u32::from(quant.0[band]) - 1;
+        for v in &mut comp[at..at + len] {
+            *v = (*v + (1 << (s - 1))) >> s;
+        }
+    }
+}
+
+// ── Entropy coding ───────────────────────────────────────────────────────────
+
+/// Bits written most significant first, padded with zeros to a byte.
+struct BitWriter {
+    bytes: Vec<u8>,
+    used: usize,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        Self { bytes: Vec::new(), used: 0 }
+    }
+
+    fn put(&mut self, value: u32, n: u32) {
+        for i in (0..n).rev() {
+            if self.used.is_multiple_of(8) {
+                self.bytes.push(0);
+            }
+            let bit = ((value >> i) & 1) as u8;
+            let last = self.bytes.len() - 1;
+            self.bytes[last] |= bit << (7 - (self.used % 8));
+            self.used += 1;
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+const KPMAX: u32 = 80;
+
+/// Golomb-Rice: `code` as `code >> kr` ones, a zero, then `kr` low bits, and
+/// the decoder's `kr` update.
+fn golomb(w: &mut BitWriter, code: u32, kr: &mut u32, krp: &mut u32) {
+    let vk = code >> *kr;
+    for _ in 0..vk {
+        w.put(1, 1);
+    }
+    w.put(0, 1);
+    w.put(code & ((1 << *kr) - 1), *kr);
+    if vk == 0 {
+        *krp = krp.saturating_sub(2);
+    } else if vk != 1 {
+        *krp = (*krp + vk).min(KPMAX);
+    }
+    *kr = *krp >> 3;
+}
+
+/// RLGR1 entropy coding of a component's coefficients, [MS-RDPRFX]
+/// 3.1.8.1.7.1; trailing zeros are left to the decoder's zero fill, and a
+/// component of nothing is one zero byte, which the decoder reads as zeros.
+pub fn rlgr1_encode(coeffs: &[i16]) -> Vec<u8> {
+    let end = coeffs.iter().rposition(|&c| c != 0).map_or(0, |p| p + 1);
+    let coeffs = &coeffs[..end];
+    let mut w = BitWriter::new();
+    let (mut k, mut kp, mut kr, mut krp) = (1u32, 8u32, 1u32, 8u32);
+    let mut i = 0;
+    while i < coeffs.len() {
+        if k > 0 {
+            let mut run = 0u32;
+            while coeffs[i] == 0 {
+                run += 1;
+                i += 1;
+            }
+            while run >= (1 << k) {
+                w.put(0, 1);
+                run -= 1 << k;
+                kp = (kp + 4).min(KPMAX);
+                k = kp >> 3;
+            }
+            w.put(1, 1);
+            w.put(run, k);
+            let v = i32::from(coeffs[i]);
+            i += 1;
+            w.put(u32::from(v < 0), 1);
+            golomb(&mut w, v.unsigned_abs() - 1, &mut kr, &mut krp);
+            kp = kp.saturating_sub(6);
+            k = kp >> 3;
+        } else {
+            let v = i32::from(coeffs[i]);
+            i += 1;
+            let code = if v < 0 { 2 * v.unsigned_abs() - 1 } else { 2 * v as u32 };
+            golomb(&mut w, code, &mut kr, &mut krp);
+            kp = if code == 0 { (kp + 3).min(KPMAX) } else { kp.saturating_sub(3) };
+            k = kp >> 3;
+        }
+    }
+    let mut bytes = w.finish();
+    if bytes.is_empty() {
+        bytes.push(0);
+    }
+    bytes
+}
+
+/// The simplified run-length coder of an upgrade pass, [MS-RDPEGFX]
+/// 3.1.8.1.5: runs of zeros as RLGR codes them, a nonzero value as its sign
+/// and its magnitude in unary, as many bits as the band's upgrade adds.
+struct SrlWriter {
+    w: BitWriter,
+    kp: u32,
+    zeros: u32,
+}
+
+impl SrlWriter {
+    fn new() -> Self {
+        Self { w: BitWriter::new(), kp: 8, zeros: 0 }
+    }
+
+    fn put(&mut self, v: i32, bits: u32) {
+        if v == 0 {
+            self.zeros += 1;
+            return;
+        }
+        let mut k = self.kp >> 3;
+        while self.zeros >= (1 << k) {
+            self.w.put(0, 1);
+            self.zeros -= 1 << k;
+            self.kp = (self.kp + 4).min(KPMAX);
+            k = self.kp >> 3;
+        }
+        self.w.put(1, 1);
+        if k > 0 {
+            self.w.put(self.zeros, k);
+        }
+        self.zeros = 0;
+        self.w.put(u32::from(v < 0), 1);
+        self.kp = self.kp.saturating_sub(6);
+        if bits > 1 {
+            let mag = v.unsigned_abs();
+            let max = (1u32 << bits) - 1;
+            self.w.put(0, mag - 1);
+            if mag < max {
+                self.w.put(1, 1);
+            }
+        }
+    }
+
+    /// The stream, its trailing zeros left to the decoder's reading of zeros
+    /// past the end, with the zero byte the specification has after the last.
+    fn finish(mut self) -> Vec<u8> {
+        self.w.put(0, 8);
+        self.w.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tile(f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
+        let mut px = vec![0u8; COEFFS * 4];
+        for y in 0..TILE {
+            for x in 0..TILE {
+                let [r, g, b] = f(x, y);
+                px[(y * TILE + x) * 4..][..4].copy_from_slice(&[b, g, r, 0]);
+            }
+        }
+        px
+    }
+
+    fn psnr(a: &[u8], b: &[u8]) -> f64 {
+        let mut se = 0f64;
+        let mut n = 0usize;
+        for (pa, pb) in a.chunks(4).zip(b.chunks(4)) {
+            for c in 0..3 {
+                let d = f64::from(pa[c]) - f64::from(pb[c]);
+                se += d * d;
+                n += 1;
+            }
+        }
+        if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 * n as f64 / se).log10() }
+    }
+
+    fn tables() -> Tables {
+        Tables { quant: [Quant([6; 10]); 3], stages: vec![Stage { quality: 25, shifts: [Quant([5, 5, 5, 4, 4, 4, 3, 3, 3, 2]); 3] }, Stage { quality: 50, shifts: [Quant([3, 3, 3, 2, 2, 2, 1, 1, 1, 1]); 3] }, Stage::FULL] }
+    }
+
+    #[test]
+    fn the_wavelet_inverts() {
+        for n in [64usize, 33, 17] {
+            let x: Vec<i32> = (0..n).map(|i| ((i * 37 + 11) % 97) as i32 * 13 - 600).collect();
+            let (mut low, mut high) = (vec![0; band_l(n)], vec![0; band_h(n)]);
+            dwt_line(&x, &mut low, &mut high);
+            let mut back = vec![0; n];
+            idwt_line(&low, &high, &mut back);
+            for (i, (a, b)) in x.iter().zip(&back).enumerate() {
+                assert!((a - b).abs() <= 1, "line of {n}, sample {i}: {a} back as {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tile_comes_back_at_full() {
+        let px = tile(|x, y| [(x * 4) as u8, (y * 4) as u8, ((x ^ y) * 4) as u8]);
+        let mut enc = Encoder::new(64, tables());
+        enc.first((0, 0), &px, TILE * 4, TILE, TILE, 2);
+        let shown = enc.shown((0, 0)).unwrap();
+        assert!(psnr(&px, &shown) > 40.0, "{}", psnr(&px, &shown));
+    }
+
+    #[test]
+    fn upgrades_reach_what_a_full_first_pass_shows() {
+        let px = tile(|x, y| if (x / 8 + y / 8) % 2 == 0 { [250, 250, 250] } else { [20, 30, 200] });
+        let mut full = Encoder::new(64, tables());
+        full.first((0, 0), &px, TILE * 4, TILE, TILE, 2);
+        let mut staged = Encoder::new(64, tables());
+        let coarse = staged.first((0, 0), &px, TILE * 4, TILE, TILE, 0);
+        let p0 = psnr(&px, &staged.shown((0, 0)).unwrap());
+        let up1 = staged.upgrade((0, 0), 1).unwrap();
+        let p1 = psnr(&px, &staged.shown((0, 0)).unwrap());
+        let up2 = staged.upgrade((0, 0), 2).unwrap();
+        assert!(staged.upgrade((0, 0), 2).is_none());
+        assert_eq!(staged.shown((0, 0)), full.shown((0, 0)));
+        assert!(p0 < p1, "{p0} {p1}");
+        assert!(coarse.block.len() < full.tiles[&(0, 0)].target.len(), "a coarse pass is small: {}", coarse.block.len());
+        assert!(up1.len() + up2.len() > 0);
+        // The bits add up: what the stages hold is what full holds.
+        assert_eq!(staged.held((0, 0)).unwrap().held, full.held((0, 0)).unwrap().held);
+    }
+
+    #[test]
+    fn a_changed_tile_goes_as_a_difference() {
+        // A textured tile, whose coefficients are mostly nonzero.
+        let px = tile(|x, y| {
+            let h = ((x * 2654435761usize) ^ (y * 40503)) % 251;
+            [h as u8, (h * 7 % 256) as u8, (x * 4) as u8]
+        });
+        let mut enc = Encoder::new(64, tables());
+        enc.first((0, 0), &px, TILE * 4, TILE, TILE, 2);
+        let mut changed = px.clone();
+        for p in changed[..64 * 4 * 4].chunks_mut(4) {
+            p[1] = p[1].wrapping_add(40);
+        }
+        let pass = enc.first((0, 0), &changed, TILE * 4, TILE, TILE, 0);
+        assert!(pass.diff);
+        enc.upgrade((0, 0), 2).unwrap();
+        let mut fresh = Encoder::new(64, tables());
+        fresh.first((0, 0), &changed, TILE * 4, TILE, TILE, 2);
+        assert_eq!(enc.held((0, 0)).unwrap().held, fresh.held((0, 0)).unwrap().held);
+    }
+}
