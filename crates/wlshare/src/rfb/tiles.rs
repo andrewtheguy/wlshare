@@ -1014,6 +1014,11 @@ pub struct TilesEncoder {
     /// Progressive tiles sent and their bytes: first passes at 50, at 75,
     /// whole, as differences, upgrades; printed when the encoder goes.
     progressive_sent: [(u64, u64); 5],
+    /// The tiles of the regions the adaptive tiles would stream, as the last
+    /// retune laid them out, where every tile is a progressive tile.
+    progressive_streamed: HashSet<(u16, u16)>,
+    /// [`Self::progressive_sent`] for the tiles in those regions alone.
+    progressive_sent_streamed: [(u64, u64); 5],
     /// How many threads code an update's progressive first passes:
     /// `WLSHARE_TILES_PROGRESSIVE_THREADS`, or every core.
     progressive_threads: usize,
@@ -1024,6 +1029,8 @@ impl Drop for TilesEncoder {
         if self.progressive.is_some() {
             let [first50, first75, whole, diff, upgrade] = self.progressive_sent;
             eprintln!("progressive tiles, count and bytes: first at 50 {first50:?}, first at 75 {first75:?}, whole {whole:?}, differences {diff:?}, upgrades {upgrade:?}");
+            let [first50, first75, whole, diff, upgrade] = self.progressive_sent_streamed;
+            eprintln!("progressive tiles the adaptive tiles would stream, count and bytes: first at 50 {first50:?}, first at 75 {first75:?}, whole {whole:?}, differences {diff:?}, upgrades {upgrade:?}");
         }
     }
 }
@@ -1064,6 +1071,8 @@ impl TilesEncoder {
             scratch: Vec::new(),
             progressive: None,
             progressive_sent: [(0, 0); 5],
+            progressive_streamed: HashSet::new(),
+            progressive_sent_streamed: [(0, 0); 5],
             progressive_threads: std::env::var("WLSHARE_TILES_PROGRESSIVE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from)),
         };
         if std::env::var("WLSHARE_TILES_PROGRESSIVE").as_deref() == Ok("1") {
@@ -1191,6 +1200,10 @@ impl TilesEncoder {
         if let Some(block) = block {
             self.progressive_sent[kind].0 += 1;
             self.progressive_sent[kind].1 += block.len() as u64;
+            if self.progressive_streamed.contains(&cell) {
+                self.progressive_sent_streamed[kind].0 += 1;
+                self.progressive_sent_streamed[kind].1 += block.len() as u64;
+            }
             let from = out.out.len();
             let header = TileHeader::Webp { len: 0 };
             let header_at = out.header(area, header);
@@ -1809,10 +1822,14 @@ impl TilesEncoder {
             return Ok(());
         }
         self.retuned_at = Some(now);
+        let worthy = components(moving);
         if self.progressive.is_some() {
+            // Measured: what the adaptive tiles would stream, every tile still a
+            // progressive tile.
+            let size = self.size;
+            self.progressive_streamed = merge(worthy, MAX_STREAMS).into_iter().filter_map(|bbox| bbox.to_area(size)).flat_map(tiles_of).map(|(cell, _)| cell).collect();
             return Ok(());
         }
-        let worthy = components(moving);
         let busy: HashSet<(u16, u16)> = moving.iter().copied().filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell))).collect();
         for live in &mut self.live {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
