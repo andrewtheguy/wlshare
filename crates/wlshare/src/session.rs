@@ -347,63 +347,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     info!("client {}: authenticated; desktop {width}x{height}{}", id.0, if beside { ", beside" } else { "" });
 
     let frames = shared.desks[desk].frame_tx.subscribe();
-    let stream = UNLISTED;
-    let walk = QualityWalk::new(stream.quality, config.capture, stream.adaptive);
-    let mut session = Session {
-        id,
-        desk,
-        shared,
-        config,
-        format: PixelFormat::NATIVE,
-        zrle: None,
-        use_zrle: false,
-        vp9: None,
-        capture: None,
-        use_vp9: false,
-        tiles: None,
-        use_tiles: false,
-        tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, progressive: true },
-        tiles_origin: Instant::now(),
-        tiles_quiet: false,
-        stream,
-        keyframe_owed: false,
-        walk,
-        in_flight: None,
-        frame_sent: None,
-        settle_owed: false,
-        continuous_supported: false,
-        fence_supported: false,
-        eds_supported: false,
-        desktop_size_supported: false,
-        version_answered: false,
-        cursor_supported: false,
-        alpha_cursor: false,
-        announce_cursor: false,
-        density: false,
-        outputs: false,
-        audio_supported: false,
-        announce_audio: false,
-        audio_format: AudioFormat::DEFAULT,
-        audio_codec: Codec::Flac,
-        audio_bitrate: None,
-        audio: None,
-        camera_supported: false,
-        camera: None,
-        microphone_supported: false,
-        microphone: None,
-        clipboard: None,
-        continuous: false,
-        pending: None,
-        seen: 0,
-        known_size: (width, height),
-        fence_outstanding: false,
-        fence_seq: 0,
-        announce_eds: false,
-        events,
-        frames,
-        scratch: Vec::new(),
-        out: Vec::new(),
-    };
+    let mut session = Session::new(id, desk, shared, config, events, frames, (width, height));
     let result = tokio::select! {
         result = session.pump(reader, writer) => result,
         ended = superseded(&mut seats, id, beside) => Err(ended?),
@@ -668,6 +612,68 @@ struct Piece {
 }
 
 impl Session {
+    /// A session on `desk` before its first SetEncodings: no encoding listed,
+    /// the client holding a desktop of `known_size`.
+    fn new(id: ClientId, desk: usize, shared: Arc<Shared>, config: Arc<SessionConfig>, events: broadcast::Receiver<Event>, frames: watch::Receiver<u64>, known_size: (u16, u16)) -> Self {
+        let stream = UNLISTED;
+        let walk = QualityWalk::new(stream.quality, config.capture, stream.adaptive);
+        Self {
+            id,
+            desk,
+            shared,
+            config,
+            format: PixelFormat::NATIVE,
+            zrle: None,
+            use_zrle: false,
+            vp9: None,
+            capture: None,
+            use_vp9: false,
+            tiles: None,
+            use_tiles: false,
+            tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, progressive: true },
+            tiles_origin: Instant::now(),
+            tiles_quiet: false,
+            stream,
+            keyframe_owed: false,
+            walk,
+            in_flight: None,
+            frame_sent: None,
+            settle_owed: false,
+            continuous_supported: false,
+            fence_supported: false,
+            eds_supported: false,
+            desktop_size_supported: false,
+            version_answered: false,
+            cursor_supported: false,
+            alpha_cursor: false,
+            announce_cursor: false,
+            density: false,
+            outputs: false,
+            audio_supported: false,
+            announce_audio: false,
+            audio_format: AudioFormat::DEFAULT,
+            audio_codec: Codec::Flac,
+            audio_bitrate: None,
+            audio: None,
+            camera_supported: false,
+            camera: None,
+            microphone_supported: false,
+            microphone: None,
+            clipboard: None,
+            continuous: false,
+            pending: None,
+            seen: 0,
+            known_size,
+            fence_outstanding: false,
+            fence_seq: 0,
+            announce_eds: false,
+            events,
+            frames,
+            scratch: Vec::new(),
+            out: Vec::new(),
+        }
+    }
+
     async fn pump(&mut self, mut reader: Reader, mut writer: Writer) -> anyhow::Result<()> {
         let mut inbuf: Vec<u8> = Vec::with_capacity(4096);
         loop {
@@ -2063,5 +2069,70 @@ mod output_tests {
         let shared = shared();
         let mut arrivals = shared.events.subscribe();
         assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_millis(50), &mut arrivals).await, Arrival::Absent);
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+    use crate::framebuffer::Framebuffer;
+    use crate::shared::{Displays, Geometry};
+    use wlshare_vp9::walk::QUALITY_FLOOR;
+
+    /// A session on a 256x128 desktop that lists the tiles picture and asked
+    /// for continuous updates, its picture sent and its stills owed their
+    /// refinement: a tick owed.
+    fn ticking() -> Session {
+        let (w, h) = (256u16, 128u16);
+        let (commands, _rx) = calloop::channel::channel();
+        let shared = Arc::new(Shared::new(Framebuffer::new(w, h), Geometry { width: w, height: h, scale: 1.0 }, Displays::default(), commands, 0));
+        let h264 = Arc::new(crate::h264::Encoder::find(false).unwrap());
+        let config = SessionConfig {
+            security: Security::default(),
+            name: "test".into(),
+            capture: Duration::from_millis(33),
+            handshake_timeout: Duration::from_secs(10),
+            output: None,
+            output_wait: Duration::ZERO,
+            capture_frames: None,
+            h264: h264.clone(),
+        };
+        let (events, frames) = (shared.events.subscribe(), shared.desks[FIRST].frame_tx.subscribe());
+        let mut session = Session::new(ClientId(1), FIRST, shared, Arc::new(config), events, frames, (w, h));
+        session.use_tiles = true;
+        session.continuous = true;
+        let mut tiles = TilesEncoder::new(w, h, session.tiles_picture, Box::new(h264.coder().unwrap())).unwrap();
+        let pixels: Vec<u8> = (0..usize::from(w) * usize::from(h) * 4).map(|i| (i * 7 % 251) as u8).collect();
+        tiles.read(&pixels, usize::from(w) * 4, None, Duration::ZERO).unwrap();
+        tiles.encode(Duration::ZERO, &mut Vec::new()).unwrap();
+        session.tiles = Some(tiles);
+        session
+    }
+
+    /// The tick's update is held for a slowed link's frame as any other, so
+    /// the tick is not due before that frame's turn: due sooner, it woke the
+    /// session loop to find the update held, again and again until the turn
+    /// came.
+    #[test]
+    fn a_tick_waits_for_a_held_frame() {
+        let mut session = ticking();
+        let owed = session.tiles_origin + session.tiles.as_ref().unwrap().tick_at().expect("a tick owed");
+        assert_eq!(session.frame_at(), None, "no frame held on a link at full rate");
+        assert_eq!(session.tick_at(), Some(owed), "the tick when it is owed");
+
+        let start = Instant::now();
+        // On the floor, a link 100 ms behind its best slows the frames.
+        session.walk = QualityWalk::new(QUALITY_FLOOR, session.config.capture, true);
+        session.walk.fenced(Duration::from_millis(40), true, start);
+        for _ in 0..2 {
+            session.walk.fenced(Duration::from_millis(140), true, start);
+        }
+        assert!(session.walk.slowed(), "the link slowed");
+        // The last frame went out as the tick came due: the next may go an
+        // interval after it.
+        session.frame_sent = Some(owed);
+        let held = session.frame_at().expect("the next frame held");
+        assert!(held > owed);
+        assert_eq!(session.tick_at(), Some(held), "the tick at the held frame's turn");
     }
 }
