@@ -123,6 +123,9 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
     Ok(records)
 }
 
+/// A rectangle: left, top, width, height.
+type Bounds = (u16, u16, u16, u16);
+
 /// What the page draws of the updates: each PNG and WebP, each region's
 /// H.264 by libavcodec, each copy and cached tile, and each progressive tile
 /// as the encoder's model of zDesk's decoder shows it.
@@ -130,7 +133,7 @@ struct Page {
     w: usize,
     canvas: Vec<u8>,
     /// Each live stream's rectangle and decoder.
-    streams: HashMap<u8, ((u16, u16, u16, u16), decode::Decoder)>,
+    streams: HashMap<u8, (Bounds, decode::Decoder)>,
     slots: HashMap<u16, Vec<u8>>,
     planes: Vec<u8>,
 }
@@ -141,7 +144,7 @@ impl Page {
     }
 
     /// `B, G, R, X` rows `line` pixels apart drawn at the rectangle.
-    fn paste(&mut self, (x, y, w, h): (u16, u16, u16, u16), bgrx: &[u8], line: usize) {
+    fn paste(&mut self, (x, y, w, h): Bounds, bgrx: &[u8], line: usize) {
         let row_bytes = usize::from(w) * 4;
         for row in 0..usize::from(h) {
             let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
@@ -150,7 +153,7 @@ impl Page {
     }
 
     fn rgb(rgb: &[u8]) -> Vec<u8> {
-        rgb.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0], 0]).collect()
+        rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[2], p[1], p[0], 0]).collect()
     }
 
     fn draw(&mut self, count: u16, rects: &[u8], encoder: &mut TilesEncoder, progressive: bool) -> Result<(), Error> {
@@ -241,7 +244,7 @@ impl Page {
 
     /// The mean squared error over B, G and R from `pixels`.
     fn mse(&self, pixels: &[u8]) -> f64 {
-        let sum: u64 = self.canvas.chunks_exact(4).zip(pixels.chunks_exact(4)).map(|(a, b)| (0..3).map(|i| u64::from(a[i].abs_diff(b[i])).pow(2)).sum::<u64>()).sum();
+        let sum: u64 = self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|i| u64::from(a[i].abs_diff(b[i])).pow(2)).sum::<u64>()).sum();
         sum as f64 / (self.canvas.len() / 4 * 3) as f64
     }
 }

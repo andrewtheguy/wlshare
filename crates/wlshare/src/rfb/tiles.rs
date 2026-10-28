@@ -1007,16 +1007,16 @@ pub struct TilesEncoder {
     scratch: Vec<u8>,
     /// The progressive encoder, where every tile is a progressive tile.
     progressive: Option<progressive::Encoder>,
-    /// Progressive tiles sent and their bytes: first passes at 50, whole,
-    /// as differences, upgrades; printed when the encoder goes.
-    progressive_sent: [(u64, u64); 4],
+    /// Progressive tiles sent and their bytes: first passes at 50, at 75,
+    /// whole, as differences, upgrades; printed when the encoder goes.
+    progressive_sent: [(u64, u64); 5],
 }
 
 impl Drop for TilesEncoder {
     fn drop(&mut self) {
         if self.progressive.is_some() {
-            let [first, whole, diff, upgrade] = self.progressive_sent;
-            eprintln!("progressive tiles, count and bytes: first at 50 {first:?}, whole {whole:?}, differences {diff:?}, upgrades {upgrade:?}");
+            let [first50, first75, whole, diff, upgrade] = self.progressive_sent;
+            eprintln!("progressive tiles, count and bytes: first at 50 {first50:?}, first at 75 {first75:?}, whole {whole:?}, differences {diff:?}, upgrades {upgrade:?}");
         }
     }
 }
@@ -1056,7 +1056,7 @@ impl TilesEncoder {
             coder,
             scratch: Vec::new(),
             progressive: None,
-            progressive_sent: [(0, 0); 4],
+            progressive_sent: [(0, 0); 5],
         };
         if std::env::var("WLSHARE_TILES_PROGRESSIVE").as_deref() == Ok("1") {
             encoder.progressive = Some(progressive::Encoder::new(width, progressive_tables()));
@@ -1127,7 +1127,9 @@ impl TilesEncoder {
     }
 
     /// Send tile `cell` as a progressive tile: a first pass at the stage of
-    /// 50, or whole where that costs little more; or, settling, the upgrade
+    /// 75 while the walk is at the ceiling and not coarse, as the host's
+    /// passes are at 75 while its link has room, else at 50, or whole where
+    /// that costs little more; or, settling, the upgrade
     /// to the stage after the one it stands at, a whole first pass where the
     /// client holds no coefficients of it. Owed the next stage until full.
     fn progressive_tile(&mut self, cell: (u16, u16), pass: ProgressivePass, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
@@ -1139,11 +1141,12 @@ impl TilesEncoder {
         let full = enc.tables.stages.len() - 1;
         let (w, h) = (usize::from(area.w()), usize::from(area.h()));
         let (block, kind) = match (pass, enc.stage_of(cell)) {
-            (ProgressivePass::Upgrade, Some(stage)) => (enc.upgrade(cell, (stage + 1).min(full)), 3),
-            (ProgressivePass::Upgrade, None) => (Some(enc.first(cell, &self.mirror[at..], self.stride, w, h, full).block), 1),
+            (ProgressivePass::Upgrade, Some(stage)) => (enc.upgrade(cell, (stage + 1).min(full)), 4),
+            (ProgressivePass::Upgrade, None) => (Some(enc.first(cell, &self.mirror[at..], self.stride, w, h, full).block), 2),
             (ProgressivePass::First, _) => {
-                let pass = enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, 0, SLACK);
-                let kind = if pass.diff { 2 } else if enc.stage_of(cell) == Some(full) { 1 } else { 0 };
+                let stage = usize::from(!self.coarse && self.quality >= self.ceiling);
+                let pass = enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, stage, SLACK);
+                let kind = if pass.diff { 3 } else if enc.stage_of(cell) == Some(full) { 2 } else { stage };
                 (Some(pass.block), kind)
             }
         };
@@ -1167,7 +1170,9 @@ impl TilesEncoder {
 
     /// What the client shows of tile `cell` from the progressive passes it
     /// was sent, 64×64 `B, G, R, X`, or `None` where it holds none: the
-    /// encoder's model of the decoder, which zDesk's shows byte for byte.
+    /// encoder's model of the decoder, which zDesk's shows byte for byte;
+    /// `examples/tiles-walk-sim.rs` reads it.
+    #[allow(dead_code)]
     pub fn progressive_shown(&mut self, cell: (u16, u16)) -> Option<Vec<u8>> {
         self.progressive.as_mut()?.shown(cell)
     }
