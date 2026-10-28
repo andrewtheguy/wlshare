@@ -193,7 +193,11 @@ impl Encoder {
     /// Code tile `cell` as [`Self::first`] does, at the full stage where its
     /// first pass there costs at most `slack` times the one at `stage`, or
     /// 64 bytes more, as a flat tile's does: refining it would cost more
-    /// than the difference. Otherwise at `stage`.
+    /// than the difference. Otherwise at `stage`. The full stage is tried
+    /// only where it could be so: the pass at `stage` under 96 bytes, or the
+    /// full stage keeping at most half as many coefficients again and 32 more
+    /// (measured: every tile sent whole over the window and mixed sessions at
+    /// 1920x1080, from a fifth of the tries).
     #[allow(clippy::too_many_arguments)]
     pub fn first_or_full(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: f32) -> Pass {
         let full = self.tables.stages.len() - 1;
@@ -201,20 +205,39 @@ impl Encoder {
         if stage == full {
             return self.code_first(cell, target, full);
         }
+        let (kept_full, kept) = self.kept(&target, stage);
         let before = self.tiles.get(&cell).cloned();
-        let whole = self.code_first(cell, target.clone(), full);
-        let whole_held = self.tiles.remove(&cell);
+        let coarse = self.code_first(cell, target.clone(), stage);
+        if coarse.block.len() >= 96 && kept_full * 2 > kept * 3 + 64 {
+            return coarse;
+        }
+        let coarse_held = self.tiles.remove(&cell);
         if let Some(before) = before {
             self.tiles.insert(cell, before);
         }
-        let coarse = self.code_first(cell, target, stage);
+        let whole = self.code_first(cell, target, full);
         if whole.block.len() as f32 <= (coarse.block.len() as f32 * slack).max(coarse.block.len() as f32 + 64.0) {
-            if let Some(held) = whole_held {
-                self.tiles.insert(cell, held);
-            }
             return whole;
         }
+        if let Some(held) = coarse_held {
+            self.tiles.insert(cell, held);
+        }
         coarse
+    }
+
+    /// How many of `target`'s coefficients are not zero, and how many of
+    /// them the shifts of `stage` keep.
+    fn kept(&self, target: &[i16], stage: usize) -> (u32, u32) {
+        let (mut all, mut kept) = (0, 0);
+        for (c, shifts) in self.tables.stages[stage].shifts.iter().enumerate() {
+            for (&(at, len), &shift) in BANDS.iter().zip(&shifts.0) {
+                for &t in &target[c * COEFFS + at..c * COEFFS + at + len] {
+                    all += u32::from(t != 0);
+                    kept += u32::from(i32::from(t).abs() >> shift != 0);
+                }
+            }
+        }
+        (all, kept)
     }
 
     /// The stage tile `cell` stands at, where the decoder holds it.
