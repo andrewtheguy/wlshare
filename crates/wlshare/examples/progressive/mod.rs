@@ -514,7 +514,8 @@ fn band_h(n: usize) -> usize {
 /// One line of `n` samples to its `band_l(n)` low and `band_h(n)` high
 /// coefficients, [MS-RDPEGFX] 3.2.8.1.2.2: a line of 64 is extrapolated to
 /// 65 and its last high coefficient, zero, dropped; a line of 33 or 17 is
-/// mirrored at both ends.
+/// mirrored at both ends. The reference [`dwt_lines`] is tested against.
+#[cfg(test)]
 fn dwt_line(x: &[i32], low: &mut [i32], high: &mut [i32]) {
     let n = x.len();
     let (nl, nh) = (band_l(n), band_h(n));
@@ -555,38 +556,92 @@ fn idwt_line(low: &[i32], high: &[i32], x: &mut [i32]) {
     }
 }
 
+/// [`dwt_line`] down `w` lines at once: `x` is `n` rows of `w` samples, a
+/// line down each column, and `out` takes the `band_l(n)` low rows, then the
+/// `band_h(n)` high ones, every row a sample of each line, so that each
+/// step runs along a row.
+fn dwt_lines(x: &[i32], n: usize, w: usize, out: &mut [i32]) {
+    let (nl, nh) = (band_l(n), band_h(n));
+    let row = |i: usize| &x[i * w..(i + 1) * w];
+    let (low, high) = out[..n * w].split_at_mut(nl * w);
+    for (k, h) in high.chunks_exact_mut(w).enumerate() {
+        for (((h, &a), &b), &c) in h.iter_mut().zip(row(2 * k)).zip(row(2 * k + 1)).zip(row(2 * k + 2)) {
+            *h = (b - half(a + c)) >> 1;
+        }
+    }
+    let high = &*high;
+    for ((l, &a), &h) in low[..w].iter_mut().zip(row(0)).zip(&high[..w]) {
+        *l = a + h;
+    }
+    for k in 1..nh {
+        let (before, after) = (&high[(k - 1) * w..k * w], &high[k * w..(k + 1) * w]);
+        for (((l, &a), &h0), &h1) in low[k * w..(k + 1) * w].iter_mut().zip(row(2 * k)).zip(before).zip(after) {
+            *l = a + half(h0 + h1);
+        }
+    }
+    let last = &high[(nh - 1) * w..nh * w];
+    let edge = &mut low[nh * w..(nh + 1) * w];
+    if n.is_multiple_of(2) {
+        for ((l, &a), &h) in edge.iter_mut().zip(row(2 * nh)).zip(last) {
+            *l = a + half(h);
+        }
+        for ((l, &a), &b) in low[(nl - 1) * w..nl * w].iter_mut().zip(row(n - 1)).zip(row(n - 2)) {
+            *l = 2 * a - b;
+        }
+    } else {
+        for ((l, &a), &h) in edge.iter_mut().zip(row(2 * nh)).zip(last) {
+            *l = a + h;
+        }
+    }
+}
+
+/// [`dwt_line`] along one row, its even and odd samples apart first, so that
+/// each step runs along an array.
+fn dwt_row(x: &[i32], low: &mut [i32], high: &mut [i32]) {
+    let n = x.len();
+    let (nl, nh) = (band_l(n), band_h(n));
+    let mut even = [0; TILE / 2 + 1];
+    let mut odd = [0; TILE / 2];
+    for (i, pair) in x.chunks(2).enumerate() {
+        even[i] = pair[0];
+        if let Some(&v) = pair.get(1) {
+            odd[i] = v;
+        }
+    }
+    for (((h, &b), &a), &c) in high[..nh].iter_mut().zip(&odd).zip(&even).zip(&even[1..]) {
+        *h = (b - half(a + c)) >> 1;
+    }
+    low[0] = even[0] + high[0];
+    for (((l, &a), &h0), &h1) in low[1..nh].iter_mut().zip(&even[1..]).zip(&high[..nh]).zip(&high[1..nh]) {
+        *l = a + half(h0 + h1);
+    }
+    if n.is_multiple_of(2) {
+        low[nh] = even[nh] + half(high[nh - 1]);
+        low[nl - 1] = 2 * x[n - 1] - x[n - 2];
+    } else {
+        low[nh] = even[nh] + high[nh - 1];
+    }
+}
+
 /// One level over the `n`×`n` picture at the front of `buf`: its four bands
 /// written over it, HL, LH, HH, then LL, the next level's input.
 fn dwt_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
     let (nl, nh) = (band_l(n), band_h(n));
-    let (input, rest) = temp.split_at_mut(n * n);
-    input.copy_from_slice(&buf[..n * n]);
-    // Vertical: each column to a low and a high column, as rows of `rows`.
-    let rows = &mut rest[..n * n];
-    let (mut line, mut low, mut high) = (vec![0; n], vec![0; nl], vec![0; nh]);
-    for x in 0..n {
-        for y in 0..n {
-            line[y] = input[y * n + x];
-        }
-        dwt_line(&line, &mut low, &mut high);
-        for k in 0..nl {
-            rows[k * n + x] = low[k];
-        }
-        for k in 0..nh {
-            rows[(nl + k) * n + x] = high[k];
-        }
+    // Vertical: low rows, then high rows.
+    let rows = &mut temp[..n * n];
+    dwt_lines(&buf[..n * n], n, n, rows);
+    // Horizontal: each low row to LL and HL, each high row to LH and HH, HL
+    // first.
+    let (lh, hh, ll) = (nl * nh, nl * nh + nh * nl, nl * nh + nh * nl + nh * nh);
+    let (lows, highs) = rows.split_at(nl * n);
+    let (front, ll_band) = buf.split_at_mut(ll);
+    let (hl_band, rest) = front.split_at_mut(lh);
+    let (lh_band, hh_band) = rest.split_at_mut(hh - lh);
+    for ((row, low), high) in lows.chunks_exact(n).zip(ll_band.chunks_exact_mut(nl)).zip(hl_band.chunks_exact_mut(nh)) {
+        dwt_row(row, low, high);
     }
-    // Horizontal: each low row to LL and HL, each high row to LH and HH.
-    let (hl, lh, hh, ll) = (0, nl * nh, nl * nh + nh * nl, nl * nh + nh * nl + nh * nh);
-    for r in 0..nl {
-        dwt_line(&rows[r * n..(r + 1) * n], &mut low, &mut high);
-        buf[ll + r * nl..ll + (r + 1) * nl].copy_from_slice(&low);
-        buf[hl + r * nh..hl + (r + 1) * nh].copy_from_slice(&high);
-    }
-    for r in 0..nh {
-        dwt_line(&rows[(nl + r) * n..(nl + r + 1) * n], &mut low, &mut high);
-        buf[lh + r * nl..lh + (r + 1) * nl].copy_from_slice(&low);
-        buf[hh + r * nh..hh + (r + 1) * nh].copy_from_slice(&high);
+    for ((row, low), high) in highs.chunks_exact(n).zip(lh_band.chunks_exact_mut(nl)).zip(hh_band.chunks_exact_mut(nh)) {
+        dwt_row(row, low, high);
     }
 }
 
@@ -818,6 +873,53 @@ mod tests {
 
     fn tables() -> Tables {
         Tables { quant: [Quant([6; 10]); 3], stages: vec![Stage { quality: 25, shifts: [Quant([5, 5, 5, 4, 4, 4, 3, 3, 3, 2]); 3] }, Stage { quality: 50, shifts: [Quant([3, 3, 3, 2, 2, 2, 1, 1, 1, 1]); 3] }, Stage::FULL] }
+    }
+
+    /// [`dwt_level`] a line at a time, by [`dwt_line`].
+    fn line_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
+        let (nl, nh) = (band_l(n), band_h(n));
+        let (input, rest) = temp.split_at_mut(n * n);
+        input.copy_from_slice(&buf[..n * n]);
+        // Vertical: each column to a low and a high column, as rows of `rows`.
+        let rows = &mut rest[..n * n];
+        let (mut line, mut low, mut high) = (vec![0; n], vec![0; nl], vec![0; nh]);
+        for x in 0..n {
+            for y in 0..n {
+                line[y] = input[y * n + x];
+            }
+            dwt_line(&line, &mut low, &mut high);
+            for k in 0..nl {
+                rows[k * n + x] = low[k];
+            }
+            for k in 0..nh {
+                rows[(nl + k) * n + x] = high[k];
+            }
+        }
+        // Horizontal: each low row to LL and HL, each high row to LH and HH.
+        let (hl, lh, hh, ll) = (0, nl * nh, nl * nh + nh * nl, nl * nh + nh * nl + nh * nh);
+        for r in 0..nl {
+            dwt_line(&rows[r * n..(r + 1) * n], &mut low, &mut high);
+            buf[ll + r * nl..ll + (r + 1) * nl].copy_from_slice(&low);
+            buf[hl + r * nh..hl + (r + 1) * nh].copy_from_slice(&high);
+        }
+        for r in 0..nh {
+            dwt_line(&rows[(nl + r) * n..(nl + r + 1) * n], &mut low, &mut high);
+            buf[lh + r * nl..lh + (r + 1) * nl].copy_from_slice(&low);
+            buf[hh + r * nh..hh + (r + 1) * nh].copy_from_slice(&high);
+        }
+    }
+
+    /// The wavelet down every line at once is the one a line at a time.
+    #[test]
+    fn the_wavelet_is_its_lines() {
+        for n in [64usize, 33, 17] {
+            let picture: Vec<i32> = (0..n * n).map(|i| ((i * 7919 + 13) % 8191) as i32 - 4096).collect();
+            let mut temp = vec![0; COEFFS * 2];
+            let (mut ours, mut lines) = (picture.clone(), picture);
+            dwt_level(&mut ours, &mut temp, n);
+            line_level(&mut lines, &mut temp, n);
+            assert_eq!(ours, lines, "a level of {n}");
+        }
     }
 
     #[test]
