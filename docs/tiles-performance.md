@@ -8,6 +8,13 @@ what the encoder is handed](architecture.md#capturing-what-the-encoder-is-handed
 and `examples/tiles-walk-sim.rs` the walk on a slow link, over whole sessions.
 Flood is in the figures for reference and is not a target.
 
+The walked picture of every section before [Progressive
+tiles](#progressive-tiles) is the one wlshare sent until 2026-10-28, zDesk's
+Adaptive tiles: every still a lossy WebP at the dial, and a region that
+moves an H.264 stream walked with it. Progressive tiles replaced it, and
+its figures stay as what they were measured against; motion-bench's
+`--walk-at`, which coded it, went with it.
+
 ## The three pictures
 
 Measured 2026-10-26 on an eight-core AMD EPYC (Milan) VM, idle and with no
@@ -138,8 +145,8 @@ most. So the stream's tiles stay owed. That is not what RDP does with its
 H.264 either: it never leaves a still region at the quantizer it moved at,
 nor sends it again in another codec, but refines it inside the stream, to QP
 33 and then 25 after 41, and leaves it there. A stream that refines itself
-that way, below the ceiling where its frames are coarse, is on the
-[roadmap](roadmap.md#the-walked-tiles).
+that way, below the ceiling where its frames are coarse, was on the roadmap
+until the walked picture's streams went.
 
 ## The settle
 
@@ -386,3 +393,118 @@ likely a difference of text or of antialiased edges has more colours than
 either tile, and its PNG loses the palette the still's had.
 What makes RDP's diffing pay is lossy: the difference of quantized wavelet
 coefficients, sent coarse first.
+
+## Progressive tiles
+
+The progressive picture ([On a walked list, every tile
+progressive](architecture.md#the-tiles-encoding)) was measured from
+2026-10-27 to 2026-10-28 as a replacement for the walked list's WebP and
+H.264, which it then replaced: every tile RemoteFX Progressive, still or
+moving, as a Windows host draws its desktop without H.264. The run is `bench/progressive-20261028/` in
+the artifacts.
+
+**What the host does.** zDesk's link probe (`examples/rdp_link_probe.rs`)
+read a Windows host's progressive tiles over a LAN and behind relays of 8, 1,
+0.5 and 0.25 Mbit/s, on a desktop of flat bands and a moving square. Its
+first passes were at the stages of 50 and 75 and its upgrades to full, never
+lower: its tables carry no stage below 50. A slower link got the same frame,
+11 to 14 KB, fewer times a second — 27, 10, 5 and 2 frames — rather than a
+coarser one. About a fifth of the first passes were at 75 on the LAN and
+almost none at 500 kbit/s, and most were at full where the tile was flat.
+Its stages are what the protocol's are built on.
+
+**The stages.** `examples/progressive-stills.rs` coded the samples' stills
+and moving tiles at each first stage. The host's stage of 50 costs about
+what a row's run of WebP at 20 does (0.97 to 0.98 of it on the mixed session
+and the window) and shows 4 to 5 dB less; its first pass and the upgrades
+after it cost 1.15 to 1.29 times the full stage sent once, where a WebP at
+the dial and one at the ceiling cost about 1.6. One more bit held back in
+every band, the protocol's stage below 50, is a third fewer bytes and 3 to
+4.6 dB coarser:
+
+| Sample | Stage 50 | One bit coarser |
+|---|---|---|
+| mixed, stills | 9.50 MB, 30.5 dB | 6.32 MB, 25.9 dB |
+| mixed, moving tiles | 137.6 MB, 34.2 dB | 93.6 MB, 30.3 dB |
+| window, moving tiles | 1.92 MB, 31.9 dB | 1.18 MB, 28.9 dB |
+| video, moving tiles | 5.15 MB, 33.6 dB | 3.36 MB, 30.5 dB |
+
+The host's full stage ends near a WebP at 60; the protocol's is a bit finer
+in every band above RemoteFX's least quantizer, 6, which settled the
+walks' pages at 45.7 to 47.0 dB where the host's settled them at 41.3 to
+42.1.
+
+**Which stage, when.** Over the window and mixed sessions at 1920x1080,
+with a fixed encode time of 5 ms, a first pass at 50 alone left the moving
+picture at 38.6 to 38.7 dB at 10 Mbit/s, against 41.3 to 42.9 for the
+adaptive tiles. At 75 while the walk stands at the ceiling, as the host's
+are while its link has room, it is 40.1 and 41.2 dB. Below the ceiling the
+walk's dial moved nothing, since 50 was the floor: 73 to 92% of the
+mixed session's and the window's bytes at 5 Mbit/s went to tiles the
+adaptive tiles would have streamed, at 1.11 to 1.61 times the H.264's bytes there, where
+at 10 Mbit/s they cost 0.85 to 1.05 times it. A first pass one bit coarser
+than 50 while the dial is under 70 took the mixed session at 5 Mbit/s from
+11.2 to 11.9 frames a second, its changes shown at 94 ms where they were 106
+at the median and 260 where they were 386 at p95, for 0.8 dB on the mean;
+under 60 measured the same.
+
+**The encoder's time.** On lab1, alone, with its own encode times over the
+same four walks, a first pass coded first at its stage and then whole to
+compare cost 4 to 6 times the adaptive tiles' encode. Trying the whole tile
+only where the stage's pass is under 96 bytes or keeps at least two thirds
+of the coefficients the full stage does (every tile sent whole on both
+sessions, three missed in 34,000) took 21 to 25% off; the wavelet lifting
+every column of a row at once, and each row's even and odd samples apart,
+19 to 24% more; and an update's first passes coded ahead on all 8 cores, 2.1
+to 2.4 times. The median update codes in 3.5 to 4 ms and the worst in 23 to
+32, where the adaptive tiles take 1.7 to 3.1 and 49 to 56.
+
+**The walk.** `tiles-walk-sim` with lab1's own encode times, the regions by
+libx264, every capture and link of [the walk's
+verdicts](#the-walks-verdicts) walked: the adaptive tiles, then the
+progressive ones.
+
+| Capture | Link | fps | p50 ms | p95 ms | Mbit/s | dB mean | dB end |
+|---|---|---|---|---|---|---|---|
+| window-1920x1080 | 5 | 20.7 → 22.9 | 65 → 75 | 222 → 128 | 3.16 → 3.87 | 41.2 → 38.5 | 44.6 → 45.7 |
+| window-1920x1080 | 10 | 23.4 → 25.1 | 54 → 52 | 129 → 63 | 5.79 → 5.73 | 43.8 → 41.2 | 44.6 → 45.7 |
+| window-1920x1080 | 25 | 24.4 → 25.3 | 39 → 38 | 58 → 41 | 7.53 → 5.75 | 44.7 → 41.2 | 44.6 → 45.7 |
+| window-1920x1080 | 50→5→50 | 22.1 → 24.2 | 35 → 35 | 277 → 120 | 4.77 → 4.95 | 42.5 → 39.5 | 44.6 → 45.7 |
+| window-2880x1800@2 | 5 | 20.2 → 17.3 | 49 → 112 | 265 → 189 | 2.38 → 3.79 | 39.7 → 37.6 | 45.2 → 48.4 |
+| window-2880x1800@2 | 10 | 21.4 → 22.8 | 65 → 62 | 159 → 96 | 6.27 → 6.32 | 43.4 → 40.7 | 45.2 → 48.4 |
+| window-2880x1800@2 | 25 | 23.0 → 23.5 | 48 → 47 | 79 → 55 | 11.56 → 8.96 | 45.1 → 43.8 | 45.2 → 48.4 |
+| window-3840x2160@2 | 5 | 17.5 → 7.2 | 63 → 192 | 369 → 327 | 2.56 → 2.48 | 38.8 → 34.9 | 47.0 → 47.7 |
+| window-3840x2160@2 | 10 | 18.5 → 17.5 | 69 → 95 | 229 → 169 | 5.52 → 6.30 | 42.5 → 36.4 | 47.0 → 47.7 |
+| window-3840x2160@2 | 25 | 21.1 → 22.6 | 51 → 62 | 122 → 78 | 10.89 → 14.25 | 45.0 → 43.8 | 47.0 → 47.7 |
+| mixed-1920x1080 | 5 | 13.9 → 12.3 | 55 → 87 | 327 → 269 | 1.86 → 2.15 | 38.8 → 37.6 | 44.0 → 47.0 |
+| mixed-1920x1080 | 10 | 15.1 → 15.4 | 54 → 54 | 181 → 147 | 3.45 → 3.52 | 40.9 → 38.8 | 44.0 → 47.0 |
+| mixed-1920x1080 | 25 | 15.7 → 16.0 | 42 → 40 | 81 → 85 | 6.05 → 5.53 | 43.1 → 41.2 | 44.1 → 47.0 |
+| mixed-2880x1800@2 | 5 | 12.9 → 6.9 | 59 → 250 | 469 → 577 | 1.68 → 2.23 | 38.9 → 37.1 | 46.4 → 47.6 |
+| mixed-2880x1800@2 | 10 | 14.0 → 11.0 | 63 → 125 | 290 → 303 | 3.51 → 3.99 | 40.9 → 38.2 | 46.4 → 47.6 |
+| mixed-2880x1800@2 | 25 | 14.4 → 14.5 | 64 → 72 | 156 → 165 | 8.52 → 8.57 | 45.5 → 41.5 | 46.4 → 47.6 |
+
+At 50 Mbit/s the frame rates and the pictures are as at 25, and the windows send 17 to 24% fewer
+bytes. From 10 Mbit/s up, but for the mixed session at 2880x1800 at 10,
+and at 1920x1080 at 5, the progressive tiles keep the frame rate: never
+more than 1.6 frames a second below it, most often above, by up to 2.2,
+and they mostly shorten the p95, for about the same bytes: fewer on the
+smaller windows at 25, more on the 4K one. The moving picture is 1.2 to
+4.0 dB coarser, 6.1 on the 4K window at 10, and the settled one 0.7 to 3.2
+dB finer. On the large desktops at 5 Mbit/s, and the mixed session at
+2880x1800 at 10, 3.0 frames a second behind, they keep up far less:
+the 4K window at 7.2 frames a second where H.264 has 17.5, the mixed
+session at 6.9 where it has 12.9, their changes shown at the median three
+to four times later. There a moving region is H.264's to carry: a wavelet tile
+costs more bytes than a P-frame at the same quality, and a slow link takes
+it as fewer frames, as the host's does. Its first passes there are already
+nearly all at the stage below 50, the dial walked to 20; one that held back
+the finest wavelet level too, a tile at half resolution until its upgrades,
+cost the samples' moving tiles 1 to 9% fewer bytes than that stage for 0.1
+to 2.6 dB, since the stage below 50 leaves those bands nearly empty
+already.
+
+**In the browser.** zDesk's end-to-end test reads a progressive session's
+tiles from wlshare in a container, through the gateway, with the page's
+decoder, against the exact picture of the tiles with motion; headless
+Chromium drew a test card of bars, gradients and noise from 505
+progressive tiles without asking for the picture again.

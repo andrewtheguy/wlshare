@@ -3,7 +3,7 @@
 //! on a session.
 //!
 //! ```text
-//! tile-recurrence [--quality Q] [--slots N,N,...] CAPTURE...
+//! tile-recurrence [--slots N,N,...] CAPTURE...
 //! ```
 //!
 //! Each capture is played as the tiles encoder reads it, with Motion's rule
@@ -17,9 +17,9 @@
 //! picture the client holds — what a COPY could draw — and `offscreen` where
 //! it does not, which only a cache serves. Flat tiles, of one colour, are
 //! never cached, as the encoder stores none, and are counted apart among the
-//! stills, since they are cheap anyway. Bytes are each still coded alone, a
-//! fast PNG as a held list's and a WebP at `--quality` (90) as a walked one's,
-//! so they overstate the per-image overhead of a run of tiles coded as one.
+//! stills, since they are cheap anyway. Bytes are each still coded alone as a
+//! fast PNG, a held list's, so they overstate the per-image overhead of a run
+//! of tiles coded as one.
 //! A whole picture — the first frame, or a keyframe asked — is counted as
 //! `whole` and not as stills, and starts the cache over with its tiles, as
 //! the encoder forgets its own.
@@ -65,22 +65,20 @@ fn main() {
 }
 
 fn run() -> Result<(), Error> {
-    let mut quality = 90u8;
     let mut slots = vec![1024usize, 4096, 16384];
     let mut captures = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--quality" => quality = args.next().ok_or("--quality needs a value")?.parse()?,
             "--slots" => slots = args.next().ok_or("--slots needs a value")?.split(',').map(|s| s.parse()).collect::<Result<_, _>>()?,
             _ => captures.push(arg),
         }
     }
     if captures.is_empty() {
-        return Err("usage: tile-recurrence [--quality Q] [--slots N,N,...] CAPTURE...".into());
+        return Err("usage: tile-recurrence [--slots N,N,...] CAPTURE...".into());
     }
     for capture in captures {
-        let stats = play(Path::new(&capture), quality, &slots)?;
+        let stats = play(Path::new(&capture), &slots)?;
         println!("{}", stats.json(&capture, &slots));
     }
     Ok(())
@@ -163,40 +161,6 @@ fn png_bytes(w: usize, h: usize, rgb: &[u8]) -> Result<usize, Error> {
     if indexed { writer.write_image_data(&indices)? } else { writer.write_image_data(rgb)? }
     writer.finish()?;
     Ok(out.len())
-}
-
-/// The still's bytes as a lossy WebP at `quality`, libwebp's fastest method.
-fn webp_bytes(w: usize, h: usize, rgb: &[u8], quality: u8) -> Result<usize, Error> {
-    use libwebp_sys as webp;
-    let mut config = webp::WebPConfig::new().map_err(|()| "libwebp refused its configuration")?;
-    config.quality = f32::from(quality);
-    config.method = 0;
-    config.thread_level = 0;
-    let mut picture = webp::WebPPicture::new().map_err(|()| "libwebp refused its picture")?;
-    picture.width = w as i32;
-    picture.height = h as i32;
-    picture.use_argb = 0;
-    // SAFETY: as the encoder's own `encode_webp`: `rgb` is `w`×`h` packed,
-    // the planes are libwebp's and freed below, the writer this call's.
-    unsafe {
-        if webp::WebPPictureImportRGB(&mut picture, rgb.as_ptr(), (w * 3) as i32) == 0 {
-            webp::WebPPictureFree(&mut picture);
-            return Err("libwebp could not take the picture".into());
-        }
-        let mut writer = std::mem::MaybeUninit::<webp::WebPMemoryWriter>::uninit();
-        webp::WebPMemoryWriterInit(writer.as_mut_ptr());
-        let mut writer = writer.assume_init();
-        picture.writer = Some(webp::WebPMemoryWrite);
-        picture.custom_ptr = (&raw mut writer).cast();
-        let coded = webp::WebPEncode(&config, &mut picture) != 0;
-        let size = writer.size;
-        webp::WebPMemoryWriterClear(&mut writer);
-        webp::WebPPictureFree(&mut picture);
-        if !coded {
-            return Err("libwebp could not code the tile".into());
-        }
-        Ok(size)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -316,29 +280,25 @@ struct Count {
     tiles: u64,
     flat: u64,
     png: u64,
-    webp: u64,
     /// Bytes of the tiles that are not flat.
     png_nonflat: u64,
-    webp_nonflat: u64,
 }
 
 impl Count {
-    fn add(&mut self, flat: bool, png: usize, webp: usize) {
+    fn add(&mut self, flat: bool, png: usize) {
         self.tiles += 1;
         self.png += png as u64;
-        self.webp += webp as u64;
         if flat {
             self.flat += 1;
         } else {
             self.png_nonflat += png as u64;
-            self.webp_nonflat += webp as u64;
         }
     }
 
     fn json(&self) -> String {
         format!(
-            "{{\"tiles\":{},\"flat\":{},\"png\":{},\"webp\":{},\"png_nonflat\":{},\"webp_nonflat\":{}}}",
-            self.tiles, self.flat, self.png, self.webp, self.png_nonflat, self.webp_nonflat
+            "{{\"tiles\":{},\"flat\":{},\"png\":{},\"png_nonflat\":{}}}",
+            self.tiles, self.flat, self.png, self.png_nonflat
         )
     }
 }
@@ -401,7 +361,7 @@ impl Stats {
     }
 }
 
-fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
+fn play(path: &Path, slots: &[usize]) -> Result<Stats, Error> {
     let mut reader = open(path)?;
     let mut stats = Stats { hits: vec![(Count::default(), Count::default()); slots.len() + 1], ..Stats::default() };
     let mut caches: Vec<Lru> = slots.iter().map(|&n| Lru::new(n)).chain(std::iter::once(Lru::new(usize::MAX))).collect();
@@ -413,7 +373,7 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
     let mut streamed: HashSet<(u16, u16)> = HashSet::new();
     let mut churn = Churn::default();
     // Each distinct content's bytes, coded once.
-    let mut coded: HashMap<u64, (usize, usize)> = HashMap::new();
+    let mut coded: HashMap<u64, usize> = HashMap::new();
     let mut size = (0u16, 0u16);
     let mut last_at = Duration::ZERO;
 
@@ -537,17 +497,17 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
         for (key, hash, flat, why) in stills {
             let (x, y, w, h) = geometry(key.0, key.1);
             let rgb = tile_rgb(pixels, width, x, y, w, h);
-            let (png, webp) = match coded.get(&hash) {
+            let png = match coded.get(&hash) {
                 Some(&b) => b,
                 None => {
-                    let b = (png_bytes(w, h, &rgb)?, webp_bytes(w, h, &rgb, quality)?);
+                    let b = png_bytes(w, h, &rgb)?;
                     coded.insert(hash, b);
                     b
                 }
             };
-            stats.stills.add(flat, png, webp);
+            stats.stills.add(flat, png);
             let (count, delta) = &mut stats.why[why as usize];
-            count.add(flat, png, webp);
+            count.add(flat, png);
             if let Some(old) = held_rgb.get(&key) {
                 let diff: Vec<u8> = rgb.iter().zip(old).map(|(new, old)| new.wrapping_sub(*old)).collect();
                 delta.tiles += 1;
@@ -561,7 +521,7 @@ fn play(path: &Path, quality: u8, slots: &[usize]) -> Result<Stats, Error> {
             if !flat {
                 for (cache, (on, off)) in caches.iter_mut().zip(&mut stats.hits) {
                     if cache.touch(hash) {
-                        if onscreen { on.add(flat, png, webp) } else { off.add(flat, png, webp) }
+                        if onscreen { on.add(flat, png) } else { off.add(flat, png) }
                     }
                 }
             }

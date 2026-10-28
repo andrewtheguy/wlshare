@@ -252,8 +252,6 @@ pub enum RectBody {
 pub enum TileBody {
     /// A PNG of the rectangle's pixels, exact.
     Png(Vec<u8>),
-    /// A lossy WebP of the rectangle's pixels, on a list whose dial walks.
-    Webp(Vec<u8>),
     /// The first frame of a region's stream on `stream`, a keyframe.
     Start { stream: u8, frame: Vec<u8> },
     /// The next frame of the stream on `stream`.
@@ -267,6 +265,9 @@ pub enum TileBody {
     Cached { slot: u16 },
     /// What the client holds at the rectangle, one tile, kept in `slot`.
     Store { slot: u16 },
+    /// A RemoteFX Progressive tile block of the rectangle's tile, on a
+    /// progressive list.
+    Progressive(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -454,13 +455,13 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                     (RectBody::Tiles(TileBody::Frame { stream, frame }), at + len)
                 }
                 TileHeader::End { stream } => (RectBody::Tiles(TileBody::End { stream }), at),
-                TileHeader::Webp { len } => {
-                    let Some(webp) = body(len)? else { return Ok(None) };
-                    (RectBody::Tiles(TileBody::Webp(webp)), at + len)
-                }
                 TileHeader::Copy { x, y } => (RectBody::Tiles(TileBody::Copy { x, y }), at),
                 TileHeader::Cached { slot } => (RectBody::Tiles(TileBody::Cached { slot }), at),
                 TileHeader::Store { slot } => (RectBody::Tiles(TileBody::Store { slot }), at),
+                TileHeader::Progressive { len } => {
+                    let Some(block) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Progressive(block)), at + len)
+                }
             }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
@@ -516,7 +517,7 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
 mod tests {
     use super::*;
     use wlshare_proto::audio::{AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect};
-    use wlshare_proto::tiles::{KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PNG, KIND_START, KIND_STORE, KIND_WEBP};
+    use wlshare_proto::tiles::{KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PNG, KIND_PROGRESSIVE, KIND_START, KIND_STORE};
 
 
     use crate::rfb::audio::FlacEncoder;
@@ -648,14 +649,14 @@ mod tests {
         wire.extend_from_slice(&[KIND_FRAME, 2, 0, 0, 0, 1, 0x86]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_END, 2]);
-        wire.extend_from_slice(&msg::rect_header(128, 0, 64, 64, ENCODING_TILES));
-        wire.extend_from_slice(&[KIND_WEBP, 0, 0, 0, 4, b'R', b'I', b'F', b'F']);
         wire.extend_from_slice(&msg::rect_header(0, 0, 320, 160, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_COPY, 0, 0, 0, 40]);
         wire.extend_from_slice(&msg::rect_header(64, 64, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_STORE, 0x0F, 0xFF]);
         wire.extend_from_slice(&msg::rect_header(128, 64, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_CACHED, 0, 7]);
+        wire.extend_from_slice(&msg::rect_header(192, 64, 64, 64, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_PROGRESSIVE, 0, 0, 0, 2, 0xC6, 0xCC]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -679,10 +680,10 @@ mod tests {
         assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
         assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));
         assert_eq!((rects[10].width, &rects[10].body), (320, &RectBody::Tiles(TileBody::End { stream: 2 })));
-        assert_eq!(rects[11], Rect { x: 128, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Webp(b"RIFF".to_vec())) });
-        assert_eq!(rects[12], Rect { x: 0, y: 0, width: 320, height: 160, body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 }) });
-        assert_eq!(rects[13], Rect { x: 64, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Store { slot: 4095 }) });
-        assert_eq!(rects[14], Rect { x: 128, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Cached { slot: 7 }) });
+        assert_eq!(rects[11], Rect { x: 0, y: 0, width: 320, height: 160, body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 }) });
+        assert_eq!(rects[12], Rect { x: 64, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Store { slot: 4095 }) });
+        assert_eq!(rects[13], Rect { x: 128, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Cached { slot: 7 }) });
+        assert_eq!(rects[14], Rect { x: 192, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Progressive(vec![0xC6, 0xCC])) });
     }
 
 

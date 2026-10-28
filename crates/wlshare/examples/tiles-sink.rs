@@ -3,8 +3,8 @@
 //! gateway, the way `vp9-sink` checks the VP9 encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--quality 1..100] [--seconds N]
-//!            [--streams DIR] [--keys]
+//! tiles-sink ADDR --size WxH [--quality 1..100] [--held]
+//!            [--seconds N] [--streams DIR] [--keys]
 //! ```
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
@@ -16,8 +16,10 @@
 //! `--size` can be sent as a SetDesktopSize before the first picture,
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
-//! client's parser; a PNG, a WebP, a copy and a region's START are counted,
-//! a copy's source checked to be inside the desktop, and with
+//! client's parser; a PNG, a progressive tile (all a list whose dial walks
+//! is sent; `--held` holds it, for PNGs and streams), a copy and a region's
+//! START are counted, a copy's source and a progressive tile's tile checked,
+//! and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -51,7 +53,7 @@ struct Args {
     seconds: u64,
     streams: Option<String>,
     keys: bool,
-    /// The dial held, not walked.
+    /// The dial held, not walked: PNGs and streams, not progressive tiles.
     held: bool,
 }
 
@@ -134,7 +136,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let init = client::read_server_init(&mut reader).await?;
     eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
 
-    let mut encodings = wlshare_proto::tiles::TilesPicture { quality: args.quality, adaptive: !args.held }.encodings();
+    let mut encodings = wlshare_proto::tiles::TilesPicture { quality: args.quality, progressive: !args.held }.encodings();
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
     out.write_all(&client::set_encodings(&encodings)).await?;
@@ -155,7 +157,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut pngs, mut png_bytes, mut webps, mut webp_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut progressives, mut progressive_bytes) = (0u64, 0u64);
+    let (mut pngs, mut png_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -202,10 +205,6 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 pngs += 1;
                                 png_bytes += png.len() as u64;
                             }
-                            RectBody::Tiles(TileBody::Webp(webp)) => {
-                                webps += 1;
-                                webp_bytes += webp.len() as u64;
-                            }
                             RectBody::Tiles(TileBody::Copy { x, y }) => {
                                 if u32::from(x) + u32::from(rect.width) > u32::from(width) || u32::from(y) + u32::from(rect.height) > u32::from(height) {
                                     return Err(format!("a copy from {x},{y} of {}x{}, past the {width}x{height} desktop", rect.width, rect.height).into());
@@ -213,6 +212,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 copies += 1;
                             }
                             RectBody::Tiles(TileBody::Cached { .. }) => cached += 1,
+                            RectBody::Tiles(TileBody::Progressive(block)) => {
+                                let cell = wlshare_proto::progressive::tile_of(&block).ok_or("a progressive body that is no tile block")?;
+                                if (u32::from(cell.0) * 64, u32::from(cell.1) * 64) != (u32::from(rect.x), u32::from(rect.y)) {
+                                    return Err(format!("a progressive tile {cell:?} at {},{}", rect.x, rect.y).into());
+                                }
+                                progressives += 1;
+                                progressive_bytes += block.len() as u64;
+                            }
                             RectBody::Tiles(TileBody::Store { .. }) => {}
                             RectBody::Tiles(TileBody::Start { stream, frame }) => {
                                 if live.contains_key(&stream) {
@@ -266,7 +273,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
+            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
         }
     }
     done.extend(live.drain().map(|(_, stream)| stream));
@@ -278,7 +285,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let (x, y, w, h) = stream.rect;
         eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
     }
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {webps} WebPs {webp_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
+    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
 
     Ok(())
 }

@@ -2,9 +2,7 @@
 name = "wlshare"
 version.workspace = true
 edition.workspace = true
-# libwebp's BSD-3-Clause beside the workspace's MIT: it is linked in statically
-# (LICENSE-libwebp).
-license = "MIT AND BSD-3-Clause"
+license.workspace = true
 repository.workspace = true
 description = "A VNC server for wlroots-based Wayland compositors that reports pixel density to the zDesk gateway"
 
@@ -60,12 +58,6 @@ sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.7
 # The tiles encoding's PNGs (src/rfb/tiles.rs), pure Rust; `fdeflate` is its
 # fast compression.
 png = "0.18"
-# The tiles encoding's lossy stills, a WebP of what changed while the link is
-# behind (src/rfb/tiles.rs): libwebp, compiled from the crate's own copy of its
-# source by `cc` and linked statically, for the target's baseline — its SSE2 on
-# x86_64 and NEON on aarch64, with no further feature asked for — so nothing
-# is downloaded or looked for at run time. Its encoder alone is spoken to.
-libwebp-sys = "0.14"
 
 # The Wayland side. wayland-client speaks the protocol in its own Rust, with no
 # libwayland linked or loaded.
@@ -111,10 +103,6 @@ tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_support
 # `examples/motion-bench.rs`, the tiles encoding measured against the VP9
 # encoding: the process's CPU time around each coder.
 cpu-time = "1"
-# The tiles encoder's tests and `examples/motion-bench.rs` read every WebP
-# still back with image-webp's decoder, pure Rust that shares nothing with the
-# libwebp the stills are coded by.
-image-webp = "0.2"
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
 # which shares nothing with `sound-flac`'s encoder; only the FLAC bundle of it
 # — `symphonia-core` for the decoder trait and the packet it takes.
@@ -135,9 +123,9 @@ section = "net"
 priority = "optional"
 # libpipewire, libpam and libavcodec/libavutil (the camera's H.264 decoder) are
 # linked, so $auto names them from the binary.
-# libxkbcommon too. libopus, the audio extension's Opus encoder, libwebp, the
-# tiles' lossy stills, and jemalloc, the allocator, are linked statically and
-# need nothing; its FLAC encoder is plain Rust.
+# libxkbcommon too. libopus, the audio extension's Opus encoder, and jemalloc,
+# the allocator, are linked statically and need nothing; its FLAC encoder is
+# plain Rust.
 
 # wlroots is the compositor's, not linked here: 0.19 is the first whose headless
 # backend keeps the cursor out of a screencopy without overlay_cursor.

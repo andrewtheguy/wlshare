@@ -73,13 +73,13 @@
 //! The dial the list names is a ceiling the same walk of the link moves the
 //! encoder below, unless the list holds it: each update's fence is the
 //! walk's verdict as a VP9 frame's is, a picture sent whole counting as a
-//! keyframe and one of the tick alone as a settle, no verdict, and each
-//! still a WebP at the dial, owed again at the ceiling where it is below it
-//! ([`TilesEncoder::set_pace`]); a list that
-//! holds the dial is sent every still exact. A slowed walk paces the
-//! updates as it paces VP9's frames. What the encoder still owes once the
-//! desktop stops — a stream to end, a tile a stream carried or a still sent
-//! below the ceiling to send at it — is
+//! keyframe and one of the tick alone as a settle, no verdict, and every
+//! tile a RemoteFX Progressive tile whose first pass follows the dial,
+//! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), with
+//! no stream; a list that holds the dial is sent every still exact. A
+//! slowed walk paces the updates as it paces VP9's frames. What the
+//! encoder still owes once the desktop stops — a stream to end, a tile a
+//! stream carried to send as a PNG, a progressive tile's upgrade — is
 //! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
 //! waits for a request and the fence as any other. A new size starts it over,
 //! and so does a non-incremental request, which ends every stream; a list that
@@ -362,7 +362,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         use_vp9: false,
         tiles: None,
         use_tiles: false,
-        tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, adaptive: true },
+        tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, progressive: true },
         tiles_origin: Instant::now(),
         tiles_quiet: false,
         stream,
@@ -934,13 +934,11 @@ impl Session {
                 if let Some(picture) = listed {
                     let changed = !self.use_tiles || picture != self.tiles_picture;
                     if changed {
-                        info!(
-                            "client {}: asked for tiles up to quality {}, {}, H.264 by {}",
-                            self.id.0,
-                            picture.quality,
-                            if picture.adaptive { "walked by its lag" } else { "held there" },
-                            self.config.h264.name()
-                        );
+                        if picture.progressive {
+                            info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, picture.quality);
+                        } else {
+                            info!("client {}: asked for tiles up to quality {}, held there, H.264 by {}", self.id.0, picture.quality, self.config.h264.name());
+                        }
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
@@ -962,7 +960,7 @@ impl Session {
                     if changed {
                         // A fresh walk from the ceiling, which the running
                         // streams follow with no keyframe.
-                        self.walk = QualityWalk::new(picture.quality, self.config.capture, picture.adaptive);
+                        self.walk = QualityWalk::new(picture.quality, self.config.capture, picture.progressive);
                         let (quality, coarse) = self.tiles_pace();
                         if let Some(encoder) = &mut self.tiles {
                             encoder.set_pace(quality, coarse);
@@ -1874,7 +1872,7 @@ impl Session {
     /// coarse, every still exact and the streams at the dial whatever the
     /// link does ([`TilesPicture`]), the walk slowing the frames alone.
     fn tiles_pace(&self) -> (u8, bool) {
-        match self.tiles_picture.adaptive {
+        match self.tiles_picture.progressive {
             true => (self.walk.quality(), self.walk.slowed()),
             false => (self.tiles_picture.quality, false),
         }

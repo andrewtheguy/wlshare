@@ -24,7 +24,8 @@
 //!   quality its owner sets ([`vp9`]), for a desktop that moves; **the tiles
 //!   encoding**, another for the gateway, the desktop as exact PNG tiles where
 //!   it is still and a video stream for each region that moves, for a link
-//!   with room to spare ([`tiles`]). Raw is produced for a client whose list
+//!   with room to spare ([`tiles`]), or every tile RemoteFX Progressive, still
+//!   or moving ([`progressive`]). Raw is produced for a client whose list
 //!   names neither. Tight, Hextile, RRE, CopyRect and every other lossy
 //!   encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
@@ -62,6 +63,7 @@ pub mod clipboard;
 pub mod cursor;
 pub mod msg;
 pub mod pixel;
+pub mod progressive;
 pub mod rsa_aes;
 pub mod tiles;
 pub mod vp9;

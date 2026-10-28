@@ -12,7 +12,8 @@
 //!   stream, and what the client lists beside it ([`vp9`]).
 //! - **The tiles encoding** ([`ENCODING_TILES`]), the desktop as exact PNG tiles
 //!   where it is still and an H.264 stream for each region that moves
-//!   ([`tiles`]).
+//!   ([`tiles`]), or, where the dial walks, every tile RemoteFX Progressive,
+//!   whose tables and stream are [`progressive`]'s.
 //! - **The density extension** ([`ENCODING_DENSITY`]), the scale the
 //!   framebuffer is drawn at ([`density`]).
 //! - **The outputs extension** ([`ENCODING_OUTPUTS`]), which outputs the
@@ -40,6 +41,7 @@ pub mod camera;
 pub mod density;
 pub mod microphone;
 pub mod outputs;
+pub mod progressive;
 pub mod scroll;
 pub mod tiles;
 pub mod version;
