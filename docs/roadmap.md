@@ -12,13 +12,6 @@ was: `tile-recurrence` for what a rule would serve, then the tiles-only
 passes of motion-bench against [the cache's
 rows](tiles-performance.md#the-cache).
 
-- **The cache kept across a picture that starts over.** A whole-picture
-  request forgets the cache, so a reconnect or a non-incremental request
-  sends every tile again as a still. With the record kept, and the page's
-  slots with it, the resend is a draw of a slot for nearly every tile. The
-  daemon's record is per encoder, which a size change makes anew, so the
-  record would have to outlive it, and the gateway would have to promise
-  that the page's slots do.
 - **A larger cache kept as the coded stills.** 16384 slots serve 18% of the
   mixed session's stills at 2880x1800@2 where 4096 serve 13%, but as pixels
   they are 256 MiB in a tab. Kept as the stills that were sent, about
@@ -43,6 +36,3 @@ performance](tiles-performance.md#progressive-tiles).
   host's does, or a moving region carried by prediction, as the walked
   tiles' H.264 regions did before progressive tiles took their place (a 4K
   window at 5 Mbit/s at 17 frames a second where these have 7).
-- **The release.** Protocol 6 is tagged `proto-v6` at the release that
-  brings it, and zDesk's gateway and page module pin that tag in place of
-  the local tree.

@@ -550,6 +550,7 @@ mod tests {
         assert_eq!(parsed(&key_event(false, 0x0100_20AC)), ClientMsg::KeyEvent { down: false, keysym: 0x0100_20AC });
         assert_eq!(parsed(&pointer_event(0b101, 300, 20)), ClientMsg::PointerEvent { buttons: 5, x: 300, y: 20 });
         assert_eq!(parsed(&wlshare_proto::scroll::scroll(48, -700)), ClientMsg::Scroll { dx: 48, dy: -700 });
+        assert_eq!(parsed(&wlshare_proto::tiles::cache_empty()), ClientMsg::CacheEmpty);
         assert_eq!(parsed(&fence(msg::FENCE_BLOCK_BEFORE, &[0, 0, 0, 9])), ClientMsg::Fence { flags: 1, payload: vec![0, 0, 0, 9] });
         assert_eq!(
             parsed(&set_desktop_size(3456, 1802)),

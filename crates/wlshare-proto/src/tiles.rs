@@ -75,6 +75,20 @@
 //! its own, ends every stream with no END, and the next update sends the
 //! picture again whole. Every body a length names is 1 to [`crate::MAX_BODY`]
 //! bytes.
+//!
+//! The cache outlives a picture that starts over — a new size, a
+//! non-incremental request, a list that names another dial or walk — and
+//! the server draws from what it stored before, as long as the list names
+//! the encoding. A client whose cache is gone, or that missed a rectangle,
+//! says so with a [`cache_empty`], and the server stores from nothing again,
+//! its next update the picture whole; a list without the encoding forgets
+//! the cache too.
+//!
+//! Client → server `CacheEmpty`, the one message of the encoding, one byte:
+//!
+//! | Offset | Type | Field |
+//! |---|---|---|
+//! | 0 | U8 | `0xE6` |
 
 use thiserror::Error;
 
@@ -104,6 +118,31 @@ pub const TILE: u16 = 64;
 /// The tiles a client's cache keeps, numbered from 0: 64 MiB of pixels, as
 /// many as serve nearly every tile a long session shows again.
 pub const CACHE_SLOTS: u16 = 4096;
+
+/// The type of [`cache_empty`]; outside every registered type.
+pub const MSG_CACHE_EMPTY: u8 = 0xE6;
+
+/// The bytes of a `CacheEmpty`, its type included.
+pub const CACHE_EMPTY_LEN: usize = 1;
+
+/// Client → server `CacheEmpty`: the client's cache of tiles holds nothing,
+/// or nothing the server can count on, so no slot is drawn from until it is
+/// stored again, and the server's next update is the picture whole, as a
+/// non-incremental request's is: a client that lost its cache holds nothing
+/// else to draw damage on. Sent where the client's picture starts over with
+/// nothing of what it held, ahead of the non-incremental request that asks
+/// for it, so no update between the two is damage, whichever read of the
+/// server's the request comes in.
+pub fn cache_empty() -> [u8; CACHE_EMPTY_LEN] {
+    [MSG_CACHE_EMPTY]
+}
+
+/// The length of the `CacheEmpty` at the front of `buf`, whose first byte is
+/// [`MSG_CACHE_EMPTY`].
+pub fn parse_cache_empty(buf: &[u8]) -> usize {
+    debug_assert_eq!(buf.first(), Some(&MSG_CACHE_EMPTY));
+    CACHE_EMPTY_LEN
+}
 
 /// What a client's list asks the tiles picture to be: the dial, the VP9
 /// encoding's `WLQ` and the value ([`ENCODING_VP9_QUALITY_BASE`]) beside
@@ -294,6 +333,12 @@ mod tests {
         assert_eq!(held.encodings(), [crate::ENCODING_TILES, 0x574c_5150, ENCODING_VP9_HELD]);
         assert_eq!(listed(&progressive.encodings()), Ok(Some(progressive)));
         assert_eq!(listed(&held.encodings()), Ok(Some(held)));
+    }
+
+    #[test]
+    fn a_cache_empty_is_its_type_alone() {
+        assert_eq!(cache_empty(), [0xE6]);
+        assert_eq!(parse_cache_empty(&[0xE6, 0xFF]), 1);
     }
 
     /// Each kind against the documented layout, and read back.
