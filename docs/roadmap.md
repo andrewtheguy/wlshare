@@ -18,12 +18,12 @@ beside it on the same links.
   its bytes at 90. Judging them no verdict changed nothing, and coding a
   burst as one H.264 picture at the dial sent more, since a picture of
   text coded from nothing is no region's frame
-  ([measured](tiles-performance.md#the-walks-verdicts)). What is left to try
-  is a first pass that does shrink, a burst past a size sent downscaled and
-  owed the ceiling, the settle sharpening it in the pause after, as RDP's
-  progressive first pass is refined; or a cap on a burst's bytes in one
-  update, the rest owed to the next, which leaves the stills as late but
-  lets the streams' frames go ahead of them.
+  ([measured](tiles-performance.md#the-walks-verdicts)). A first pass that
+  does shrink is the progressive picture's, a third of the bytes below 50
+  ([measured](tiles-performance.md#progressive-tiles)); what is left to try
+  on this list is a cap on a burst's bytes in one update, the rest owed to
+  the next, which leaves the stills as late but lets the streams' frames go
+  ahead of them.
 - **A stream that settles itself.** A walked list's stream leaves its
   tiles owed a WebP at the ceiling once they are still, so a region that
   moved is sent twice, in two codecs. RDP never replaces its H.264 with
@@ -74,28 +74,28 @@ rows](tiles-performance.md#the-cache).
   they are 256 MiB in a tab. Kept as the PNG or WebP that was sent, about
   2.5 KB a tile, they are 40 MB, decoded again on a draw, which is a hit's
   cost in the page rather than a still's on the link.
-- **A tile's difference from what the client holds.** RemoteFX
-  Progressive codes a changed tile as the difference of its wavelet
-  coefficients from those the client holds, which is how it carries motion
-  without AVC. The stills of tiles that changed in the 0.8 s before but are
-  no stream's are about two thirds of the mixed session's still bytes, yet a
-  lossless difference of their pixels costs more than the still, 130 to 140%
-  ([measured](tiles-performance.md#the-motion-the-stills-carry)). The
-  difference would have to be lossy, of a transform's coefficients: the
-  wavelet codec of the progressive refinement below, measured with it on a
-  walked list, whose stills are lossy already. What a held list can try
-  without one is the rule: how many of those stills a stream would carry if
-  a tile were moving sooner, counted by `tile-recurrence` first.
-- **Progressive refinement of the stills.** RemoteFX's progressive codec
-  sends a tile coarse in one round trip and refines it in idle time by
-  sending only the coefficient bits it dropped, so coarse plus refinements
-  cost about the sharp tile once, where a walked list sends a WebP at the
-  dial and a second at the ceiling. The browser decodes PNG, WebP and
-  H.264 natively and nothing else, so it would be a wavelet tile codec of
-  this repository's own, compiled once for the daemon and once to WASM for
-  the gateway's page, tested by the same tests. The saving is the first
-  installment alone, since the wavelet compresses no better than WebP at
-  the ceiling; [what the settle sends
-  again](tiles-performance.md#what-the-settle-sends-again) puts the stills
-  owed for being sent below the ceiling at about 3% of what is sent walked
-  to 20, so it is measured there first, and done only where that grows.
+
+## Progressive tiles
+
+What is left of the progressive picture ([Or every tile
+progressive](architecture.md#the-tiles-encoding)), each measured as it was:
+`tiles-walk-sim --progressive` against the walked tiles in [Tiles
+performance](tiles-performance.md#progressive-tiles).
+
+- **In place of the adaptive tiles.** From 10 Mbit/s up, and at 1920x1080 at
+  5, the progressive tiles keep the adaptive tiles' frame rate for about
+  their bytes, with no video decoder in the browser, coarser while the
+  desktop moves and finer once it stops. Where they do not is a large
+  desktop that moves on a slow link: a 4K window at 5 Mbit/s at 7 frames a
+  second where H.264 has 17. Used on real links, and that gap closed or
+  judged worth it, the walked list's WebP and its H.264 streams go, and
+  zDesk's Adaptive tiles with them; until then both are offered.
+- **Motion on a slow link and a large desktop.** What costs the progressive
+  picture its frame rate there is a moving region coded as wavelet tiles at
+  a stage, which a P-frame carries in fewer bytes. A stage coarser still
+  for a dial walked far down, or a first pass of a moving tile at a lower
+  resolution, owed its stages once it stops, would shrink it; each is
+  measured on the large desktops at 5 and 10 Mbit/s.
+- **The release.** Protocol 6 is tagged `proto-v6` at the release that
+  brings it, and zDesk's gateway and page module pin that tag in place of
+  the local tree.
