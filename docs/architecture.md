@@ -743,7 +743,9 @@ a list naming another dial or walk — for as long as the list names the
 encoding. The encoding's one message, `0xE6`, a byte alone (`CacheEmpty`), is
 the client's word that its cache holds nothing the server can count on, a
 page that attached anew or missed a rectangle: the server draws from no slot
-until it stores it again.
+until it stores it again, and its next update is the picture whole, so none
+of damage goes between it and the non-incremental request the client sends
+after, in whatever read that comes.
 A PROGRESSIVE is the rectangle's tile, one 64×64 on the grid cut by the
 desktop's edge, as one tile block of RemoteFX Progressive ([MS-RDPEGFX]
 2.2.4.2.1.5): a first pass at a stage, in place of what the client held of

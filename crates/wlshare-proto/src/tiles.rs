@@ -80,8 +80,9 @@
 //! non-incremental request, a list that names another dial or walk — and
 //! the server draws from what it stored before, as long as the list names
 //! the encoding. A client whose cache is gone, or that missed a rectangle,
-//! says so with a [`cache_empty`], and the server stores from nothing again;
-//! a list without the encoding forgets the cache too.
+//! says so with a [`cache_empty`], and the server stores from nothing again,
+//! its next update the picture whole; a list without the encoding forgets
+//! the cache too.
 //!
 //! Client → server `CacheEmpty`, the one message of the encoding, one byte:
 //!
@@ -126,8 +127,12 @@ pub const CACHE_EMPTY_LEN: usize = 1;
 
 /// Client → server `CacheEmpty`: the client's cache of tiles holds nothing,
 /// or nothing the server can count on, so no slot is drawn from until it is
-/// stored again. Sent where the client's picture starts over with nothing of
-/// what it held, ahead of the non-incremental request that asks for it.
+/// stored again, and the server's next update is the picture whole, as a
+/// non-incremental request's is: a client that lost its cache holds nothing
+/// else to draw damage on. Sent where the client's picture starts over with
+/// nothing of what it held, ahead of the non-incremental request that asks
+/// for it, so no update between the two is damage, whichever read of the
+/// server's the request comes in.
 pub fn cache_empty() -> [u8; CACHE_EMPTY_LEN] {
     [MSG_CACHE_EMPTY]
 }

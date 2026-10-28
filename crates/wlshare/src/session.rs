@@ -1099,10 +1099,15 @@ impl Session {
             ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
             ClientMsg::Scroll { dx, dy } => self.shared.command(Command::Scroll { client: self.id, dx, dy }),
             // Without the tiles picture there is no record of a cache to forget.
+            // A client whose cache is gone holds nothing else to draw an update
+            // on either, so the next is the picture whole, whether the request
+            // it sends after comes in the same read or not: no update of damage
+            // goes between the two.
             ClientMsg::CacheEmpty => {
                 if let Some(encoder) = &mut self.tiles {
                     debug!("client {}: its cache of tiles is empty", self.id.0);
                     encoder.forget_cache();
+                    self.seen = 0;
                 }
             }
             ClientMsg::CutText(_) => debug!("client {}: latin-1 cut text, which is not spoken here; ignored", self.id.0),
@@ -2119,6 +2124,21 @@ mod pacing_tests {
         tiles.encode(Duration::ZERO, &mut Vec::new()).unwrap();
         session.tiles = Some(tiles);
         session
+    }
+
+    /// A client that says its cache of tiles is empty is sent the picture
+    /// whole next, not damage: the request for it may come in a later read,
+    /// and an update between would be drawn on nothing the client holds.
+    #[tokio::test]
+    async fn a_cache_emptied_makes_the_next_update_whole() {
+        let mut session = ticking();
+        session.seen = 3;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (_, inner) = socket.into_split();
+        let mut writer = Writer { inner, sealer: None };
+        session.handle(ClientMsg::CacheEmpty, &mut writer).await.unwrap();
+        assert_eq!(session.seen, 0, "the next update is whole");
     }
 
     /// The tick's update is held for a slowed link's frame as any other, so
