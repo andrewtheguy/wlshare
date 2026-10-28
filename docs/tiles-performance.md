@@ -503,6 +503,51 @@ cost the samples' moving tiles 1 to 9% fewer bytes than that stage for 0.1
 to 2.6 dB, since the stage below 50 leaves those bands nearly empty
 already.
 
+**The encoder's processor time, again.** A live session of a video in a
+window, and one scrolling a browser, then showed wlshare's processor at least
+half again a Windows host's, the gateway's and the browser's on par. On lab1
+(rebuilt on 2026-10-28, eight cores of EPYC Rome where the figures above are
+Milan's), alone, with its own encode times, the regions by libx264 and a link
+of 100 Mbit/s that holds nothing back, `tiles-walk-sim` read the process's
+processor time around each update's read and encode, as a share of one core:
+the whole session's, and its busiest second's. The runs are
+`bench/progressive-cpu-20261028/` in the artifacts. Six changes took a third to a
+half off it. A tile's 60 KB of state is no longer copied once or twice for
+every tile coded. The first passes are coded on a pool kept for the process
+and shared by every session, not threads made for each update. The bits are
+written 64 at a time, and a run of zeros skipped 8 at a time. A whole tile's
+colour conversion and the coefficients' loop are written as loops the
+compiler makes vectors of. And the cache's key is xxh3, not SipHash. None of
+the six moves a byte: `--encode 20` at 10 Mbit/s over the window and the
+mixed session at 1920x1080 sent the same updates, passes and bytes before
+and after. The seventh does: on a walked list, a copy from a settled source
+is settled (see [The tiles encoding](architecture.md#the-tiles-encoding)),
+so a page scrolled after its upgrades goes again only where the scroll
+uncovered it. Before the six, then after all seven (`ddc147b`):
+
+| Capture | Session | Busiest second | Median update |
+|---|---|---|---|
+| browser-1920x1080 | 28.6 → 17.6% | 48 → 30% | 6.8 → 4.8 ms |
+| browser-2880x1800@2 | 63.4 → 41.4% | 128 → 80% | 16.3 → 11.7 ms |
+| window-1920x1080 | 45.7 → 25.1% | 65 → 40% | 4.3 → 2.3 ms |
+| window-2880x1800@2 | 65.4 → 37.9% | 96 → 60% | 6.7 → 3.8 ms |
+| mixed-1920x1080 | 39.2 → 22.0% | 171 → 101% | 5.1 → 2.7 ms |
+
+The frame rates, the bytes and the pictures before and after are within a
+run's noise, as measured encode times leave them.
+The copy rule's share is the busiest scrolling second at 2880x1800 from 88
+to 80% and the mixed session's from 107 to 101; on the windows it moves
+nothing beyond a run's noise, 1 to 2 points. On a slow link it
+rarely applies, since a page is seldom settled before it is scrolled
+again: at 10 Mbit/s with `--encode 20` it sent no byte differently on
+the browser captures and 0.01 and 0.2% fewer on the mixed sessions, the
+pictures within 0.01 dB. These are the encoder's alone, without the
+screen's capture a live session adds. Of what it spends scrolling at
+2880x1800, before the copy rule, coding the tiles was 63%, finding what
+moved and copying it 30%, and the rest of the update 7%. Of the coding,
+the coefficients' loop of a first pass was a third, the wavelet 18%, the
+coding of runs and bits 15% and the colour conversion 11%.
+
 **In the browser.** zDesk's end-to-end test reads a progressive session's
 tiles from wlshare in a container, through the gateway, with the page's
 decoder, against the exact picture of the tiles with motion; headless
