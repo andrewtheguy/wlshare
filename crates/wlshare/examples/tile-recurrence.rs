@@ -3,7 +3,7 @@
 //! on a session.
 //!
 //! ```text
-//! tile-recurrence [--slots N,N,...] CAPTURE...
+//! tile-recurrence [--slots N,N,...] [--keep] CAPTURE...
 //! ```
 //!
 //! Each capture is played as the tiles encoder reads it, with Motion's rule
@@ -22,7 +22,12 @@
 //! of tiles coded as one.
 //! A whole picture — the first frame, or a keyframe asked — is counted as
 //! `whole` and not as stills, and starts the cache over with its tiles, as
-//! the encoder forgets its own.
+//! the encoder forgot its own before it kept it. With `--keep` the cache
+//! outlives it, as the encoder's does now, and each cache counts the tiles
+//! of every whole picture after the first, flat ones apart, that it holds:
+//! `restart_tiles` of them in all, each a draw of a slot and not a still,
+//! and their bytes as a fast PNG, of `restart_png`, every tile of those
+//! pictures so coded.
 //!
 //! Each still is also counted by why it is sent: `fresh`, a tile that had not
 //! changed in the 0.8 s before; `warming`, one that had, but in fewer than 4
@@ -66,19 +71,21 @@ fn main() {
 
 fn run() -> Result<(), Error> {
     let mut slots = vec![1024usize, 4096, 16384];
+    let mut keep = false;
     let mut captures = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--slots" => slots = args.next().ok_or("--slots needs a value")?.split(',').map(|s| s.parse()).collect::<Result<_, _>>()?,
+            "--keep" => keep = true,
             _ => captures.push(arg),
         }
     }
     if captures.is_empty() {
-        return Err("usage: tile-recurrence [--slots N,N,...] CAPTURE...".into());
+        return Err("usage: tile-recurrence [--slots N,N,...] [--keep] CAPTURE...".into());
     }
     for capture in captures {
-        let stats = play(Path::new(&capture), &slots)?;
+        let stats = play(Path::new(&capture), &slots, keep)?;
         println!("{}", stats.json(&capture, &slots));
     }
     Ok(())
@@ -338,11 +345,18 @@ struct Stats {
     frames: u64,
     seconds: f64,
     whole_tiles: u64,
+    /// The tiles of every whole picture after the first that are not flat.
+    restart_tiles: u64,
+    /// Every tile of those pictures as a fast PNG, with `--keep`.
+    restart_png: u64,
     stills: Count,
     /// The stills by [`Why`], and of each those against exact pixels.
     why: [(Count, Delta); 4],
     /// Per cache size, then unbounded last: hits on screen, hits off screen.
     hits: Vec<(Count, Count)>,
+    /// Per cache size, then unbounded last: of `restart_tiles`, those it
+    /// held, and of `restart_png`, theirs.
+    restart_hits: Vec<(u64, u64)>,
 }
 
 impl Stats {
@@ -350,20 +364,21 @@ impl Stats {
         let mut caches = Vec::new();
         for (i, (on, off)) in self.hits.iter().enumerate() {
             let name = slots.get(i).map_or("unbounded".to_owned(), |n| n.to_string());
-            caches.push(format!("\"{name}\":{{\"onscreen\":{},\"offscreen\":{}}}", on.json(), off.json()));
+            let (tiles, png) = self.restart_hits[i];
+            caches.push(format!("\"{name}\":{{\"onscreen\":{},\"offscreen\":{},\"restart\":{{\"tiles\":{tiles},\"png\":{png}}}}}", on.json(), off.json()));
         }
         let why: Vec<String> =
             WHY.iter().zip(&self.why).map(|(name, (count, delta))| format!("\"{name}\":{{\"stills\":{},\"delta\":{}}}", count.json(), delta.json())).collect();
         format!(
-            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"why\":{{{}}},\"cache\":{{{}}}}}",
-            capture, self.frames, self.seconds, self.whole_tiles, self.stills.json(), why.join(","), caches.join(",")
+            "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"restart_tiles\":{},\"restart_png\":{},\"stills\":{},\"why\":{{{}}},\"cache\":{{{}}}}}",
+            capture, self.frames, self.seconds, self.whole_tiles, self.restart_tiles, self.restart_png, self.stills.json(), why.join(","), caches.join(",")
         )
     }
 }
 
-fn play(path: &Path, slots: &[usize]) -> Result<Stats, Error> {
+fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
     let mut reader = open(path)?;
-    let mut stats = Stats { hits: vec![(Count::default(), Count::default()); slots.len() + 1], ..Stats::default() };
+    let mut stats = Stats { hits: vec![(Count::default(), Count::default()); slots.len() + 1], restart_hits: vec![(0, 0); slots.len() + 1], ..Stats::default() };
     let mut caches: Vec<Lru> = slots.iter().map(|&n| Lru::new(n)).chain(std::iter::once(Lru::new(usize::MAX))).collect();
     // What the client holds in each tile, exact: `None` under a stream.
     let mut held: HashMap<(u16, u16), Option<u64>> = HashMap::new();
@@ -398,19 +413,29 @@ fn play(path: &Path, slots: &[usize]) -> Result<Stats, Error> {
             refcount.clear();
             streamed.clear();
             churn = Churn::default();
-            for cache in &mut caches {
-                cache.clear();
+            if !keep {
+                for cache in &mut caches {
+                    cache.clear();
+                }
             }
+            let restart = stats.frames > 1;
             for ty in 0..tiles_y as u16 {
                 for tx in 0..tiles_x as u16 {
                     let (x, y, w, h) = geometry(tx, ty);
                     let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
                     held.insert((tx, ty), Some(hash));
-                    held_rgb.insert((tx, ty), tile_rgb(pixels, width, x, y, w, h));
+                    let rgb = tile_rgb(pixels, width, x, y, w, h);
+                    let png = if keep && restart { png_bytes(w, h, &rgb)? as u64 } else { 0 };
+                    stats.restart_png += png;
+                    held_rgb.insert((tx, ty), rgb);
                     *refcount.entry(hash).or_default() += 1;
                     if !flat {
-                        for cache in &mut caches {
-                            cache.touch(hash);
+                        stats.restart_tiles += u64::from(restart);
+                        for (cache, (tiles, bytes)) in caches.iter_mut().zip(&mut stats.restart_hits) {
+                            if cache.touch(hash) && restart {
+                                *tiles += 1;
+                                *bytes += png;
+                            }
                         }
                     }
                     stats.whole_tiles += 1;

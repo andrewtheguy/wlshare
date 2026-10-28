@@ -737,7 +737,13 @@ overlapping as a picture drawn onto itself does, its source read whole first.
 A STORE keeps what the client holds at its rectangle, one 64×64 tile on the
 grid from (0,0), in slot `N` of the client's cache of 4096, over whatever the
 slot held; a CACHED draws the tile slot `N` keeps at its rectangle, the same
-size, and drawing from a slot nothing was stored in is fatal.
+size, and drawing from a slot nothing was stored in is fatal. The cache
+outlives a picture that starts over — a new size, a non-incremental request,
+a list naming another dial or walk — for as long as the list names the
+encoding. The encoding's one message, `0xE6`, a byte alone (`CacheEmpty`), is
+the client's word that its cache holds nothing the server can count on, a
+page that attached anew or missed a rectangle: the server draws from no slot
+until it stores it again.
 A PROGRESSIVE is the rectangle's tile, one 64×64 on the grid cut by the
 desktop's edge, as one tile block of RemoteFX Progressive ([MS-RDPEGFX]
 2.2.4.2.1.5): a first pass at a stage, in place of what the client held of
@@ -814,8 +820,15 @@ the picture.
   A flat tile is never stored:
   its PNG is a few bytes and a slot is worth more. The client keeps only
   what it is told to and draws only what it is told, so the record decides
-  everything and the two agree by construction; a picture that starts over
-  forgets the record, and the client's slots are written over from then on.
+  everything and the two agree by construction. A picture that starts over
+  keeps the record, as the client keeps its slots, so the whole picture is a
+  draw of a slot for every tile of it a slot still keeps: an output switched
+  back to, a new size — the record handed to the encoder made for it — or
+  another dial. A tile a walked list stored is the full stage's at best,
+  short of the exact pixels a held list is owed, so a held list draws none
+  of them until each is stored again, exact. The record is forgotten only where the client says its cache is gone
+  (`CacheEmpty`), as the gateway does at every repaint it asks, a page
+  attached anew holding nothing, or where the list stops naming the encoding.
   Over a session at the desk it serves about a seventh of the stills
   ([measured](tiles-performance.md#the-cache)).
 - **On a held list, what moves is video.** Motion's rules: a tile is moving when it changed in

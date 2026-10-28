@@ -1098,6 +1098,13 @@ impl Session {
             ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { client: self.id, keysym, down }),
             ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
             ClientMsg::Scroll { dx, dy } => self.shared.command(Command::Scroll { client: self.id, dx, dy }),
+            // Without the tiles picture there is no record of a cache to forget.
+            ClientMsg::CacheEmpty => {
+                if let Some(encoder) = &mut self.tiles {
+                    debug!("client {}: its cache of tiles is empty", self.id.0);
+                    encoder.forget_cache();
+                }
+            }
             ClientMsg::CutText(_) => debug!("client {}: latin-1 cut text, which is not spoken here; ignored", self.id.0),
             ClientMsg::ExtendedCutText(body) => self.handle_clipboard(&body, writer).await?,
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
@@ -1494,6 +1501,11 @@ impl Session {
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
                     let (quality, coarse) = self.tiles_pace();
                     encoder.set_pace(quality, coarse);
+                    // The client keeps its cache of tiles through the new
+                    // size, and so does the record of it.
+                    if let Some(old) = self.tiles.take() {
+                        encoder.keep_cache(old);
+                    }
                     self.tiles = Some(encoder);
                     continue;
                 }

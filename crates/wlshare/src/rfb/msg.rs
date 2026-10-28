@@ -14,6 +14,7 @@ use wlshare_proto::density::{Density, MSG_DENSITY};
 use wlshare_proto::microphone::{ClientMicrophone, MSG_MICROPHONE, MicrophoneParseError};
 use wlshare_proto::outputs::{ClientOutputs, MSG_OUTPUTS, OutputsParseError};
 use wlshare_proto::scroll::MSG_SCROLL;
+use wlshare_proto::tiles::MSG_CACHE_EMPTY;
 
 use crate::rfb::pixel::PixelFormat;
 
@@ -109,6 +110,9 @@ pub enum ClientMsg {
     /// pixels, positive rightward and downward, where the pointer is
     /// ([`wlshare_proto::scroll`]).
     Scroll { dx: i16, dy: i16 },
+    /// The tiles encoding's message: the client's cache of tiles holds
+    /// nothing the server can draw from ([`wlshare_proto::tiles::cache_empty`]).
+    CacheEmpty,
     /// The QEMU Audio extension: start sending the desktop's sound.
     AudioEnable,
     /// The QEMU Audio extension: stop.
@@ -275,6 +279,7 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             None => return Ok(None),
             Some(((dx, dy), n)) => (ClientMsg::Scroll { dx, dy }, n),
         },
+        MSG_CACHE_EMPTY => (ClientMsg::CacheEmpty, wlshare_proto::tiles::parse_cache_empty(buf)),
         MSG_QEMU => match wlshare_proto::audio::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientAudio::Enable, n)) => (ClientMsg::AudioEnable, n),
@@ -469,6 +474,7 @@ mod tests {
         assert_eq!(m, ClientMsg::Scroll { dx: -32, dy: 256 });
         assert_eq!(n, 6);
         assert_eq!(parse(&[0xE5, 0, 0xFF, 0xE0, 0x01]).unwrap(), None, "a short Scroll asks for more");
+        assert_eq!(parse(&[0xE6, 0xE6]).unwrap(), Some((ClientMsg::CacheEmpty, 1)));
     }
 
     #[test]

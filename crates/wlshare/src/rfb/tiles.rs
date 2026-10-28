@@ -58,7 +58,13 @@
 //! then a few bytes a tile. A progressive tile stored below the full stage
 //! is owed it when drawn, as a copy of one is; settled by its upgrades, it is
 //! stored again in its slot, settled. A picture that starts over
-//! ([`TilesEncoder::forget`]) forgets the cache.
+//! ([`TilesEncoder::forget`]) keeps the cache, as the client does, so a
+//! whole picture of tiles it was shown is a draw of a slot for each: an
+//! output switched back to, a new size, another dial. A tile a walked list
+//! stored is not exact, so a held list draws none of them until it is stored
+//! again ([`TilesEncoder::set_picture`]). The client says when its cache is
+//! gone ([`TilesEncoder::forget_cache`]), and a new size hands the record to
+//! the encoder made for it ([`TilesEncoder::keep_cache`]).
 //!
 //! **What a stream codes.** A region is an encoder over its rectangle alone,
 //! told the damage inside it as the VP9 encoding's whole-desktop stream is, so
@@ -760,6 +766,14 @@ impl Cache {
         self.by_use.clear();
     }
 
+    /// No slot is settled: what each keeps is owed a picture finer than it
+    /// was stored as, and is stored again once settled.
+    fn unsettle(&mut self) {
+        for kept in self.slots.values_mut() {
+            kept.settled = false;
+        }
+    }
+
     /// The slot that keeps the tile hashed `hash`, and whether it is settled.
     fn find(&self, hash: u64) -> Option<(u16, bool)> {
         let slot = *self.by_hash.get(&hash)?;
@@ -995,19 +1009,24 @@ impl TilesEncoder {
     /// the client holds was coded against the old one, and nothing of it is
     /// owed what the new one would owe, so the picture starts over as
     /// [`Self::forget`] starts it, every live stream's END owed first, at the
-    /// new ceiling from here.
+    /// new ceiling from here. The cache is kept, but a held list is owed
+    /// exact pixels, which no tile a walked list stored is.
     pub fn set_picture(&mut self, picture: TilesPicture) {
         self.ceiling = picture.quality;
         self.quality = picture.quality;
+        if self.progressive.is_some() && !picture.progressive {
+            self.cache.unsettle();
+        }
         if picture.progressive != self.progressive.is_some() {
             self.progressive = picture.progressive.then(|| progressive::Encoder::new(self.size.0, progressive::Tables::protocol()));
         }
         self.forget();
     }
 
-    /// The client holds nothing: every stream ends, with its END at the next
-    /// encode, nothing is owed, the cache is forgotten, and the next read is
-    /// sent whole.
+    /// The client holds nothing of the picture: every stream ends, with its
+    /// END at the next encode, nothing is owed, and the next read is sent
+    /// whole. Its cache it keeps, so the whole picture is drawn from it
+    /// wherever the record has a tile.
     pub fn forget(&mut self) {
         for live in self.live.drain(..) {
             if live.started {
@@ -1016,7 +1035,6 @@ impl TilesEncoder {
         }
         self.covered.clear();
         self.debts.clear();
-        self.cache.clear();
         self.retuned_at = None;
         self.churn.clear();
         self.copied_at = None;
@@ -1027,6 +1045,18 @@ impl TilesEncoder {
         if let Some(enc) = &mut self.progressive {
             enc.forget();
         }
+    }
+
+    /// The client's cache holds nothing it can count on: no slot is drawn
+    /// from until it is stored again, from the first.
+    pub fn forget_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    /// The client keeps its cache through a new size: this encoder, made for
+    /// it, draws from what `old`, the size before's, stored.
+    pub fn keep_cache(&mut self, mut old: TilesEncoder) {
+        self.cache = std::mem::take(&mut old.cache);
     }
 
     /// The stage a progressive first pass is coded at: 75 while the walk is
@@ -2710,7 +2740,8 @@ mod tests {
     }
 
     /// A client that asks for the picture whole is sent every stream's end and
-    /// the picture as PNG.
+    /// the picture again: where the stream was, as PNG; where it was not, the
+    /// tiles of the first picture, from the cache.
     #[test]
     fn a_picture_forgotten_ends_its_streams_and_starts_over() {
         let (w, h) = (512u16, 256u16);
@@ -2726,10 +2757,11 @@ mod tests {
         assert_eq!((page.starts, page.ends), (1, 0));
         encoder.forget();
         assert_eq!(encoder.tick_at(), Some(Duration::ZERO), "the ends are owed at once, read or no read");
-        let pngs = page.pngs;
+        let (pngs, cached) = (page.pngs, page.cached);
         step(&mut encoder, &mut page, &pixels, None, ms(1100));
         assert_eq!(page.ends, 1, "the stream ended");
-        assert_eq!(page.pngs - pngs, 4, "the picture again in its bands");
+        assert_eq!(page.pngs - pngs, 3, "the three bands the stream crossed as PNG");
+        assert_eq!(page.cached - cached, 20, "every other tile from its slot, the last band whole");
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed(), "a picture sent whole owes nothing");
     }
@@ -2852,10 +2884,12 @@ mod tests {
         assert!(!encoder.owed(), "a tile drawn from a settled slot is owed nothing");
     }
 
-    /// A picture that starts over forgets the cache: what the client was
-    /// shown before is sent as a still again, and stored again.
+    /// A picture that starts over keeps the cache, as the client does: what
+    /// the client was shown is drawn from its slots, the whole picture with
+    /// no still. Once the client says its cache is gone, the picture is
+    /// stills again, every whole tile stored anew.
     #[test]
-    fn a_picture_forgotten_forgets_the_cache() {
+    fn a_picture_forgotten_is_drawn_from_the_cache() {
         let (w, h) = (128u16, 64u16);
         let mut pixels = noise(w, h, 61);
         let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
@@ -2864,12 +2898,80 @@ mod tests {
         let text = Rect { x: 0, y: 0, width: 64, height: 64 };
         glyphs(&mut pixels, w, text);
         step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        assert_eq!((page.pngs, page.stored, page.cached), (2, 3, 0));
         encoder.forget();
         step(&mut encoder, &mut page, &pixels, None, ms(200));
-        assert_eq!((page.pngs, page.stored, page.cached), (3, 5, 0), "the picture again, whole, every whole tile stored anew");
+        assert_eq!((page.pngs, page.stored, page.cached), (2, 3, 2), "the picture again, whole, every tile from its slot");
+        assert_eq!(page.off(&pixels), 0);
+        assert!(!encoder.owed(), "drawn from slots stored exact, owed nothing");
+
+        encoder.forget_cache();
+        encoder.forget();
+        page.slots.clear();
+        step(&mut encoder, &mut page, &pixels, None, ms(300));
+        assert_eq!((page.pngs, page.stored, page.cached), (3, 5, 2), "the cache gone: the picture as a still, every whole tile stored anew");
         same_tile(&mut pixels, w, (0, 0), (64, 0));
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(300));
-        assert_eq!((page.pngs, page.cached), (3, 1), "and from then on the cache serves again");
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(400));
+        assert_eq!((page.pngs, page.cached), (3, 3), "and from then on the cache serves again");
+        assert_eq!(page.off(&pixels), 0);
+    }
+
+    /// A new size is a new encoder, which draws from what the old one
+    /// stored: the tiles the client was shown before are slots drawn where
+    /// they now stand, and only what is new is a still.
+    #[test]
+    fn a_new_size_keeps_the_cache() {
+        let (w, h) = (128u16, 64u16);
+        let pixels = noise(w, h, 62);
+        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert_eq!(page.stored, 2);
+
+        // The same two tiles, swapped, beside a third that is new.
+        let wide = 192u16;
+        let mut resized = noise(wide, h, 63);
+        for (from, to) in [(0, 64), (64, 0)] {
+            for row in 0..usize::from(h) {
+                let src = (row * usize::from(w) + from) * 4;
+                let dst = (row * usize::from(wide) + to) * 4;
+                resized[dst..dst + 64 * 4].copy_from_slice(&pixels[src..src + 64 * 4]);
+            }
+        }
+        let mut grown = TilesEncoder::new(wide, h, held(80), Fake::coder()).unwrap();
+        grown.keep_cache(encoder);
+        let mut bigger = Page::new(wide, h);
+        bigger.slots = std::mem::take(&mut page.slots);
+        step(&mut grown, &mut bigger, &resized, None, ms(100));
+        assert_eq!((bigger.pngs, bigger.cached, bigger.stored), (1, 2, 1), "two tiles from their slots, the new one a still, stored");
+        assert_eq!(bigger.off(&resized), 0);
+    }
+
+    /// A walked list's tiles are stored as a progressive tile left them,
+    /// which a held list is not owed: switched to one, the picture again is
+    /// stills, exact, stored again in the slots they were in, and a tile
+    /// shown after that is drawn from its slot.
+    #[test]
+    fn a_held_list_draws_no_tile_a_walked_one_stored() {
+        let (w, h) = (128u16, 64u16);
+        let mut pixels = soft(w, h, 0);
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        let stored = page.stored;
+        assert!(stored >= 2, "every tile stored, settled");
+
+        encoder.set_picture(held(80));
+        step(&mut encoder, &mut page, &pixels, None, ms(5000));
+        assert_eq!(page.cached, 0, "nothing a walked list stored is drawn on a held one");
+        assert_eq!(page.off(&pixels), 0, "the picture exact");
+        assert_eq!(page.stored - stored, 2, "and stored again, exact");
+        assert_eq!(page.slots.len(), 2, "in the slots they were in");
+
+        same_tile(&mut pixels, w, (0, 0), (64, 0));
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(5100));
+        assert_eq!(page.cached, 1, "an exact slot is drawn on a held list");
         assert_eq!(page.off(&pixels), 0);
     }
 

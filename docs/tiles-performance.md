@@ -360,6 +360,39 @@ neither coarse nor again at the ceiling. The held CPU is within the 4% two
 runs of one build differ by on lab1. `check` passes 82 of 82: the held tiles
 settle exact and send nothing after.
 
+Kept through a picture that starts over, as it is since protocol 7, it was
+counted by `tile-recurrence --keep` on 2026-10-28 (a count, run on the
+desktop machine rather than lab1): the cache not started over at a whole
+picture, and of each whole picture after the first, the tiles that are not
+flat that it holds. Those pictures are the captures' keyframes asked — at
+10 s in video and window — which is what an output switched back to, a new
+size or another dial sends; a repaint the gateway asks empties the cache
+first. At 4096 slots, a third of each picture's tiles or more being flat
+and never stored, their PNG bytes each tile alone:
+
+| Capture | Tiles not flat | From the cache | PNG of the picture | From the cache |
+|---|---:|---:|---:|---:|
+| browser-1920x1080 | 310 | 310 | 0.52 MB | 0.47 MB, 89% |
+| browser-2880x1800@2 | 688 | 688 | 1.11 MB | 0.93 MB, 84% |
+| drag-1920x1080 | 127 | 127 | 0.30 MB | 0.19 MB, 63% |
+| drag-2880x1800@2 | 428 | 428 | 0.85 MB | 0.60 MB, 71% |
+| mixed-1920x1080 | 341 | 341 | 0.53 MB | 0.48 MB, 91% |
+| mixed-2880x1800@2 | 723 | 723 | 1.19 MB | 1.03 MB, 86% |
+| window-1920x1080 | 503 | 490 | 0.96 MB | 0.79 MB, 82% |
+| window-2880x1800@2 | 950 | 937 | 1.93 MB | 1.43 MB, 74% |
+| terminal-1920x1080 | 21 | 20 | 0.43 MB | 0.02 MB, 4% |
+| video-1920x1080 | 381 | 15 | 2.20 MB | 0.02 MB, 1% |
+
+A desk's picture again is a draw of a slot for every tile it shows that is
+not flat, the rest flat tiles of a few bytes each when coded as a run; a
+terminal is nearly all flat, and a video playing shows new frames, which no
+cache serves. Unbounded serves no more than 4096 slots. The stills between
+are served as before, within 0.1% on the mixed sessions, since a whole
+picture stored its tiles in the cache that started over too; the video in a
+window gains 20 tiles of 2,000 to 3,000 stills, what was shown before its
+keyframe shown again after it. motion-bench's samples begin with their one
+whole picture, so its figures are the same.
+
 ## The motion the stills carry
 
 How much of what the stills send is motion — what a codec that sends a
