@@ -704,8 +704,11 @@ coded once. `crates/wlshare/src/rfb/tiles.rs` is the encoder, and
 A client that lists it, with a quality beside it (`WLQ` and the value, as
 VP9's) and `WLSD` where it wants the dial held rather than walked, as VP9's
 list says it, gets it instead of a standard pixel encoding, wherever in the
-list it is. Listed without a quality it is fatal, and so is a list that names
-both it and `WLSV`: they are two pictures, of which a client wants one. A
+list it is; a walked list that names `WLSP` (`0x574c5350`) beside it gets
+every tile progressive, below. Listed without a quality it is fatal, and so
+is a list that names both it and `WLSV`: they are two pictures, of which a
+client wants one; so is one that names `WLSP` beside `WLSD`, since
+progressive tiles never settle exact. A
 pixel update is then any number of rectangles of the encoding, drawn in
 order, each a rectangle of the desktop whose body begins with a kind:
 
@@ -719,6 +722,7 @@ u8 kind
 5 COPY    u16 x | u16 y                                    what the client holds at (x, y), drawn here
 6 CACHED  u16 slot                                         the tile kept in slot N, drawn here
 7 STORE   u16 slot                                         what the client holds here, kept in slot N
+8 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
 ```
 
 A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
@@ -736,6 +740,14 @@ A STORE keeps what the client holds at its rectangle, one 64×64 tile on the
 grid from (0,0), in slot `N` of the client's cache of 4096, over whatever the
 slot held; a CACHED draws the tile slot `N` keeps at its rectangle, the same
 size, and drawing from a slot nothing was stored in is fatal.
+A PROGRESSIVE is the rectangle's tile, one 64×64 on the grid cut by the
+desktop's edge, as one tile block of RemoteFX Progressive ([MS-RDPEGFX]
+2.2.4.2.1.5): a first pass at a stage, in place of what the client held of
+the tile or as the difference from it, or an upgrade, the bits the stage
+before held back. The tables it is coded with are the protocol's and never
+sent — `wlshare-proto`'s `progressive` module holds them, and the stream a
+standard decoder reads a block from — and the client decodes every block in
+order, keeping each tile's coefficients from one to the next.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
@@ -853,6 +865,31 @@ the picture.
   — an update's queueing on the link — and a second set of thresholds would
   be a second thing to measure.
 
+- **Or every tile progressive.** A walked list that names `WLSP` gets no
+  PNG, WebP or stream: every tile that changed, still or moving, is a
+  PROGRESSIVE, as a Windows host draws its desktop where it has no H.264,
+  and copies and the cache as above. `crates/wlshare/src/rfb/progressive.rs`
+  is the encoder: a tile to YCbCr in 11.5 fixed point, three levels of the
+  reduce-extrapolate 5/3 wavelet, quantized by the protocol's table, and sent
+  in passes. A first pass holds back the low bits of every coefficient at a
+  stage — 75 while the walk is at the ceiling and not slowed, 50 while its
+  dial is at 70 or above, and below that a stage of the protocol's own that
+  holds back a bit more in every band, a third fewer bytes than 50, since the
+  host's first pass stays at 50 however slow the link and a walk that lowers
+  its dial would shrink nothing — or is the full stage at once where that
+  costs at most a quarter more, as a flat tile's does. A changed tile the
+  client holds goes as the difference of its coefficients from what the
+  client holds where that has more zeros, which is how motion is carried
+  without a stream. The encoder keeps what the client holds of every tile,
+  so each pass is coded against it; a tile a copy or a cache slot draws over
+  is forgotten, and goes next as a first pass that is no difference. An
+  update's first passes are coded ahead on every core and sent in order.
+  What is owed is the stages after: the settle sends a tile's upgrade, one
+  stage at a time, the bits the stage before held back, until it stands at
+  full, and nothing is owed after. Its tests read every pass back with a
+  decoder of their own, and `examples/tiles-walk-sim.rs --progressive`
+  walks it ([measured](tiles-performance.md#progressive-tiles)).
+
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
   region is H.264, by an encoder found once at startup; the client has no
   say, and a START names no codec. On a host whose GPU has an H.264 encoder a VA-API
@@ -902,7 +939,8 @@ the picture.
   a word on a machine with no encoder.
 - **It settles.** Every tile a stream carried, or a still sent below the
   ceiling, is owed a still at the ceiling once it has been still for half a
-  second: a PNG on a held list, a WebP at the ceiling on a walked one. What
+  second: a PNG on a held list, a WebP at the ceiling on a walked one, the
+  next stage's upgrade on a progressive one. What
   is owed is looked for every quarter of a
   second, each look an update that waits for a request and the fence as any
   other: the 320 tiles owed longest at most, as runs along a row, the oldest
@@ -941,8 +979,8 @@ it measured, and what the rules beyond Motion's were chosen by, is in
 `examples/tiles-walk-sim.rs`, beside it, plays the captures through this
 encoder and the walk over `walk-sim`'s model of the gateway and the
 browser's link (`crates/wlshare-vp9/examples/sim`), one update in flight,
-as a session does on a walked list or one that holds its dial, and says of
-a run what `walk-sim` says; what it found is in [Tiles
+as a session does on a walked list, one that holds its dial or a
+progressive one, and says of a run what `walk-sim` says; what it found is in [Tiles
 performance](tiles-performance.md#the-walks-verdicts).
 
 ## The density extension

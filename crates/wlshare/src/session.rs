@@ -362,7 +362,7 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         use_vp9: false,
         tiles: None,
         use_tiles: false,
-        tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, adaptive: true },
+        tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, adaptive: true, progressive: false },
         tiles_origin: Instant::now(),
         tiles_quiet: false,
         stream,

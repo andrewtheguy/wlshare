@@ -1,8 +1,10 @@
 //! A RemoteFX Progressive encoder: the codec a Windows host draws its
 //! desktop with where it has no H.264 ([MS-RDPEGFX] 2.2.4 and 3.2.8.1), as
-//! an encoder of this repository's own, written to the decoder the zDesk
-//! page runs (`zdesk-rdp-graphics`, `proto/progressive.rs`), which is what
-//! it is checked against.
+//! an encoder of this repository's own, for the progressive tiles
+//! ([`wlshare_proto::tiles::KIND_PROGRESSIVE`]), whose tables and stream are
+//! the protocol's ([`wlshare_proto::progressive`]). It is written to the
+//! decoder the zDesk page runs (`zdesk-rdp-graphics`, `proto/progressive.rs`),
+//! and its tests read every pass back with a decoder of their own.
 //!
 //! A 64×64 tile is converted to YCbCr in 11.5 fixed point, transformed by
 //! three levels of the reduce-extrapolate 5/3 wavelet, quantized by a table
@@ -22,22 +24,13 @@
 
 use std::collections::HashMap;
 
+use wlshare_proto::progressive::{WBT_TILE_FIRST, WBT_TILE_UPGRADE, block};
+
 pub const TILE: usize = 64;
 pub const COEFFS: usize = TILE * TILE;
 
-pub const WBT_SYNC: u16 = 0xCCC0;
-pub const WBT_FRAME_BEGIN: u16 = 0xCCC1;
-pub const WBT_FRAME_END: u16 = 0xCCC2;
-pub const WBT_CONTEXT: u16 = 0xCCC3;
-pub const WBT_REGION: u16 = 0xCCC4;
-pub const WBT_TILE_SIMPLE: u16 = 0xCCC5;
-pub const WBT_TILE_FIRST: u16 = 0xCCC6;
-pub const WBT_TILE_UPGRADE: u16 = 0xCCC7;
-
-const DWT_REDUCE_EXTRAPOLATE: u8 = 0x01;
+/// A first pass's flag: the difference from what the decoder holds.
 const TILE_DIFFERENCE: u8 = 0x01;
-/// Context flag: sub-band diffing is in use.
-const CONTEXT_SUBBAND_DIFFING: u8 = 0x01;
 
 /// Where each sub-band sits in a component's 4096 coefficients, as
 /// `(offset, count)`, in the order the quantization values are kept: HL1,
@@ -62,12 +55,7 @@ pub const LL3: usize = 9;
 pub struct Quant(pub [u8; 10]);
 
 impl Quant {
-    /// The five packed bytes of an `RFX_COMPONENT_CODEC_QUANT`.
-    pub fn to_bytes(self) -> [u8; 5] {
-        let q = self.0;
-        [q[9] | (q[6] << 4), q[7] | (q[8] << 4), q[3] | (q[4] << 4), q[5] | (q[0] << 4), q[1] | (q[2] << 4)]
-    }
-
+    /// The shifts of the five packed bytes of an `RFX_COMPONENT_CODEC_QUANT`.
     pub fn from_bytes(b: [u8; 5]) -> Self {
         Self([b[3] >> 4, b[4] & 0xF, b[4] >> 4, b[2] & 0xF, b[2] >> 4, b[3] & 0xF, b[0] >> 4, b[1] & 0xF, b[1] >> 4, b[0] & 0xF])
     }
@@ -82,18 +70,12 @@ pub struct Stage {
 }
 
 impl Stage {
-    /// The full stage: nothing held back.
+    /// The full stage: nothing held back; `examples/progressive-stills.rs`
+    /// ends its tables with it.
+    #[allow(dead_code)]
     pub const FULL: Stage = Stage { quality: 100, shifts: [Quant([0; 10]); 3] };
 
-    pub fn to_bytes(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
-        out[0] = self.quality;
-        for (c, q) in self.shifts.iter().enumerate() {
-            out[1 + c * 5..6 + c * 5].copy_from_slice(&q.to_bytes());
-        }
-        out
-    }
-
+    /// A quality label and the three components' packed shifts.
     pub fn from_bytes(b: &[u8]) -> Self {
         let q = |at: usize| Quant::from_bytes(b[at..at + 5].try_into().unwrap());
         Self { quality: b[0], shifts: [q(1), q(6), q(11)] }
@@ -110,6 +92,13 @@ pub struct Tables {
 }
 
 impl Tables {
+    /// The protocol's tables, which a decoder reads every tile with
+    /// ([`wlshare_proto::progressive::QUANT`] and `STAGES`).
+    pub fn protocol() -> Self {
+        use wlshare_proto::progressive::{QUANT, STAGES};
+        Self { quant: [Quant::from_bytes(QUANT); 3], stages: STAGES.iter().map(|stage| Stage::from_bytes(stage)).collect() }
+    }
+
     /// Index of the full stage in the region's table, which the tile's
     /// quality byte names, or 0xFF for a stage holding nothing back.
     fn quality_byte(&self, stage: usize) -> u8 {
@@ -137,7 +126,9 @@ pub struct Held {
 /// One pass as coded: its tile block for the wire, and what it was.
 pub struct Pass {
     pub block: Vec<u8>,
-    /// A first pass coded as a difference from what the decoder held.
+    /// A first pass coded as a difference from what the decoder held, which
+    /// `examples/progressive-stills.rs` counts.
+    #[allow(dead_code)]
     pub diff: bool,
 }
 
@@ -220,6 +211,9 @@ impl Encoder {
         self.ready.clear();
     }
 
+    /// The tiles across the picture, which `examples/progressive-stills.rs`
+    /// sizes its encoders by.
+    #[allow(dead_code)]
     pub fn cols(&self) -> usize {
         self.cols
     }
@@ -235,11 +229,7 @@ impl Encoder {
         self.ready.remove(&cell);
     }
 
-    /// Whether the decoder holds tile `cell`.
-    pub fn holds(&self, cell: (u16, u16)) -> bool {
-        self.tiles.contains_key(&cell)
-    }
-
+    #[cfg(test)]
     pub fn held(&self, cell: (u16, u16)) -> Option<&Held> {
         self.tiles.get(&cell)
     }
@@ -463,58 +453,6 @@ impl Encoder {
         to_bgrx(&self.work, &mut pixels);
         Some(pixels)
     }
-
-    /// A region block over `rects` (x, y, w, h in pixels) carrying `tiles`,
-    /// with this encoder's tables.
-    pub fn region(&self, rects: &[(u16, u16, u16, u16)], tiles: &[Vec<u8>]) -> Vec<u8> {
-        let mut b = vec![TILE as u8];
-        b.extend_from_slice(&(rects.len() as u16).to_le_bytes());
-        b.push(3);
-        b.push(self.tables.stages.len() as u8);
-        b.push(DWT_REDUCE_EXTRAPOLATE);
-        b.extend_from_slice(&(tiles.len() as u16).to_le_bytes());
-        let data = tiles.concat();
-        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        for r in rects {
-            for v in [r.0, r.1, r.2, r.3] {
-                b.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        for q in self.tables.quant {
-            b.extend_from_slice(&q.to_bytes());
-        }
-        for stage in &self.tables.stages {
-            b.extend_from_slice(&stage.to_bytes());
-        }
-        b.extend_from_slice(&data);
-        block(WBT_REGION, &b)
-    }
-
-    /// The bytes a region's header costs around its tiles.
-    pub fn region_overhead(&self, rects: usize) -> usize {
-        6 + 11 + rects * 8 + 15 + self.tables.stages.len() * 16
-    }
-}
-
-/// A whole bitmap stream: sync, frame begin, context, the regions, frame end.
-pub fn pdu(frame: u32, regions: &[Vec<u8>]) -> Vec<u8> {
-    let mut v = block(WBT_SYNC, &[0xCA, 0xAC, 0xCC, 0xCA, 0x00, 0x01]);
-    let mut begin = frame.to_le_bytes().to_vec();
-    begin.extend_from_slice(&(regions.len() as u16).to_le_bytes());
-    v.extend(block(WBT_FRAME_BEGIN, &begin));
-    v.extend(block(WBT_CONTEXT, &[0, TILE as u8, 0, CONTEXT_SUBBAND_DIFFING]));
-    for r in regions {
-        v.extend_from_slice(r);
-    }
-    v.extend(block(WBT_FRAME_END, &[]));
-    v
-}
-
-fn block(kind: u16, body: &[u8]) -> Vec<u8> {
-    let mut v = kind.to_le_bytes().to_vec();
-    v.extend_from_slice(&(body.len() as u32 + 6).to_le_bytes());
-    v.extend_from_slice(body);
-    v
 }
 
 /// `v / 2^p` rounded toward zero.
@@ -952,6 +890,57 @@ mod tests {
         Tables { quant: [Quant([6; 10]); 3], stages: vec![Stage { quality: 25, shifts: [Quant([5, 5, 5, 4, 4, 4, 3, 3, 3, 2]); 3] }, Stage { quality: 50, shifts: [Quant([3, 3, 3, 2, 2, 2, 1, 1, 1, 1]); 3] }, Stage::FULL] }
     }
 
+    /// Every pass of a sequence — first passes at each stage and whole,
+    /// upgrades to full, a changed tile as a difference, a tile forgotten
+    /// and sent again — read back from the protocol's stream by a decoder of
+    /// its own shows what the encoder says the client shows, byte for byte.
+    #[test]
+    fn every_pass_reads_back_as_the_encoder_says() {
+        let pictures = [
+            tile(|x, y| {
+                let h = ((x * 2654435761usize) ^ (y * 40503)) % 251;
+                [h as u8, (h * 7 % 256) as u8, (x * 4) as u8]
+            }),
+            tile(|x, y| if (x * 7 + y * 13) % 11 < 3 && y % 9 != 0 { [0, 0, 0] } else { [255, 255, 255] }),
+            tile(|x, y| [(x * 4) as u8, (y * 4) as u8, ((x ^ y) * 4) as u8]),
+            tile(|_, _| [37, 120, 200]),
+        ];
+        let mut enc = Encoder::new(256, Tables::protocol());
+        let mut dec = super::decoder::Decoder::default();
+        let full = enc.tables.stages.len() - 1;
+        let mut frame = 0;
+        let mut check = |enc: &mut Encoder, cell: (u16, u16), block: Vec<u8>, what: &str| {
+            frame += 1;
+            let rect = (cell.0 * 64, cell.1 * 64, 64, 64);
+            let shown = dec.decode(&wlshare_proto::progressive::stream(frame, &[rect], &[&block]));
+            assert_eq!(shown.len(), 1);
+            assert_eq!(shown[0].0, cell, "{what}: the block's tile");
+            assert!(shown[0].1 == enc.shown(cell).unwrap(), "{what}: the decoder shows what the encoder says");
+        };
+        for (i, px) in pictures.iter().enumerate() {
+            let cell = (i as u16, 0);
+            for stage in 0..full {
+                enc.forget_tile(cell);
+                let pass = enc.first_or_full(cell, px, TILE * 4, TILE, TILE, stage, 1.25);
+                check(&mut enc, cell, pass.block, &format!("tile {i}, a first pass at {stage}"));
+                while let Some(stood) = enc.stage_of(cell).filter(|&s| s < full) {
+                    let up = enc.upgrade(cell, stood + 1).expect("an upgrade");
+                    check(&mut enc, cell, up, &format!("tile {i}, an upgrade to {}", stood + 1));
+                }
+            }
+            // Changed under the decoder: a difference where it has more zeros.
+            let mut changed = px.clone();
+            for p in changed[..TILE * 4 * 16].chunks_mut(4) {
+                p[1] = p[1].wrapping_add(40);
+            }
+            let pass = enc.first(cell, &changed, TILE * 4, TILE, TILE, 0);
+            check(&mut enc, cell, pass.block, &format!("tile {i}, changed"));
+            let up = enc.upgrade(cell, full).expect("to full");
+            check(&mut enc, cell, up, &format!("tile {i}, changed, to full"));
+            assert!(psnr(&enc.shown(cell).unwrap(), &changed) > 30.0, "tile {i} at full: {:.1} dB", psnr(&enc.shown(cell).unwrap(), &changed));
+        }
+    }
+
     /// [`dwt_level`] a line at a time, by [`dwt_line`].
     fn line_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
         let (nl, nh) = (band_l(n), band_h(n));
@@ -1102,6 +1091,317 @@ mod tests {
             assert_eq!((a.block, a.diff), (b.block, b.diff), "tile {:?}", job.cell);
             let (a, b) = (ordered.held(job.cell).unwrap(), ahead.held(job.cell).unwrap());
             assert_eq!((&a.held, &a.sign, a.shifts, a.full), (&b.held, &b.sign, b.shifts, b.full), "tile {:?}", job.cell);
+        }
+    }
+}
+
+/// A RemoteFX Progressive decoder of the tests' own, written from
+/// [MS-RDPEGFX] 3.2.8.1 and [MS-RDPRFX] 3.1.8.1.7 and sharing nothing
+/// with the encoder: it reads a stream as [`wlshare_proto::progressive::stream`]
+/// makes one, its tables from the region, and keeps every tile's
+/// coefficients from one region to the next; the tiles' tests draw with it
+/// too.
+#[cfg(test)]
+pub mod decoder {
+    use std::collections::HashMap;
+
+    const N: usize = 4096;
+    /// Each band's offset and length in a component, HL1 first, LL3 last.
+    const BANDS: [(usize, usize); 10] = [(0, 1023), (1023, 1023), (2046, 961), (3007, 272), (3279, 272), (3551, 256), (3807, 72), (3879, 72), (3951, 64), (4015, 81)];
+
+    /// The ten nibbles of a packed quantizer table, in band order.
+    fn nibbles(b: &[u8]) -> [u8; 10] {
+        [b[3] >> 4, b[4] & 0xF, b[4] >> 4, b[2] & 0xF, b[2] >> 4, b[3] & 0xF, b[0] >> 4, b[1] & 0xF, b[1] >> 4, b[0] & 0xF]
+    }
+
+    struct Bits<'a> {
+        data: &'a [u8],
+        at: usize,
+    }
+
+    impl Bits<'_> {
+        fn bit(&mut self) -> u32 {
+            let b = self.data.get(self.at / 8).map_or(0, |byte| u32::from(byte >> (7 - self.at % 8)) & 1);
+            self.at += 1;
+            b
+        }
+        fn take(&mut self, n: u32) -> u32 {
+            (0..n).fold(0, |v, _| (v << 1) | self.bit())
+        }
+    }
+
+    /// Golomb-Rice with its adaptive parameter.
+    fn gr(bits: &mut Bits<'_>, kr: &mut u32, krp: &mut u32) -> u32 {
+        let mut vk = 0;
+        while bits.bit() == 1 {
+            vk += 1;
+        }
+        let code = (vk << *kr) | bits.take(*kr);
+        if vk == 0 {
+            *krp = krp.saturating_sub(2);
+        } else if vk != 1 {
+            *krp = (*krp + vk).min(80);
+        }
+        *kr = *krp >> 3;
+        code
+    }
+
+    fn rlgr1(data: &[u8]) -> Vec<i32> {
+        let mut bits = Bits { data, at: 0 };
+        let mut out = Vec::with_capacity(N);
+        let (mut kp, mut kr, mut krp) = (8u32, 1u32, 8u32);
+        while out.len() < N && bits.at < data.len() * 8 {
+            let k = kp >> 3;
+            if k > 0 {
+                if bits.bit() == 0 {
+                    out.extend(std::iter::repeat_n(0, 1 << k));
+                    kp = (kp + 4).min(80);
+                    continue;
+                }
+                let run = bits.take(k) as usize;
+                out.extend(std::iter::repeat_n(0, run));
+                let negative = bits.bit() == 1;
+                let magnitude = gr(&mut bits, &mut kr, &mut krp) as i32 + 1;
+                out.push(if negative { -magnitude } else { magnitude });
+                kp = kp.saturating_sub(6);
+            } else {
+                let code = gr(&mut bits, &mut kr, &mut krp);
+                out.push(if code % 2 == 1 { -((code as i32 + 1) / 2) } else { code as i32 / 2 });
+                kp = if code == 0 { (kp + 3).min(80) } else { kp.saturating_sub(3) };
+            }
+        }
+        out.resize(N, 0);
+        out
+    }
+
+    /// The simplified run-length code of an upgrade's new coefficients.
+    struct Srl<'a> {
+        bits: Bits<'a>,
+        kp: u32,
+        zeros: u32,
+        value: bool,
+    }
+
+    impl Srl<'_> {
+        fn next(&mut self, n: u32) -> i32 {
+            loop {
+                if self.zeros > 0 {
+                    self.zeros -= 1;
+                    return 0;
+                }
+                if self.value {
+                    self.value = false;
+                    let negative = self.bits.bit() == 1;
+                    self.kp = self.kp.saturating_sub(6);
+                    let mut magnitude = 1;
+                    while magnitude < (1 << n) - 1 && self.bits.bit() == 0 {
+                        magnitude += 1;
+                    }
+                    return if negative { -magnitude } else { magnitude };
+                }
+                let k = self.kp >> 3;
+                if self.bits.bit() == 0 {
+                    self.zeros = 1 << k;
+                    self.kp = (self.kp + 4).min(80);
+                } else {
+                    self.zeros = self.bits.take(k);
+                    self.value = true;
+                }
+            }
+        }
+    }
+
+    struct Tile {
+        coeffs: [Vec<i16>; 3],
+        sign: [Vec<i8>; 3],
+        shifts: [[u8; 10]; 3],
+    }
+
+    #[derive(Default)]
+    pub struct Decoder {
+        tiles: HashMap<(u16, u16), Tile>,
+    }
+
+    fn le16(b: &[u8], at: usize) -> usize {
+        usize::from(u16::from_le_bytes([b[at], b[at + 1]]))
+    }
+
+    impl Decoder {
+        /// Every tile of `stream`'s region, as `B, G, R, X`, 64×64.
+        pub fn decode(&mut self, stream: &[u8]) -> Vec<((u16, u16), Vec<u8>)> {
+            let mut shown = Vec::new();
+            let mut at = 0;
+            while at < stream.len() {
+                let kind = u16::from_le_bytes([stream[at], stream[at + 1]]);
+                let len = u32::from_le_bytes(stream[at + 2..at + 6].try_into().unwrap()) as usize;
+                if kind == 0xCCC4 {
+                    shown.extend(self.region(&stream[at + 6..at + len]));
+                }
+                at += len;
+            }
+            assert_eq!(at, stream.len(), "the blocks fill the stream");
+            shown
+        }
+
+        fn region(&mut self, r: &[u8]) -> Vec<((u16, u16), Vec<u8>)> {
+            assert_eq!(r[0], 64);
+            let (rects, quants, stages) = (le16(r, 1), usize::from(r[3]), usize::from(r[4]));
+            let mut at = 12 + rects * 8;
+            let quant: Vec<[u8; 10]> = (0..quants).map(|i| nibbles(&r[at + i * 5..])).collect();
+            at += quants * 5;
+            let stage: Vec<[[u8; 10]; 3]> = (0..stages).map(|i| [0, 1, 2].map(|c| nibbles(&r[at + i * 16 + 1 + c * 5..]))).collect();
+            at += stages * 16;
+            let mut shown = Vec::new();
+            while at < r.len() {
+                let (kind, len) = (u16::from_le_bytes([r[at], r[at + 1]]), u32::from_le_bytes(r[at + 2..at + 6].try_into().unwrap()) as usize);
+                let t = &r[at + 6..at + len];
+                let q = [quant[usize::from(t[0])], quant[usize::from(t[1])], quant[usize::from(t[2])]];
+                let cell = (le16(t, 3) as u16, le16(t, 5) as u16);
+                match kind {
+                    0xCCC6 => self.first(cell, t, &stage),
+                    0xCCC7 => self.upgrade(cell, t, &stage),
+                    other => panic!("a tile block of {other:#x}"),
+                }
+                shown.push((cell, self.picture(cell, q)));
+                at += len;
+            }
+            shown
+        }
+
+        fn first(&mut self, cell: (u16, u16), t: &[u8], stage: &[[[u8; 10]; 3]]) {
+            let (difference, quality) = (t[7] & 1 == 1, t[8]);
+            let shifts = if quality == 0xFF { [[0; 10]; 3] } else { stage[usize::from(quality)] };
+            let lens = [le16(t, 9), le16(t, 11), le16(t, 13)];
+            let tile = self.tiles.entry(cell).or_insert_with(|| Tile { coeffs: [vec![0; N], vec![0; N], vec![0; N]], sign: [vec![0; N], vec![0; N], vec![0; N]], shifts });
+            let mut from = 17;
+            for c in 0..3 {
+                let mut v = rlgr1(&t[from..from + lens[c]]);
+                from += lens[c];
+                let (ll, len) = BANDS[9];
+                for i in ll + 1..ll + len {
+                    v[i] += v[i - 1];
+                }
+                for (band, &(at, len)) in BANDS.iter().enumerate() {
+                    let held = tile.coeffs[c][at..at + len].iter_mut().zip(&mut tile.sign[c][at..at + len]);
+                    for ((coeff, sign), &v) in held.zip(&v[at..at + len]) {
+                        let value = (v << shifts[c][band]) as i16;
+                        *coeff = if difference { coeff.wrapping_add(value) } else { value };
+                        *sign = v.signum() as i8;
+                    }
+                }
+            }
+            tile.shifts = shifts;
+        }
+
+        fn upgrade(&mut self, cell: (u16, u16), t: &[u8], stage: &[[[u8; 10]; 3]]) {
+            let quality = t[7];
+            let to = if quality == 0xFF { [[0; 10]; 3] } else { stage[usize::from(quality)] };
+            let lens: Vec<usize> = (0..6).map(|i| le16(t, 8 + i * 2)).collect();
+            let tile = self.tiles.get_mut(&cell).expect("an upgrade of a tile the decoder holds");
+            let mut from = 20;
+            for c in 0..3 {
+                let srl = &t[from..from + lens[c * 2]];
+                let raw = &t[from + lens[c * 2]..from + lens[c * 2] + lens[c * 2 + 1]];
+                from += lens[c * 2] + lens[c * 2 + 1];
+                let (mut srl, mut raw) = (Srl { bits: Bits { data: srl, at: 0 }, kp: 8, zeros: 0, value: false }, Bits { data: raw, at: 0 });
+                for (band, &(at, len)) in BANDS.iter().enumerate() {
+                    let (was, now) = (tile.shifts[c][band], to[c][band]);
+                    let n = u32::from(was - now);
+                    if n == 0 {
+                        continue;
+                    }
+                    for i in at..at + len {
+                        let add = if band == 9 {
+                            (raw.take(n) as i32) << now
+                        } else if tile.sign[c][i] == 0 {
+                            let v = srl.next(n);
+                            tile.sign[c][i] = v.signum() as i8;
+                            v << now
+                        } else {
+                            let v = (raw.take(n) as i32) << now;
+                            if tile.sign[c][i] < 0 { -v } else { v }
+                        };
+                        tile.coeffs[c][i] = tile.coeffs[c][i].wrapping_add(add as i16);
+                    }
+                }
+            }
+            tile.shifts = to;
+        }
+
+        /// The tile's picture: dequantized, the inverse wavelet, YCbCr to
+        /// `B, G, R, X`.
+        fn picture(&self, cell: (u16, u16), quant: [[u8; 10]; 3]) -> Vec<u8> {
+            let tile = &self.tiles[&cell];
+            let planes: Vec<Vec<i32>> = (0..3)
+                .map(|c| {
+                    let mut v = vec![0i32; N];
+                    for (band, &(at, len)) in BANDS.iter().enumerate() {
+                        for (v, &coeff) in v[at..at + len].iter_mut().zip(&tile.coeffs[c][at..at + len]) {
+                            *v = i32::from((i32::from(coeff) << (quant[c][band] - 1)) as i16);
+                        }
+                    }
+                    for (n, at) in [(17, 3807), (33, 3007), (64, 0)] {
+                        inverse_level(&mut v[at..], n);
+                    }
+                    v
+                })
+                .collect();
+            let mut px = vec![0u8; N * 4];
+            for i in 0..N {
+                let y = i64::from(planes[0][i]) + 4096;
+                let (cb, cr) = (i64::from(planes[1][i]), i64::from(planes[2][i]));
+                let to = |v: i64| (v >> 21).clamp(0, 255) as u8;
+                px[i * 4] = to((y << 16) + cb * 115992);
+                px[i * 4 + 1] = to((y << 16) - cb * 22527 - cr * 46819);
+                px[i * 4 + 2] = to((y << 16) + cr * 91916);
+            }
+            px
+        }
+    }
+
+    fn half(v: i32) -> i32 {
+        if v < 0 { -(-v / 2) } else { v / 2 }
+    }
+
+    /// One line back from its low and high halves, the reduce-extrapolate
+    /// wavelet's inverse.
+    fn inverse_line(low: &[i32], high: &[i32], n: usize) -> Vec<i32> {
+        let nh = high.len();
+        let mut x = vec![0; n];
+        for k in 0..=nh {
+            let before = if k > 0 { high[k - 1] } else { 0 };
+            x[2 * k] = match (k, k == nh) {
+                (0, _) => low[0] - high[0],
+                (_, false) => low[k] - half(before + high[k]),
+                (_, true) if n.is_multiple_of(2) => low[k] - half(before),
+                _ => low[k] - before,
+            };
+        }
+        for k in 0..nh {
+            x[2 * k + 1] = 2 * high[k] + half(x[2 * k] + x[2 * k + 2]);
+        }
+        if n.is_multiple_of(2) {
+            x[n - 1] = half(x[n - 2] + low[nh + 1]);
+        }
+        x
+    }
+
+    /// One level back over the bands at the front of `v`: HL, LH, HH, LL.
+    fn inverse_level(v: &mut [i32], n: usize) {
+        let nl = n / 2 + 1;
+        let nh = n - nl;
+        let (hl, lh, hh, ll) = (0, nl * nh, 2 * nl * nh, 2 * nl * nh + nh * nh);
+        let mut rows = vec![0; n * n];
+        for r in 0..n {
+            let (low, high) = if r < nl { (&v[ll + r * nl..][..nl], &v[hl + r * nh..][..nh]) } else { (&v[lh + (r - nl) * nl..][..nl], &v[hh + (r - nl) * nh..][..nh]) };
+            rows[r * n..(r + 1) * n].copy_from_slice(&inverse_line(low, high, n));
+        }
+        for x in 0..n {
+            let low: Vec<i32> = (0..nl).map(|r| rows[r * n + x]).collect();
+            let high: Vec<i32> = (nl..n).map(|r| rows[r * n + x]).collect();
+            for (y, value) in inverse_line(&low, &high, n).into_iter().enumerate() {
+                v[y * n + x] = value;
+            }
         }
     }
 }

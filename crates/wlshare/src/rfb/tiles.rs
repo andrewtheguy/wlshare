@@ -155,62 +155,17 @@ pub enum TilesError {
 /// A tile's side, ZRLE's, from the desktop's top-left: the encoding's.
 const TILE: u16 = wlshare_proto::tiles::TILE;
 
-/// The RemoteFX Progressive encoder, measured here as a Windows host draws
-/// without H.264: `WLSHARE_TILES_PROGRESSIVE=1` runs no stream and codes
-/// every changed tile, moving or still, as a first pass at the stage of
-/// quality 50, a difference where that is smaller, or whole where that
-/// costs little more; the settle refines a still tile to 75 and then to
-/// full. The dial is not read: a slow link gets fewer frames.
-#[allow(dead_code)]
-#[path = "../../examples/progressive/mod.rs"]
-mod progressive;
-
-/// A Windows host's tables, as zDesk's link probe recorded them on
-/// 2026-10-27: one quantization table and the stages of quality 50 and 75.
-fn progressive_tables() -> progressive::Tables {
-    fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
-    }
-    let quant = progressive::Quant::from_bytes(hex("66768899a9").try_into().unwrap());
-    let stage = |quality: u8, table: &str| {
-        let mut b = vec![quality];
-        b.extend(hex(table));
-        progressive::Stage::from_bytes(&b)
-    };
-    // The host's stages of 50 and 75, and ahead of them one of this
-    // encoder's own, 50's holding a bit more back in every band: a third
-    // fewer bytes than 50 and 3 to 4.6 dB coarser over the samples' stills
-    // and motion, for a walk whose dial is low.
-    let mut tables = progressive::Tables {
-        quant: [quant; 3],
-        stages: vec![stage(25, "222233232222223323222222332312"), stage(50, "111122121111112212111111221201"), stage(75, "101111010010111201001011121100"), progressive::Stage::FULL],
-    };
-    // Measured: `WLSHARE_TILES_PROGRESSIVE_FINE=1` makes the full table a bit
-    // finer in every band above RemoteFX's least quantizer, 6, and holds that
-    // bit back at 50 and 75, so the first passes are coded as the host's and
-    // only the full stage is finer.
-    if std::env::var("WLSHARE_TILES_PROGRESSIVE_FINE").as_deref() == Ok("1") {
-        let finer: Vec<u8> = quant.0.iter().map(|&q| u8::from(q > 6)).collect();
-        for q in &mut tables.quant {
-            for (v, d) in q.0.iter_mut().zip(&finer) {
-                *v -= d;
-            }
-        }
-        let last = tables.stages.len() - 1;
-        for stage in &mut tables.stages[..last] {
-            for q in &mut stage.shifts {
-                for (v, d) in q.0.iter_mut().zip(&finer) {
-                    *v += d;
-                }
-            }
-        }
-    }
-    tables
-}
+use super::progressive;
 
 /// A progressive first pass whole costs at most this many times the one at
 /// its stage.
 const PROGRESSIVE_SLACK: f32 = 1.25;
+
+/// The dial below which a progressive first pass is coded at the stage
+/// coarser than 50 (measured: over the mixed session at 5 Mbit/s, 70 and 60
+/// alike sent 7% fewer bytes than 50 alone and showed a change 11% sooner,
+/// 0.8 dB coarser on the mean; 70 the window's sooner too).
+const PROGRESSIVE_COARSE_BELOW: u8 = 70;
 
 /// What a progressive tile is sent as: its first pass, or the upgrades from
 /// the stage it stands at.
@@ -1018,32 +973,9 @@ pub struct TilesEncoder {
     scratch: Vec<u8>,
     /// The progressive encoder, where every tile is a progressive tile.
     progressive: Option<progressive::Encoder>,
-    /// Progressive tiles sent and their bytes: first passes at the coarser
-    /// stage, at 50, at 75, whole, as differences, upgrades; printed when
-    /// the encoder goes.
-    progressive_sent: [(u64, u64); 6],
-    /// The tiles of the regions the adaptive tiles would stream, as the last
-    /// retune laid them out, where every tile is a progressive tile.
-    progressive_streamed: HashSet<(u16, u16)>,
-    /// [`Self::progressive_sent`] for the tiles in those regions alone.
-    progressive_sent_streamed: [(u64, u64); 6],
-    /// The dial below which a progressive first pass is coded at the stage
-    /// coarser than 50: `WLSHARE_TILES_PROGRESSIVE_COARSE_BELOW`, else 70.
-    progressive_coarse_below: u8,
-    /// How many threads code an update's progressive first passes:
-    /// `WLSHARE_TILES_PROGRESSIVE_THREADS`, or every core.
+    /// How many threads code an update's progressive first passes: every
+    /// core.
     progressive_threads: usize,
-}
-
-impl Drop for TilesEncoder {
-    fn drop(&mut self) {
-        if self.progressive.is_some() {
-            let [first25, first50, first75, whole, diff, upgrade] = self.progressive_sent;
-            eprintln!("progressive tiles, count and bytes: first at 25 {first25:?}, first at 50 {first50:?}, first at 75 {first75:?}, whole {whole:?}, differences {diff:?}, upgrades {upgrade:?}");
-            let [first25, first50, first75, whole, diff, upgrade] = self.progressive_sent_streamed;
-            eprintln!("progressive tiles the adaptive tiles would stream, count and bytes: first at 25 {first25:?}, first at 50 {first50:?}, first at 75 {first75:?}, whole {whole:?}, differences {diff:?}, upgrades {upgrade:?}");
-        }
-    }
 }
 
 impl TilesEncoder {
@@ -1080,16 +1012,9 @@ impl TilesEncoder {
             changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
-            progressive: None,
-            progressive_sent: [(0, 0); 6],
-            progressive_streamed: HashSet::new(),
-            progressive_sent_streamed: [(0, 0); 6],
-            progressive_coarse_below: std::env::var("WLSHARE_TILES_PROGRESSIVE_COARSE_BELOW").ok().and_then(|v| v.parse().ok()).unwrap_or(70),
-            progressive_threads: std::env::var("WLSHARE_TILES_PROGRESSIVE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from)),
+            progressive: picture.progressive.then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
+            progressive_threads: std::thread::available_parallelism().map_or(1, usize::from),
         };
-        if std::env::var("WLSHARE_TILES_PROGRESSIVE").as_deref() == Ok("1") {
-            encoder.progressive = Some(progressive::Encoder::new(width, progressive_tables()));
-        }
         encoder.forget();
         Ok(encoder)
     }
@@ -1129,6 +1054,9 @@ impl TilesEncoder {
         self.ceiling = picture.quality;
         self.adaptive = picture.adaptive;
         self.quality = picture.quality;
+        if picture.progressive != self.progressive.is_some() {
+            self.progressive = picture.progressive.then(|| progressive::Encoder::new(self.size.0, progressive::Tables::protocol()));
+        }
         self.forget();
     }
 
@@ -1157,11 +1085,11 @@ impl TilesEncoder {
 
     /// The stage a progressive first pass is coded at: 75 while the walk is
     /// at the ceiling and not coarse, 50 while its dial is at
-    /// [`Self::progressive_coarse_below`] or above, else the coarser stage.
+    /// [`PROGRESSIVE_COARSE_BELOW`] or above, else the coarser stage.
     fn first_stage(&self) -> usize {
         if !self.coarse && self.quality >= self.ceiling {
             2
-        } else if self.quality >= self.progressive_coarse_below {
+        } else if self.quality >= PROGRESSIVE_COARSE_BELOW {
             1
         } else {
             0
@@ -1206,25 +1134,15 @@ impl TilesEncoder {
         let enc = self.progressive.as_mut().expect("progressive");
         let full = enc.tables.stages.len() - 1;
         let (w, h) = (usize::from(area.w()), usize::from(area.h()));
-        let (block, kind) = match (pass, enc.stage_of(cell)) {
-            (ProgressivePass::Upgrade, Some(stage)) => (enc.upgrade(cell, (stage + 1).min(full)), 5),
-            (ProgressivePass::Upgrade, None) => (Some(enc.first(cell, &self.mirror[at..], self.stride, w, h, full).block), 3),
-            (ProgressivePass::First, _) => {
-                let pass = enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, stage, PROGRESSIVE_SLACK);
-                let kind = if pass.diff { 4 } else if enc.stage_of(cell) == Some(full) { 3 } else { stage };
-                (Some(pass.block), kind)
-            }
+        let block = match (pass, enc.stage_of(cell)) {
+            (ProgressivePass::Upgrade, Some(stage)) => enc.upgrade(cell, (stage + 1).min(full)),
+            (ProgressivePass::Upgrade, None) => Some(enc.first(cell, &self.mirror[at..], self.stride, w, h, full).block),
+            (ProgressivePass::First, _) => Some(enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, stage, PROGRESSIVE_SLACK).block),
         };
         let settled = enc.stage_of(cell) == Some(full);
         if let Some(block) = block {
-            self.progressive_sent[kind].0 += 1;
-            self.progressive_sent[kind].1 += block.len() as u64;
-            if self.progressive_streamed.contains(&cell) {
-                self.progressive_sent_streamed[kind].0 += 1;
-                self.progressive_sent_streamed[kind].1 += block.len() as u64;
-            }
             let from = out.out.len();
-            let header = TileHeader::Webp { len: 0 };
+            let header = TileHeader::Progressive { len: 0 };
             let header_at = out.header(area, header);
             out.out.extend_from_slice(&block);
             out.length(from, header_at, header)?;
@@ -1841,14 +1759,10 @@ impl TilesEncoder {
             return Ok(());
         }
         self.retuned_at = Some(now);
-        let worthy = components(moving);
         if self.progressive.is_some() {
-            // Measured: what the adaptive tiles would stream, every tile still a
-            // progressive tile.
-            let size = self.size;
-            self.progressive_streamed = merge(worthy, MAX_STREAMS).into_iter().filter_map(|bbox| bbox.to_area(size)).flat_map(tiles_of).map(|(cell, _)| cell).collect();
             return Ok(());
         }
+        let worthy = components(moving);
         let busy: HashSet<(u16, u16)> = moving.iter().copied().filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell))).collect();
         for live in &mut self.live {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
@@ -1940,11 +1854,7 @@ impl TilesEncoder {
         }
         self.cover();
         self.owe(&unsent);
-        // Measured: `WLSHARE_TILES_PROGRESSIVE_REFINE=busy` refines progressive
-        // tiles on a coarse walk too, a tick's 40 at a time, without waiting
-        // for the desktop to be quiet.
-        let busy = self.progressive.is_some() && std::env::var("WLSHARE_TILES_PROGRESSIVE_REFINE").as_deref() == Ok("busy");
-        if self.coarse && !busy && now.saturating_sub(self.changed_at) < COARSE_QUIET {
+        if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
             return Ok(());
         }
 
@@ -2069,6 +1979,9 @@ mod tests {
         streams: HashMap<u8, Place>,
         /// The cache of tiles, each slot a tile's `B, G, R, X` rows.
         slots: HashMap<u16, Vec<u8>>,
+        /// The progressive tiles' decoder, the tests' own.
+        decoder: super::progressive::decoder::Decoder,
+        progressives: usize,
         pngs: usize,
         webps: usize,
         starts: usize,
@@ -2082,7 +1995,7 @@ mod tests {
 
     impl Page {
         fn new(w: u16, h: u16) -> Self {
-            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), pngs: 0, webps: 0, starts: 0, frames: 0, ends: 0, copies: 0, cached: 0, stored: 0, bytes: 0 }
+            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), decoder: Default::default(), progressives: 0, pngs: 0, webps: 0, starts: 0, frames: 0, ends: 0, copies: 0, cached: 0, stored: 0, bytes: 0 }
         }
 
         /// Packed RGB drawn at the rectangle.
@@ -2170,6 +2083,18 @@ mod tests {
                             self.canvas[at..at + line].copy_from_slice(pixels);
                         }
                     }
+                    TileBody::Progressive(block) => {
+                        self.progressives += 1;
+                        let cell = wlshare_proto::progressive::tile_of(&block).expect("a tile block");
+                        assert!(x == cell.0 * TILE && y == cell.1 * TILE && w <= TILE && h <= TILE, "the block's tile is the rectangle's: {cell:?} at {w}x{h}+{x}+{y}");
+                        let shown = self.decoder.decode(&wlshare_proto::progressive::stream(0, &[(x, y, w, h)], &[&block]));
+                        let [(_, tile)] = &shown[..] else { panic!("one tile") };
+                        let line = usize::from(w) * 4;
+                        for row in 0..usize::from(h) {
+                            let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+                            self.canvas[at..at + line].copy_from_slice(&tile[row * usize::from(TILE) * 4..][..line]);
+                        }
+                    }
                 }
             }
         }
@@ -2187,6 +2112,12 @@ mod tests {
         /// How many pixels differ from `pixels` in B, G or R.
         fn off(&self, pixels: &[u8]) -> usize {
             self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).filter(|(a, b)| a[..3] != b[..3]).count()
+        }
+
+        /// How close the page is to `pixels`, the PSNR over B, G and R.
+        fn psnr(&self, pixels: &[u8]) -> f64 {
+            let se: f64 = self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).flat_map(|(a, b)| a[..3].iter().zip(&b[..3])).map(|(a, b)| f64::from(a.abs_diff(*b)).powi(2)).sum();
+            if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64.powi(2) * (self.canvas.len() / 4 * 3) as f64 / se).log10() }
         }
 
         /// How far the page is from `pixels`: the sum over every sample of B,
@@ -2237,12 +2168,25 @@ mod tests {
 
     /// A list that holds the dial at `quality`.
     fn held(quality: u8) -> TilesPicture {
-        TilesPicture { quality, adaptive: false }
+        TilesPicture { quality, adaptive: false, progressive: false }
     }
 
     /// A list that lets the dial walk under `quality`.
     fn walked(quality: u8) -> TilesPicture {
-        TilesPicture { quality, adaptive: true }
+        TilesPicture { quality, adaptive: true, progressive: false }
+    }
+
+    /// A walked list whose every tile is progressive.
+    fn progressive(quality: u8) -> TilesPicture {
+        TilesPicture { quality, adaptive: true, progressive: true }
+    }
+
+    /// A desktop a progressive tile settles close to: a soft gradient with
+    /// text over it.
+    fn soft(w: u16, h: u16, seed: u32) -> Vec<u8> {
+        let mut pixels: Vec<u8> = (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).flat_map(move |x| [(x / 2 + seed as usize) as u8, (y / 2) as u8, ((x + y) / 4) as u8, 0])).collect();
+        glyphs(&mut pixels, w, Rect { x: 16, y: 8, width: w - 32, height: h / 2 });
+        pixels
     }
 
     /// A region coder standing in for the daemon's H.264 one: its frames are
@@ -2453,6 +2397,96 @@ mod tests {
         step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(5000));
         assert_eq!(page.webps, 7);
         assert!(!encoder.owed(), "at the ceiling a still owes nothing");
+    }
+
+    /// On a progressive list every rectangle is a progressive tile, a COPY,
+    /// a CACHED or a STORE: no PNG, WebP or stream, even where the desktop
+    /// moves. Each settles to the full stage, close to the desktop, and owes
+    /// nothing then.
+    #[test]
+    fn a_progressive_list_is_sent_progressive_tiles_alone() {
+        let (w, h) = (256u16, 128u16);
+        let mut pixels = soft(w, h, 0);
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert!(first.keyframe, "the first picture is one");
+        assert_eq!((page.progressives, page.pngs, page.webps), (8, 0, 0), "every tile a progressive tile");
+        settle(&mut encoder, &mut page, ms(0));
+        assert!(!encoder.owed(), "settled at full");
+        assert!(page.psnr(&pixels) > 40.0, "settled close: {:.1} dB", page.psnr(&pixels));
+
+        // Moving: no stream, every frame progressive tiles.
+        encoder.set_pace(40, false);
+        let busy = Rect { x: 64, y: 0, width: 128, height: 64 };
+        for n in 0..12 {
+            paint(&mut pixels, w, busy, n);
+            step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100 + 50 * u64::from(n)));
+        }
+        assert_eq!((page.starts, page.pngs, page.webps), (0, 0, 0), "no stream, no still but progressive");
+        assert!(encoder.owed(), "below the ceiling, owed the stages after");
+        encoder.set_pace(80, false);
+        pixels = soft(w, h, 3);
+        step(&mut encoder, &mut page, &pixels, None, ms(1000));
+        settle(&mut encoder, &mut page, ms(1000));
+        assert!(!encoder.owed());
+        assert!(page.psnr(&pixels) > 40.0, "settled close again: {:.1} dB", page.psnr(&pixels));
+    }
+
+    /// A page scrolled below the ceiling is copies of tiles owed their
+    /// upgrades: each tile a copy draws over is sent again from what the
+    /// desktop shows there, as a first pass, and the settle ends at the
+    /// picture a client sent it fresh would hold, not at the tile the copy
+    /// drew over.
+    #[test]
+    fn a_progressive_copy_is_sent_again_from_the_desktop() {
+        let (w, h) = (256u16, 256u16);
+        let document = noise(w, 3 * h, 21);
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        encoder.set_pace(30, false);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let mut pixels = Vec::new();
+        for (n, top) in [24, 48, 72, 96].into_iter().enumerate() {
+            pixels = scrolled(&document, w, top, h);
+            step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100 * (n as u64 + 1)));
+        }
+        assert_eq!(page.copies, 4, "scrolled as copies");
+        encoder.set_pace(80, false);
+        settle(&mut encoder, &mut page, ms(500));
+        assert!(!encoder.owed());
+        let mut fresh = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut sent = Page::new(w, h);
+        step(&mut fresh, &mut sent, &pixels, None, ms(0));
+        settle(&mut fresh, &mut sent, ms(0));
+        let (scrolled_db, fresh_db) = (page.psnr(&pixels), sent.psnr(&pixels));
+        assert!(scrolled_db > fresh_db - 0.5, "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}");
+    }
+
+    /// A tile shown again is a draw of its cache slot, which leaves the
+    /// client holding no coefficients the encoder counts on: the next change
+    /// there is a first pass whole, and the page ends right.
+    #[test]
+    fn a_progressive_tile_drawn_from_the_cache_starts_over() {
+        let (w, h) = (256u16, 128u16);
+        let (a, b) = (soft(w, h, 0), soft(w, h, 90));
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &a, None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        step(&mut encoder, &mut page, &b, None, ms(1000));
+        settle(&mut encoder, &mut page, ms(1000));
+        let cached = page.cached;
+        step(&mut encoder, &mut page, &a, None, ms(2000));
+        assert!(page.cached > cached, "the first picture again, from the cache");
+        settle(&mut encoder, &mut page, ms(2000));
+        assert!(page.psnr(&a) > 40.0, "{:.1} dB", page.psnr(&a));
+        let mut c = a.clone();
+        paint(&mut c, w, Rect { x: 0, y: 0, width: 64, height: 64 }, 4);
+        step(&mut encoder, &mut page, &c, Some(&[Rect { x: 0, y: 0, width: 64, height: 64 }]), ms(3000));
+        settle(&mut encoder, &mut page, ms(3000));
+        assert!(!encoder.owed());
+        assert!(page.psnr(&c) > 30.0, "{:.1} dB", page.psnr(&c));
     }
 
     /// A tick sends the oldest runs owed: below the ceiling

@@ -410,6 +410,7 @@ impl Page {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
                     }
                 }
+                TileBody::Progressive(_) => return Err("a progressive tile, which no list here asks for".into()),
             }
         }
         Ok(sent)
@@ -631,7 +632,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 setup = cost;
                 Some(coder)
             };
-            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, TilesPicture { quality, adaptive: args.walk_at.is_some() }, encoder)? });
+            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, TilesPicture { quality, adaptive: args.walk_at.is_some(), progressive: false }, encoder)? });
         }
         let run = run.as_mut().expect("just made");
 
@@ -770,7 +771,7 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
         let quality = args.quality.unwrap_or(frame.quality);
         let fresh = run.as_ref().is_none_or(|(size, _)| *size != frame.size);
         if fresh {
-            run = Some((frame.size, Tiles::new(frame.size, TilesPicture { quality, adaptive: false }, encoder)?));
+            run = Some((frame.size, Tiles::new(frame.size, TilesPicture { quality, adaptive: false, progressive: false }, encoder)?));
         }
         let (_, tiles) = run.as_mut().expect("just made");
         tiles.ticks(now)?;

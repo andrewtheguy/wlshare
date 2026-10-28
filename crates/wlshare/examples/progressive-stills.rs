@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 use wlshare_vp9::capture::Reader;
 
 #[allow(dead_code)]
-#[path = "progressive/mod.rs"]
+#[path = "../src/rfb/progressive.rs"]
 mod progressive;
 
 use progressive::{Encoder, Quant, Stage, Tables};

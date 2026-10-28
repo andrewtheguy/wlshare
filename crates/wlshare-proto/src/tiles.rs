@@ -2,11 +2,14 @@
 //! video stream of its own for each region that moves, for a client on a link
 //! with room to spare — or, on a list that lets the dial walk, every still a
 //! lossy WebP at the dial, for a client that wants the walk more than a
-//! picture that ends exact.
+//! picture that ends exact — or, on a walked list that names
+//! [`ENCODING_TILES_PROGRESSIVE`], every tile a RemoteFX Progressive tile,
+//! still or moving, and no stream.
 //!
 //! A private encoding, [`crate::ENCODING_TILES`], beside the VP9 encoding
 //! ([`crate::vp9`]) rather than in place of it: a client lists one or the
-//! other, and beside it the dial and whether it walks ([`TilesPicture`]).
+//! other, and beside it the dial, whether it walks and whether its tiles are
+//! progressive ([`TilesPicture`]).
 //!
 //! A pixel update in this encoding is any number of rectangles of it, drawn in
 //! order, each a rectangle of the desktop whose body begins with a kind
@@ -22,6 +25,7 @@
 //! 5 COPY    u16 x | u16 y        the picture at (x, y) the rectangle's size
 //! 6 CACHED  u16 slot             the tile kept in slot N, drawn at the rectangle
 //! 7 STORE   u16 slot             what the client holds at the rectangle, kept in slot N
+//! 8 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
 //! ```
 //!
 //! - A **PNG** is the desktop's pixels in the rectangle exactly, 8-bit RGB or
@@ -32,6 +36,17 @@
 //!   still of a list whose dial walks, and nothing else's: one below the
 //!   ceiling is owed again at the ceiling once the link has room, and nothing
 //!   is owed exact. A list whose dial walks is sent no PNG.
+//! - A **PROGRESSIVE** is the rectangle's tile — one [`TILE`] square on the
+//!   tile grid from the desktop's top-left, cut by the desktop's edge — as a
+//!   RemoteFX Progressive tile block ([`crate::progressive`]): a first pass at
+//!   a stage, which replaces what the client held of the tile or adds to it as
+//!   a difference, or an upgrade, the bits the stage before held back. The
+//!   client decodes every one in order and holds each tile's coefficients from
+//!   one to the next; what it draws is the tile as those coefficients show
+//!   it. It is every rectangle of a progressive list but a COPY, a CACHED and
+//!   a STORE: no PNG, WEBP or stream. A first pass below the full stage is
+//!   owed its upgrades once the link has room, and the full stage is the
+//!   settled picture, lossy still: nothing is owed exact.
 //! - A **START** begins a stream on `stream`, over its rectangle: an H.264
 //!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
 //!   4:2:0, BT.601 at studio swing, of the rectangle's size rounded up to even
@@ -89,6 +104,13 @@ pub const KIND_COPY: u8 = 5;
 pub const KIND_CACHED: u8 = 6;
 /// What the client holds at the rectangle, kept in a cache slot.
 pub const KIND_STORE: u8 = 7;
+/// A RemoteFX Progressive tile block of the rectangle's tile, on a
+/// progressive list.
+pub const KIND_PROGRESSIVE: u8 = 8;
+
+/// Listed beside [`crate::ENCODING_TILES`] on a list whose dial walks, asks
+/// for every tile progressive: the ASCII bytes `WLSP`.
+pub const ENCODING_TILES_PROGRESSIVE: i32 = 0x574c_5350;
 
 /// A tile's side: the desktop is in tiles this square from its top-left, and
 /// a STORE or a CACHED rectangle is one of them.
@@ -105,11 +127,13 @@ pub const CACHE_SLOTS: u16 = 4096;
 /// held there,
 /// `WLSD` ([`ENCODING_VP9_HELD`]) beside it, every still exact and the
 /// streams at the dial whatever the link does, as the VP9 encoding reads
-/// the same two.
+/// the same two. A walked list that names [`ENCODING_TILES_PROGRESSIVE`]
+/// beside it is progressive: every tile a RemoteFX Progressive tile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TilesPicture {
     pub quality: u8,
     pub adaptive: bool,
+    pub progressive: bool,
 }
 
 impl TilesPicture {
@@ -117,7 +141,8 @@ impl TilesPicture {
     /// name the encoding. The server has no quality of its own, so a list
     /// that names the encoding without one is fatal, and so is one that
     /// names the VP9 encoding beside it: they are two pictures, of which a
-    /// client wants one.
+    /// client wants one. Progressive tiles end lossy, so a held list that
+    /// names them is fatal too.
     pub fn listed(encodings: &[i32]) -> Result<Option<Self>, TilesListError> {
         let has = |e: i32| encodings.contains(&e);
         if !has(crate::ENCODING_TILES) {
@@ -127,7 +152,11 @@ impl TilesPicture {
             return Err(TilesListError::Both);
         }
         let quality = crate::listed_quality(encodings).ok_or(TilesListError::NoQuality)?;
-        Ok(Some(Self { quality, adaptive: !has(ENCODING_VP9_HELD) }))
+        let (adaptive, progressive) = (!has(ENCODING_VP9_HELD), has(ENCODING_TILES_PROGRESSIVE));
+        if progressive && !adaptive {
+            return Err(TilesListError::HeldProgressive);
+        }
+        Ok(Some(Self { quality, adaptive, progressive }))
     }
 
     /// The list that asks for this picture: the encoding, the quality always,
@@ -138,6 +167,9 @@ impl TilesPicture {
         let mut listed = vec![crate::ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + i32::from(quality)];
         if !self.adaptive {
             listed.push(ENCODING_VP9_HELD);
+        }
+        if self.progressive {
+            listed.push(ENCODING_TILES_PROGRESSIVE);
         }
         listed
     }
@@ -151,12 +183,14 @@ pub enum TilesListError {
     NoQuality,
     #[error("the list names both the tiles and the VP9 encoding")]
     Both,
+    #[error("the list names progressive tiles on a held dial, which they never settle exact for")]
+    HeldProgressive,
 }
 
 /// Why a tiles rectangle's body is not one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
-    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, WEBP, COPY, CACHED and STORE")]
+    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, WEBP, COPY, CACHED, STORE and PROGRESSIVE")]
     UnknownKind(u8),
     #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
     Slot(u16),
@@ -187,13 +221,15 @@ pub enum TileHeader {
     /// What the client holds at the rectangle, kept in `slot`; nothing
     /// follows.
     Store { slot: u16 },
+    /// A progressive tile block of `len` bytes follows.
+    Progressive { len: usize },
 }
 
 impl TileHeader {
     /// The bytes of a header that begins with `kind`, the kind included.
     pub fn len_of(kind: u8) -> Result<usize, TilesParseError> {
         match kind {
-            KIND_PNG | KIND_WEBP | KIND_COPY => Ok(5),
+            KIND_PNG | KIND_WEBP | KIND_COPY | KIND_PROGRESSIVE => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
             KIND_CACHED | KIND_STORE => Ok(3),
@@ -215,6 +251,7 @@ impl TileHeader {
             Self::Copy { x, y } => Self::Copy { x, y },
             Self::Cached { slot } => Self::Cached { slot },
             Self::Store { slot } => Self::Store { slot },
+            Self::Progressive { .. } => Self::Progressive { len },
         }
     }
 
@@ -231,6 +268,7 @@ impl TileHeader {
             Self::Copy { x, y } => [&[KIND_COPY][..], &x.to_be_bytes(), &y.to_be_bytes()].concat(),
             Self::Cached { slot } => [&[KIND_CACHED][..], &slot.to_be_bytes()].concat(),
             Self::Store { slot } => [&[KIND_STORE][..], &slot.to_be_bytes()].concat(),
+            Self::Progressive { len } => [&[KIND_PROGRESSIVE][..], &length(len)].concat(),
         }
     }
 
@@ -253,6 +291,7 @@ impl TileHeader {
             KIND_START => Self::Start { stream: buf[1], len: len(2)? },
             KIND_FRAME => Self::Frame { stream: buf[1], len: len(2)? },
             KIND_WEBP => Self::Webp { len: len(1)? },
+            KIND_PROGRESSIVE => Self::Progressive { len: len(1)? },
             KIND_COPY => Self::Copy { x: u16::from_be_bytes([buf[1], buf[2]]), y: u16::from_be_bytes([buf[3], buf[4]]) },
             KIND_CACHED | KIND_STORE => {
                 let slot = u16::from_be_bytes([buf[1], buf[2]]);
@@ -275,18 +314,23 @@ mod tests {
     fn the_list_names_one_picture_its_dial_and_whether_it_walks() {
         let quality = ENCODING_VP9_QUALITY_BASE + 70;
         let listed = TilesPicture::listed;
-        assert_eq!(listed(&[crate::ENCODING_TILES, quality, 16]), Ok(Some(TilesPicture { quality: 70, adaptive: true })));
-        assert_eq!(listed(&[crate::ENCODING_TILES, quality, ENCODING_VP9_HELD]), Ok(Some(TilesPicture { quality: 70, adaptive: false })));
+        assert_eq!(listed(&[crate::ENCODING_TILES, quality, 16]), Ok(Some(TilesPicture { quality: 70, adaptive: true, progressive: false })));
+        assert_eq!(listed(&[crate::ENCODING_TILES, quality, ENCODING_VP9_HELD]), Ok(Some(TilesPicture { quality: 70, adaptive: false, progressive: false })));
+        assert_eq!(listed(&[crate::ENCODING_TILES, quality, ENCODING_TILES_PROGRESSIVE]), Ok(Some(TilesPicture { quality: 70, adaptive: true, progressive: true })));
+        assert_eq!(listed(&[crate::ENCODING_TILES, quality, ENCODING_VP9_HELD, ENCODING_TILES_PROGRESSIVE]), Err(TilesListError::HeldProgressive));
         assert_eq!(listed(&[crate::ENCODING_TILES, 16]), Err(TilesListError::NoQuality));
         assert_eq!(listed(&[crate::ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + 101]), Err(TilesListError::NoQuality));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_VP9, quality]), Err(TilesListError::Both));
         assert_eq!(listed(&[16, quality]), Ok(None));
-        let walked = TilesPicture { quality: 80, adaptive: true };
-        let held = TilesPicture { quality: 80, adaptive: false };
+        let walked = TilesPicture { quality: 80, adaptive: true, progressive: false };
+        let held = TilesPicture { quality: 80, adaptive: false, progressive: false };
+        let progressive = TilesPicture { quality: 80, adaptive: true, progressive: true };
         assert_eq!(walked.encodings(), [crate::ENCODING_TILES, 0x574c_5150]);
         assert_eq!(held.encodings(), [crate::ENCODING_TILES, 0x574c_5150, ENCODING_VP9_HELD]);
+        assert_eq!(progressive.encodings(), [crate::ENCODING_TILES, 0x574c_5150, 0x574c_5350]);
         assert_eq!(listed(&walked.encodings()), Ok(Some(walked)));
         assert_eq!(listed(&held.encodings()), Ok(Some(held)));
+        assert_eq!(listed(&progressive.encodings()), Ok(Some(progressive)));
     }
 
     /// Each kind against the documented layout, and read back.
@@ -301,6 +345,7 @@ mod tests {
             (TileHeader::Copy { x: 0x0102, y: 0x0304 }, vec![5, 1, 2, 3, 4]),
             (TileHeader::Cached { slot: 0x0102 }, vec![6, 1, 2]),
             (TileHeader::Store { slot: 0x0FFF }, vec![7, 0x0F, 0xFF]),
+            (TileHeader::Progressive { len: 0x0102 }, vec![8, 0, 0, 1, 2]),
         ] {
             assert_eq!(header.to_bytes(), bytes);
             assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -311,7 +356,7 @@ mod tests {
 
     #[test]
     fn a_length_filled_in_keeps_the_header_its_size() {
-        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Webp { len: 0 }, TileHeader::Copy { x: 1, y: 2 }, TileHeader::Cached { slot: 3 }, TileHeader::Store { slot: 4 }] {
+        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Webp { len: 0 }, TileHeader::Copy { x: 1, y: 2 }, TileHeader::Cached { slot: 3 }, TileHeader::Store { slot: 4 }, TileHeader::Progressive { len: 0 }] {
             let filled = header.with_len(9);
             assert_eq!(filled.to_bytes().len(), header.to_bytes().len());
             assert_eq!(filled.to_bytes()[0], header.to_bytes()[0], "the kind is kept");
@@ -324,7 +369,8 @@ mod tests {
 
     #[test]
     fn a_bad_kind_length_or_slot_is_fatal() {
-        assert_eq!(TileHeader::parse(&[8]), Err(TilesParseError::UnknownKind(8)));
+        assert_eq!(TileHeader::parse(&[9]), Err(TilesParseError::UnknownKind(9)));
+        assert_eq!(TileHeader::parse(&[8, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
         assert_eq!(TileHeader::parse(&[6, 0x10, 0]), Err(TilesParseError::Slot(4096)));
         assert_eq!(TileHeader::parse(&[7, 0xFF, 0xFF]), Err(TilesParseError::Slot(65535)));
         assert_eq!(TileHeader::parse(&[6, 0x0F, 0xFF, 9]), Ok(Some((TileHeader::Cached { slot: 4095 }, 3))), "the last slot");

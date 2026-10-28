@@ -267,6 +267,9 @@ pub enum TileBody {
     Cached { slot: u16 },
     /// What the client holds at the rectangle, one tile, kept in `slot`.
     Store { slot: u16 },
+    /// A RemoteFX Progressive tile block of the rectangle's tile, on a
+    /// progressive list.
+    Progressive(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,6 +464,10 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                 TileHeader::Copy { x, y } => (RectBody::Tiles(TileBody::Copy { x, y }), at),
                 TileHeader::Cached { slot } => (RectBody::Tiles(TileBody::Cached { slot }), at),
                 TileHeader::Store { slot } => (RectBody::Tiles(TileBody::Store { slot }), at),
+                TileHeader::Progressive { len } => {
+                    let Some(block) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Progressive(block)), at + len)
+                }
             }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
@@ -516,7 +523,7 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
 mod tests {
     use super::*;
     use wlshare_proto::audio::{AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect};
-    use wlshare_proto::tiles::{KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PNG, KIND_START, KIND_STORE, KIND_WEBP};
+    use wlshare_proto::tiles::{KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PNG, KIND_PROGRESSIVE, KIND_START, KIND_STORE, KIND_WEBP};
 
 
     use crate::rfb::audio::FlacEncoder;
@@ -629,7 +636,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(15).to_vec();
+        let mut wire = msg::update_header(16).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -656,6 +663,8 @@ mod tests {
         wire.extend_from_slice(&[KIND_STORE, 0x0F, 0xFF]);
         wire.extend_from_slice(&msg::rect_header(128, 64, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_CACHED, 0, 7]);
+        wire.extend_from_slice(&msg::rect_header(192, 64, 64, 64, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_PROGRESSIVE, 0, 0, 0, 2, 0xC6, 0xCC]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -683,6 +692,7 @@ mod tests {
         assert_eq!(rects[12], Rect { x: 0, y: 0, width: 320, height: 160, body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 }) });
         assert_eq!(rects[13], Rect { x: 64, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Store { slot: 4095 }) });
         assert_eq!(rects[14], Rect { x: 128, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Cached { slot: 7 }) });
+        assert_eq!(rects[15], Rect { x: 192, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Progressive(vec![0xC6, 0xCC])) });
     }
 
 
@@ -697,8 +707,8 @@ mod tests {
         assert_eq!(parse(&wire), Err(ParseError::RectTooLong(u32::MAX as usize)));
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
-        wire.push(8);
-        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(8))));
+        wire.push(9);
+        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(9))));
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_CACHED, 0x10, 0]);
