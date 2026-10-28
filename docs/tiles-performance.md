@@ -477,13 +477,14 @@ progressive ones.
 | mixed-2880x1800@2 | 25 | 14.4 → 14.5 | 64 → 72 | 156 → 165 | 8.52 → 8.57 | 45.5 → 41.5 | 46.4 → 47.6 |
 
 At 50 Mbit/s the frame rates and the pictures are as at 25, and the windows send 17 to 24% fewer
-bytes. From 10 Mbit/s up, and at 1920x1080 at 5, the progressive tiles
-keep the frame rate within 1.6 frames a second, most often above it, and
-mostly shorten the p95, for about the same bytes: fewer on the smaller
-windows at 25, more on the 4K one. The moving picture is 1.2 to 4.0 dB
-coarser, 6.1 on the 4K window at 10, and the settled one 0.7 to 3.2 dB
-finer. On the large desktops at 5
-Mbit/s, and the mixed session at 2880x1800 at 10, they keep up far less:
+bytes. From 10 Mbit/s up, but for the mixed session at 2880x1800 at 10,
+and at 1920x1080 at 5, the progressive tiles keep the frame rate: never
+more than 1.6 frames a second below it, most often above, by up to 2.2,
+and they mostly shorten the p95, for about the same bytes: fewer on the
+smaller windows at 25, more on the 4K one. The moving picture is 1.2 to
+4.0 dB coarser, 6.1 on the 4K window at 10, and the settled one 0.7 to 3.2
+dB finer. On the large desktops at 5 Mbit/s, and the mixed session at
+2880x1800 at 10, 3.0 frames a second behind, they keep up far less:
 the 4K window at 7.2 frames a second where H.264 has 17.5, the mixed
 session at 6.9 where it has 12.9, their changes shown at the median three
 to four times later. There a moving region is H.264's to carry: a wavelet tile

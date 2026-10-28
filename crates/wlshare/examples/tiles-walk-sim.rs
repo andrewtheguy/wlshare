@@ -208,8 +208,11 @@ impl Page {
                 }
                 TileBody::Progressive(block) => {
                     let cell = wlshare_proto::progressive::tile_of(&block).ok_or("a progressive body that is no tile block")?;
-                    let shown = encoder.progressive_shown(cell).ok_or("a progressive tile the encoder holds nothing of")?;
-                    self.paste(place, &shown, 64);
+                    // A tile something later in the update drew over is
+                    // held no more; what drew over it is pasted in its turn.
+                    if let Some(shown) = encoder.progressive_shown(cell) {
+                        self.paste(place, &shown, 64);
+                    }
                     passes.add(&block);
                 }
                 TileBody::Webp(webp) => {

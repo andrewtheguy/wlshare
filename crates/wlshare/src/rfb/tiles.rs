@@ -1882,8 +1882,19 @@ impl TilesEncoder {
             }
             if let Some(area) = run.to_area(self.size) {
                 if self.progressive.is_some() {
-                    for (cell, _) in tiles_of(area) {
-                        self.progressive_tile(cell, ProgressivePass::Upgrade, now, out)?;
+                    // A whole tile not one colour that settles is stored
+                    // settled, as a still at the ceiling is.
+                    for (cell, part) in tiles_of(area) {
+                        let settled = self.progressive_tile(cell, ProgressivePass::Upgrade, now, out)?;
+                        if settled
+                            && part == self.cell_area(cell)
+                            && part.w() == TILE
+                            && part.h() == TILE
+                            && let (hash, false) = tile_key(&self.mirror, self.stride, part)
+                        {
+                            let slot = self.cache.store(hash, true);
+                            out.header(part, TileHeader::Store { slot });
+                        }
                     }
                 } else {
                     self.still(area, self.ceiling, now, out)?;
@@ -2487,6 +2498,25 @@ mod tests {
         settle(&mut encoder, &mut page, ms(3000));
         assert!(!encoder.owed());
         assert!(page.psnr(&c) > 30.0, "{:.1} dB", page.psnr(&c));
+    }
+
+    /// A tile that settles by its upgrades is stored settled: shown again,
+    /// it is a draw of its slot that owes nothing.
+    #[test]
+    fn a_progressive_tile_settled_by_upgrades_is_kept_settled() {
+        let (w, h) = (256u16, 128u16);
+        let (a, b) = (noise(w, h, 3), noise(w, h, 4));
+        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &a, None, ms(0));
+        assert!(encoder.owed(), "first passes below the full stage");
+        settle(&mut encoder, &mut page, ms(0));
+        step(&mut encoder, &mut page, &b, None, ms(1000));
+        settle(&mut encoder, &mut page, ms(1000));
+        let (cached, progressives) = (page.cached, page.progressives);
+        step(&mut encoder, &mut page, &a, None, ms(2000));
+        assert_eq!((page.cached - cached, page.progressives - progressives), (8, 0), "every tile from the cache");
+        assert!(!encoder.owed(), "kept settled");
     }
 
     /// A tick sends the oldest runs owed: below the ceiling
