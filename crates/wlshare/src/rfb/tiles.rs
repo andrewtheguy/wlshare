@@ -2300,11 +2300,10 @@ mod tests {
         assert!(page.psnr(&pixels) > 40.0, "settled close again: {:.1} dB", page.psnr(&pixels));
     }
 
-    /// A page scrolled below the ceiling is copies of tiles owed their
-    /// upgrades: each tile a copy draws over is sent again from what the
-    /// desktop shows there, as a first pass, and the settle ends at the
-    /// picture a client sent it fresh would hold, not at the tile the copy
-    /// drew over.
+    /// A settled page scrolled is copies of settled tiles, which are settled
+    /// where they land: only the strip the scroll uncovered is owed its
+    /// upgrades, and the settle ends at the picture a client sent it fresh
+    /// would hold.
     #[test]
     fn a_progressive_copy_of_a_settled_page_is_not_sent_again() {
         let (w, h) = (256u16, 256u16);
@@ -2329,6 +2328,11 @@ mod tests {
         assert!(scrolled_db > fresh_db - 0.5, "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}");
     }
 
+    /// A page scrolled below the ceiling is copies of tiles owed their
+    /// upgrades: each tile a copy draws over is sent again from what the
+    /// desktop shows there, as a first pass, and the settle ends at the
+    /// picture a client sent it fresh would hold, not at the tile the copy
+    /// drew over.
     #[test]
     fn a_progressive_copy_is_sent_again_from_the_desktop() {
         let (w, h) = (256u16, 256u16);
@@ -3024,10 +3028,10 @@ mod tests {
         (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).flat_map(move |x| [((x + 2 * y) / 3 % 256) as u8, (x * y / 40 % 256) as u8, ((3 * x + y) / 5 % 256) as u8, 0])).collect()
     }
 
-    /// On a walked list a copy is owed even from a tile settled, and the
-    /// settle sends its tiles again where they now are.
+    /// On a walked list a copy from a settled source is settled: only the
+    /// strip the scroll uncovered is owed, and the settle sends that alone.
     #[test]
-    fn a_walked_copy_is_owed_from_a_settled_source() {
+    fn a_walked_copy_from_a_settled_source_owes_only_the_uncovered_strip() {
         let (w, h) = (256u16, 256u16);
         let document = ramps(w, 3 * h);
         let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
@@ -3038,10 +3042,13 @@ mod tests {
         let pixels = scrolled(&document, w, 40, h);
         step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now);
         assert_eq!(page.copies, 1);
-        assert!(encoder.owed(), "the copied tiles are owed");
+        // 40 rows uncovered, all in the last row of tiles.
+        let mut owed: Vec<_> = encoder.debts.keys().copied().collect();
+        owed.sort_unstable();
+        assert_eq!(owed, [(0, 3), (1, 3), (2, 3), (3, 3)], "the uncovered strip alone is owed");
         let sent = page.progressives;
         settle(&mut encoder, &mut page, now);
-        assert!(page.progressives > sent, "the copied tiles sent again");
+        assert!(page.progressives > sent, "the uncovered strip sent");
         assert!(!encoder.owed());
     }
 
