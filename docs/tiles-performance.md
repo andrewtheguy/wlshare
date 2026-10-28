@@ -488,7 +488,12 @@ the 4K window at 7.2 frames a second where H.264 has 17.5, the mixed
 session at 6.9 where it has 12.9, their changes shown at the median three
 to four times later. There a moving region is H.264's to carry: a wavelet tile
 costs more bytes than a P-frame at the same quality, and a slow link takes
-it as fewer frames, as the host's does.
+it as fewer frames, as the host's does. Its first passes there are already
+nearly all at the stage below 50, the dial walked to 20; one that held back
+the finest wavelet level too, a tile at half resolution until its upgrades,
+cost the samples' moving tiles 1 to 9% fewer bytes than that stage for 0.1
+to 2.6 dB, since the stage below 50 leaves those bands nearly empty
+already.
 
 **In the browser.** zDesk's end-to-end test reads a progressive session's
 tiles from wlshare in a container, through the gateway, with the page's

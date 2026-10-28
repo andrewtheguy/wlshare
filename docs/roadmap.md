@@ -91,11 +91,14 @@ performance](tiles-performance.md#progressive-tiles).
   judged worth it, the walked list's WebP and its H.264 streams go, and
   zDesk's Adaptive tiles with them; until then both are offered.
 - **Motion on a slow link and a large desktop.** What costs the progressive
-  picture its frame rate there is a moving region coded as wavelet tiles at
-  a stage, which a P-frame carries in fewer bytes. A stage coarser still
-  for a dial walked far down, or a first pass of a moving tile at a lower
-  resolution, owed its stages once it stops, would shrink it; each is
-  measured on the large desktops at 5 and 10 Mbit/s.
+  picture its frame rate there is a moving region coded as wavelet tiles,
+  each from nothing or as a difference of its coefficients, which a P-frame
+  predicted from the frame before carries in fewer bytes. The first passes
+  there are already at the stage below 50, and one at half resolution
+  shrinks them by 1 to 9% more ([measured](tiles-performance.md#progressive-tiles)),
+  so no stage closes it: what is left is a frame rate that falls, as the
+  host's does, or a moving region carried by prediction, which is the
+  adaptive tiles' H.264.
 - **The release.** Protocol 6 is tagged `proto-v6` at the release that
   brings it, and zDesk's gateway and page module pin that tag in place of
   the local tree.
