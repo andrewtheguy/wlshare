@@ -201,6 +201,10 @@ fn progressive_tables() -> progressive::Tables {
     tables
 }
 
+/// A progressive first pass whole costs at most this many times the one at
+/// its stage.
+const PROGRESSIVE_SLACK: f32 = 1.25;
+
 /// What a progressive tile is sent as: its first pass, or the upgrades from
 /// the stage it stands at.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1010,6 +1014,9 @@ pub struct TilesEncoder {
     /// Progressive tiles sent and their bytes: first passes at 50, at 75,
     /// whole, as differences, upgrades; printed when the encoder goes.
     progressive_sent: [(u64, u64); 5],
+    /// How many threads code an update's progressive first passes:
+    /// `WLSHARE_TILES_PROGRESSIVE_THREADS`, or every core.
+    progressive_threads: usize,
 }
 
 impl Drop for TilesEncoder {
@@ -1057,6 +1064,7 @@ impl TilesEncoder {
             scratch: Vec::new(),
             progressive: None,
             progressive_sent: [(0, 0); 5],
+            progressive_threads: std::env::var("WLSHARE_TILES_PROGRESSIVE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from)),
         };
         if std::env::var("WLSHARE_TILES_PROGRESSIVE").as_deref() == Ok("1") {
             encoder.progressive = Some(progressive::Encoder::new(width, progressive_tables()));
@@ -1126,6 +1134,37 @@ impl TilesEncoder {
         }
     }
 
+    /// The stage a progressive first pass is coded at: 75 while the walk is
+    /// at the ceiling and not coarse, else 50.
+    fn first_stage(&self) -> usize {
+        usize::from(!self.coarse && self.quality >= self.ceiling)
+    }
+
+    /// Code the first passes of the progressive tiles of `stills` ahead, on
+    /// [`Self::progressive_threads`] threads, each tile the client's cache
+    /// does not hold now; [`Self::progressive_tile`] takes each as it comes
+    /// to it, in order, where nothing has touched the tile since.
+    fn precode(&mut self, stills: &[Area]) {
+        if self.progressive.is_none() || self.progressive_threads < 2 {
+            return;
+        }
+        let mut seen = HashSet::new();
+        let jobs: Vec<progressive::Job> = stills
+            .iter()
+            .flat_map(|&area| tiles_of(area))
+            .filter(|&(cell, part)| {
+                let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
+                seen.insert(cell) && !(whole && self.cache.find(tile_key(&self.mirror, self.stride, part).0).is_some())
+            })
+            .map(|(cell, _)| {
+                let area = self.cell_area(cell);
+                progressive::Job { cell, at: usize::from(area.top) * self.stride + usize::from(area.left) * 4, w: usize::from(area.w()), h: usize::from(area.h()) }
+            })
+            .collect();
+        let stage = self.first_stage();
+        self.progressive.as_mut().expect("progressive").precode(&jobs, &self.mirror, self.stride, stage, PROGRESSIVE_SLACK, self.progressive_threads);
+    }
+
     /// Send tile `cell` as a progressive tile: a first pass at the stage of
     /// 75 while the walk is at the ceiling and not coarse, as the host's
     /// passes are at 75 while its link has room, else at 50, or whole where
@@ -1133,10 +1172,9 @@ impl TilesEncoder {
     /// to the stage after the one it stands at, a whole first pass where the
     /// client holds no coefficients of it. Owed the next stage until full.
     fn progressive_tile(&mut self, cell: (u16, u16), pass: ProgressivePass, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
-        /// A first pass whole costs at most this many times the one at 50.
-        const SLACK: f32 = 1.25;
         let area = self.cell_area(cell);
         let at = usize::from(area.top) * self.stride + usize::from(area.left) * 4;
+        let stage = self.first_stage();
         let enc = self.progressive.as_mut().expect("progressive");
         let full = enc.tables.stages.len() - 1;
         let (w, h) = (usize::from(area.w()), usize::from(area.h()));
@@ -1144,8 +1182,7 @@ impl TilesEncoder {
             (ProgressivePass::Upgrade, Some(stage)) => (enc.upgrade(cell, (stage + 1).min(full)), 4),
             (ProgressivePass::Upgrade, None) => (Some(enc.first(cell, &self.mirror[at..], self.stride, w, h, full).block), 2),
             (ProgressivePass::First, _) => {
-                let stage = usize::from(!self.coarse && self.quality >= self.ceiling);
-                let pass = enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, stage, SLACK);
+                let pass = enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, stage, PROGRESSIVE_SLACK);
                 let kind = if pass.diff { 3 } else if enc.stage_of(cell) == Some(full) { 2 } else { stage };
                 (Some(pass.block), kind)
             }
@@ -1540,6 +1577,7 @@ impl TilesEncoder {
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
             out.keyframe = true;
         }
+        self.precode(&stills);
         for area in stills {
             self.still(area, self.quality, now, &mut out)?;
         }
@@ -1552,8 +1590,13 @@ impl TilesEncoder {
             self.tick(now, &mut out)?;
         }
         // What the streams that ended here had not carried, after their ENDs.
-        for area in std::mem::take(&mut self.stills) {
+        let stills = std::mem::take(&mut self.stills);
+        self.precode(&stills);
+        for area in stills {
             self.still(area, self.quality, now, &mut out)?;
+        }
+        if let Some(enc) = &mut self.progressive {
+            enc.drop_ready();
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
         Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0 })

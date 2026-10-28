@@ -148,12 +148,76 @@ pub struct Encoder {
     /// Scratch: the tile's YCbCr, transformed in place.
     work: Vec<i32>,
     temp: Vec<i32>,
+    /// First passes [`Self::precode`] coded ahead, by tile, dropped where
+    /// anything else touches the tile first.
+    ready: HashMap<(u16, u16), Ready>,
+}
+
+/// A first pass coded ahead: the stage and slack it was coded at, the pass,
+/// and what the decoder holds after it.
+struct Ready {
+    stage: usize,
+    slack: f32,
+    pass: Pass,
+    held: Option<Held>,
+}
+
+/// A tile [`Encoder::precode`] codes: its cell, where its pixels start, and
+/// its width and height under the picture's edge.
+pub struct Job {
+    pub cell: (u16, u16),
+    pub at: usize,
+    pub w: usize,
+    pub h: usize,
 }
 
 impl Encoder {
     pub fn new(width: u16, tables: Tables) -> Self {
         assert!(!tables.stages.is_empty(), "a stage to code at");
-        Self { tables, cols: usize::from(width).div_ceil(TILE), tiles: HashMap::new(), work: vec![0; COEFFS * 3], temp: vec![0; COEFFS * 2] }
+        Self { tables, cols: usize::from(width).div_ceil(TILE), tiles: HashMap::new(), work: vec![0; COEFFS * 3], temp: vec![0; COEFFS * 2], ready: HashMap::new() }
+    }
+
+    /// Code each of `jobs` as [`Self::first_or_full`] would, on up to
+    /// `threads` threads, each a worker holding the one tile it codes, and
+    /// keep the passes for the calls that ask for them; the decoder's state
+    /// is untouched until they do.
+    pub fn precode(&mut self, jobs: &[Job], pixels: &[u8], stride: usize, stage: usize, slack: f32, threads: usize) {
+        let threads = threads.min(jobs.len());
+        if threads < 2 {
+            return;
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let (tables, tiles, cols) = (&self.tables, &self.tiles, self.cols);
+        let done: Vec<Vec<_>> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut worker = Encoder { tables: tables.clone(), cols, tiles: HashMap::new(), work: vec![0; COEFFS * 3], temp: vec![0; COEFFS * 2], ready: HashMap::new() };
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(job) = jobs.get(i) else { break };
+                            worker.tiles.clear();
+                            if let Some(held) = tiles.get(&job.cell) {
+                                worker.tiles.insert(job.cell, held.clone());
+                            }
+                            let pass = worker.first_or_full(job.cell, &pixels[job.at..], stride, job.w, job.h, stage, slack);
+                            done.push((job.cell, pass, worker.tiles.remove(&job.cell)));
+                        }
+                        done
+                    })
+                })
+                .collect();
+            workers.into_iter().map(|w| w.join().expect("a precoding thread")).collect()
+        });
+        for (cell, pass, held) in done.into_iter().flatten() {
+            self.ready.insert(cell, Ready { stage, slack, pass, held });
+        }
+    }
+
+    /// Drop every pass [`Self::precode`] coded that nothing asked for.
+    pub fn drop_ready(&mut self) {
+        self.ready.clear();
     }
 
     pub fn cols(&self) -> usize {
@@ -163,10 +227,12 @@ impl Encoder {
     /// The decoder holds nothing.
     pub fn forget(&mut self) {
         self.tiles.clear();
+        self.ready.clear();
     }
 
     pub fn forget_tile(&mut self, cell: (u16, u16)) {
         self.tiles.remove(&cell);
+        self.ready.remove(&cell);
     }
 
     /// Whether the decoder holds tile `cell`.
@@ -186,6 +252,7 @@ impl Encoder {
     /// stages after.
     #[allow(clippy::too_many_arguments)]
     pub fn first(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize) -> Pass {
+        self.ready.remove(&cell);
         let target = self.analyse(pixels, stride, w, h);
         self.code_first(cell, target, stage)
     }
@@ -200,6 +267,15 @@ impl Encoder {
     /// 1920x1080, from a fifth of the tries).
     #[allow(clippy::too_many_arguments)]
     pub fn first_or_full(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: f32) -> Pass {
+        if let Some(Ready { stage: at, slack: by, pass, held }) = self.ready.remove(&cell)
+            && (at, by) == (stage, slack)
+        {
+            match held {
+                Some(held) => self.tiles.insert(cell, held),
+                None => self.tiles.remove(&cell),
+            };
+            return pass;
+        }
         let full = self.tables.stages.len() - 1;
         let target = self.analyse(pixels, stride, w, h);
         if stage == full {
@@ -307,6 +383,7 @@ impl Encoder {
     /// which holds back no more than it in any band; `None` where it stands
     /// there already, or the decoder does not hold it.
     pub fn upgrade(&mut self, cell: (u16, u16), stage: usize) -> Option<Vec<u8>> {
+        self.ready.remove(&cell);
         let to = self.tables.stages[stage].shifts;
         let held = self.tiles.get_mut(&cell)?;
         if held.shifts == to {
@@ -984,5 +1061,47 @@ mod tests {
         let mut fresh = Encoder::new(64, tables());
         fresh.first((0, 0), &changed, TILE * 4, TILE, TILE, 2);
         assert_eq!(enc.held((0, 0)).unwrap().held, fresh.held((0, 0)).unwrap().held);
+    }
+
+    /// First passes coded ahead on threads are the ones coded in order, and
+    /// leave the decoder holding the same; one whose tile is touched in
+    /// between is coded again.
+    #[test]
+    fn passes_coded_ahead_are_the_ones_in_order() {
+        let tiles = [
+            tile(|x, y| {
+                let h = ((x * 2654435761usize) ^ (y * 40503)) % 251;
+                [h as u8, (h * 7 % 256) as u8, (x * 4) as u8]
+            }),
+            tile(|_, _| [30, 90, 200]),
+            tile(|x, y| [(x * 4) as u8, (y * 4) as u8, ((x ^ y) * 4) as u8]),
+            tile(|x, y| [((x + y) * 2) as u8, 128, (y * 4) as u8]),
+        ];
+        let stride = TILE * 4 * tiles.len();
+        let mut picture = vec![0u8; stride * TILE];
+        for (i, px) in tiles.iter().enumerate() {
+            for y in 0..TILE {
+                picture[y * stride + i * TILE * 4..][..TILE * 4].copy_from_slice(&px[y * TILE * 4..][..TILE * 4]);
+            }
+        }
+        let (mut ordered, mut ahead) = (Encoder::new(256, tables()), Encoder::new(256, tables()));
+        // Held before: the first two tiles, at the full stage, then changed.
+        for enc in [&mut ordered, &mut ahead] {
+            enc.first((0, 0), &tiles[1], TILE * 4, TILE, TILE, 2);
+            enc.first((1, 0), &tiles[2], TILE * 4, TILE, TILE, 0);
+        }
+        let jobs: Vec<Job> = (0..tiles.len()).map(|i| Job { cell: (i as u16, 0), at: i * TILE * 4, w: TILE, h: TILE }).collect();
+        ahead.precode(&jobs, &picture, stride, 1, 1.25, 3);
+        // Touched in between: coded again, as in order.
+        for enc in [&mut ordered, &mut ahead] {
+            enc.upgrade((1, 0), 2);
+        }
+        for job in &jobs {
+            let a = ordered.first_or_full(job.cell, &picture[job.at..], stride, TILE, TILE, 1, 1.25);
+            let b = ahead.first_or_full(job.cell, &picture[job.at..], stride, TILE, TILE, 1, 1.25);
+            assert_eq!((a.block, a.diff), (b.block, b.diff), "tile {:?}", job.cell);
+            let (a, b) = (ordered.held(job.cell).unwrap(), ahead.held(job.cell).unwrap());
+            assert_eq!((&a.held, &a.sign, a.shifts, a.full), (&b.held, &b.sign, b.shifts, b.full), "tile {:?}", job.cell);
+        }
     }
 }
