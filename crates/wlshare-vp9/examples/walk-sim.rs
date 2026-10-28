@@ -81,7 +81,7 @@ fn main() -> Result<(), Error> {
     let paint = Duration::from_secs_f64(paint / 1e3);
     let mut jitter = sim::jitter(jitter);
 
-    // A 60 Hz capture, the daemon's default.
+    // A 60 Hz capture, `max_fps = 60`.
     let base = Instant::now();
     let mut walk = QualityWalk::new(ceiling, Duration::from_micros(16_667), !held);
     let mut encoder: Option<Stream> = None;

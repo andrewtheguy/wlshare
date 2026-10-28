@@ -306,8 +306,8 @@ fn qp(quality: u8) -> i32 {
     40 - ((quality - 1) * 24 + 49) / 99
 }
 
-/// The frame rate the level is figured at: wlshare's default `max_fps`, the
-/// most a region is asked for.
+/// The frame rate the level is figured at: twice wlshare's default
+/// `max_fps`, so a daemon set up to 60 still keeps to the level it names.
 const FPS: i32 = 60;
 
 impl Stream {

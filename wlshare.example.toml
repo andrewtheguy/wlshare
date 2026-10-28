@@ -56,8 +56,9 @@ listen = "127.0.0.1:5900"
 # A client may always resize the output and set its scale -- a HEADLESS-* one
 # alone; a monitor keeps the modes it has. Nothing here turns that off.
 
-# The most frames captured per second.
-max_fps = 60
+# The most frames captured per second; the zDesk page draws at most 30, so a
+# frame past it is coded and sent for nothing.
+max_fps = 30
 
 # Seconds a connection has to finish the handshake — the security exchange and
 # the login — before it is dropped. A client that shows its user the server key

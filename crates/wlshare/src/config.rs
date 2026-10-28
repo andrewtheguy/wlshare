@@ -40,7 +40,8 @@ pub struct Config {
     /// nobody waiting.
     #[serde(default)]
     pub output_wait_secs: u64,
-    /// The most frames captured per second.
+    /// The most frames captured per second; 30 by default, the most the
+    /// zDesk page draws, so a frame past it is coded and sent for nothing.
     #[serde(default = "default_max_fps")]
     pub max_fps: u32,
     /// How many seconds a connection has to finish the handshake — the
@@ -128,7 +129,7 @@ fn default_true() -> bool {
 }
 
 fn default_max_fps() -> u32 {
-    60
+    30
 }
 
 fn default_handshake_timeout_secs() -> u64 {
@@ -198,7 +199,7 @@ mod tests {
     fn defaults_fill_an_empty_file() {
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.listen, default_listen());
-        assert_eq!(c.max_fps, 60);
+        assert_eq!(c.max_fps, 30);
         assert_eq!(c.handshake_timeout_secs, 120);
         assert_eq!(c.name, "wlshare");
         assert!(c.xkb.layout.is_empty());

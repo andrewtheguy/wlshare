@@ -603,7 +603,7 @@ mod tests {
     const MS: Duration = Duration::from_millis(1);
     /// Clear frames 33 ms apart that make up a [`CLEAR_SPAN`], and then one.
     const CLEAR_RUN: u32 = 32;
-    /// A 60 Hz capture, the default: slowed once, 30 Hz.
+    /// A 60 Hz capture, `max_fps = 60`: slowed once, 30 Hz.
     const CAPTURE: Duration = Duration::from_micros(16_667);
 
     /// A lag-aware walk that has learnt a 40 ms link floor from one clear
