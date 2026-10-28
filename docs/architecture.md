@@ -767,12 +767,19 @@ the picture.
   filter chosen otherwise, at `png`'s fast compression.
 - **What moved is a copy.** Where a read changed enough tiles that no
   stream carries and that have not been changing in place — 4, none of them
-  changed in 2 of the last 8 tenths — runs of 16 pixels of the new picture,
-  up to 64 of them, none of one colour, are looked for in the old one, along
-  every fourth of its rows within the damage and 512 pixels of the tiles, by
-  a rolling hash. A run found at more than 32 places, in a texture or a flat
+  changed in 2 of the last 8 tenths, unless a copy was found within those
+  8 tenths: then what churns may be a scroll the search missed, and left out,
+  two misses ended the copies for the rest of the scroll — runs of 16 pixels
+  of the new picture, up to 64 of them, none of one colour, are looked for in
+  the old one, along every fourth of its rows within the damage and 512
+  pixels of the tiles, by a rolling hash, and along the rest of them where
+  that found nothing. A run found at more than 32 places, in a texture or a flat
   fill with an edge, says nothing and is dropped, where one in a line of text,
-  found on many of a page's lines, still counts; an offset two runs agree on
+  found on many of a page's lines, still counts. Each offset a run was found
+  at is checked against every run, its 16 pixels against the old picture's
+  there: a run on a row the scan stepped over is found at no offset, and on a
+  fast scroll, whose new rows hold most of the rest, the scan alone left
+  fewer than two to agree. An offset two runs agree on
   is grown from each into the largest rectangle whose every row is the old
   picture's at that offset, and sent as a COPY ahead of the update's stills,
   at most 8 a read, where it draws some changed tile whole: one that draws

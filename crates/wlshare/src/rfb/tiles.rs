@@ -645,6 +645,8 @@ const PROBE: u16 = 16;
 const MAX_PROBES: usize = 64;
 /// The most offsets a read tries, the one the most probes found first.
 const MAX_OFFSETS: usize = 3;
+/// The most offsets the scan found that are checked against every probe.
+const MAX_CHECKED: usize = 64;
 /// The most places a probe is found at and still counted: one found at more
 /// is in something that repeats, a texture or a flat fill with an edge, and
 /// says nothing of where anything moved. A run of text is found on many of a
@@ -884,6 +886,10 @@ pub struct TilesEncoder {
     /// coded from and every read is compared with.
     mirror: Vec<u8>,
     churn: Churn,
+    /// When a read last found a copy: within [`CHURN_WINDOW`] of it, what
+    /// churns may be a scroll the search missed rather than a video, and is
+    /// looked among all the same.
+    copied_at: Option<Duration>,
     /// Tiles the client cannot be counted on to hold.
     unknown: HashSet<(u16, u16)>,
     /// The stills the next encode sends are of a picture the client held
@@ -940,6 +946,7 @@ impl TilesEncoder {
             stride,
             mirror: vec![0; stride * usize::from(height)],
             churn: Churn::default(),
+            copied_at: None,
             unknown: HashSet::new(),
             restarting: false,
             live: Vec::new(),
@@ -1012,6 +1019,7 @@ impl TilesEncoder {
         self.cache.clear();
         self.retuned_at = None;
         self.churn.clear();
+        self.copied_at = None;
         self.stills.clear();
         self.copies.clear();
         self.restarting = true;
@@ -1129,6 +1137,9 @@ impl TilesEncoder {
         // area's damage takes as changed.
         let differ: Vec<HashSet<(u16, u16)>> = areas.iter().map(|area| tiles_of(*area).filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part)).map(|(cell, _)| cell).collect()).collect();
         let copies = self.find_copies(pixels, stride, &areas, &differ, now);
+        if !copies.is_empty() {
+            self.copied_at = Some(now);
+        }
         // A copy draws what the client holds of its source over every tile it
         // touches, changed or not: each is owed what the source is owed, and
         // is paid where the copy draws it whole from a source owed nothing.
@@ -1158,13 +1169,17 @@ impl TilesEncoder {
     /// [`MAX_COPIES`]; `differ`, each area's tiles that changed.
     ///
     /// Only where enough tiles changed that no stream carries and that have not
-    /// been changing in place ([`COPY_CHURN`]): up to [`MAX_PROBES`] runs of
-    /// those tiles, none of one colour, are looked for along the rows of the
-    /// old picture within the damage and [`COPY_REACH`] of them, every
-    /// [`MAX_SCAN_STEP`]th at most, by a rolling hash; of those found at
-    /// [`MAX_PROBE_HITS`] places at most, the offsets the most were found at
-    /// are grown, from each run, into the rectangle whose rows are the old
-    /// picture's at that offset, kept where it draws a changed tile whole. A
+    /// been changing in place ([`COPY_CHURN`]), unless a copy was found within
+    /// the churn's window, a scroll the search may have missed: up to
+    /// [`MAX_PROBES`] runs of those tiles, none of one colour, are looked for
+    /// along the rows of the old picture within the damage and [`COPY_REACH`]
+    /// of them, every [`MAX_SCAN_STEP`]th at most, by a rolling hash, and
+    /// along the rows it stepped over where that found nothing; each offset
+    /// one of them was found at, of those found at [`MAX_PROBE_HITS`] places
+    /// at most, is checked against every such probe, and the offsets the most
+    /// match at are grown, from each run, into the rectangle whose rows are
+    /// the old picture's at that offset, kept where it draws a changed tile
+    /// whole. A
     /// copy goes out ahead of the update's stills, so it reads only what the
     /// client holds by then: never a tile a stream carries, or one a still not yet sent is
     /// owed for, or the rectangle of a copy before it in the same read, since
@@ -1175,11 +1190,15 @@ impl TilesEncoder {
             return Vec::new();
         }
         let (old, old_stride) = (&self.mirror[..], self.stride);
+        // A copy found within the churn's window: a scroll is on, and a tile
+        // it changed that the search missed churns as a video's would. Left
+        // out, two misses would leave the rest of the scroll nothing to find.
+        let scrolling = self.copied_at.is_some_and(|at| now.saturating_sub(at) < CHURN_SLOT * CHURN_WINDOW as u32);
         let parts: Vec<(usize, Area)> = areas
             .iter()
             .enumerate()
             .flat_map(|(i, area)| tiles_of(*area).map(move |(cell, part)| (i, cell, part)))
-            .filter(|(i, cell, _)| !self.covered.contains(cell) && self.churn.recent(*cell, now) < COPY_CHURN && differ[*i].contains(cell))
+            .filter(|(i, cell, _)| !self.covered.contains(cell) && (scrolling || self.churn.recent(*cell, now) < COPY_CHURN) && differ[*i].contains(cell))
             .map(|(i, _, part)| (i, part))
             .collect();
         if parts.len() < COPY_MIN_TILES {
@@ -1226,7 +1245,7 @@ impl TilesEncoder {
         let first = (1..PROBE).fold(1u64, |power, _| power.wrapping_mul(HASH_BASE));
         let mut hits: Vec<Vec<(i32, i32)>> = vec![Vec::new(); probes.len()];
         let mut row: Vec<u64> = Vec::with_capacity(usize::from(window.w()));
-        for y in (window.top..=window.bottom).filter(|y| y % step == 0) {
+        let mut scan = |y: u16, hits: &mut [Vec<(i32, i32)>]| {
             let at = usize::from(y) * old_stride + usize::from(window.left) * 4;
             row.clear();
             row.extend(old[at..at + usize::from(window.w()) * 4].as_chunks::<4>().0.iter().map(|px| u64::from(u32::from_le_bytes(*px))));
@@ -1240,7 +1259,7 @@ impl TilesEncoder {
                 let bit = filter_bit(hash);
                 if filter[bit / 64] & (1 << (bit % 64)) != 0 {
                     let x = window.left + dx as u16;
-                    for (probe, hits) in probes.iter().zip(&mut hits).filter(|(probe, hits)| probe.hash == hash && hits.len() <= MAX_PROBE_HITS) {
+                    for (probe, hits) in probes.iter().zip(hits.iter_mut()).filter(|(probe, hits)| probe.hash == hash && hits.len() <= MAX_PROBE_HITS) {
                         let offset = (i32::from(x) - i32::from(probe.x), i32::from(y) - i32::from(probe.y));
                         if offset != (0, 0) {
                             hits.push(offset);
@@ -1248,18 +1267,57 @@ impl TilesEncoder {
                     }
                 }
             }
-        }
-        let mut found: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        for (i, offsets) in hits.iter().enumerate().filter(|(_, offsets)| offsets.len() <= MAX_PROBE_HITS) {
-            for offset in offsets {
-                found.entry(*offset).or_default().push(i);
+        };
+        // The scan looks along every `step`th row only, so a probe is found
+        // at an offset only where its row lands on one: a quarter of them at
+        // a step of four, fewer than two on a fast scroll whose new rows hold
+        // most of the rest. Each offset it found, the most found first, is
+        // checked against every probe it did not crowd out, a probe's run
+        // against the old picture's there; those two or more match are kept,
+        // the ones a quarter as many as the most at least.
+        let (w, h) = self.size;
+        let matches = |probe: &Probe, (dx, dy): (i32, i32)| {
+            let (Ok(x), Ok(y)) = (u16::try_from(i32::from(probe.x) + dx), u16::try_from(i32::from(probe.y) + dy)) else { return false };
+            if u32::from(x) + u32::from(PROBE) > u32::from(w) || y >= h {
+                return false;
             }
+            let new = usize::from(probe.y) * stride + usize::from(probe.x) * 4;
+            let was = usize::from(y) * old_stride + usize::from(x) * 4;
+            pixels[new..new + usize::from(PROBE) * 4] == old[was..was + usize::from(PROBE) * 4]
+        };
+        let tally = |hits: &[Vec<(i32, i32)>]| {
+            let mut found: HashMap<(i32, i32), usize> = HashMap::new();
+            for offsets in hits.iter().filter(|offsets| offsets.len() <= MAX_PROBE_HITS) {
+                for offset in offsets {
+                    *found.entry(*offset).or_default() += 1;
+                }
+            }
+            let mut found: Vec<((i32, i32), usize)> = found.into_iter().collect();
+            found.sort_unstable_by_key(|&(offset, seeds)| (Reverse(seeds), offset));
+            found.truncate(MAX_CHECKED);
+            let mut offsets: Vec<((i32, i32), Vec<usize>)> = found
+                .into_iter()
+                .map(|(offset, _)| (offset, (0..probes.len()).filter(|&i| hits[i].len() <= MAX_PROBE_HITS && matches(&probes[i], offset)).collect::<Vec<_>>()))
+                .filter(|(_, seeds)| seeds.len() >= 2)
+                .collect();
+            offsets.sort_unstable_by_key(|(offset, seeds)| (Reverse(seeds.len()), *offset));
+            let most = offsets.first().map_or(0, |(_, seeds)| seeds.len());
+            offsets.retain(|(_, seeds)| seeds.len() * 4 >= most);
+            offsets.truncate(MAX_OFFSETS);
+            offsets
+        };
+        for y in (window.top..=window.bottom).filter(|y| y % step == 0) {
+            scan(y, &mut hits);
         }
-        let mut offsets: Vec<((i32, i32), Vec<usize>)> = found.into_iter().filter(|(_, seeds)| seeds.len() >= 2).collect();
-        offsets.sort_unstable_by_key(|(offset, seeds)| (Reverse(seeds.len()), *offset));
-        let most = offsets.first().map_or(0, |(_, seeds)| seeds.len());
-        offsets.retain(|(_, seeds)| seeds.len() * 4 >= most);
-        offsets.truncate(MAX_OFFSETS);
+        let mut offsets = tally(&hits);
+        // Where that found nothing, the rows stepped over: a miss is the whole
+        // page coded again, many times the scan's cost.
+        if offsets.is_empty() && step > 1 {
+            for y in (window.top..=window.bottom).filter(|y| y % step != 0) {
+                scan(y, &mut hits);
+            }
+            offsets = tally(&hits);
+        }
 
         // Each offset grown from its probes, one not inside a copy already.
         let pending: HashSet<(u16, u16)> = self.stills.iter().flat_map(|still| tiles_of(*still).map(|(cell, _)| cell)).collect();
@@ -3050,6 +3108,36 @@ mod tests {
         settle(&mut encoder, &mut page, now);
         assert!(page.progressives > sent, "the uncovered strip sent");
         assert!(!encoder.owed());
+    }
+
+    /// A page that churns everywhere, as a scroll the search missed twice
+    /// leaves it, is still looked among while a copy was found within the
+    /// churn's window, and not once none was: a video churns so, and moves
+    /// nothing.
+    #[test]
+    fn a_scroll_the_search_missed_is_looked_for_again() {
+        let (w, h) = (256u16, 512u16);
+        let document = noise(w, 4 * h, 34);
+        let whole = [Rect { x: 0, y: 0, width: w, height: h }];
+        let scroll = |recently: bool| {
+            let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+            let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
+            step(&mut encoder, &mut page, &scrolled(&document, w, 24, h), Some(&whole), now);
+            assert_eq!(page.copies, 1, "the first scroll a copy");
+            for (cell, _) in tiles_of(Area::whole((w, h))) {
+                encoder.churn.observe(cell, now + ms(100));
+                encoder.churn.observe(cell, now + ms(200));
+            }
+            if !recently {
+                encoder.copied_at = None;
+            }
+            step(&mut encoder, &mut page, &scrolled(&document, w, 48, h), Some(&whole), now + ms(300));
+            page.copies
+        };
+        assert_eq!(scroll(true), 2, "looked among while scrolling");
+        assert_eq!(scroll(false), 1, "churn left out otherwise");
     }
 
     /// Beside a region's stream, a scroll's copy neither draws on the tiles

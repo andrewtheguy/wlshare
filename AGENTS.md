@@ -16,14 +16,19 @@
   `wlshare-vp9` is libvpx alone, from a
   prebuilt static archive, set up for a desktop, with the planes in front of
   it, its decoder, the quality walk and the capture file; nothing about a wire
-  is decided there. Everything is built for its target's baseline, with no CPU floor.
+  is decided there. Everything is built for its target's baseline, with no CPU floor:
+  a wider instruction set is used only where the processor says at run time it
+  has it.
   libvpx's decoder is also what the daemon's VP9 tests read the
   encoder's frames back with. A measurement of the encoder is run on an idle machine,
   alone: no build, test, profile or second measurement beside it. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
-  architecture-specific, and the release builds each architecture in Docker on
-  its own native runner.
+  architecture-specific but the progressive tiles' coder (`code_tile` in
+  `src/rfb/progressive.rs`), compiled a second time for AVX2 on x86-64 and
+  chosen at run time, the same source, which a test holds to the baseline's
+  bytes; and the release builds each architecture in Docker on its own native
+  runner.
   Linking the daemon and its tests needs `libpam0g-dev` and
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio

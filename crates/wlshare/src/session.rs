@@ -1808,12 +1808,16 @@ impl Session {
 
     /// When the tiles picture's tick is owed an update — a stream to end, a
     /// tile to send exact — or `None` while it owes nothing, or no update may
-    /// go: nothing is wanted, or a fence is outstanding.
+    /// go: nothing is wanted, or a fence is outstanding. Not before a held
+    /// frame's turn ([`Self::frame_at`]), which holds the tick's update as any
+    /// other: a tick due in the meantime woke the loop to find the update held,
+    /// again and again until the turn came.
     fn tick_at(&self) -> Option<Instant> {
         if !self.use_tiles || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
             return None;
         }
-        self.tiles.as_ref()?.tick_at().map(|at| self.tiles_origin + at)
+        let at = self.tiles_origin + self.tiles.as_ref()?.tick_at()?;
+        Some(self.frame_at().map_or(at, |held| at.max(held)))
     }
 
     /// When the desktop is to be settled at the configured quality: a frame
