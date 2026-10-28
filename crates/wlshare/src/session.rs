@@ -934,13 +934,17 @@ impl Session {
                 if let Some(picture) = listed {
                     let changed = !self.use_tiles || picture != self.tiles_picture;
                     if changed {
-                        info!(
-                            "client {}: asked for tiles up to quality {}, {}, H.264 by {}",
-                            self.id.0,
-                            picture.quality,
-                            if picture.adaptive { "walked by its lag" } else { "held there" },
-                            self.config.h264.name()
-                        );
+                        if picture.progressive {
+                            info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, picture.quality);
+                        } else {
+                            info!(
+                                "client {}: asked for tiles up to quality {}, {}, H.264 by {}",
+                                self.id.0,
+                                picture.quality,
+                                if picture.adaptive { "walked by its lag" } else { "held there" },
+                                self.config.h264.name()
+                            );
+                        }
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
                         info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
