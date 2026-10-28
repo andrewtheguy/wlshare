@@ -120,8 +120,8 @@ distance from the ceiling or a level the link decides, would buy at most that
 3% for a picture at rest below the ceiling, and the picture at rest stays the
 ceiling's.
 
-Nor is a stream's frame at the ceiling worth leaving owed nothing, as RDP
-leaves its H.264: that was measured on lab1 on 2026-10-27, a walked list's
+Nor is a stream's frame at the ceiling worth leaving owed nothing on its
+own: that was measured on lab1 on 2026-10-27, a walked list's
 stream at the ceiling paying its tiles' debts, against main at `6ebb6cb`,
 both in one session (`bench/settle-ceiling-20261027/` in the artifacts).
 Walked at 90, summed over the scenarios, flood out, it sent 1,253 MB where
@@ -134,7 +134,12 @@ dial the region's H.264 is not the WebP's picture: on a video the settle's
 WebPs are about 2 dB better, for 1% of the bytes. Over the walks of
 `tiles-walk-sim` nothing moved beyond what two runs of one build differ by,
 and where the dial stays at 90, over 25 and 50 Mbit/s, the bytes moved 1% at
-most. So the stream's tiles stay owed.
+most. So the stream's tiles stay owed. That is not what RDP does with its
+H.264 either: it never leaves a still region at the quantizer it moved at,
+nor sends it again in another codec, but refines it inside the stream, to QP
+33 and then 25 after 41, and leaves it there. A stream that refines itself
+that way, below the ceiling where its frames are coarse, is on the
+[roadmap](roadmap.md#the-walked-tiles).
 
 ## The settle
 

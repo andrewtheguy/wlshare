@@ -25,23 +25,33 @@ beside it on the same links.
   update, the rest owed to the next, which leaves the stills as late but
   lets the streams' frames go ahead of them.
 - **A stream that settles itself.** A walked list's stream leaves its
-  tiles owed a WebP at the ceiling once they are still. RDP's H.264 refines
-  a still region inside the stream instead, at QP 33 and then 25 after 41
-  for what moves ([zDesk's
+  tiles owed a WebP at the ceiling once they are still, so a region that
+  moved is sent twice, in two codecs. RDP never replaces its H.264 with
+  another picture: it refines a still region inside the stream, at QP 33
+  and then 25 after the 41 it moves at (38, 30 and 22 for the whole desktop,
+  [zDesk's
   measurements](https://github.com/andrewtheguy/zdesk/blob/main/docs/rdp-client.md#the-connection-sequence)),
-  with no second codec. Here a stream whose motion stops would end with a
-  frame at the ceiling in place of the WebPs: an IDR, since a region's
-  quantizer is its encoder's for life, or a P-frame where a quantizer per
-  frame can be had — libavcodec's regions of interest, which libx264 and
-  `h264_vaapi` take where the driver does, not yet tried on the UHD 630.
-  Leaving a stream at the ceiling owed nothing saved 1% of the bytes and
-  ended a video about 2 dB below the WebPs
-  ([measured](tiles-performance.md#what-the-settle-sends-again)), so the
-  frame has to reach the WebP's picture rather than the stream's quantizer
-  at the dial, and what is left to save is the settle below the ceiling and
-  the WebPs' coding. It is measured against the WebP settle with
-  motion-bench `--walk-at` and `tiles-walk-sim`: the bytes, the time to
-  settle, the end dB and the CPU.
+  and leaves it at what the refinement reaches, coarser than this ceiling's
+  QP 18 and not the WebP's picture. Here a stream whose motion stops would
+  end with P-frames over the same picture at finer quantizers, each carrying
+  only what the one before left out, and its tiles owed nothing after them.
+  An IDR at the finer quantizer is a picture coded from nothing again, the
+  replacement in another form. What is missing is a quantizer per frame: a
+  region's is its encoder's for life, and libx264 in constant-quantizer
+  mode turns adaptive quantization off, so libavcodec's regions of interest
+  skip its offsets (`ffmpeg`'s `addroi` at an offset of −1 left every
+  P-frame at 41, with or without `aq-mode`, libavcodec 7.1 and x264 164 on
+  2026-10-27), and its reconfiguration takes no new constant quantizer.
+  What can carry one is a rate factor, which x264's reconfiguration does
+  take, with no lookahead or macroblock tree to hold frames back, or
+  `h264_vaapi`'s regions of interest where the driver takes them, not yet
+  tried on the UHD 630. Leaving a stream at the ceiling owed nothing saved
+  1% of the bytes ([measured](tiles-performance.md#what-the-settle-sends-again)),
+  since at the ceiling its frames were already coded fine; the saving is
+  below the ceiling, where the stream moves coarse and the WebP's second
+  send is the most of a still region's bytes. It is measured against the
+  WebP settle with motion-bench `--walk-at` and `tiles-walk-sim`: the bytes,
+  the time to settle, the end dB and the CPU.
 
 ## The tiles' cache
 
