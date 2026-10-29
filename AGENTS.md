@@ -60,11 +60,12 @@
   wlroots, Sway and labwc the APT repository serves, never on the host.
 - Do not run `cargo fmt`. Use `anyhow` for application errors and `thiserror` for
   typed protocol errors.
-- Translate Simplified (`zh-CN`) and Traditional (`zh-TW`) Chinese each from the
-  English, never one by converting the other's characters: their technical terms
-  differ (网关/閘道, 配置/設定, 软件包/套件, 会话/工作階段, 文件/檔案), so each
-  keeps its own vocabulary.
+- Translate the READMEs' Simplified (`zh-CN`) and Traditional (`zh-TW`)
+  Chinese each from the English, never one by converting the other's
+  characters: their technical terms differ (网关/閘道, 配置/設定,
+  软件包/套件, 会话/工作階段, 文件/檔案), so each keeps its own vocabulary.
+  Everything under `docs/` is English alone, untranslated.
 - Design and wire details live in `docs/architecture.md`, not here.
-  Measurements live in their own English documents, untranslated
-  (`docs/vp9-performance.md`, `docs/tiles-performance.md`), which the
-  architecture links to rather than repeats.
+  Measurements live in their own documents (`docs/vp9-performance.md`,
+  `docs/tiles-performance.md`), which the architecture links to rather than
+  repeats.
