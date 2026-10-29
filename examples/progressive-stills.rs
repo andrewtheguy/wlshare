@@ -39,13 +39,16 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use wlshare_vp9::capture::Reader;
+use wlcap::Reader;
 
+#[allow(unused)]
+#[path = "../src/rfb/mod.rs"]
+mod rfb;
 #[allow(dead_code)]
-#[path = "../src/rfb/progressive.rs"]
-mod progressive;
+#[path = "../src/wlcap.rs"]
+mod wlcap;
 
-use progressive::{Encoder, Quant, Stage, Tables};
+use rfb::progressive::{Encoder, Quant, Stage, Tables};
 
 type Error = Box<dyn std::error::Error>;
 

@@ -2,7 +2,9 @@
 //!
 //! The configured quality is a ceiling. For a ceiling at or above
 //! [`QUALITY_FLOOR`], that is the adaptive floor; a lower ceiling stays at its
-//! own quality and gives up frame rate alone. Between the ceiling and floor the
+//! own quality and gives up frame rate alone, and so does a walk of the frames
+//! alone ([`QualityWalk::frames`]), whatever its ceiling: the video stream's,
+//! whose quantizer is its stream's for its life. Between the ceiling and floor the
 //! dial walks down when the client falls behind and back up when it keeps up,
 //! and at the floor it is the frame rate that goes. Severe queueing can move
 //! both in the same step. The signal is queueing: time a frame spent behind
@@ -28,15 +30,10 @@
 //! quantizer, because a quantizer is the codec's own scale and the mapping lives
 //! with the encoder.
 //!
-//! What the walk holds is what a *moving* picture is coded at. A desktop that
-//! went quiet below the ceiling is sharpened there once, and the walk keeps
-//! its place through it: the link did not get any wider because the screen
-//! stopped. The walk is told what each frame left the client holding
-//! ([`QualityWalk::sent`]) and says when that is owed a settle
-//! ([`QualityWalk::settle_at`]), [`SETTLE_IDLE`] of quiet on; the frame is
-//! [`crate::Stream::settle`]'s, and [`QualityWalk::settle`] is told as it
-//! goes. What quiet is stays the caller's: that nothing has changed since,
-//! that no frame is still on its way, and whatever else it waits for.
+//! What the walk holds is what a *moving* picture is coded at. What the tiles
+//! owe once the desktop stops is sent on their tick, and the walk keeps its
+//! place through it ([`QualityWalk::settle`]): the link did not get any wider
+//! because the screen stopped.
 //!
 //! A walk that is not lag-aware — a client that asked for its dial held — hears
 //! nothing in a fence or a paint window, however late, and moves on a blocked
@@ -49,7 +46,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::{QUALITY_MAX, QUALITY_MIN};
+use crate::rfb::{QUALITY_MAX, QUALITY_MIN};
 
 /// How long writing a frame may block before it counts as one the link could
 /// not keep up with. More than half a frame at 30 Hz. The queues between the
@@ -76,12 +73,6 @@ const LAG_SEVERE: Duration = Duration::from_millis(400);
 /// `LAG_BEHIND` is hysteresis: a link hovering there earns neither a coarser
 /// picture nor its quality back.
 pub const LAG_CLEAR: Duration = Duration::from_millis(30);
-
-/// How long a picture left below the ceiling stays quiet, with the client
-/// holding it, before it is settled at the ceiling. Long enough that a brief
-/// pause in motion is not chased with a redundant frame of the whole picture,
-/// short enough that a settled screen sharpens while the eye is still on it.
-pub const SETTLE_IDLE: Duration = Duration::from_millis(500);
 
 /// Behind frames among the last [`VERDICT_WINDOW`] before quality is given up,
 /// the latest among them. Two rather than one, so a single unlucky frame is not
@@ -202,7 +193,7 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(4);
 /// hands off to resolution and frame rate at an internal quantizer threshold
 /// in the coarsest fifth of VP9's range, TigerVNC's AutoSelect has a built-in
 /// bottom rung — because past it a finer quantizer step buys nothing a viewer
-/// can see, and the settle sharpens a quiet desktop at the ceiling whatever
+/// can see, and a quiet desktop's tiles are upgraded to the ceiling whatever
 /// the walk holds. A ceiling below it starts in the frame-rate handoff and gives
 /// up frames alone.
 pub const QUALITY_FLOOR: u8 = 20;
@@ -250,6 +241,10 @@ pub struct QualityWalk {
     frame: Duration,
     /// The quality in force for a moving picture.
     quality: u8,
+    /// The lowest quality the walk gives up to before frames: [`QUALITY_FLOOR`]
+    /// or a ceiling below it, and the ceiling itself for a walk of the frames
+    /// alone.
+    floor: u8,
     /// How many times the frame interval is doubled, at most [`SLOW_MAX`].
     slow: u8,
     /// The deliveries of the last [`BASELINE_WINDOW`], fenced ones only, and
@@ -268,9 +263,6 @@ pub struct QualityWalk {
     changed_at: Option<Instant>,
     /// Until when the verdicts wait, after a keyframe ([`KEYFRAME_HOLD`]).
     held_until: Option<Instant>,
-    /// Since when the client has held a picture some of which is below the
-    /// ceiling, while it does: what a settle is owed for, [`SETTLE_IDLE`] on.
-    coarse_since: Option<Instant>,
     /// What the next step up reclaims: [`STEP_UP`], doubling with every step
     /// up the link takes, to [`STEP_UP_MAX`].
     reclaim: u8,
@@ -303,19 +295,32 @@ impl QualityWalk {
     /// already stopped, giving up nothing while the link fell further behind,
     /// and one below [`QUALITY_MIN`] would hold a quality the encoder is not at.
     pub fn new(ceiling: u8, frame: Duration, adaptive: bool) -> Self {
+        Self::walk(ceiling, QUALITY_FLOOR, frame, adaptive)
+    }
+
+    /// A walk that holds the quality at `ceiling` and gives up frames alone,
+    /// as [`Self::new`]'s does once it is on its floor: for a stream whose
+    /// quantizer cannot move without starting it over.
+    pub fn frames(ceiling: u8, frame: Duration, adaptive: bool) -> Self {
+        Self::walk(ceiling, QUALITY_MAX, frame, adaptive)
+    }
+
+    /// A walk from `ceiling`, clamped to the dial, whose quality goes no lower
+    /// than `floor` or the ceiling, whichever is the lower.
+    fn walk(ceiling: u8, floor: u8, frame: Duration, adaptive: bool) -> Self {
         let ceiling = ceiling.clamp(QUALITY_MIN, QUALITY_MAX);
         Self {
             ceiling,
             lag_aware: adaptive,
             frame,
             quality: ceiling,
+            floor: floor.min(ceiling),
             slow: 0,
             recent: VecDeque::new(),
             verdicts: 0,
             clear: None,
             changed_at: None,
             held_until: None,
-            coarse_since: None,
             reclaim: STEP_UP,
             reclaimed: None,
             refused: None,
@@ -325,11 +330,13 @@ impl QualityWalk {
     }
 
     /// The configured quality, which the walk never goes above.
+    #[cfg(test)]
     pub fn ceiling(&self) -> u8 {
         self.ceiling
     }
 
     /// Whether the client's lag is a signal this walk listens to.
+    #[cfg(test)]
     pub fn lag_aware(&self) -> bool {
         self.lag_aware
     }
@@ -356,37 +363,11 @@ impl QualityWalk {
         Pace { quality: self.quality, interval: self.interval() }
     }
 
-    /// A frame went out and left the coarsest of the client's picture at
-    /// `coarsest` ([`crate::Stream::coarsest`]): below the ceiling, a desktop
-    /// that goes quiet now owes a settle, counted from here; at it, none is
-    /// owed. Every frame says, the settle's own too, which is what pays it.
-    pub fn sent(&mut self, coarsest: u8, now: Instant) {
-        self.coarse_since = (coarsest < self.ceiling).then_some(now);
-    }
-
-    /// The client has the last frame: the quiet a settle waits out is counted
-    /// from here and not from when the frame was written, for a caller that
-    /// hears of it.
-    pub fn delivered(&mut self, now: Instant) {
-        if self.coarse_since.is_some() {
-            self.coarse_since = Some(now);
-        }
-    }
-
-    /// When the picture the client holds is owed a settle, if nothing changes
-    /// before then: [`SETTLE_IDLE`] after the frame that left it below the
-    /// ceiling. `None` while it is all at the ceiling. A desktop that changed
-    /// since, or a frame still on its way, is the caller's to know and wait
-    /// for.
-    pub fn settle_at(&self) -> Option<Instant> {
-        self.coarse_since.map(|since| since + SETTLE_IDLE)
-    }
-
     /// A frame's fence came back `delivery` after the frame was written.
     /// Every delivery counts towards the link's floor; only a `verdict` frame's
     /// is one — a delta frame at the walk's quality. A keyframe is the whole
-    /// picture again and slow by its nature, and so is the settle's frame at
-    /// the ceiling; the frames behind either carry any lag they cause. Returns
+    /// picture again and slow by its nature, and so is what the tiles send on
+    /// their tick; the frames behind either carry any lag they cause. Returns
     /// where the walk stands if the dial moved. Nothing, ever, on a walk that
     /// is not lag-aware.
     pub fn fenced(&mut self, delivery: Duration, verdict: bool, now: Instant) -> Option<Pace> {
@@ -496,21 +477,17 @@ impl QualityWalk {
         Some(self.pace())
     }
 
-    /// A desktop that went quiet below the ceiling is being sharpened there
-    /// with one frame, or, for the daemon's tiles, sent what its stopping
-    /// owes on their tick, none of it a verdict: the walk keeps its place, since the screen stopping
-    /// says nothing about the link, and starts its verdicts over from here
-    /// with the cooldown restarted like any other move, so the frames queued
-    /// behind that one large picture are not read as the link giving way. The
-    /// clear run starts over too: the quiet is no evidence of room, and a run
-    /// that spanned it would take quality back on the first frame of every
-    /// burst. And a step up before the settle is no longer the last move: lag
-    /// behind the settle's frame is that frame's, not a refusal of the step,
-    /// and nothing queued behind it no reason to climb sooner. No settle is owed from here: the frame says what it left
-    /// ([`Self::sent`]), and one that never goes out is asked for by the next
-    /// frame that does.
+    /// The daemon's tiles are being sent what the desktop's stopping owes on
+    /// their tick, none of it a verdict: the walk keeps its place, since the
+    /// screen stopping says nothing about the link, and starts its verdicts
+    /// over from here with the cooldown restarted like any other move, so the
+    /// updates queued behind those pictures are not read as the link giving
+    /// way. The clear run starts over too: the quiet is no evidence of room,
+    /// and a run that spanned it would take quality back on the first frame of
+    /// every burst. And a step up before the settle is no longer the last
+    /// move: lag behind the settle's update is that update's, not a refusal of
+    /// the step, and nothing queued behind it no reason to climb sooner.
     pub fn settle(&mut self, now: Instant) {
-        self.coarse_since = None;
         self.verdicts = 0;
         self.clear = None;
         self.changed_at = Some(now);
@@ -541,7 +518,7 @@ impl QualityWalk {
             1
         };
         let mut moved = false;
-        let on_floor = self.quality <= QUALITY_FLOOR;
+        let on_floor = self.quality <= self.floor;
         if let Some((from, _)) = self.reclaimed.filter(|(_, at)| now.saturating_duration_since(*at) <= REFUSAL_WINDOW) {
             // A step up the link refused: back to the quality it bore, and the
             // walk may come halfway back up towards the one it would not take.
@@ -553,7 +530,7 @@ impl QualityWalk {
                 moved = true;
             }
         } else if !on_floor {
-            self.quality = self.quality.saturating_sub(STEP_DOWN * steps).max(QUALITY_FLOOR);
+            self.quality = self.quality.saturating_sub(STEP_DOWN * steps).max(self.floor);
             moved = true;
         }
         if (on_floor || (steps == 3 && !soon)) && self.slow < SLOW_MAX {
@@ -683,6 +660,30 @@ mod tests {
     /// A ceiling under the floor starts in the frame-rate handoff: a link behind
     /// takes frames, a clear one gives them back, and the quality stays the one
     /// that was asked for.
+    /// A walk of the frames alone holds a ceiling far above the floor as one
+    /// under it is held: a link behind takes frames, however far behind, and
+    /// a clear one gives them back.
+    #[test]
+    fn a_walk_of_the_frames_alone_never_moves_the_quality() {
+        let start = Instant::now();
+        let mut walk = QualityWalk::frames(90, CAPTURE, true);
+        assert_eq!(walk.fenced(40 * MS, true, start), None);
+        walk.fenced(140 * MS, true, start);
+        assert_eq!(walk.fenced(140 * MS, true, start), Some(Pace { quality: 90, interval: CAPTURE * 2 }));
+        let later = start + ADJUST_COOLDOWN;
+        walk.fenced(40 * MS + LAG_SEVERE, true, later);
+        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, later), Some(Pace { quality: 90, interval: CAPTURE * 4 }));
+        let mut at = later + ADJUST_COOLDOWN;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            let (moved, then) = clear(&mut walk, CLEAR_RUN, at);
+            seen.extend(moved);
+            at = then + ADJUST_COOLDOWN;
+        }
+        assert_eq!(seen, [Pace { quality: 90, interval: CAPTURE * 2 }, Pace { quality: 90, interval: CAPTURE }]);
+        assert_eq!(QualityWalk::frames(101, CAPTURE, true).pace(), Pace { quality: QUALITY_MAX, interval: CAPTURE }, "a ceiling off the dial is clamped to it");
+    }
+
     #[test]
     fn a_ceiling_under_the_floor_gives_up_frames_alone() {
         let start = Instant::now();
@@ -1102,36 +1103,6 @@ mod tests {
         walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN);
         assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN), None, "the settle's frames were stepped on");
         assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at + ADJUST_COOLDOWN).map(|pace| pace.quality), Some(QUALITY_FLOOR));
-    }
-
-    /// A settle is owed [`SETTLE_IDLE`] after a frame left any of the picture
-    /// below the ceiling, counted from when the client had it where that is
-    /// heard of, and no longer once a frame has left it all at the ceiling or
-    /// the settle is on its way.
-    #[test]
-    fn a_settle_is_owed_for_a_picture_left_below_the_ceiling() {
-        let start = Instant::now();
-        let mut walk = walk(60, start);
-        assert_eq!(walk.settle_at(), None, "a walk that has sent nothing owes a settle");
-        walk.sent(60, start);
-        walk.delivered(start + 40 * MS);
-        assert_eq!(walk.settle_at(), None, "a picture at the ceiling owes a settle");
-        walk.sent(50, start + 100 * MS);
-        assert_eq!(walk.settle_at(), Some(start + 100 * MS + SETTLE_IDLE));
-        walk.delivered(start + 180 * MS);
-        assert_eq!(walk.settle_at(), Some(start + 180 * MS + SETTLE_IDLE), "the quiet was not counted from the delivery");
-        // A frame at the ceiling over part of the picture leaves the rest coarse.
-        walk.sent(50, start + 300 * MS);
-        assert_eq!(walk.settle_at(), Some(start + 300 * MS + SETTLE_IDLE));
-        walk.settle(start + 800 * MS);
-        assert_eq!((walk.settle_at(), walk.quality()), (None, 60), "a settle on its way is owed again");
-        // The settle's frame left the picture at the ceiling, and one that
-        // could not would be owed again.
-        walk.sent(60, start + 810 * MS);
-        assert_eq!(walk.settle_at(), None);
-        walk.sent(50, start + 900 * MS);
-        walk.sent(60, start + 950 * MS);
-        assert_eq!(walk.settle_at(), None, "a frame that sharpened the last of the picture left a settle owed");
     }
 
     /// The clear frames before a desktop went quiet do not span the quiet: a

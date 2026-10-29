@@ -1,18 +1,16 @@
 # The daemon, with the RFB protocol it speaks inside it, is the package at the
 # root; beside it the bytes of its private extensions, `wlshare-proto`, which
-# the zDesk gateway depends on too, and the VP9 coding, libvpx as `wlshare-vp9`
-# sets it up (see docs/architecture.md). The FLAC coding is sound-flac and the
-# Opus coding sound-opus, each its own repository.
+# the zDesk gateway depends on too (see docs/architecture.md). The FLAC coding
+# is sound-flac and the Opus coding sound-opus, each its own repository.
 #
-# All three are default members, so a plain `cargo test` and `cargo clippy` on
-# the Linux host the daemon builds on check the whole workspace, the Opus tests
+# Both are default members, so a plain `cargo test` and `cargo clippy` on the
+# Linux host the daemon builds on check the whole workspace, the Opus tests
 # with the ffmpeg that machine has installed. The daemon needs libxkbcommon,
 # libpam, libpipewire and libavcodec and only runs against a Wayland
-# compositor; elsewhere, on a target covered by libvpx-prebuilt, the other two
-# are tested with `-p wlshare-proto -p wlshare-vp9`.
+# compositor; elsewhere the protocol crate is tested with `-p wlshare-proto`.
 [workspace]
-members = ["crates/wlshare-proto", "crates/wlshare-vp9"]
-default-members = [".", "crates/wlshare-proto", "crates/wlshare-vp9"]
+members = ["crates/wlshare-proto"]
+default-members = [".", "crates/wlshare-proto"]
 resolver = "3"
 
 [workspace.package]
@@ -42,10 +40,6 @@ path = "src/main.rs"
 # The private extensions' bytes (src/rfb/), the crate the zDesk gateway reads
 # and writes them with too.
 wlshare-proto = { path = "crates/wlshare-proto" }
-# The VP9 encoding's codec, libvpx set up for a desktop, and the quality walk
-# its dial follows a link with. Its decoder is what the encoding's tests read
-# every frame back with.
-wlshare-vp9 = { path = "crates/wlshare-vp9" }
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true
@@ -114,27 +108,27 @@ libc = "0.2"
 pipewire = { version = "0.10", features = ["v0_3_49"] }
 # The client's camera arrives as H.264, decoded by the system's libavcodec,
 # linked dynamically; avcodec alone, since nothing here demuxes or scales. The
-# same libavcodec's h264_vaapi is the hardware encoder of the tiles picture's
-# moving regions (h264.rs), its VA-API device and surfaces libavutil's, and its
-# libx264 their encoder on a host with no GPU: Debian's libavcodec links it.
+# same libavcodec's h264_vaapi is the hardware encoder of the video stream and
+# of the tiles picture's moving regions (h264.rs), its VA-API device and
+# surfaces libavutil's, and its libx264 their encoder on a host with no GPU:
+# Debian's libavcodec links it.
 ffmpeg-sys-next = { version = "7.1", default-features = false, features = ["avcodec"] }
 # The conversion from the framebuffer's pixels to the NV12 the H.264
-# encoders take, as wlshare-vp9 converts to its planes: pure Rust, AVX2 or
-# NEON chosen at run time.
+# encoders take: pure Rust, AVX2 or NEON chosen at run time.
 yuv = { version = "0.8", features = ["professional_mode"] }
 # The [password] table's hash: Argon2id and the PHC string it is stored as.
 argon2 = "0.6"
 # The global allocator (src/main.rs), as the zDesk gateway's: glibc's per-thread
 # arenas keep what a thread frees. Unprefixed, so jemalloc is `malloc` itself and
-# not only Rust's allocator: libvpx and libopus, and the linked libpipewire
-# and libavcodec, allocate through it too.
+# not only Rust's allocator: libopus, and the linked libpipewire and
+# libavcodec, allocate through it too.
 tikv-jemallocator = "0.7"
 tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
 
 # `cargo deb -p wlshare` (scripts/build-debs.sh runs it in Docker per architecture;
 # the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).
 [dev-dependencies]
-# `examples/motion-bench.rs`, the tiles encoding measured against the VP9
+# `examples/motion-bench.rs`, the tiles encoding measured against the video
 # encoding: the process's CPU time around each coder.
 cpu-time = "1"
 # The FLAC encoder's tests read every frame back with symphonia's decoder,
@@ -142,9 +136,15 @@ cpu-time = "1"
 # — `symphonia-core` for the decoder trait and the packet it takes.
 symphonia-bundle-flac = "0.6"
 symphonia-core = "0.6"
-# `io-std` for `examples/vp9-sink.rs`, the client the capture container runs
+# `io-std` for `examples/video-sink.rs`, the client the capture container runs
 # against the daemon, which types what it reads.
 tokio = { version = "1", features = ["io-std"] }
+
+# The capture tool's tests, of which run of a capture it plays, run with the
+# daemon's.
+[[example]]
+name = "wlcap"
+test = true
 
 [package.metadata.deb]
 name = "wlshare"
@@ -169,8 +169,9 @@ priority = "optional"
 # the default or link anything to it, and no PulseAudio server for most
 # applications to play through, so wireplumber and pipewire-pulse come with it.
 depends = "$auto, libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
-# The VA-API drivers the hardware H.264 encoder of the tiles' regions reaches the
-# GPU through: Intel's and Mesa's. Without one the regions are libx264's, on the CPU.
+# The VA-API drivers the hardware H.264 encoder reaches the GPU through: Intel's
+# and Mesa's. Without one the video stream and the tiles' regions are libx264's,
+# on the CPU.
 # And the portal a browser reaches the client's camera through: xdg-desktop-portal's
 # Camera interface, which it exports only beside a backend that implements Access,
 # xdg-desktop-portal-gtk (xdg-desktop-portal-wlr does not). Recommends rather than
@@ -195,12 +196,9 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 
-# wlshare-vp9 and the conversion in front of its encoder (the `yuv` crate)
-# optimised in a debug build as in release, so that a debug daemon codes a
-# desktop at the speed a released one does, and the VP9 tests run at it.
-[profile.dev.package.wlshare-vp9]
-opt-level = 3
-
+# The conversion in front of the H.264 encoders (the `yuv` crate) optimised in
+# a debug build as in release, so that a debug daemon converts a desktop at
+# the speed a released one does, and the video tests run at it.
 [profile.dev.package.yuv]
 opt-level = 3
 

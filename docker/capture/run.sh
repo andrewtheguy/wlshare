@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The capture container's run: a headless sway, the daemon started with
-# `--capture-frames`, and vp9-sink connected to it once per scenario and size,
-# so each capture in /captures is one session's worth of what the VP9 encoder
+# `--capture-frames`, and video-sink connected to it once per scenario and size,
+# so each capture in /captures is one session's worth of what the video encoder
 # was handed — the frames of one kind of content at one size — named
 # `<scenario>-<WxH>[@2].wlcap.zst`. Settings come from the environment:
 # SIZES (WxH, with `@2` for a desktop drawn at scale 2), SCENARIOS (names,
-# or the groups `quiet`, `busy` and `all`), QUALITY (the dial, 90 by
-# default), LENGTH (each scenario's seconds, 20 by default), FRAMES (the
+# or the groups `quiet`, `busy` and `all`), LENGTH (each scenario's
+# seconds, 20 by default), FRAMES (the
 # least frames the flood is played for, 150 by default) and CAPTURE_VIDEO
 # (the video file the video and the walk play, which they need).
 #
@@ -15,7 +15,7 @@
 # session around each — its windows opened and drawn before it, so that a
 # capture begins with them and not with the desktop bare, and the sink's
 # flags, which make the first one resize into the size, the video ask a
-# keyframe midway, and the walk read late so the dial moves — and the file
+# keyframe midway, and the walk read late so the frames slow — and the file
 # each session leaves.
 #
 #   quiet  terminal  a resize into the size, then a terminal typed into and scrolled
@@ -27,19 +27,16 @@
 #          video     a video playing full screen, with a keyframe asked midway
 #          window    the video playing in a window over a page, the rest still,
 #                    with a keyframe asked midway
-#          walk      the video while the client reads late, so the dial walks
-#                    down and back up, then paused, so the desktop settles on
-#                    a frame of it
+#          walk      the video while the client reads late, so the frames slow
+#                    and come back, then paused on a frame of it
 #   mixed  mixed     minutes at the desk, quiet and busy in turn, the video
 #                    in a window and full screen among them; not in `all`,
 #                    and its own length, MIXED_LENGTH (300 by default)
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
-# and a 1024x768 one. Eight are vp9-wasm's, sizes its benchmark has a quiet
-# and a busy sample of under the names (`bench/run.sh` there) that
-# scripts/vp9-samples.sh makes of these; 3200x2000 is here in place of its
-# 3456x2168, so that each of the four is captured at both scales. A size is in
+# and a 1024x768 one, so that each of the four is captured at both scales. A
+# size is in
 # pixels, so a desktop at scale 2 is half of it in points:
 #   2048x1536@2   1024x768 points
 #   2560x1600@2   1280x800 points
@@ -48,7 +45,6 @@ set -euo pipefail
 #   3840x2160@2   1920x1080 points
 SIZES="${SIZES:-1280x800 1440x900 1600x1000 1920x1080 2048x1536@2 2560x1600@2 2880x1800@2 3200x2000@2 3840x2160@2}"
 SCENARIOS="${SCENARIOS:-all}"
-QUALITY="${QUALITY:-90}"
 LENGTH="${LENGTH:-20}"
 FRAMES="${FRAMES:-150}"
 OUT=/captures
@@ -120,10 +116,10 @@ trap cleanup EXIT
 
 # ── The session around each scenario ─────────────────────────────────────────
 
-# Connect vp9-sink for the scenario's length at WxH, with any further flags,
+# Connect video-sink for the scenario's length at WxH, with any further flags,
 # in the background; `finish` waits for it and names the capture it made.
 sink() {
-	vp9-sink "$ADDR" --size "$W"x"$H" --quality "$QUALITY" --seconds "$LENGTH" --keys "$@" <&3 2>>"$OUT/sink.log" &
+	video-sink "$ADDR" --size "$W"x"$H" --seconds "$LENGTH" --keys "$@" <&3 2>>"$OUT/sink.log" &
 	SINK=$!
 	# Its first frame, which opens the capture: a keyframe, then the content.
 	sleep 1.5
@@ -147,7 +143,7 @@ play() {
 	local script=$1 before waited=0
 	shift
 	rm -f "$READY".*
-	vp9-sink "$ADDR" --size "${START:-${W}x${H}}" --quality "$QUALITY" --seconds 600 </dev/null 2>>"$OUT/sink.log" &
+	video-sink "$ADDR" --size "${START:-${W}x${H}}" --seconds 600 </dev/null 2>>"$OUT/sink.log" &
 	before=$!
 	sleep 1.5
 	CAPTURE_READY="$READY" "$SCENARIOS_DIR/$script.sh" "${SCRIPT_LENGTH:-$LENGTH}" 2>>"$OUT/scenarios.log" &
@@ -176,7 +172,7 @@ play() {
 finish() {
 	local name=$1
 	if [[ -n "$SINK" ]]; then
-		wait "$SINK" || BROKEN="vp9-sink ended with $?"
+		wait "$SINK" || BROKEN="video-sink ended with $?"
 	fi
 	if kill -0 "$SCENARIO" 2>/dev/null; then
 		pkill -P "$SCENARIO" 2>/dev/null || true
@@ -251,12 +247,10 @@ scenario_window() {
 }
 
 scenario_walk() {
-	# The sink reads late for six seconds, a step down the dial a second,
-	# then promptly, for the steps back up; the video pauses seven seconds
-	# before the end, partway up, so the desktop goes quiet below the
-	# ceiling on a frame of the video and the settle of that frame is
-	# captured: at five, a dial that climbed quickly was back at the
-	# ceiling first and there was no settle. Best with LENGTH at 20 or more.
+	# The sink reads late for six seconds, so the walk slows the frames,
+	# then promptly, for them to come back; the video pauses seven seconds
+	# before the end, so the desktop goes quiet on a frame of the video.
+	# Best with LENGTH at 20 or more.
 	PAUSE_BEFORE=7 play video --slow 4:6:200
 	finish walk
 }
@@ -299,7 +293,7 @@ rmdir "$RAW" 2>/dev/null || true
 {
 	echo "# Frame captures"
 	echo
-	echo "What a wlshare session handed its VP9 encoder, exact, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`crates/wlshare-vp9/src/capture.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. Quality $QUALITY, $LENGTH seconds each; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
+	echo "What a wlshare session handed its video encoder, exact, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`src/wlcap.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. $LENGTH seconds each; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
 	echo
 	echo "Quiet:"
 	echo "- terminal: a resize into the size from the size before, then a terminal typed into one key at a time and scrolled"
@@ -312,7 +306,7 @@ rmdir "$RAW" 2>/dev/null || true
 	echo "- drag: a floating terminal dragged around the desktop"
 	echo "- video: \`$(basename "${CAPTURE_VIDEO:-none}")\` playing full screen from its start, cropped to fill it, with a keyframe asked at 10 s"
 	echo "- window: the video playing in a floating 16:9 window 55% of the desktop's width, centred over the page, from its start, the rest of the desktop still, with a keyframe asked at 10 s"
-	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the dial walks down and back up, then paused 7 s before the end, partway back up, so the desktop settles on a frame of the video"
+	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the frames slow and come back, then paused 7 s before the end on a frame of the video"
 	echo
 	echo "$(sway --version), $(wlshare --version)"
 } >"$OUT/README.md"

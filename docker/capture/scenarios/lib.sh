@@ -77,7 +77,7 @@ material() {
 
 # Press and let go of one key: a character, or `-k` and Return or Page_Down.
 # Through the session's client where CAPTURE_KEYS names what it reads keys
-# from (`vp9-sink --keys`: a keysym in hexadecimal a line), so that they come
+# from (`video-sink --keys`: a keysym in hexadecimal a line), so that they come
 # as a person's do, on the daemon's keyboard; by wtype otherwise. Not by both
 # on one desktop: wtype's keyboard is gone when it exits, and with the
 # daemon's beside it, which has pressed nothing, sway is left with a seat

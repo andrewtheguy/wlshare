@@ -37,29 +37,27 @@
 //! A slow link is therefore never flooded and the compositor's frames coalesce
 //! in the framebuffer meanwhile. Without Fence, TCP's own backpressure paces it.
 //!
-//! A client that lists the VP9 encoding gets every pixel update as one rectangle
-//! over the whole framebuffer, the next frame of one VP9 stream
-//! ([`crate::rfb::vp9`]), at the chroma the list asks for. The encoder is made again at every
-//! new size, whose first frame is a keyframe; a non-incremental request or the encoding's
-//! being listed anew also asks for one. A frame between them is handed the
-//! damage since the client's last one, and the encoder converts and codes that
-//! alone: a small change costs a small encode. The encode runs on this task's worker,
-//! told it is blocking, and the fence keeps it to one frame in flight as it does
-//! a standard pixel update. Its quality starts at the configured one and follows
-//! the link through wlshare-vp9's quality walk: each frame's fence, answered
-//! once the client has the frame — zDesk answers once the browser has taken
-//! it, so the walk reads the whole path to the screen — is how long that frame
-//! took, and a client without Fence is measured by how long writing the frame
-//! blocked. The dial moves on the running encoder, so a move costs no keyframe.
-//! Ordinarily a frame only goes out when something changed, so a desktop that
-//! stops right after the link coarsened it would keep that picture. Once a frame
-//! below the configured quality has been delivered and nothing has changed for
-//! [`SETTLE_IDLE`](wlshare_vp9::walk::SETTLE_IDLE), the dial is taken back to the configured quality and the
-//! unchanged picture is sent again as one inter frame, coded whole, which
-//! sharpens every block without a keyframe. A list that drops VP9
-//! is answered with the whole framebuffer in the standard encoding it selected
-//! — ZRLE when listed, Raw otherwise — since the picture the client has is a
-//! lossy one.
+//! A client that lists the video encoding gets every pixel update as one
+//! rectangle over the whole framebuffer, the next frame of one H.264 stream
+//! ([`crate::rfb::video`]), by the encoder the daemon found at startup
+//! ([`crate::h264`]), the host's hardware or libx264. The encoder is made again
+//! at every new size and every new dial, its first frame an IDR; a
+//! non-incremental request or the encoding's being listed anew also asks for
+//! one. A frame between them is handed the damage since the client's last
+//! one, and the encoder converts that alone: a small change costs a small
+//! conversion. The encode runs on this task's worker, told it is blocking,
+//! and the fence keeps it to one frame in flight as it does a standard pixel
+//! update. Nothing beside the encoding says what the stream is to be: every
+//! frame is at wlshare's dial ([`crate::rfb::QUALITY`]), the quantizer the
+//! stream's for its life, so what follows the link is the frame rate, through
+//! the walk of the frames alone ([`QualityWalk::frames`]): each frame's fence,
+//! answered once the client has the frame — zDesk answers once the browser
+//! has taken it, so the walk reads the whole path to the screen — is how long
+//! that frame took, and a client without Fence is measured by how long
+//! writing the frame blocked. A list that drops
+//! the encoding is answered with the whole framebuffer in the standard
+//! encoding it selected — ZRLE when listed, Raw otherwise — since the picture
+//! the client has is a lossy one.
 //!
 //! A client that lists the tiles encoding instead gets each pixel update as
 //! exact PNG tiles where the desktop changed and a frame of a stream of its own
@@ -69,15 +67,15 @@
 //! coder that cannot be opened, or fails a stream, ends the session. The damage since the
 //! client's last update is copied out of the framebuffer under the lock into
 //! the encoder's own picture, and coded on the worker once it is let go, as a
-//! VP9 frame is; a damage that changes nothing the client holds sends nothing.
-//! The dial the list names is a ceiling the same walk of the link moves the
-//! encoder below, unless the list holds it: each update's fence is the
-//! walk's verdict as a VP9 frame's is, a picture sent whole counting as a
+//! video frame is; a damage that changes nothing the client holds sends nothing.
+//! wlshare's dial is a ceiling the same walk of the link moves the encoder
+//! below, unless the list holds it: each update's fence is the
+//! walk's verdict as a video frame's is, a picture sent whole counting as a
 //! keyframe and one of the tick alone as a settle, no verdict, and every
 //! tile a RemoteFX Progressive tile whose first pass follows the dial,
 //! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), with
 //! no stream; a list that holds the dial is sent every still exact. A
-//! slowed walk paces the updates as it paces VP9's frames. What the
+//! slowed walk paces the updates as it paces the video's frames. What the
 //! encoder still owes once the desktop stops — a stream to end, a tile a
 //! stream carried to send as a PNG, a progressive tile's upgrade — is
 //! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
@@ -165,13 +163,11 @@ use wlshare_proto::camera::{CameraFormat, camera_available, camera_keyframe, cam
 use wlshare_proto::density::{from_fixed, output_scale};
 use wlshare_proto::microphone::{microphone_available, microphone_start, microphone_stop};
 use wlshare_proto::outputs::output_list;
-use wlshare_proto::vp9::{Chroma, Vp9Stream};
-use wlshare_proto::{ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS, ENCODING_VP9, PROTOCOL_VERSION, version};
+use wlshare_proto::{ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS, ENCODING_VIDEO, PROTOCOL_VERSION, version};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, watch};
-use wlshare_vp9::capture;
 
 use crate::audio::{Capture, Lease};
 use crate::auth::Login;
@@ -185,12 +181,13 @@ use crate::rfb::pixel::PixelFormat;
 use crate::rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use crate::rfb::tiles::TilesEncoder;
 use wlshare_proto::tiles::TilesPicture;
-use crate::rfb::vp9::{self, Vp9Encoder};
+use crate::rfb::video::VideoEncoder;
 use crate::rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use crate::rfb::{
     ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE,
 };
-use wlshare_vp9::walk::{Pace, QualityWalk};
+use crate::walk::{Pace, QualityWalk};
+use crate::wlcap;
 use crate::shared::{BESIDE, ClientId, Command, Event, FIRST, Seats, Shared};
 
 /// What the server offers at the security step, and what it checks the client
@@ -221,12 +218,6 @@ impl Security {
     }
 }
 
-/// The stream before the client has listed one, which no frame is coded
-/// from: a list that asks for VP9 names the stream it asks for, and a client
-/// that has seen nothing of a stream starts it at a keyframe whatever this
-/// held.
-const UNLISTED: Vp9Stream = Vp9Stream { quality: wlshare_proto::QUALITY_MAX, adaptive: true, chroma: Chroma::Yuv444 };
-
 pub struct SessionConfig {
     pub security: Security,
     pub name: String,
@@ -239,15 +230,13 @@ pub struct SessionConfig {
     /// desktop waits for it before its ServerInit.
     pub output: Option<String>,
     pub output_wait: Duration,
-    /// Where each session writes what its VP9 stream is handed, exact
-    /// ([`wlshare_vp9::capture`]), or `None` for no capture: a flag of a
-    /// daemon run by hand, for an encoder to be run again on the pictures a
-    /// desktop is shown as. A 4:4:4 stream's alone: a capture is played back
-    /// at 4:4:4 (`examples/vp9cap.rs`), the chroma every use of one is about,
-    /// so a session asked for 4:2:0 writes none while it is.
+    /// Where each session writes what its video stream is handed, exact
+    /// ([`crate::wlcap`]), or `None` for no capture: a flag of a daemon run by
+    /// hand, for an encoder to be run again on the pictures a desktop is shown
+    /// as.
     pub capture_frames: Option<PathBuf>,
-    /// The H.264 encoder that codes the tiles picture's moving regions
-    /// ([`crate::h264`]), the host's hardware or libx264.
+    /// The H.264 encoder that codes the video stream and the tiles picture's
+    /// moving regions ([`crate::h264`]), the host's hardware or libx264.
     pub h264: Arc<crate::h264::Encoder>,
 }
 
@@ -496,16 +485,16 @@ struct Session {
     format: PixelFormat,
     zrle: Option<ZrleEncoder>,
     use_zrle: bool,
-    /// The VP9 stream's encoder, at the framebuffer's size once a frame has
-    /// been sent.
-    vp9: Option<Vp9Encoder>,
-    /// What the VP9 encoder is handed, written as it is handed it, while the
-    /// daemon was started with a capture directory and the stream is 4:4:4:
-    /// opened at the session's first such frame, and spanning every encoder
-    /// the session makes.
-    capture: Option<capture::Writer<BufWriter<File>>>,
-    /// The client listed the VP9 encoding, which it gets instead of Raw or ZRLE.
-    use_vp9: bool,
+    /// The video stream's encoder, at the framebuffer's size and the stream's
+    /// dial once a frame has been sent.
+    video: Option<VideoEncoder>,
+    /// What the video encoder is handed, written as it is handed it, while the
+    /// daemon was started with a capture directory: opened at the session's
+    /// first frame, and spanning every encoder the session makes.
+    capture: Option<wlcap::Writer<BufWriter<File>>>,
+    /// The client listed the video encoding, which it gets instead of Raw or
+    /// ZRLE.
+    use_video: bool,
     /// The tiles picture's encoder, at the framebuffer's size once an update
     /// has been sent in it.
     tiles: Option<TilesEncoder>,
@@ -519,27 +508,22 @@ struct Session {
     /// The last tiles update was the tick's alone: the desktop is quiet, and
     /// the walk was told so at the first.
     tiles_quiet: bool,
-    /// What the VP9 stream is to be: the ceiling of its quality, whether the
-    /// walk moves it below, and its chroma, as the client's list asks
-    /// ([`Vp9Stream`]).
-    stream: Vp9Stream,
-    /// The next VP9 frame must be a keyframe.
+    /// The next video frame must be an IDR.
     keyframe_owed: bool,
-    /// The quality this client's link will bear, of the VP9 stream or the
-    /// tiles picture, whichever it lists.
+    /// The frame rate this client's link will bear, and for the tiles
+    /// picture the quality, of the video stream or the tiles picture,
+    /// whichever it lists.
     walk: QualityWalk,
-    /// The VP9 frame or tiles update whose fence is outstanding: when it was
-    /// written, and whether its delivery is a verdict about the link — a
-    /// delta frame at the walk's quality, so neither a keyframe nor the
-    /// settle's frame, or a tiles update with no START and no picture whole.
+    /// The video frame or tiles update whose fence is outstanding: when it
+    /// was written, and whether its delivery is a verdict about the link — a
+    /// frame that is not an IDR, or a tiles update with no START and no
+    /// picture whole.
     in_flight: Option<(Instant, bool)>,
-    /// When the last VP9 frame or tiles update went out. On a link the walk
+    /// When the last video frame or tiles update went out. On a link the walk
     /// has slowed, the next may go the walk's interval after it
     /// ([`QualityWalk::interval`]), read when it is asked for, so a step the
     /// fence of that frame brings paces the very next one.
     frame_sent: Option<Instant>,
-    /// The unchanged picture is owed as a frame at the configured quality.
-    settle_owed: bool,
     continuous_supported: bool,
     fence_supported: bool,
     eds_supported: bool,
@@ -598,7 +582,7 @@ struct Session {
     events: broadcast::Receiver<Event>,
     frames: watch::Receiver<u64>,
     /// Pixels copied out of the framebuffer for encoding, rect by rect. A
-    /// VP9 frame is read straight into its stream and copies none, unless
+    /// video frame is read straight into its stream and copies none, unless
     /// the frames are captured: then this is the whole picture in place, as
     /// the client holds it, which the capture is written from.
     scratch: Vec<u8>,
@@ -615,8 +599,7 @@ impl Session {
     /// A session on `desk` before its first SetEncodings: no encoding listed,
     /// the client holding a desktop of `known_size`.
     fn new(id: ClientId, desk: usize, shared: Arc<Shared>, config: Arc<SessionConfig>, events: broadcast::Receiver<Event>, frames: watch::Receiver<u64>, known_size: (u16, u16)) -> Self {
-        let stream = UNLISTED;
-        let walk = QualityWalk::new(stream.quality, config.capture, stream.adaptive);
+        let walk = QualityWalk::frames(crate::rfb::QUALITY, config.capture, true);
         Self {
             id,
             desk,
@@ -625,20 +608,18 @@ impl Session {
             format: PixelFormat::NATIVE,
             zrle: None,
             use_zrle: false,
-            vp9: None,
+            video: None,
             capture: None,
-            use_vp9: false,
+            use_video: false,
             tiles: None,
             use_tiles: false,
-            tiles_picture: TilesPicture { quality: wlshare_proto::QUALITY_MAX, progressive: true },
+            tiles_picture: TilesPicture { progressive: true },
             tiles_origin: Instant::now(),
             tiles_quiet: false,
-            stream,
             keyframe_owed: false,
             walk,
             in_flight: None,
             frame_sent: None,
-            settle_owed: false,
             continuous_supported: false,
             fence_supported: false,
             eds_supported: false,
@@ -679,7 +660,6 @@ impl Session {
         loop {
             self.flush_audio(&mut writer).await?;
             self.maybe_update(&mut writer).await?;
-            let settle_at = self.settle_at();
             let frame_at = self.frame_at();
             let tick_at = self.tick_at();
             tokio::select! {
@@ -713,7 +693,6 @@ impl Session {
                     }
                     Err(broadcast::error::RecvError::Closed) => anyhow::bail!("the compositor thread is gone"),
                 },
-                () = until(settle_at) => self.settle()?,
                 // The slowed frame's turn: the top of the loop sends it.
                 () = until(frame_at) => {}
                 // The tiles picture's tick: the top of the loop sends what it owes.
@@ -881,79 +860,43 @@ impl Session {
                 if self.use_zrle && self.zrle.is_none() {
                     self.zrle = Some(ZrleEncoder::default());
                 }
-                // Fatal without a quality: no client sends such a list.
-                let listed = Vp9Stream::listed(&encodings).context("reading the VP9 stream the client lists")?;
-                let vp9 = listed.is_some();
-                // The walk was the tiles picture's, where that was listed.
-                let changed = listed.is_some_and(|stream| stream != self.stream || self.use_tiles);
-                if let Some(stream) = listed.filter(|_| changed) {
-                    // A new ceiling or walk is a fresh walk from the ceiling, which
-                    // a running encoder follows without a keyframe. A new ceiling
-                    // is owed the picture the client holds whether or not the
-                    // desktop changed, once at it, as a settle sends it. A new
-                    // chroma is a new stream, which the next update makes and
-                    // starts at a keyframe.
-                    let new_ceiling = stream.quality != self.stream.quality;
-                    if stream.chroma != self.stream.chroma {
-                        self.vp9 = None;
-                    }
-                    self.stream = stream;
-                    self.walk = QualityWalk::new(stream.quality, self.config.capture, stream.adaptive);
-                    self.settle_owed = false;
-                    if let Some(encoder) = &mut self.vp9 {
-                        encoder.set_quality(self.walk.quality());
-                        self.settle_owed = new_ceiling && vp9;
-                    }
+                let video = has(ENCODING_VIDEO);
+                if video && !self.use_video {
+                    info!("client {}: asked for video, H.264 by {} at quality {}, paced by its lag", self.id.0, self.config.h264.name(), crate::rfb::QUALITY);
                 }
-                if vp9 && (changed || !self.use_vp9) {
-                    let stream = self.stream;
-                    info!(
-                        "client {}: asked for VP9 at {} up to quality {}, {}",
-                        self.id.0,
-                        match stream.chroma {
-                            Chroma::Yuv444 => "4:4:4",
-                            Chroma::Yuv420 => "4:2:0",
-                        },
-                        stream.quality,
-                        if stream.adaptive { "walked by its lag" } else { "held there" }
-                    );
-                    if self.config.capture_frames.is_some() && stream.chroma != Chroma::Yuv444 {
-                        info!("client {}: a 4:2:0 stream is not captured: a capture is 4:4:4's", self.id.0);
-                    }
+                if video && (!self.use_video || self.use_tiles) {
+                    // The walk was the tiles picture's, where that was listed.
+                    self.walk = QualityWalk::frames(crate::rfb::QUALITY, self.config.capture, true);
                 }
-                if vp9 && !self.use_vp9 {
-                    // A decoder that has seen nothing of this stream starts at a keyframe.
+                if video && !self.use_video {
+                    // A decoder that has seen nothing of this stream starts at an IDR.
                     self.keyframe_owed = true;
-                } else if !vp9 && self.use_vp9 {
-                    // What the client holds is VP9's lossy picture, and damage
-                    // alone would leave most of it on the screen.
-                    self.vp9 = None;
+                } else if !video && self.use_video {
+                    // What the client holds is the stream's lossy picture, and
+                    // damage alone would leave most of it on the screen.
+                    self.video = None;
                     self.seen = 0;
-                    // The picture the client holds is the stream's no longer,
-                    // and owes no settle.
-                    self.walk.sent(self.walk.ceiling(), Instant::now());
-                    self.settle_owed = false;
                 }
-                self.use_vp9 = vp9;
-                // Fatal without a quality, or beside VP9: no client sends such a list.
+                self.use_video = video;
+                // Fatal beside the video: no client sends such a list.
                 let listed = TilesPicture::listed(&encodings).context("reading the tiles picture the client lists")?;
                 if let Some(picture) = listed {
                     let changed = !self.use_tiles || picture != self.tiles_picture;
                     if changed {
                         if picture.progressive {
-                            info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, picture.quality);
+                            info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, crate::rfb::QUALITY);
                         } else {
-                            info!("client {}: asked for tiles up to quality {}, held there, H.264 by {}", self.id.0, picture.quality, self.config.h264.name());
+                            info!("client {}: asked for tiles at quality {}, held there, H.264 by {}", self.id.0, crate::rfb::QUALITY, self.config.h264.name());
                         }
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
-                        info!("client {}: the tiles picture is not captured: a capture is a 4:4:4 VP9 stream's", self.id.0);
+                        info!("client {}: the tiles picture is not captured: a capture is the video stream's", self.id.0);
                     }
                     if !self.use_tiles {
                         self.tiles = None;
                         self.seen = 0;
                     } else if picture != self.tiles_picture {
-                        // A new ceiling or walk is a new picture: what the
+                        // A new walk is a new picture: what the
                         // client holds was coded against the old one, so it
                         // starts over whole at the next update, whether or not
                         // the desktop changed, every live stream ended first.
@@ -966,7 +909,7 @@ impl Session {
                     if changed {
                         // A fresh walk from the ceiling, which the running
                         // streams follow with no keyframe.
-                        self.walk = QualityWalk::new(picture.quality, self.config.capture, picture.progressive);
+                        self.walk = QualityWalk::new(crate::rfb::QUALITY, self.config.capture, picture.progressive);
                         let (quality, coarse) = self.tiles_pace();
                         if let Some(encoder) = &mut self.tiles {
                             encoder.set_pace(quality, coarse);
@@ -979,8 +922,8 @@ impl Session {
                     self.seen = 0;
                 }
                 self.use_tiles = listed.is_some();
-                if !self.use_vp9 && !self.use_tiles && !self.use_zrle && !has(ENCODING_RAW) {
-                    warn!("client {}: lists neither VP9, tiles, ZRLE nor Raw; sending Raw", self.id.0);
+                if !self.use_video && !self.use_tiles && !self.use_zrle && !has(ENCODING_RAW) {
+                    warn!("client {}: lists neither video, tiles, ZRLE nor Raw; sending Raw", self.id.0);
                 }
                 let announced_continuous = !self.continuous_supported && has(ENCODING_CONTINUOUS_UPDATES);
                 self.continuous_supported |= has(ENCODING_CONTINUOUS_UPDATES);
@@ -1042,11 +985,11 @@ impl Session {
                     false => None,
                 };
                 debug!(
-                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} vp9={} tiles={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
+                    "client {}: encodings {encodings:?}; cursor={} alpha_cursor={} video={} tiles={} zrle={} continuous={} fence={} eds={} density={} outputs={} audio={} camera={} microphone={} clipboard={}",
                     self.id.0,
                     self.cursor_supported,
                     self.alpha_cursor,
-                    self.use_vp9,
+                    self.use_video,
                     self.use_tiles,
                     self.use_zrle,
                     self.continuous_supported,
@@ -1135,9 +1078,6 @@ impl Session {
                             debug!("client {}: the frame before took {}ms to deliver", self.id.0, delivery.as_millis());
                         }
                         self.follow_walk(moved);
-                        // Quiet is counted from when the client had the frame,
-                        // not from when it was written.
-                        self.walk.delivered(now);
                     }
                 }
             }
@@ -1464,7 +1404,7 @@ impl Session {
             return Ok(());
         }
 
-        // Under the lock: decide, and take the pixels: read into the VP9
+        // Under the lock: decide, and take the pixels: read into the video
         // stream's planes, or copied out for the other encodings. Encoding
         // happens after.
         let mut pieces: Vec<Piece> = Vec::new();
@@ -1472,15 +1412,15 @@ impl Session {
         let generation;
         let size;
         let full;
-        // Where a VP9 frame's picture changed, or `None` for a whole one.
-        let changed: Option<Vec<vp9::Rect>>;
+        // Where a video frame's picture changed, or `None` for a whole one.
+        let changed: Option<Vec<crate::rfb::Rect>>;
         {
-            // A VP9 stream is made for the desktop's size with the lock let
-            // go, since making one takes a third of a second at 4K and the
-            // compositor waits on the lock; the desktop is then looked at
-            // again, which may have changed size meanwhile. A stream made is
-            // owed its keyframe until one is sent, which may not be this time:
-            // the desktop may be unpainted by then.
+            // A video stream is made for the desktop's size with the lock let
+            // go, since opening an encoder takes the compositor's time while
+            // it waits on the lock; the desktop is then looked at again, which
+            // may have changed size meanwhile. A stream made is owed its IDR
+            // until one is sent, which may not be this time: the desktop may
+            // be unpainted by then.
             let fb = loop {
                 let fb = self.shared.desks[self.desk].framebuffer.lock().unwrap();
                 let (width, height) = (fb.width, fb.height);
@@ -1514,13 +1454,14 @@ impl Session {
                     self.tiles = Some(encoder);
                     continue;
                 }
-                if !self.use_vp9 || !fb.painted || self.vp9.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
+                if !self.use_video || !fb.painted || self.video.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
                     break fb;
                 }
                 drop(fb);
-                let encoder = Vp9Encoder::new(width, height, self.walk.quality(), vp9::chroma(self.stream.chroma))
-                    .with_context(|| format!("starting a VP9 stream for a {width}x{height} desktop"))?;
-                self.vp9 = Some(encoder);
+                let mut coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the video stream", self.config.h264.name()))?;
+                let encoder = VideoEncoder::new(&mut coder, width, height)
+                    .with_context(|| format!("starting the video stream of a {width}x{height} desktop"))?;
+                self.video = Some(encoder);
                 self.keyframe_owed = true;
             };
             if !fb.painted {
@@ -1534,12 +1475,9 @@ impl Session {
                 resized = Some(fb.resize_origin);
             }
             full = resized.is_some() || self.pending == Some(false) || self.seen == 0;
-            // A VP9 frame that starts its stream over is the whole picture,
-            // which has none to be damage to. A settle is a frame whether or
-            // not anything changed, and codes the whole picture, of which it
-            // reads what did.
-            let starting = self.use_vp9 && self.keyframe_owed;
-            let settling = self.use_vp9 && self.settle_owed;
+            // A video frame that starts its stream over is the whole picture,
+            // which has none to be damage to.
+            let starting = self.use_video && self.keyframe_owed;
             // The tiles picture owes what its tick looks for whether or not
             // anything changed.
             let now = self.tiles_origin.elapsed();
@@ -1548,7 +1486,7 @@ impl Session {
                 None
             } else {
                 match fb.damage_since(self.seen) {
-                    Some(rects) if rects.is_empty() && !settling && !ticking => {
+                    Some(rects) if rects.is_empty() && !ticking => {
                         drop(fb);
                         answered(self);
                         return Ok(());
@@ -1561,26 +1499,26 @@ impl Session {
                 // Copied out of the framebuffer into the encoder's own picture,
                 // and compared there with what the client holds; coded once
                 // the lock is let go.
-                let read: Option<Vec<vp9::Rect>> =
-                    damage.as_ref().map(|rects| rects.iter().map(|r| vp9::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
+                let read: Option<Vec<crate::rfb::Rect>> =
+                    damage.as_ref().map(|rects| rects.iter().map(|r| crate::rfb::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
                 let encoder = self.tiles.as_mut().expect("made before the lock was kept");
                 if full {
                     encoder.forget();
                 }
                 encoder.read(&fb.pixels, stride, read.as_deref(), now).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
                 changed = None;
-            } else if self.use_vp9 {
-                // A VP9 frame is the whole picture, of which the stream reads
-                // the rectangles that changed, straight out of the
+            } else if self.use_video {
+                // A video frame is the whole picture, of which the stream
+                // reads the rectangles that changed, straight out of the
                 // framebuffer and into its planes: the lock is held for the
                 // conversion, which a copy of the same pixels took as long
                 // as, and the frame is coded from the planes once it is let
                 // go.
-                let read: Option<Vec<vp9::Rect>> =
-                    damage.as_ref().map(|rects| rects.iter().map(|r| vp9::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
-                let encoder = self.vp9.as_mut().expect("made before the lock was kept");
+                let read: Option<Vec<crate::rfb::Rect>> =
+                    damage.as_ref().map(|rects| rects.iter().map(|r| crate::rfb::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
+                let encoder = self.video.as_mut().expect("made before the lock was kept");
                 encoder.read(&fb.pixels, stride, read.as_deref()).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
-                if self.config.capture_frames.is_some() && self.stream.chroma == Chroma::Yuv444 {
+                if self.config.capture_frames.is_some() {
                     // The capture is written after the lock is let go, from
                     // a copy kept for it: the rectangles that changed, and
                     // the rest of `scratch` is what the frames before left
@@ -1600,8 +1538,7 @@ impl Session {
                         }
                     }
                 }
-                // The settle's frame codes the whole picture whatever it read.
-                changed = if settling { None } else { read };
+                changed = read;
             } else {
                 let rects = damage.unwrap_or_else(|| vec![Rect::whole(fb.width, fb.height)]);
                 let rects = if rects.len() > MAX_RECTS { crate::framebuffer::merge(rects, 1) } else { rects };
@@ -1645,21 +1582,19 @@ impl Session {
             return self.send_tiles(writer, generation, answered).await;
         }
         self.out.clear();
-        self.out.extend_from_slice(&msg::update_header(if self.use_vp9 { 1 } else { pieces.len() as u16 }));
-        // Whether the update is a VP9 frame, and if so whether it is a keyframe
-        // and whether its delivery is a verdict about the link: a delta frame at
-        // the walk's quality. The settle's frame is at the ceiling, for the
-        // rounds after it to leave.
-        let settling = self.use_vp9 && self.settle_owed;
-        let vp9 = if self.use_vp9 {
-            let Some(keyframe) = self.encode_vp9(full, changed.as_deref())? else {
+        self.out.extend_from_slice(&msg::update_header(if self.use_video { 1 } else { pieces.len() as u16 }));
+        // Whether the update is a video frame, and if so whether it is an IDR,
+        // which is no verdict about the link: it is the whole picture again,
+        // slow by its nature.
+        let keyframe = if self.use_video {
+            let Some(keyframe) = self.encode_video(full, changed.as_deref())? else {
                 // Nothing to send, and nothing changes hands: the damage stays
-                // unseen, the request pending and the keyframe owed, for the
-                // frame the next change brings.
-                warn!("client {}: libvpx made no frame of the desktop; waiting for the next change", self.id.0);
+                // unseen, the request pending and the IDR owed, for the frame
+                // the next change brings.
+                warn!("client {}: the H.264 encoder made no frame of the desktop; waiting for the next change", self.id.0);
                 return Ok(());
             };
-            Some((keyframe, !keyframe && !settling))
+            Some(keyframe)
         } else {
             self.encode_pieces(&pieces);
             None
@@ -1671,33 +1606,22 @@ impl Session {
         }
         let sent = Instant::now();
         writer.send(&self.out).await.context("writing an update")?;
-        if let Some((keyframe, _)) = vp9 {
-            // Judged by the coarsest quality any of the picture was last
-            // encoded at, which is what the client is holding: a frame of
-            // damage sharpens the blocks it codes and no others, and a settle
-            // all of them, at the ceiling whatever the walk holds.
-            let quality = self.vp9.as_ref().expect("a VP9 frame was encoded").coarsest();
+        if let Some(keyframe) = keyframe {
             if keyframe {
-                // The frames behind it queue behind its crossing, a settle's too.
+                // The frames behind it queue behind its crossing.
                 self.walk.keyframe(sent);
             }
-            self.walk.sent(quality, sent);
-            self.settle_owed = false;
             self.frame_sent = Some(sent);
-        }
-        if let Some((_, verdict)) = vp9 {
-            let now = Instant::now();
+            let verdict = !keyframe;
             if verdict {
                 // How long the socket had no room for the frame, which the
                 // walk hears now or leaves to the fence.
+                let now = Instant::now();
                 let moved = self.walk.written(now.saturating_duration_since(sent), self.fence_supported, now);
                 self.follow_walk(moved);
             }
             if self.fence_supported {
                 self.in_flight = Some((sent, verdict));
-            } else {
-                // Without Fence, a written frame is as delivered as it gets.
-                self.walk.delivered(now);
             }
         }
         self.seen = generation;
@@ -1705,54 +1629,39 @@ impl Session {
         Ok(())
     }
 
-    /// The picture the VP9 stream read under the lock as its next frame: a
-    /// keyframe when the update is a full one or one is owed. `changed` is the
+    /// The picture the video stream read under the lock as its next frame: an
+    /// IDR when the update is a full one or one is owed. `changed` is the
     /// damage the frame carries, or `None` for a whole picture, which is what
     /// a capture is told; the stream knows what it read. Returns whether the
-    /// frame was a keyframe, or `None` when libvpx made no frame of it:
-    /// `out` is left as it was, and so is the keyframe owed. A settle, which
-    /// is a whole picture, is coded at the configured quality, with the
-    /// encoder returned to the walk's after it — a retune and not a rebuild
-    /// either way, so no keyframe is spent on it.
-    fn encode_vp9(&mut self, full: bool, changed: Option<&[vp9::Rect]>) -> anyhow::Result<Option<bool>> {
-        let settling = self.settle_owed;
+    /// frame was an IDR, or `None` when the encoder made no frame of it: `out`
+    /// is left as it was, and so is the IDR owed.
+    fn encode_video(&mut self, full: bool, changed: Option<&[crate::rfb::Rect]>) -> anyhow::Result<Option<bool>> {
         let (width, height) = self.known_size;
         let rect_at = self.out.len();
-        self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VP9));
-        let (encoder, out) = (self.vp9.as_mut().expect("made for the read"), &mut self.out);
+        self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VIDEO));
+        let (encoder, out) = (self.video.as_mut().expect("made for the read"), &mut self.out);
         let keyframe = full || self.keyframe_owed;
-        // A 4:4:4 stream's frames alone, which is what a capture is played back as.
-        if let Some(dir) = self.config.capture_frames.as_ref().filter(|_| self.stream.chroma == Chroma::Yuv444) {
+        if let Some(dir) = &self.config.capture_frames {
             let capture = match &mut self.capture {
                 Some(capture) => capture,
                 None => {
                     let millis = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
                     let path = dir.join(format!("{millis}-client{}.wlcap", self.id.0));
                     let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-                    info!("client {}: capturing what the VP9 encoder is handed into {}", self.id.0, path.display());
-                    let writer = capture::Writer::new(BufWriter::with_capacity(1 << 20, file)).context("beginning the VP9 capture")?;
+                    info!("client {}: capturing what the video encoder is handed into {}", self.id.0, path.display());
+                    let writer = wlcap::Writer::new(BufWriter::with_capacity(1 << 20, file)).context("beginning the capture")?;
                     self.capture.insert(writer)
                 }
             };
-            // The frame as the encoder is handed it, the settle's dial
-            // included; what it says is what the stream reads.
-            let quality = if settling { self.stream.quality } else { encoder.quality() };
+            // The frame as the encoder is handed it; what it says is what
+            // the stream reads.
             let stride = usize::from(width) * 4;
-            tokio::task::block_in_place(|| capture.frame((width, height), quality, keyframe, changed, &self.scratch, stride))
-                .context("writing the VP9 capture")?;
+            tokio::task::block_in_place(|| capture.frame((width, height), crate::rfb::QUALITY, keyframe, changed, &self.scratch, stride))
+                .context("writing the capture")?;
         }
         // Tens of milliseconds for a large desktop that changed all over, which
         // is the worker's to spend and not the runtime's to wait on.
-        // The settle's frame is the whole picture at the configured quality,
-        // and leaves the dial at the walk's.
-        let encoded = tokio::task::block_in_place(|| {
-            if settling {
-                encoder.settle(self.stream.quality, keyframe, out)
-            } else {
-                encoder.encode(keyframe, out)
-            }
-        })
-        .with_context(|| format!("encoding a {width}x{height} VP9 frame"))?;
+        let encoded = tokio::task::block_in_place(|| encoder.encode(keyframe, out)).with_context(|| format!("encoding a {width}x{height} video frame"))?;
         if !encoded {
             self.out.truncate(rect_at);
             return Ok(None);
@@ -1766,7 +1675,7 @@ impl Session {
     /// slowed, or its interval has passed. The interval is the walk's as it
     /// stands now, not as it stood when the last frame went out.
     fn frame_at(&self) -> Option<Instant> {
-        if !(self.use_vp9 || self.use_tiles) || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
+        if !(self.use_video || self.use_tiles) || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
             return None;
         }
         if !self.walk.slowed() {
@@ -1779,10 +1688,10 @@ impl Session {
     /// fence, and the framebuffer seen up to `generation`. An encode that owes
     /// nothing — damage that changed nothing the client holds — sends nothing,
     /// and the request waits for what will; `answered` is what is done of it then.
-    /// The update is the walk's to judge as a VP9 frame is: one with the
+    /// The update is the walk's to judge as a video frame is: one with the
     /// picture whole crosses the link as a keyframe and is no verdict, and one
     /// of the tick alone — what the desktop stopping owes — is no verdict
-    /// either, as a VP9 settle is not: the walk keeps its place through the
+    /// either: the walk keeps its place through the
     /// quiet, its verdicts starting over at the first such
     /// ([`QualityWalk::settle`]). Any other is a verdict, a START among it.
     async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
@@ -1843,38 +1752,10 @@ impl Session {
         Some(self.frame_at().map_or(at, |held| at.max(held)))
     }
 
-    /// When the desktop is to be settled at the configured quality: a frame
-    /// below it went out, the client has it, and nothing has been sent since.
-    /// `None` while there is nothing to settle or the frame is still in
-    /// flight — its fence coming back is what starts the quiet — and while the
-    /// desktop has changed since that frame: it is not quiet, and the frame
-    /// that carries the change, when the client asks for it, starts the quiet
-    /// again.
-    fn settle_at(&self) -> Option<Instant> {
-        if !self.use_vp9 || self.settle_owed || self.in_flight.is_some() || *self.frames.borrow() > self.seen {
-            return None;
-        }
-        self.walk.settle_at()
-    }
-
-    /// Owe the unchanged picture as one inter frame at the configured
-    /// quality, which the next update sends. The walk keeps its place.
-    fn settle(&mut self) -> anyhow::Result<()> {
-        self.walk.settle(Instant::now());
-        debug!(
-            "client {}: the desktop went quiet below VP9 quality {}; settling it there (motion stays at {})",
-            self.id.0,
-            self.stream.quality,
-            self.walk.quality()
-        );
-        self.settle_owed = true;
-        Ok(())
-    }
-
-    /// Move the running encoder's dial, the VP9 stream's or the tiles
-    /// picture's, to where the walk went, if it went anywhere; an encoder made
-    /// later starts there anyway. The interval the walk asks for is read when
-    /// a frame goes out.
+    /// Move the tiles picture's dial to where the walk went, if it went
+    /// anywhere; an encoder made later starts there anyway. The interval the
+    /// walk asks for is read when a frame goes out, the video stream's as the
+    /// tiles picture's, whose dial is the walk's alone to move.
     fn follow_walk(&mut self, moved: Option<Pace>) {
         let Some(pace) = moved else {
             return;
@@ -1884,9 +1765,6 @@ impl Session {
             debug!("client {}: quality {}, at most one frame per {:?}", self.id.0, pace.quality, pace.interval);
         } else {
             debug!("client {}: quality {}", self.id.0, pace.quality);
-        }
-        if let Some(encoder) = &mut self.vp9 {
-            encoder.set_quality(pace.quality);
         }
         let (quality, coarse) = self.tiles_pace();
         if let Some(encoder) = &mut self.tiles {
@@ -1901,7 +1779,7 @@ impl Session {
     fn tiles_pace(&self) -> (u8, bool) {
         match self.tiles_picture.progressive {
             true => (self.walk.quality(), self.walk.slowed()),
-            false => (self.tiles_picture.quality, false),
+            false => (crate::rfb::QUALITY, false),
         }
     }
 
@@ -2094,7 +1972,7 @@ mod pacing_tests {
     use super::*;
     use crate::framebuffer::Framebuffer;
     use crate::shared::{Displays, Geometry};
-    use wlshare_vp9::walk::QUALITY_FLOOR;
+    use crate::walk::QUALITY_FLOOR;
 
     /// A session on a 256x128 desktop that lists the tiles picture and asked
     /// for continuous updates, its picture sent and its stills owed their

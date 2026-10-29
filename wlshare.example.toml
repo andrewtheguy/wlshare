@@ -93,16 +93,16 @@ handshake_timeout_secs = 120
 # record from like any other. The client sends 16-bit PCM only while one of
 # them is recording.
 
-# Whether the tiles picture's moving regions -- the picture a zDesk session
-# started with "Tiles with motion" is sent -- are coded by the host's hardware
-# H.264 encoder, through VA-API; on by default. wlshare looks for one at
-# startup, the low-power encoder first (Intel's fixed-function block, which
-# leaves the GPU's execution units to the desktop), and logs what it found;
-# with none, or with this off, every region is H.264 by libx264 on the CPU, at
-# its fastest preset. Regions are VP9 by libvpx where libavcodec has no
-# libx264, and for the rest of a session whose H.264 coder cannot be opened, or
-# refuses or fails a stream, which the log says. The whole-desktop VP9 stream is VP9 either way. The hardware needs a VA-API
-# driver for the GPU (intel-media-va-driver, mesa-va-drivers).
+# Whether the video -- the whole desktop as one stream, what a zDesk session
+# started with "Video" is sent -- and the tiles picture's moving regions, of
+# "Tiles with motion", are coded by the host's hardware H.264 encoder, through
+# VA-API; on by default. wlshare looks for one at startup, the low-power
+# encoder first (Intel's fixed-function block, which leaves the GPU's execution
+# units to the desktop), and logs what it found; with none, or with this off,
+# both are H.264 by libx264 on the CPU, at its fastest preset. With neither
+# working wlshare does not start, and a session whose H.264 coder cannot be
+# opened, or fails a frame, ends, which the log says. The hardware needs a
+# VA-API driver for the GPU (intel-media-va-driver, mesa-va-drivers).
 hardware_h264 = true
 
 # The desktop name clients see.

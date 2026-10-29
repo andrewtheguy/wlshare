@@ -8,8 +8,8 @@
 //! Standard RFB, and the codecs behind the private encodings, are each end's
 //! own.
 //!
-//! - **The VP9 encoding** ([`ENCODING_VP9`]), the whole framebuffer as one VP9
-//!   stream, and what the client lists beside it ([`vp9`]).
+//! - **The video encoding** ([`ENCODING_VIDEO`]), the whole framebuffer as one
+//!   H.264 stream, and what the client lists beside it ([`video`]).
 //! - **The tiles encoding** ([`ENCODING_TILES`]), the desktop as exact PNG tiles
 //!   where it is still and an H.264 stream for each region that moves
 //!   ([`tiles`]), or, where the dial walks, every tile RemoteFX Progressive,
@@ -45,21 +45,21 @@ pub mod progressive;
 pub mod scroll;
 pub mod tiles;
 pub mod version;
-pub mod vp9;
+pub mod video;
 
 pub use version::PROTOCOL_VERSION;
 
-/// The VP9 encoding, the ASCII bytes `WLSV`: a client that lists it, with a
-/// quality beside it ([`vp9::Vp9Stream`]), is sent every picture as one
-/// rectangle over the whole framebuffer, a frame of one VP9 stream ([`vp9`]).
-/// It wins over ZRLE wherever it is listed; listed without a quality it is
-/// fatal, since the server has none of its own.
-pub const ENCODING_VP9: i32 = 0x574c_5356;
-/// The tiles encoding, the ASCII bytes `WLST`: a client that lists it, with a
-/// quality beside it ([`tiles::listed`]), is sent the desktop as exact PNG
-/// tiles where it is still and a video stream for each region that moves
-/// ([`tiles`]). It wins over ZRLE wherever it is listed; listed without a
-/// quality, or beside [`ENCODING_VP9`], it is fatal.
+/// The video encoding, the ASCII bytes `WLSV`: a client that lists it is sent
+/// every picture as one rectangle over the whole framebuffer, a frame of one
+/// H.264 stream ([`video`]). It wins over ZRLE wherever it is listed, and
+/// nothing beside it says what the stream is to be: there is one way to code
+/// it.
+pub const ENCODING_VIDEO: i32 = 0x574c_5356;
+/// The tiles encoding, the ASCII bytes `WLST`: a client that lists it is sent
+/// the desktop as RemoteFX Progressive tiles, or with [`ENCODING_HELD`] beside
+/// it as exact PNG tiles where it is still and a video stream for each region
+/// that moves ([`tiles`]). It wins over ZRLE wherever it is listed; listed
+/// beside [`ENCODING_VIDEO`] it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;
@@ -84,14 +84,14 @@ pub const fn private(encoding: i32) -> bool {
     encoding >> 16 == 0x574c
 }
 
-/// The lowest quality on the 1–100 dial a VP9 stream and a region's stream are
-/// coded at.
-pub const QUALITY_MIN: u8 = 1;
-/// The highest quality on the dial.
-pub const QUALITY_MAX: u8 = 100;
+/// Listed beside [`ENCODING_TILES`], asks for the tiles picture held rather
+/// than walked: every still an exact PNG and each region that moves a stream
+/// of its own, at the server's dial whatever the link does
+/// ([`tiles::TilesPicture`]). The ASCII bytes `WLSD`.
+pub const ENCODING_HELD: i32 = 0x574c_5344;
 
-/// The most bytes one VP9 frame, and one tiles rectangle's PNG or region frame,
-/// may be. A 4:4:4 keyframe of the largest desktop at the finest quantizer is a
+/// The most bytes one video frame, and one tiles rectangle's PNG or region
+/// frame, may be. An IDR of the largest desktop at the finest quantizer is a
 /// few megabytes; a length past this is a server that has lost its framing,
 /// and the server sends none.
 pub const MAX_BODY: usize = 64 << 20;
@@ -126,23 +126,14 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
     u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
 }
 
-/// The quality on the dial `encodings` names beside a private encoding: `WLQ`
-/// and the value ([`vp9::ENCODING_VP9_QUALITY_BASE`]), the first that is on the
-/// dial.
-fn listed_quality(encodings: &[i32]) -> Option<u8> {
-    encodings
-        .iter()
-        .filter_map(|&e| u8::try_from(e.checked_sub(vp9::ENCODING_VP9_QUALITY_BASE)?).ok())
-        .find(|q| (QUALITY_MIN..=QUALITY_MAX).contains(q))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_encodings_are_their_ascii_names() {
-        assert_eq!(ENCODING_VP9, i32::from_be_bytes(*b"WLSV"));
+        assert_eq!(ENCODING_VIDEO, i32::from_be_bytes(*b"WLSV"));
+        assert_eq!(ENCODING_HELD, i32::from_be_bytes(*b"WLSD"));
         assert_eq!(ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
         assert_eq!(ENCODING_DENSITY, i32::from_be_bytes(*b"WLSH"));
         assert_eq!(ENCODING_OUTPUTS, i32::from_be_bytes(*b"WLSO"));
@@ -154,9 +145,8 @@ mod tests {
 
     #[test]
     fn every_encoding_here_is_private() {
-        let quality = vp9::ENCODING_VP9_QUALITY_BASE;
         for e in [
-            ENCODING_VP9,
+            ENCODING_VIDEO,
             ENCODING_TILES,
             ENCODING_DENSITY,
             ENCODING_OUTPUTS,
@@ -164,10 +154,7 @@ mod tests {
             ENCODING_MICROPHONE,
             ENCODING_AUDIO,
             ENCODING_AUDIO_OPUS,
-            vp9::ENCODING_VP9_HELD,
-            vp9::ENCODING_VP9_SUBSAMPLED,
-            quality + 1,
-            quality + 100,
+            ENCODING_HELD,
             version::encoding(1),
         ] {
             assert!(private(e), "{e:#x}");
@@ -176,13 +163,5 @@ mod tests {
         for e in [16, -239, -259] {
             assert!(!private(e), "{e}");
         }
-    }
-
-    #[test]
-    fn a_quality_is_the_first_one_on_the_dial() {
-        let base = vp9::ENCODING_VP9_QUALITY_BASE;
-        assert_eq!(listed_quality(&[ENCODING_VP9, base + 60]), Some(60));
-        assert_eq!(listed_quality(&[base, base + 101, base + 1]), Some(1), "0 and 101 are not on it");
-        assert_eq!(listed_quality(&[ENCODING_VP9, base - 1]), None);
     }
 }

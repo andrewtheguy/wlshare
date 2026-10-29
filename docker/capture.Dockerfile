@@ -1,7 +1,7 @@
 # check=skip=InvalidDefaultArgInFrom
 # The capture container: a headless sway, the daemon started with
 # `--capture-frames`, and the scripted desktop `docker/capture/run.sh` plays on
-# it, so that what the VP9 encoder is handed by a real session — every frame's
+# it, so that what the video encoder is handed by a real session — every frame's
 # pixels and rectangles, exact — is written for an encoder to be run again
 # on. `scripts/capture-frames.sh` builds and runs it.
 ARG BASE_IMAGE=debian:trixie
@@ -26,10 +26,10 @@ COPY . /build
 RUN --mount=type=cache,target=/build/target --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git \
     set -eux; \
     cargo build --release --locked -p wlshare; \
-    cargo build --release --locked -p wlshare --example vp9-sink; \
+    cargo build --release --locked -p wlshare --example video-sink; \
     mkdir -p /out; \
     cargo deb -p wlshare --no-build -o /out/wlshare.deb; \
-    cp target/release/examples/vp9-sink /out/
+    cp target/release/examples/video-sink /out/
 
 FROM ${BASE_IMAGE}
 
@@ -40,7 +40,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # whose headless backend keeps the cursor out of the capture as a deployment's
 # does; the daemon's package depends on that wlroots. foot is the terminal,
 # chromium the browser, mpv the video, socat what starts it playing and
-# wlrctl the pointer; the keys are typed by vp9-sink, through the daemon.
+# wlrctl the pointer; the keys are typed by video-sink, through the daemon.
 # bsdextrautils is `column`, which fills the terminals the scenarios show.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
@@ -54,7 +54,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/wlshare.deb /tmp/wlshare.deb
 RUN apt-get update && apt-get install -y --no-install-recommends /tmp/wlshare.deb && rm -rf /var/lib/apt/lists/* /tmp/wlshare.deb
-COPY --from=build /out/vp9-sink /usr/local/bin/vp9-sink
+COPY --from=build /out/video-sink /usr/local/bin/video-sink
 COPY docker/capture/ /opt/capture/
 
 # Nothing here needs root. scripts/capture-frames.sh runs it as whoever runs

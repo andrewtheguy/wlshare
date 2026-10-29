@@ -13,7 +13,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 ```
 
 - `crates/wlshare-proto` is the bytes of wlshare's private extensions, both
-  directions: the VP9 and tiles encodings' framing and what a client lists
+  directions: the video and tiles encodings' framing and what a client lists
   for them, the density, outputs, audio, camera and microphone extensions, the
   scroll message and the beside ClientInit byte, and the protocol version
   that names them all. It is the one crate the zDesk gateway depends on,
@@ -22,16 +22,10 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   ([The protocol version](#the-protocol-version)). It depends on `thiserror` alone, has no OS
   APIs, and each builder is tested against a decoder written from the
   documented layout and read back by its parser.
-- `crates/wlshare-vp9` is the VP9 encoder: libvpx pinned to a quality dial,
-  8-bit 4:4:4 or 4:2:0, with the planes in front of it, its decoder, the
-  quality walk, and the capture file of what a session handed it. It decides
-  nothing about the wire, and has no OS APIs. Its current prebuilt archives
-  cover macOS arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC. See
-  [The VP9 encoding](#the-vp9-encoding).
 - The package at the root, `wlshare`, is the daemon. `rfb/` decides every byte on the wire that
   is not a private extension's: handshake, message parsing and building,
-  RSA-AES and its frames, the ZRLE encoder, the VP9 encoder over
-  `wlshare-vp9`, the tiles encoder, the audio extension's encoders, and the
+  RSA-AES and its frames, the ZRLE encoder, the video encoder, the tiles
+  encoder, the audio extension's encoders, and the
   cursor and clipboard encodings. The audio extension's FLAC encoder is
   `sound-flac`'s own, in plain Rust, and its Opus encoder libopus under
   `sound-opus`, a prebuilt static archive. Its tests decode every encoder's
@@ -43,7 +37,10 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
   `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
   and `h264.rs` the H.264 encoder through the same libavcodec, the host's
-  hardware or libx264, for the tiles picture's moving regions;
+  hardware or libx264, for the video stream and the tiles picture's moving
+  regions; `walk.rs` is the walk of the frame rate and the tiles' dial a link
+  bears, and `wlcap.rs` the capture file of what a session's encoder was
+  handed;
   `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
   the system half of that check; `state.rs` tells whoever connects to the state socket
@@ -212,7 +209,7 @@ damage after the generation it last sent and gets the merged union; a session
 behind the log, or one that has seen nothing yet, gets the whole framebuffer.
 Sessions take the pixels they need under the lock — copied out for Raw and
 ZRLE, into the encoder's own picture for tiles, converted straight into the
-stream's planes for VP9 — and encode after
+stream's planes for the video — and encode after
 releasing it, so encoding a slow client's update never holds up a capture.
 
 ### The cursor
@@ -306,9 +303,9 @@ A client gets a pixel update when it has asked (`FramebufferUpdateRequest`, or
 once for all with continuous updates) and there is damage. Each pixel update is
 one `FramebufferUpdate` of merged rectangles, at most 32, ZRLE-encoded on the
 client's own deflate stream, or Raw for a client whose list names none of
-ZRLE, VP9 and tiles — or, for a client that
-lists the VP9 encoding, one rectangle of the whole framebuffer
-([below](#the-vp9-encoding)), and for one that lists the tiles encoding
+ZRLE, the video and tiles — or, for a client that
+lists the video encoding, one rectangle of the whole framebuffer
+([below](#the-video-encoding)), and for one that lists the tiles encoding
 its PNG tiles and region streams ([below](#the-tiles-encoding)).
 
 With Fence negotiated, every pixel update ends with a fence the client echoes,
@@ -319,7 +316,7 @@ flooded and frames coalesce in the framebuffer meanwhile. zDesk negotiates
 both ContinuousUpdates and Fence.
 
 What the echo means is the client's to decide, and zDesk holds it while the
-picture is the VP9 stream until the browser has taken the frame, rather than
+picture is the video stream until the browser has taken the frame, rather than
 answering the moment it arrives ([below](#the-clients-paint)).
 
 A size change goes out first, as its own update — an ExtendedDesktopSize
@@ -370,202 +367,126 @@ zDesk reads the answer as the first message after its list, and refuses a
 `wlshare` target whose server sends anything else first: a server that does
 not version the extensions is not one it can speak them to.
 
-## The VP9 encoding
+## The video encoding
 
 A private encoding, `WLSV` (`0x574c5356`), for the zDesk gateway: the whole
-desktop as one VP9 stream, for a client that
-would rather have a picture that moves than one that is exact. While the
-framebuffer is within its video ceiling, zDesk lists it for every browser on a
-target with `subtype = "wlshare"` and passes each frame to the browser as it came, since it is the stream zDesk would
-otherwise encode from ZRLE's pixels — at the target's own dial and the
-browser's chroma, which it names beside the encoding, below. A client
-that does not list it is unchanged.
+desktop as one H.264 stream, for a client that would rather have a picture
+that moves than one that is exact. While the framebuffer is within its video
+ceiling, zDesk lists it for every browser on a target with
+`subtype = "wlshare"` whose picture is the video, and passes each frame to the
+browser as it came. A client that does not list it is unchanged.
 
-A client that lists it, with a quality beside it (below), gets it instead of a
-standard pixel encoding, wherever in the list it is; listed without one it is
-fatal. Each pixel update is then one rectangle covering the whole
-framebuffer, whose body is the dial the frame was coded at, a length word and
-one VP9 frame:
+A client that lists it gets it instead of a standard pixel encoding, wherever
+in the list it is, and nothing beside it in the list says what the stream is
+to be: there is one way to code it, wlshare's, and the gateway has no setting
+for it. Each pixel update is then one rectangle covering the whole
+framebuffer, whose body is a length word and one access unit:
 
 ```text
-u8 quality   the 1–100 dial the frame was coded at
-u32 length   the frame's bytes
-u8[length]   one VP9 frame
+u32 length   the access unit's bytes
+u8[length]   one H.264 access unit, Annex B
 ```
 
-The quality is the walk's dial as the frame was coded, or the ceiling for a
-settle's frame (both below): the gateway passes the frames on without decoding
-them, so it is the one thing about a frame it cannot read for itself, and
-what it logs at a session's end for judging a slow link by. Successive
-rectangles are one stream, each frame coded against the ones before
-it, so a client decodes them all with one decoder, in order. The coding is
-libvpx's, as `wlshare-vp9` sets it up: the quantizer
-pinned to the dial, no lag, no dropped frames, no keyframe that was not
-asked for, and the colour declared in the bitstream.
-`src/rfb/vp9.rs` is the framebuffer's pixels in and the
-frame out in the rectangle's framing, which is `wlshare-proto`'s `vp9`
-module — the quality byte, the length word and its ceiling.
-What a frame holds is fixed:
+Successive rectangles are one stream, each frame coded against the ones before it, so a client decodes them
+all with one decoder, in order. The coding is the daemon's H.264
+(`src/h264.rs`), the one the tiles picture's regions are coded by
+([below](#the-tiles-encoding)): the host's hardware encoder through
+libavcodec's `h264_vaapi` where the startup finds one, libx264 at its
+`ultrafast` preset otherwise, found once and the same for every session.
+`src/rfb/video.rs` is the framebuffer's pixels in and the frame out in the
+rectangle's framing, which is `wlshare-proto`'s `video` module — the length
+word and its ceiling. What a frame holds is fixed:
 
-- **8-bit 4:4:4, VP9 profile 1, unless the list asks for 4:2:0.** A colour
-  sample per pixel: the loss 4:2:0 costs a desktop is its text's colour — a
-  one-pixel coloured stem shares its sample with three pixels of background —
-  and no quantizer puts it back. But no browser's hardware VP9 decoder takes
-  profile 1, and a browser with no software one, Safari on iOS and iPadOS,
-  refuses it, so for such a browser the gateway lists `WLSS` (below) and the
-  stream is 4:2:0, VP9 profile 0, which every decoder takes.
-- **BT.601 at studio swing**, converted from the framebuffer's `B, G, R, X` and
-  declared in the keyframe header, so a decoder converts back with the same
-  matrix. The client's pixel format does not apply.
-- **A quantizer and a frame rate that follow the link.** The 1–100 dial,
-  finest last, maps onto VP9's quantizer 63 down to 8, as zDesk's dial does; rate control is pinned
-  to wherever the dial is, with no bitrate, no adaptive quantization and no
-  dropped frames. A session starts at the ceiling the client's list names
-  (`WLQ`, below), which it never goes above, and
-  walks down to a floor of 20 while the client is behind — `wlshare-vp9`'s
-  `walk`. The floor is a constant, not a key, as
-  every adaptive stream's is: where WebRTC's quality scaler hands off from the
-  quantizer to resolution and frame rate at its own threshold, this walk hands
-  off to the frame rate, and the settle below sharpens a quiet desktop back at
-  the ceiling.
-  A frame's queueing is its fence's round trip — answered once the client has
-  the frame, which for zDesk means once the browser has taken it
-  ([below](#the-clients-paint)) — less the shortest of the last
-  minute's, so distance does not read as queueing; a keyframe counts towards
-  that floor but is no verdict. Without Fence — and for a held dial, fence or
-  no fence — it is how long writing the frame blocked, 20 ms of it being behind. Two
-  behind frames (60 ms of queueing or more) among the last four give quality
-  up: ten points, twenty at 150 ms, thirty at 400 ms; once the dial is on the
-  floor the capture's frame interval doubles instead, 33 ms up to 133 at the
-  default `max_fps`, and at 400 ms both go at once. The interval is read when
-  the next frame is due, so a step the last frame's fence brings paces that
-  frame. The cursor, the audio announcement and a desktop that changed size
-  never wait for a slowed frame's turn. A step is taken at most once a second — half a second after a step down while the lag is 150 ms or more, such a step giving quality up and leaving the frames — and while the lag
-  is still falling a fifth per second from the step before — the queue it
-  left draining — no further step is taken, since the step was enough; after
-  a keyframe the verdicts wait two seconds, since the frames behind it queue
-  behind its crossing. A second of clear frames (30 ms or less), four at the
-  least, takes frames back first, then quality in steps that double from
-  three to twenty-four while the link keeps taking them, and after a step
-  up the link took, half a second of them is enough while none has more
-  than 15 ms queued; a step the link
-  refuses within four seconds is walked back after 300 ms to the quality it
-  came from, and for fifteen seconds the walk climbs no further than halfway
-  back towards the one refused. The dial
-  moves on the running encoder, so a move costs no keyframe, and an encoder
-  made at a new size starts where it stands. A slowed session paces its own
-  frames; an unslowed one is paced by the capture and its one fence in flight.
-- **What the client lists beside it says what the stream is to be**, the way
-  Tight's quality levels ride `SetEncodings` — pseudo-encodings rather than a
-  message, because a server that is not wlshare ignores an encoding it does
-  not know where a message it does not know ends the connection, and because
-  they ride the list that names the encoding, so the first frame is already
-  what was asked for. `0x574c5100` plus a quality 1–100 (`WLQ` and the value) names the ceiling the
-  walk never goes above; `WLSD` (`0x574c5344`)
-  holds the dial there, with a walk that hears nothing in a fence — only a
-  frame whose write blocked moves it, fence or no fence — and a settle only
-  for what such a frame coarsened; `WLSS` (`0x574c5353`, subsampled) asks for the stream
-  at 4:2:0. The
-  gateway lists the first two from the target's keys, so
-  `video_quality` and `render_adaptive` mean on a passed stream what they mean
-  on one the gateway codes, and `WLSS` from what the browser decodes. Read at
-  every `SetEncodings`: a new ceiling moves the running encoder's dial and
-  sends the picture once at it, as a settle does, whether or not the desktop
-  changed, and a new walk moves the dial alone. Neither costs a keyframe; a
-  new chroma is a new stream, from a keyframe. A list that names VP9 without a quality is
-  fatal, as a malformed message is: wlshare has no quality of its own, the
-  gateway names one beside the encoding on every list, and a client that is
-  not the gateway — a plain `vnc` target reads wlshare through the RFB
-  baseline — lists no VP9 at all. Without `WLSD` the stream walks, and without `WLSS` it is 4:4:4.
-  No lag, and threads with row and tile parallelism: the
-  machine's cores less two, at most eight, for the encoder, since an encode
-  is a burst the person at the other end waits on. The stream's shape follows
-  the picture's width and those threads, for the decoder's sake: one tile
-  column under 1440 wide, two from 1440, four from 2048, eight from 5760, never more than the
-  threads, and a stream in four columns or more is coded without the loop
-  filter. An inter frame that codes half the picture or more — a page
-  scrolled, a video playing — is searched at libvpx's speed 9, the fastest
-  its real-time VP9 has, and every other frame, a keyframe and a settle
-  among them, at speed 7, the speed moving on the running encoder with no
-  keyframe: speed 9 saves a scroll or a video much of the processor for a
-  few more bytes, where a window dragged or uncovered, a quarter to a third
-  of the picture, would send far more, and is left at 7
-  ([measured](vp9-performance.md#done-motion-at-speed-9)). The conversion
-  from the framebuffer's pixels to the planes is the `yuv` crate's, which
-  chooses its AVX2 or NEON path at run time: the daemon is built for its
-  target's baseline and asks nothing more of the processor.
-- **A quiet desktop is sharpened at the ceiling, and the walk keeps its
-  place.** The walk only runs when a frame goes out. Ordinarily a frame only
-  goes out when something changed, so a desktop that stops right after the link
-  coarsened it would keep that picture until it changed again. Once a frame
-  encoded below the ceiling has been delivered — its fence answered, or
-  without Fence its write finished — and nothing has been sent for 500 ms
-  since, the unchanged picture goes out again, at the next update the client
-  asks for, as one inter frame at the ceiling, coded whole and not by its
-  damage: the residual of the blocks the client holds coarse is coded at the
-  finer quantizer, and a block it holds exactly already is left as it is, so
-  it sharpens the whole desktop without a keyframe
-  (`a_settle_sharpens_the_picture_and_leaves_the_dial` guards that). The encoder is retuned for that one frame and returned to the
-  walk's quality after it, and the frame is no verdict: the screen stopping
-  says nothing about the link, and a walk that started every burst of motion
-  from the ceiling was measured to put the picture half a second behind at
-  every one. The clear frames before the quiet do not span it either: the
-  walk's run of clear frames starts over at the settle, so a burst earns its
-  step back up from its own frames rather than taking one on its first. A
-  whole frame that went out at the ceiling owes nothing, and a desktop that
-  goes quiet after one sends nothing; a frame of damage at the ceiling
-  sharpens only the blocks it codes, so a picture coarsened before it is
-  still owed its settle.
-- **Keyframes only when a decoder needs one**: the first frame after the
-  encoding is listed, the first at a new size or a new chroma (the encoder
-  is made again for either), and the frame that answers a non-incremental request. There is
+- **8-bit 4:2:0, BT.601 at studio swing**, converted from the framebuffer's
+  `B, G, R, X` and declared in the stream's VUI, so a decoder converts back
+  with the same matrix. The client's pixel format does not apply. The picture
+  is the framebuffer's size rounded up to even sides, which libx264 requires
+  and 4:2:0 cannot crop below — its last row again below it and black to its
+  right — and a decoder draws it cut to the rectangle from its top-left. The
+  hardware's at High profile with CABAC, libx264's at Constrained Baseline;
+  no B-frames, so each frame in is one out, and no frame is dropped. Every
+  IDR has its sequence and picture parameter sets ahead of it, so the gateway
+  reads the stream's `avc1` codec string out of the stream itself.
+- **wlshare's dial pins the quantizer.** The dial is 90 of the 1–100 scale
+  both encodings' coders take (`QUALITY` in `src/rfb/mod.rs`), finest last,
+  which maps onto QP 18 of H.264's 40 down to 16, with no bitrate and no
+  adaptive quantization: every frame is at exactly that quality. libavcodec
+  fixes the quantizer when it opens an encoder, its `h264_vaapi` and its
+  libx264 alike, so a stream cannot move it without starting over from an
+  IDR; a quantizer that walks frame by frame with no keyframe, as VP9's did,
+  is the daemon's own encoder over libva and x264's own API, still to be
+  built ([roadmap](roadmap.md#the-whole-desktop-stream-in-hardware)).
+- **A frame rate that follows the link.** What a link that falls behind
+  gives up is frames: the walk of `src/walk.rs`, which walks the tiles'
+  dial too, holds the quality at the dial and moves the frame interval alone
+  (`QualityWalk::frames`). A frame's queueing is its fence's round trip —
+  answered once the client has the frame, which for zDesk means once the
+  browser has taken it ([below](#the-clients-paint)) — less the shortest of
+  the last minute's, so distance does not read as queueing; an IDR counts
+  towards that floor but is no verdict. Without Fence it is how long writing
+  the frame blocked, 20 ms of it being behind. Two behind frames (60 ms of queueing or more) among the last
+  four double the capture's frame interval, up to three times: 33 ms to
+  267 at the default `max_fps`. The interval is read when the next frame is
+  due, so a step the last frame's fence brings paces that frame. The cursor,
+  the audio announcement and a desktop that changed size never wait for a
+  slowed frame's turn. A step is taken at most once a second — half a second
+  after one while the lag is 150 ms or more — and while the lag is still
+  falling a fifth per second from the step before — the queue it left
+  draining — no further step is taken, since the step was enough; after an
+  IDR the verdicts wait two seconds, since the frames behind it queue behind
+  its crossing. A second of clear frames (30 ms or less), four at the least,
+  takes a step back, and after a step back the link took, half a second of
+  them is enough while none has more than 15 ms queued. A slowed session
+  paces its own frames; an unslowed one is paced by the capture and its one
+  fence in flight.
+- **IDRs only when a decoder needs one**: the first frame after the encoding
+  is listed, the first at a new size (the encoder is made again for it), and
+  the frame that answers a non-incremental request. There is
   no periodic keyframe; nothing is lost on TCP.
 
-A normal VP9 update is sent when anything is damaged; a non-incremental request,
-a quality-ceiling change and the settle described above can also owe
-one. The frame is the whole picture, and what did not change costs it
-nearly nothing, in bytes or in time: the session hands the encoder the damage
-since the client's last frame, the encoder converts the rectangles of the damage
-and codes the 16×16 blocks they touch, and every other block is left as the client
-holds it, in a segment a decoder reads nothing more of. The conversion is
-straight out of the framebuffer, under its lock, into the encoder's planes, and
-the frame is coded from those once the lock is let go: the pixels are copied
-nowhere between, unless the frames are captured. What the encoder was
-measured at is beside the constants it was measured for, in
-`crates/wlshare-vp9`. A keyframe,
-an encoder's first frame, a settle and a client the damage log no longer
-reaches back for are coded whole. The encode runs on the session's worker,
-which is told it is blocking, and the fence keeps one frame in flight as it does
-a standard pixel update. A `SetEncodings` that drops the encoding is answered
-with the whole framebuffer in the standard encoding it selected — ZRLE when
-listed, Raw otherwise — since the client is holding a lossy picture.
+A video update is sent when anything is damaged; a non-incremental request
+can also owe one. The frame is the whole picture, and what did
+not change costs it little: the session hands the encoder the damage since the
+client's last frame, the encoder converts the rectangles of the damage,
+widened to the 2×2 blocks they touch, into the NV12 planes it keeps of the
+whole picture, and the rest of the planes is the picture the client already
+holds, which the encoder codes as skipped macroblocks. The conversion is
+straight out of the framebuffer, under its lock, into the encoder's planes,
+and the frame is coded from those once the lock is let go: the pixels are
+copied nowhere between, unless the frames are captured. A stream's first frame
+and a client the damage log no longer reaches back for are converted whole.
+The encode runs on the session's worker, which is told it is blocking, and the
+fence keeps one frame in flight as it does a standard pixel update. A
+`SetEncodings` that drops the encoding is answered with the whole framebuffer
+in the standard encoding it selected — ZRLE when listed, Raw otherwise —
+since the client is holding a lossy picture.
 
-libvpx is in the daemon as `wlshare-vp9` links it, from `libvpx-prebuilt`'s
-static archive, and it is the decoder the VP9 encoding's tests read every
-frame back with (`wlshare_vp9::Decoder`). If libvpx makes no frame, nothing is
-sent: the damage stays unseen and the keyframe
-owed, for the frame the next change brings.
+The stream's tests read every frame back with libavcodec's software H.264
+decoder (`src/decode.rs`), which shares nothing with either encoder, through
+the rectangle's framing. A coder that cannot be opened, or fails a frame,
+ends the session, as it does a tiles picture's; one that makes no frame sends
+nothing: the damage stays unseen and the IDR owed, for the frame the next
+change brings.
 
 ### Capturing what the encoder is handed
 
 A daemon started with `--capture-frames DIR` writes, for every session, what
-its VP9 encoder is handed, exact: each frame's time, its size, the dial at
-the time, whether a keyframe was asked, the damage rectangles or that there
-were none, and the rows the rectangles span as the framebuffer holds them,
-`B, G, R, X`. The file is the capture file of `wlshare-vp9`'s `capture`
-module, whose layout is written out there: this repository's own, read and
-written here, and owing nothing to the codec, since a capture is the pixels
-in front of an encoder whichever encoder that is. There is one
-`<unix millis>-client<id>.wlcap` per session, written at the one call that
-hands the encoder its pixels and so spanning every encoder the session makes
-across resizes. Nothing on the way is lossy, which is the point: an encoder
-is run again on the pictures a desktop is actually shown as and the
-rectangles they came with, not on a decode of a stream. A capture is a 4:4:4
-stream's alone, the chroma every use of one is about and the one its tools
-play it back at (`examples/vp9cap.rs`): a session whose client asks for
-4:2:0 (`WLSS`) writes no frame of it while it does. The files are
-uncompressed and large — a 4K whole frame is 33 MB — and are `zstd`
-compressed afterwards.
+its video encoder is handed, exact: each frame's time, its size, the dial,
+whether a keyframe was asked, the damage rectangles or that there were none,
+and the rows the rectangles span as the framebuffer holds them,
+`B, G, R, X`. The file is the capture file of `src/wlcap.rs`, whose layout is
+written out there: this repository's own, read and written here, and owing
+nothing to the codec, since a capture is the pixels in front of an encoder
+whichever encoder that is — the captures kept from VP9's sessions are read as
+they are. There is one `<unix millis>-client<id>.wlcap` per session, written
+at the one call that hands the encoder its pixels and so spanning every
+encoder the session makes across resizes. Nothing on the way is lossy, which
+is the point: an encoder is run again on the pictures a desktop is actually
+shown as and the rectangles they came with, not on a decode of a stream. The
+files are uncompressed and large — a 4K whole frame is 33 MB — and are `zstd`
+compressed afterwards. `examples/wlcap.rs` says what a capture holds, lists
+its frames' times, plays a run of a size out as raw pictures and cuts part of
+it into a capture of its own.
 
 The flag is on the command line alone, with no key in the configuration, and
 on purpose: a capture writes every frame of every session to disk and removes
@@ -578,12 +499,12 @@ started has another id and is not taken for one.
 
 `docker/capture/` runs that without a person: a headless sway on wlroots
 0.19, the daemon started by the container's script with the flag and no
-authentication on loopback, and `vp9-sink` (`examples/`),
-the one client the container has, which lists VP9 at a quality with Fence,
-ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's size, echoes
-the fences, throws the frames away, on cue reads late for a while, and
-types what the scenarios have it type, so the keys reach the desktop through
-the daemon as a person's do. The
+authentication on loopback, and `video-sink` (`examples/`),
+the one client the container has, which lists the video at a quality with
+Fence, ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's
+size, echoes the fences, throws the frames away, on cue reads late for a
+while, and types what the scenarios have it type, so the keys reach the
+desktop through the daemon as a person's do. The
 content is `docker/capture/scenarios/`, a script per scenario that plays on
 any sway desktop and can be run by hand on one a daemon is capturing: the
 quiet ones, a terminal typed into and scrolled, a page left alone, and a
@@ -595,8 +516,8 @@ pixel is the video's: the file `--video` hands the container, which the
 video and the walk need. `run.sh` plays them at each size
 with a session around each — the first resizes into the size, the video
 asks a keyframe midway, and the walk is the video while the sink reads late
-so the fences come back late and the dial goes down, then back up, then the
-video paused where it stands for the settle of a frame of it — each scenario its own session and so its own
+so the fences come back late and the frames slow, then come back, then the
+video paused where it stands — each scenario its own session and so its own
 file. A script opens its windows and says it is ready before the session
 that captures it connects, and plays once that session has its first frame,
 so that every capture begins with the scenario's windows drawn and not with
@@ -614,55 +535,32 @@ this: its Mac in Standard mode and its Windows over RDP hand it exact pixels
 of the same kind of desktop, so a wlshare capture at their sizes stands for
 them.
 
-To watch one, `scripts/capture-mp4.sh` makes an MP4 of it: `vp9cap frames`
+To watch one, `scripts/capture-mp4.sh` makes an MP4 of it: `wlcap frames`
 writes the capture's pictures at a constant rate, its own timing kept, into
-ffmpeg's libx264, so nothing passes through the VP9 encoder, and it runs
-wherever `vp9cap` builds, not only beside the daemon.
+ffmpeg's libx264, so nothing passes through the daemon's encoder.
 
-The captures are the source, and the streams a decoder is tested and timed
-on are made of them: `vp9cap` (`crates/wlshare-vp9/examples/`) plays a
-capture into the encoder again, each frame with its rectangles, at the dial
-it was coded at, a keyframe where one was asked. So a walk's steps and its
-settle are in the stream it makes without a slow link being played again,
-and a change to how a desktop is coded — in `wlshare-vp9`, or a bump of its
-libvpx — is a run
-of `scripts/vp9-samples.sh` over the captures already kept, not a desktop
-played again. The script writes what vp9-wasm's benchmark reads: for each
-size a quiet and a busy sample of 120 frames, the start of the terminal's
-capture and the frames in a row of the video's that said the most pixels
-changed, each starting with a keyframe of the picture as it stood and named
-`<scenario>-<WxH>-<tile columns>col-<lf|nolf>` from what the stream's own
-keyframe header says, not from the encoder's rule. With `--streams` it also
-codes every capture whole, one stream per run of a size the capture held
-for thirty frames or more, as IVF beside a CSV of each frame's time, bytes,
-keyframe and dial. Every stream gets the MD5 of each frame libvpx decodes of
-it, from ffmpeg, and the run stops at a stream that ffmpeg's own VP9 decoder,
-which shares no code with libvpx, makes other pictures of. The encoder there is given four threads
-whatever the machine, since the tile columns a width is coded in are capped
-by the threads and a sample must be the same stream wherever it is made.
-An encoder is measured on the captures themselves, and for a quick run on
+The captures are the source an encoder is measured on, and for a quick run
 parts of them: `scripts/capture-samples.sh` cuts each capture to 120 frames
-under its own name with `vp9cap trim --frames`, chosen as the samples are,
-a quiet scenario's first and a busy one's busiest, the cut's first frame
-the picture as it stood, whole, with a keyframe asked; `walk` it copies
-whole, since its dial walks down, back up and settles over all of it, and
-`mixed`, minutes at the desk of which a cut would keep only the busiest, the
-video full screen.
+under its own name with `wlcap trim --frames`, a quiet scenario's first and
+a busy one's busiest, the cut's first frame the picture as it stood, whole,
+with a keyframe asked; `walk` it copies whole, since its frames slow and
+come back over all of it, and `mixed`, minutes at the desk of which a cut
+would keep only the busiest, the video full screen.
 
 The walk is measured on the captures the same way, without a link being
-shaped: `walk-sim` (`crates/wlshare-vp9/examples/`) plays one or several of
-them through the encoder and `QualityWalk` as a session does, one frame in
-flight, to a model of zDesk passing the stream to a browser — the frame
+shaped: `walk-sim` (`examples/`) plays one or several of them through the
+video encoder and `QualityWalk` as a session does, one frame in flight, to a
+model of zDesk passing the stream to a browser (`examples/sim`) — the frame
 handed to the browser's link as it arrives, its fence echoed at once while
 nothing handed before it is unpainted and otherwise once the oldest such has
 been owed past the link's ping round trip, 500 ms at most — over a link of a
 given rate, changing at given times, and round trip. It says how long each
-change of the desktop took to be painted, the frames a second, the dial the
-motion was coded at and the link it used, and with `--timeline` every frame,
-as JSON lines, a JSON object a line.
-The time is the model's, so a run takes seconds; `--encode` fixes what an
-encode takes, so that two walks are compared on the same frames. What it
-measured is in [VP9 performance](vp9-performance.md#the-walk-on-a-slow-link).
+change of the desktop took to be painted, the frames a second, the link it
+used and the encoder's processor time, and with `--timeline` every frame,
+as JSON lines, a JSON object a line. The time is the model's, so a run takes
+seconds; `--encode` fixes what an encode takes, so that two walks are
+compared on the same frames. Its stream is the hardware's where the machine
+has a VA-API encoder and libx264's otherwise, or with `--libx264`.
 
 ### The client's paint
 
@@ -701,12 +599,13 @@ ZRLE — and which belongs here, where the compositor's pixels and damage are
 coded once. `src/rfb/tiles.rs` is the encoder, and
 `wlshare-proto`'s `tiles` module its framing.
 
-A client that lists it, with a quality beside it (`WLQ` and the value, as
-VP9's) and `WLSD` where it wants the dial held rather than walked, as VP9's
-list says it, gets it instead of a standard pixel encoding, wherever in the
-list it is; a walked list gets every tile progressive, below. Listed
-without a quality it is fatal, and so is a list that names both it and
-`WLSV`: they are two pictures, of which a client wants one. A
+A client that lists it, with `WLSD` (`0x574c5344`) beside it where it wants
+the dial held rather than walked, gets it instead of a standard pixel
+encoding, wherever in the list it is; a walked list gets every tile
+progressive, below. The dial is wlshare's, as the video's is
+([above](#the-video-encoding)): nothing in the list names one. A list that
+names both it and `WLSV` is fatal: they are two pictures, of which a client
+wants one. A
 pixel update is then any number of rectangles of the encoding, drawn in
 order, each a rectangle of the desktop whose body begins with a kind:
 
@@ -737,7 +636,7 @@ grid from (0,0), in slot `N` of the client's cache of 4096, over whatever the
 slot held; a CACHED draws the tile slot `N` keeps at its rectangle, the same
 size, and drawing from a slot nothing was stored in is fatal. The cache
 outlives a picture that starts over — a new size, a non-incremental request,
-a list naming another dial or walk — for as long as the list names the
+a list naming another walk — for as long as the list names the
 encoding. The encoding's one message, `0xE6`, a byte alone (`CacheEmpty`), is
 the client's word that its cache holds nothing the server can count on, a
 page that attached anew or missed a rectangle: the server draws from no slot
@@ -848,16 +747,17 @@ the picture.
   `WLSV`'s is, so the encoder's time follows the area that moves rather than
   the desktop. It is H.264 at 4:2:0, below, which every browser decodes, its
   hardware decoders included; what it loses lasts only while the region
-  moves, since the settle sends it again as a still. Its dial is the list's,
+  moves, since the settle sends it again as a still. Its dial is wlshare's,
   held: a walked list streams nothing.
-- **The dial walks, unless the list holds it.** The dial the list names is a
+- **The dial walks, unless the list holds it.** wlshare's dial is a
   ceiling, and the session's walk of the link — the same one, with the same
-  thresholds and steps, that moves `WLSV`'s dial ([above](#the-vp9-encoding))
-  — moves this picture's below it on each update's fence, and on how long
+  thresholds and steps, that paces `WLSV`'s frames ([above](#the-video-encoding)),
+  walking the quality down before the frames — moves this picture's below it
+  on each update's fence, and on how long
   its write blocked where there is no fence. An update that carries the
   picture whole crosses the link as a keyframe does and is no verdict, and
-  nor is one of the tick's alone, what the desktop stopping owes, as
-  `WLSV`'s settle is none: the walk keeps its place through the quiet, its
+  nor is one of the tick's alone, what the desktop stopping owes: the walk
+  keeps its place through the quiet, its
   verdicts starting over at the first. Any other is a verdict, a START
   among it: a region's IDR is the load a desktop that moves keeps sending,
   which the walk is there to judge, and were its verdicts held two seconds
@@ -911,13 +811,14 @@ the picture.
   configuration, the default — it is that one, which is what this picture is
   for: the processor pays for the conversion to NV12 and nothing of the
   search. On a host with none, or with the key off, it is libx264 at its
-  `ultrafast` preset, which costs the processor about a third of VP9's time a
+  `ultrafast` preset, which cost the processor about a third of VP9's time a
   frame for about twice its bytes, on a link that has them ([measured](tiles-performance.md#the-regions-encoder)).
   `src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
   `libx264` through the libavcodec already linked for the camera — Debian's,
-  which links libx264 itself — and the `RegionCoder` of the daemon's tiles
-  encoder, which opens a stream of it for each region. The coding
-  is pinned as VP9's is: constant quantizer, the dial mapped onto QP 40 down
+  which links libx264 itself — and the `H264Coder` of the daemon's tiles
+  encoder, which opens a stream of it for each region, as the video encoder
+  opens one over the whole desktop. The coding
+  is pinned as the video stream's is: constant quantizer, the dial mapped onto QP 40 down
   to 16, no bitrate, nothing dropped, no B-frames, one frame in and one out,
   BT.601 at studio swing in the stream's VUI; the picture the region's size
   rounded up to even sides, which libx264 requires, so a region of an odd
@@ -927,7 +828,7 @@ the picture.
   START; the dial is the stream's for its life. The
   hardware's is High profile with CABAC; libx264's is Constrained Baseline,
   which `ultrafast` comes to, tuned `zerolatency` — no lookahead, the
-  picture sliced among the VP9 encoder's count of threads — with no scene
+  picture sliced among the machine's cores less two, at most eight — with no scene
   cut, and with its version SEI ahead of a stream's first IDR, which a
   decoder passes over. The gateway announces the stream from that parameter
   set, `avc1.` and its profile and level, and the browser's decoder takes it
@@ -936,13 +837,11 @@ the picture.
   the execution units to the desktop and codes CQP without the HuC firmware —
   and the shader one after it, then libx264, each on a frame of a small
   picture, since a driver lists more profiles than it opens; the log says
-  what it found, and with nothing found the daemon does not start: a region
-  has no other codec. A coder that cannot be opened for a session's tiles
+  what it found, and with nothing found the daemon does not start: neither a
+  region nor the video stream has another codec. A coder that cannot be opened for a session's tiles
   picture, refuses a stream or fails one midway ends that session, as any
   encoder's failure does. Each session opens the device itself, so a VA
-  display is one thread's. The
-  whole-desktop `WLSV` stream is VP9 whatever the list says: the walk's
-  quantizer moves every frame, which a hardware encoder's does not.
+  display is one thread's.
   `examples/tiles-sink.rs` in the daemon's crate is a client that keeps
   each stream, for FFmpeg's own decoders to read back whole. The daemon's unit
   tests code frames on libx264, on every machine, and on the hardware, and
@@ -970,11 +869,12 @@ the picture.
 `examples/motion-bench.rs` in the daemon's crate plays the kept captures
 through this encoder and through `WLSV`, both decoded as a page would, the
 tiles' updates through the client's parser, a copy from the page's own
-picture, and each region by libavcodec's software H.264 decoder, the dial
-held and every still exact. It writes JSON lines as `walk-sim` does,
+picture, and `WLSV` and each region by libavcodec's software H.264 decoder,
+the dial held and every still exact. It writes JSON lines as `walk-sim` does,
 and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
-regions are the daemon's own H.264 — `h264.rs`, found as the daemon finds
-it, or libx264 with `--libx264` — so it runs where the daemon builds.
+regions and `WLSV` are the daemon's own H.264 — `h264.rs`, found as the
+daemon finds it, or libx264 with `--libx264` — so it runs where the daemon
+builds.
 `--tiles-only` codes no `WLSV`, so a change to the tiles is measured
 against the `WLSV` of a run before. Its `check` holds the encoder to sending nothing once settled,
 through 5 s of quiet and 10 redraws of the pixels the page already has, and
@@ -984,7 +884,7 @@ it measured, and what the rules beyond Motion's were chosen by, is in
 
 `examples/tiles-walk-sim.rs`, beside it, plays the captures through this
 encoder and the walk over `walk-sim`'s model of the gateway and the
-browser's link (`crates/wlshare-vp9/examples/sim`), one update in flight,
+browser's link (`examples/sim`), one update in flight,
 as a session does on a walked list, every tile progressive, or one that
 holds its dial, and says of a run what `walk-sim` says; what it found is in [Tiles
 performance](tiles-performance.md#the-walks-verdicts).
@@ -1187,7 +1087,7 @@ included.
 
 It is a whole RFB session over that output: its own framebuffer and capture,
 its own cursor session, a virtual pointer made against its output, its own
-encoding — VP9 with a walk of its own link, where it lists it — and its own
+encoding — the video paced to its own link, where it lists it — and its own
 resize and density, under the rules of the output it is on. Its ServerInit
 names that output's size, so it is sent only once the output is its own. The
 keyboard is the seat's, and keys from either connection reach whatever the
@@ -1273,7 +1173,7 @@ lists only `-259`, gtk-vnc for one, hears nothing.
 
 - **Opus**, client → server: the pseudo-encoding `WLOP`, listed beside `WLSF`,
   asks for the sound as Opus in place of FLAC. A pseudo-encoding rather than a
-  message, as the VP9 stream's choices are, so it rides the list that asks for
+  message, as the video stream's choices are, so it rides the list that asks for
   the sound at all. A list that changes the codec while a stream runs restarts
   the stream in the new one, between an end and a begin.
 - **Set bitrate**, client → server, operation `3` beside QEMU's three and
@@ -1688,10 +1588,10 @@ bare reason "authentication failed"; the actual reason is logged.
 ## Deliberately absent
 
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the
-private ones, VP9 and the tiles' region streams: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
-lossless choice. A VP9 quality above the ceiling the stream was asked for
-however much room the link has, the VP9 encoding for any client that does not
-list it.
+private ones, the video and the tiles' region streams: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
+lossless choice. A video quality other than the dial the stream was asked
+for, however much room the link has, and the video encoding for any client
+that does not list it.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the
 cursor session does report positions, but only when the output repaints.

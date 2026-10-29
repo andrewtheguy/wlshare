@@ -2,13 +2,12 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 
-- Three crates: `wlshare` (the daemon, Linux + wlroots-based Wayland only),
+- Two crates: `wlshare` (the daemon, Linux + wlroots-based Wayland only),
   the package at the repository's root, whose RFB protocol is its own module
   (`src/rfb/`), not a crate; and under `crates/`, `wlshare-proto` (the
-  private extensions' bytes) and `wlshare-vp9` (the VP9 coding),
-  platform-independent and tested elsewhere with
-  `cargo test -p wlshare-proto -p wlshare-vp9`. All three are default
-  members: a bare `cargo test` tests the workspace. The daemon's one
+  private extensions' bytes), platform-independent and tested elsewhere with
+  `cargo test -p wlshare-proto`. Both are default members: a bare
+  `cargo test` tests the workspace. The daemon's one
   client is the zDesk gateway; there is no native client. `wlshare-proto` is
   the one crate anything outside this repository depends on: the gateway pins
   it by its `proto-v<N>` tag, behind its `wlshare` feature, and it
@@ -16,14 +15,11 @@
   `<N>.0.0`: any change to it bumps `PROTOCOL_VERSION` and the crate's version
   together, and the release that brings it tags `proto-v<N>`. Every private extension's bytes, both
   directions, are built and parsed there, never in the daemon or the gateway.
-  `wlshare-vp9` is libvpx alone, from a
-  prebuilt static archive, set up for a desktop, with the planes in front of
-  it, its decoder, the quality walk and the capture file; nothing about a wire
-  is decided there. Everything is built for its target's baseline, with no CPU floor:
+  Nothing on the wire says how a picture is coded: the dial is the daemon's
+  (`QUALITY` in `src/rfb/mod.rs`), and its one codec setting is
+  `hardware_h264`. Everything is built for its target's baseline, with no CPU floor:
   a wider instruction set is used only where the processor says at run time it
-  has it.
-  libvpx's decoder is also what the daemon's VP9 tests read the
-  encoder's frames back with. A measurement of the encoder is run on an idle machine,
+  has it. A measurement of the encoder is run on an idle machine,
   alone: no build, test, profile or second measurement beside it. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
@@ -36,8 +32,9 @@
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
-  `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder and the tiles'
-  H.264 encoder (`h264.rs`), the system's libavcodec linked dynamically.
+  `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder and the
+  H.264 encoder of the video and the tiles' regions (`h264.rs`), the system's
+  libavcodec linked dynamically.
   The audio extension's FLAC coding is not here: it is the `sound-flac`
   repository, shared with the zDesk gateway and pinned by its release tag,
   its own encoder in plain Rust: nothing is needed to build or to run.
@@ -66,6 +63,5 @@
   软件包/套件, 会话/工作階段, 文件/檔案), so each keeps its own vocabulary.
   Everything under `docs/` is English alone, untranslated.
 - Design and wire details live in `docs/architecture.md`, not here.
-  Measurements live in their own documents (`docs/vp9-performance.md`,
-  `docs/tiles-performance.md`), which the architecture links to rather than
-  repeats.
+  Measurements live in their own documents (`docs/tiles-performance.md`),
+  which the architecture links to rather than repeats.

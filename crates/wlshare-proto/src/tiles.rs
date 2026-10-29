@@ -4,9 +4,9 @@
 //! RemoteFX Progressive tile, still or moving, and no stream, for a client
 //! that wants the walk more than a picture that ends exact.
 //!
-//! A private encoding, [`crate::ENCODING_TILES`], beside the VP9 encoding
-//! ([`crate::vp9`]) rather than in place of it: a client lists one or the
-//! other, and beside it the dial and whether it walks ([`TilesPicture`]).
+//! A private encoding, [`crate::ENCODING_TILES`], beside the video encoding
+//! ([`crate::video`]) rather than in place of it: a client lists one or the
+//! other, and beside it whether it walks ([`TilesPicture`]).
 //!
 //! A pixel update in this encoding is any number of rectangles of it, drawn in
 //! order, each a rectangle of the desktop whose body begins with a kind
@@ -77,7 +77,7 @@
 //! bytes.
 //!
 //! The cache outlives a picture that starts over — a new size, a
-//! non-incremental request, a list that names another dial or walk — and
+//! non-incremental request, a list that names another walk — and
 //! the server draws from what it stored before, as long as the list names
 //! the encoding. A client whose cache is gone, or that missed a rectangle,
 //! says so with a [`cache_empty`], and the server stores from nothing again,
@@ -92,7 +92,7 @@
 
 use thiserror::Error;
 
-use crate::vp9::{ENCODING_VP9_HELD, ENCODING_VP9_QUALITY_BASE};
+use crate::ENCODING_HELD;
 
 /// A PNG of the rectangle's pixels.
 pub const KIND_PNG: u8 = 0;
@@ -144,46 +144,40 @@ pub fn parse_cache_empty(buf: &[u8]) -> usize {
     CACHE_EMPTY_LEN
 }
 
-/// What a client's list asks the tiles picture to be: the dial, the VP9
-/// encoding's `WLQ` and the value ([`ENCODING_VP9_QUALITY_BASE`]) beside
-/// [`crate::ENCODING_TILES`], and whether it walks — progressive, every tile
-/// a RemoteFX Progressive tile, the ceiling its first passes are coded
-/// toward while the link keeps up, walked down while it does not, nothing
-/// owed exact — or is held there, `WLSD` ([`ENCODING_VP9_HELD`]) beside it,
-/// every still exact and the streams at the dial whatever the link does, as
-/// the VP9 encoding reads the same two.
+/// What a client's list asks the tiles picture to be, beside
+/// [`crate::ENCODING_TILES`]: whether it walks — progressive, every tile a
+/// RemoteFX Progressive tile, the server's dial the ceiling its first passes
+/// are coded toward while the link keeps up, walked down while it does not,
+/// nothing owed exact — or is held, `WLSD` ([`ENCODING_HELD`]) beside it,
+/// every still exact and the streams at the server's dial whatever the link
+/// does. The dial is the server's alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TilesPicture {
-    pub quality: u8,
     pub progressive: bool,
 }
 
 impl TilesPicture {
     /// The picture `encodings` asks for, or `None` where the list does not
-    /// name the encoding. The server has no quality of its own, so a list
-    /// that names the encoding without one is fatal, and so is one that
-    /// names the VP9 encoding beside it: they are two pictures, of which a
-    /// client wants one.
+    /// name the encoding. A list that names the video encoding beside it is
+    /// fatal: they are two pictures, of which a client wants one.
     pub fn listed(encodings: &[i32]) -> Result<Option<Self>, TilesListError> {
         let has = |e: i32| encodings.contains(&e);
         if !has(crate::ENCODING_TILES) {
             return Ok(None);
         }
-        if has(crate::ENCODING_VP9) {
+        if has(crate::ENCODING_VIDEO) {
             return Err(TilesListError::Both);
         }
-        let quality = crate::listed_quality(encodings).ok_or(TilesListError::NoQuality)?;
-        Ok(Some(Self { quality, progressive: !has(ENCODING_VP9_HELD) }))
+        Ok(Some(Self { progressive: !has(ENCODING_HELD) }))
     }
 
-    /// The list that asks for this picture: the encoding, the quality always,
-    /// and the held dial where it is held. A client puts it ahead of the rest
-    /// of its list, and lists no VP9 beside it.
+    /// The list that asks for this picture: the encoding, and `WLSD` where it
+    /// is held. A client puts it ahead of the rest of its list, and lists no
+    /// video beside it.
     pub fn encodings(self) -> Vec<i32> {
-        let quality = self.quality.clamp(crate::QUALITY_MIN, crate::QUALITY_MAX);
-        let mut listed = vec![crate::ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + i32::from(quality)];
+        let mut listed = vec![crate::ENCODING_TILES];
         if !self.progressive {
-            listed.push(ENCODING_VP9_HELD);
+            listed.push(ENCODING_HELD);
         }
         listed
     }
@@ -193,9 +187,7 @@ impl TilesPicture {
 /// sends. Fatal to the connection, as a malformed message is.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesListError {
-    #[error("the list names the tiles encoding without a quality 1–100 beside it")]
-    NoQuality,
-    #[error("the list names both the tiles and the VP9 encoding")]
+    #[error("the list names both the tiles and the video encoding")]
     Both,
 }
 
@@ -318,19 +310,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_list_names_one_picture_its_dial_and_whether_it_walks() {
-        let quality = ENCODING_VP9_QUALITY_BASE + 70;
+    fn the_list_names_one_picture_and_whether_it_walks() {
         let listed = TilesPicture::listed;
-        assert_eq!(listed(&[crate::ENCODING_TILES, quality, 16]), Ok(Some(TilesPicture { quality: 70, progressive: true })));
-        assert_eq!(listed(&[crate::ENCODING_TILES, quality, ENCODING_VP9_HELD]), Ok(Some(TilesPicture { quality: 70, progressive: false })));
-        assert_eq!(listed(&[crate::ENCODING_TILES, 16]), Err(TilesListError::NoQuality));
-        assert_eq!(listed(&[crate::ENCODING_TILES, ENCODING_VP9_QUALITY_BASE + 101]), Err(TilesListError::NoQuality));
-        assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_VP9, quality]), Err(TilesListError::Both));
-        assert_eq!(listed(&[16, quality]), Ok(None));
-        let progressive = TilesPicture { quality: 80, progressive: true };
-        let held = TilesPicture { quality: 80, progressive: false };
-        assert_eq!(progressive.encodings(), [crate::ENCODING_TILES, 0x574c_5150]);
-        assert_eq!(held.encodings(), [crate::ENCODING_TILES, 0x574c_5150, ENCODING_VP9_HELD]);
+        assert_eq!(listed(&[crate::ENCODING_TILES, 16]), Ok(Some(TilesPicture { progressive: true })));
+        assert_eq!(listed(&[crate::ENCODING_TILES, ENCODING_HELD]), Ok(Some(TilesPicture { progressive: false })));
+        assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_VIDEO]), Err(TilesListError::Both));
+        assert_eq!(listed(&[16, ENCODING_HELD]), Ok(None));
+        let progressive = TilesPicture { progressive: true };
+        let held = TilesPicture { progressive: false };
+        assert_eq!(progressive.encodings(), [crate::ENCODING_TILES]);
+        assert_eq!(held.encodings(), [crate::ENCODING_TILES, ENCODING_HELD]);
         assert_eq!(listed(&progressive.encodings()), Ok(Some(progressive)));
         assert_eq!(listed(&held.encodings()), Ok(Some(held)));
     }

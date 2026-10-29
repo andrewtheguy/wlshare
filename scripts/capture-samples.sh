@@ -1,26 +1,24 @@
 #!/usr/bin/env bash
 # Cut the captures scripts/capture-frames.sh left into shorter captures of the
-# same names, for an encoder measured on a part of each as vp9-wasm's decoder
-# is on the samples of scripts/vp9-samples.sh, which reads a directory of
-# them as it reads the captures whole (`--captures DIR`).
+# same names, for an encoder measured on a part of each.
 #
 #   ./scripts/capture-samples.sh [--captures DIR] [--out DIR] [--frames N] [--clean]
 #
 # For every capture in `--captures` (dist/captures), `--out`
 # (dist/capture-samples) gets `--frames` (120) frames of it under its name,
-# cut by `vp9cap trim --frames` from the capture's longest run of a size,
+# cut by `wlcap trim --frames` from the capture's longest run of a size,
 # past the whole pictures that open it where nothing follows them for over a
 # second: a quiet scenario's (still, uncover) first N, and a busy one's the N
 # in a row whose frames said the most pixels changed, a whole picture
-# counting as none, as vp9-samples.sh cuts the video, the earliest where
+# counting as none, the earliest where
 # several tie. The terminal's N are where they
 # were chosen by eye (`chosen` below), from just before a 40-line output to a
 # second and a half after a page printed across the screen. The
 # cut's first frame is a whole picture with a keyframe asked, the picture as
 # it stood, and the rest are as the session handed them to its encoder. A
 # capture whose longest run is N frames or fewer is copied whole, and so are
-# walk, whose dial walks down, back up and settles over all of it, a cut
-# keeping only the walk down, and mixed, minutes at the desk of which a cut
+# walk, whose frames slow and come back over all of it, a cut keeping only
+# the slowing, and mixed, minutes at the desk of which a cut
 # would keep only the busiest, the video full screen. A README.md says what
 # this run put there. Nothing in `--out` is removed unless `--clean` is given,
 # which first empties it of captures. Needs cargo and zstd on the path.
@@ -67,8 +65,8 @@ all=("$captures"/*.wlcap.zst)
 shopt -u nullglob
 [[ ${#all[@]} -gt 0 ]] || { echo "$0: no *.wlcap.zst in $captures: run scripts/capture-frames.sh" >&2; exit 1; }
 
-cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare-vp9 --example vp9cap
-vp9cap="${here}/target/release/examples/vp9cap"
+cargo build --release --manifest-path "${here}/Cargo.toml" -p wlshare --example wlcap
+wlcap="${here}/target/release/examples/wlcap"
 
 mkdir -p "$out"
 [[ -z "$clean" ]] || rm -f "$out"/*.wlcap.zst
@@ -77,7 +75,7 @@ for capture in "${all[@]}"; do
 	name="$(basename "$capture")"
 	scenario="${name%%-*}"
 	# `WxH: frames A..B, ...` for each run of a size.
-	info="$("$vp9cap" info "$capture")"
+	info="$("$wlcap" info "$capture")"
 	total="$(head -n 1 <<<"$info" | cut -d' ' -f1)"
 	longest="$(sed -n 's/.*: frames \([0-9]*\)\.\.\([0-9]*\),.*/\1 \2/p' <<<"$info" | awk '{ n = $2 - $1 + 1; if (n > most) most = n } END { print most }')"
 	if [[ "$longest" -le "$frames" || "$whole" == *" $scenario "* ]]; then
@@ -93,8 +91,8 @@ for capture in "${all[@]}"; do
 			how=(--busiest)
 		fi
 		said="$(mktemp)"
-		"$vp9cap" trim "$capture" --out "$out/$name" --frames "$frames" "${how[@]}" >/dev/null 2>"$said" || { cat "$said" >&2; rm -f "$said"; exit 1; }
-		# `vp9cap: trim: frames A..B`
+		"$wlcap" trim "$capture" --out "$out/$name" --frames "$frames" "${how[@]}" >/dev/null 2>"$said" || { cat "$said" >&2; rm -f "$said"; exit 1; }
+		# `wlcap: trim: frames A..B`
 		window="$(sed -n 's/.*: frames \([0-9]*\)\.\.\([0-9]*\)$/\1–\2/p' "$said") of $total"
 		rm -f "$said"
 	fi
@@ -104,9 +102,9 @@ done
 {
 	echo "# Capture samples"
 	echo
-	echo "The captures of what a wlshare session handed its VP9 encoder, cut to $frames frames each by \`scripts/capture-samples.sh\` in the wlshare repository on $(date -u +%Y-%m-%d), under the names of the captures they are cut from, for an encoder measured on a part of each. What the scenarios are is in the README.md beside the captures."
+	echo "The captures of what a wlshare session handed its video encoder, cut to $frames frames each by \`scripts/capture-samples.sh\` in the wlshare repository on $(date -u +%Y-%m-%d), under the names of the captures they are cut from, for an encoder measured on a part of each. What the scenarios are is in the README.md beside the captures."
 	echo
-	echo "Each is cut from the capture's longest run of a size, past the whole pictures that open it where nothing follows them for over a second: a quiet scenario's (still, uncover) first $frames frames, a busy one's the $frames in a row whose frames said the most pixels changed, a whole picture counting as none, the earliest where several tie, and the terminal's where they were chosen by eye, from just before the for loop's 40 lines of output to a second and a half after the page printed across the screen. Its first frame is a whole picture with a keyframe asked, the picture as it stood, its times are counted from it, and every frame after is as captured. A capture whose longest run is $frames frames or fewer is here whole, and so are walk, whose dial walks down, back up and settles over all of it, and mixed, minutes at the desk."
+	echo "Each is cut from the capture's longest run of a size, past the whole pictures that open it where nothing follows them for over a second: a quiet scenario's (still, uncover) first $frames frames, a busy one's the $frames in a row whose frames said the most pixels changed, a whole picture counting as none, the earliest where several tie, and the terminal's where they were chosen by eye, from just before the for loop's 40 lines of output to a second and a half after the page printed across the screen. Its first frame is a whole picture with a keyframe asked, the picture as it stood, its times are counted from it, and every frame after is as captured. A capture whose longest run is $frames frames or fewer is here whole, and so are walk, whose frames slow and come back over all of it, and mixed, minutes at the desk."
 	echo
 	echo "| Capture | Frames | Size |"
 	echo "|---|---|---|"

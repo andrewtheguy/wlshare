@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
 mod rfb;
+#[allow(dead_code)]
+#[path = "../src/wlcap.rs"]
+mod wlcap;
 
 use rfb::progressive::{Encoder, Tables, TILE};
 
@@ -26,7 +29,7 @@ fn main() {
     } else {
         Box::new(std::fs::File::open(&args[1]).unwrap())
     };
-    let mut reader = wlshare_vp9::capture::Reader::new(BufReader::with_capacity(1 << 20, input)).unwrap();
+    let mut reader = wlcap::Reader::new(BufReader::with_capacity(1 << 20, input)).unwrap();
     let mut enc: Option<Encoder> = None;
     let mut hash = xxhash_rust::xxh3::Xxh3Default::new();
     let (mut spent, mut tiles, mut bytes, mut frames) = (Duration::ZERO, 0u64, 0u64, 0u64);

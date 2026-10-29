@@ -1,15 +1,15 @@
 //! A client that takes the daemon's tiles picture and keeps its region
 //! streams: what the tiles encoding is checked against without the zDesk
-//! gateway, the way `vp9-sink` checks the VP9 encoding.
+//! gateway, the way `video-sink` checks the video encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--quality 1..100] [--held]
+//! tiles-sink ADDR --size WxH [--held]
 //!            [--seconds N] [--streams DIR] [--keys]
 //! ```
 //!
 //! The handshake is RFB 3.8 with security None, so the daemon is one started
 //! without a `[pam]` or `[password]` table. The list names the tiles encoding
-//! at the quality — the regions are H.264, through the host's hardware or
+//! — the regions are H.264, through the host's hardware or
 //! libx264, the daemon's choice; `hardware_h264 = false` skips the hardware
 //! probe and uses libx264 — and Fence and
 //! ContinuousUpdates so updates flow, ExtendedDesktopSize so
@@ -24,7 +24,7 @@
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
 //! count. With `--keys` the sink types what
-//! `vp9-sink` does: every line of its standard input a keysym in
+//! `video-sink` does: every line of its standard input a keysym in
 //! hexadecimal, pressed and let go, or `@X,Y,BUTTONS`, a pointer event, so
 //! that something moves on the desktop. Every second a line says what came,
 //! and at the end a summary and one line per stream.
@@ -49,7 +49,6 @@ mod rfb;
 struct Args {
     addr: String,
     size: (u16, u16),
-    quality: u8,
     seconds: u64,
     streams: Option<String>,
     keys: bool,
@@ -81,13 +80,12 @@ fn size(s: &str) -> Result<(u16, u16), String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--quality Q] [--held] [--seconds N] [--streams DIR] [--keys]")?;
-    let mut parsed = Args { addr, size: (0, 0), quality: 90, seconds: 10, streams: None, keys: false, held: false };
+    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held] [--seconds N] [--streams DIR] [--keys]")?;
+    let mut parsed = Args { addr, size: (0, 0), seconds: 10, streams: None, keys: false, held: false };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
             "--size" => parsed.size = size(&value()?)?,
-            "--quality" => parsed.quality = value()?.parse().map_err(|_| "--quality takes 1..100")?,
             "--seconds" => parsed.seconds = value()?.parse().map_err(|_| "--seconds takes a number")?,
             "--streams" => parsed.streams = Some(value()?),
             "--keys" => parsed.keys = true,
@@ -97,9 +95,6 @@ fn parse_args() -> Result<Args, String> {
     }
     if parsed.size == (0, 0) {
         return Err("--size WxH is required".into());
-    }
-    if !(1..=100).contains(&parsed.quality) {
-        return Err("--quality takes 1..100".into());
     }
     Ok(parsed)
 }
@@ -136,7 +131,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let init = client::read_server_init(&mut reader).await?;
     eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
 
-    let mut encodings = wlshare_proto::tiles::TilesPicture { quality: args.quality, progressive: !args.held }.encodings();
+    let mut encodings = wlshare_proto::tiles::TilesPicture { progressive: !args.held }.encodings();
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
     out.write_all(&client::set_encodings(&encodings)).await?;

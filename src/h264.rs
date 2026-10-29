@@ -1,35 +1,36 @@
-//! H.264 for the tiles picture's moving regions, through the system's
-//! libavcodec, the one already linked for the camera's decoder: the host's
-//! hardware encoder by VA-API, as its `h264_vaapi` encoder, where the host has
-//! one, and libx264 at its fastest preset where it has none.
+//! H.264 for the video stream and for the tiles picture's moving regions,
+//! through the system's libavcodec, the one already linked for the camera's
+//! decoder: the host's hardware encoder by VA-API, as its `h264_vaapi`
+//! encoder, where the host has one, and libx264 at its fastest preset where it
+//! has none.
 //!
-//! A region of the tiles picture is a stream over its rectangle alone
-//! ([`crate::rfb::tiles`]), coded by the [`RegionCoder`] the daemon hands
-//! the encoder. This is that coder. On a host whose GPU has an H.264 encoder
-//! a VA-API driver reaches — Intel's iHD, AMD's Mesa — a region that moves
-//! costs the processor its conversion to NV12 and nothing of the search,
-//! which is what the tiles picture is for: the least of the encoder's time on
-//! a link with room. On a host with none, libx264's `ultrafast` codes it in
+//! The video stream is one stream over the whole desktop
+//! ([`crate::rfb::video`]), and a region of the tiles picture one over its
+//! rectangle alone ([`crate::rfb::tiles`]), each coded by the [`H264Coder`]
+//! the daemon hands its encoder. This is that coder. On a host whose GPU has
+//! an H.264 encoder a VA-API driver reaches — Intel's iHD, AMD's Mesa — a
+//! picture that moves costs the processor its conversion to NV12 and nothing
+//! of the search. On a host with none, libx264's `ultrafast` codes it in
 //! about a third of the processor's time a frame that VP9 at libvpx's fastest
-//! speed takes, for about twice the bytes, which a link with room has.
+//! speed took, for about twice the bytes.
 //!
-//! **What a stream is.** Constant quantizer, pinned to the dial the client's
-//! list names, with no bitrate and nothing dropped: the
-//! 1–100 dial maps onto QP 40 down to 16, finest last. No B-frames, one frame
-//! in and one out, so a frame is on the wire the moment it is coded: the
-//! hardware's at High profile with CABAC and `async_depth` 1, libx264's at
-//! Constrained Baseline, the profile `ultrafast` comes to, with its
-//! `zerolatency` tuning, no scene cut, and the VP9 encoder's threads, as
-//! slices. BT.601 at studio swing, said in the stream's VUI. The picture coded is the region's
-//! rounded up to even sides, which libx264 requires and 4:2:0 cannot crop
-//! below: a region of an odd width or height is coded a pixel larger, its last
-//! row again below it and black to its right, and the gateway clips it to the
-//! region. Each frame is one Annex B access unit, the parameter sets ahead of
-//! every IDR, and the first frame of a stream is one. The dial is the
-//! stream's for its life: a held tiles picture's streams are at the dial its
-//! list names whatever the link does. No AUD; no SEI from
-//! the hardware, and from libx264 the one naming its version and options,
-//! ahead of a stream's first IDR, which a decoder passes over.
+//! **What a stream is.** Constant quantizer, pinned to the dial its encoder
+//! opens it at ([`crate::rfb::QUALITY`]), with no bitrate and nothing
+//! dropped: the 1–100 dial maps onto QP 40 down to 16, finest last. libavcodec fixes the quantizer when it opens
+//! an encoder, so the dial is the stream's for its life: another dial is
+//! another stream, from an IDR. No B-frames, one frame in and one out, so a
+//! frame is on the wire the moment it is coded: the hardware's at High
+//! profile with CABAC and `async_depth` 1, libx264's at Constrained Baseline,
+//! the profile `ultrafast` comes to, with its `zerolatency` tuning, no scene
+//! cut, and [`encoder_threads`] threads, as slices. BT.601 at studio swing,
+//! said in the stream's VUI. The picture coded is the stream's rounded up to
+//! even sides, which libx264 requires and 4:2:0 cannot crop below: a picture
+//! of an odd width or height is coded a pixel larger, its last row again below
+//! it and black to its right, and the gateway clips it. Each frame is one
+//! Annex B access unit, the parameter sets ahead of every IDR, and the first
+//! frame of a stream is one. No AUD; no SEI from the hardware, and from
+//! libx264 the one naming its version and options, ahead of a stream's first
+//! IDR, which a decoder passes over.
 //!
 //! **Which encoder.** The daemon looks once, at startup ([`Encoder::find`]):
 //! with `hardware_h264` on, each render node in turn, the low-power encoder
@@ -38,15 +39,16 @@
 //! small picture, since a driver lists more profiles than it will open; with
 //! none working, or the key off, libx264, tried the same way. What works is
 //! what every session uses; with nothing working the daemon does not start,
-//! since a region has no other codec. The low-power block codes CQP without
-//! the HuC firmware, which only bitrate control needs.
+//! since neither the video stream nor a region has another codec. The
+//! low-power block codes CQP without the HuC firmware, which only bitrate
+//! control needs.
 //!
 //! **Failure ends the session.** A coder that cannot be opened, refuses a
-//! stream or fails one midway fails the tiles picture's encode
-//! ([`crate::rfb::tiles::TilesEncoder`]), and with it the session that
-//! asked for the picture. Each session opens the device itself
-//! ([`Encoder::coder`]), so a VA display is one thread's and the sessions
-//! share nothing of it.
+//! stream or fails one midway fails the encode of the picture it codes
+//! ([`crate::rfb::video::VideoEncoder`], [`crate::rfb::tiles::TilesEncoder`]),
+//! and with it the session that asked for the picture. Each session opens
+//! the device itself ([`Encoder::coder`]), so a VA display is one thread's and
+//! the sessions share nothing of it.
 //!
 //! Tested against libavcodec's own H.264 decoder ([`crate::decode`]), which
 //! shares nothing with either encoder: libx264's on every machine, the
@@ -59,8 +61,7 @@ use std::ptr;
 use anyhow::Context as _;
 use ffmpeg_sys_next as ff;
 use log::{debug, info};
-use crate::rfb::tiles::{RegionCoder, RegionError, RegionStream};
-use crate::rfb::vp9::Rect;
+use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
 
 /// The H.264 encoder the startup found, which every session's coder opens.
 #[derive(Debug)]
@@ -94,7 +95,8 @@ const DRI: &str = "/dev/dri";
 const X264_PRESET: &str = "ultrafast";
 
 impl Encoder {
-    /// The encoder the tiles' regions are coded by: the hardware's where
+    /// The encoder the video stream and the tiles' regions are coded by: the
+    /// hardware's where
     /// `hardware` asks for it and [`Self::vaapi`] finds one, libx264
     /// otherwise, each tried on a frame first. An error with neither working.
     pub fn find(hardware: bool) -> anyhow::Result<Self> {
@@ -105,8 +107,8 @@ impl Encoder {
         } else {
             info!("hardware_h264 is off: the hardware H.264 encoder is not looked for");
         }
-        Self::X264.try_frame().context("no H.264 encoder for the tiles' regions: libx264 codes nothing here")?;
-        info!("software H.264 for the tiles' regions: libx264 at {X264_PRESET}");
+        Self::X264.try_frame().context("no H.264 encoder: libx264 codes nothing here")?;
+        info!("software H.264: libx264 at {X264_PRESET}");
         Ok(Self::X264)
     }
 
@@ -133,7 +135,7 @@ impl Encoder {
                 let encoder = Self::Vaapi { device: device.clone(), low_power };
                 match encoder.try_frame() {
                     Ok(()) => {
-                        info!("hardware H.264 for the tiles' regions: {} through VA-API, its {} encoder", node.display(), kind(low_power));
+                        info!("hardware H.264: {} through VA-API, its {} encoder", node.display(), kind(low_power));
                         return Some(encoder);
                     }
                     Err(e) => debug!("the {} encoder on {}: {e:#}", kind(low_power), node.display()),
@@ -145,7 +147,7 @@ impl Encoder {
         None
     }
 
-    /// What codes the regions, for the log: `H.264 by …`.
+    /// What codes the streams, for the log: `H.264 by …`.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Vaapi { .. } => "the hardware",
@@ -203,11 +205,11 @@ pub struct Coder {
 unsafe impl Send for Coder {}
 
 impl Coder {
-    /// A stream over a `width`×`height` region at `quality`.
+    /// A stream over a `width`×`height` picture at `quality`.
     fn stream(&mut self, width: u16, height: u16, quality: u8) -> anyhow::Result<Stream> {
-        anyhow::ensure!(width > 0 && height > 0, "a {width}x{height} region has no pixels");
+        anyhow::ensure!(width > 0 && height > 0, "a {width}x{height} picture has no pixels");
         let (w, h) = (usize::from(width), usize::from(height));
-        // Strides a multiple of 64, which leaves an odd region's coded picture
+        // Strides a multiple of 64, which leaves an odd picture's coded one
         // its extra column, and the coded picture's rows and one to spare, so
         // the bottom row pair's planes are a whole stride past its left edge.
         let stride = w.next_multiple_of(64);
@@ -261,15 +263,15 @@ impl Drop for Coder {
     }
 }
 
-impl RegionCoder for Coder {
-    fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn RegionStream>, RegionError> {
+impl H264Coder for Coder {
+    fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn H264Stream>, H264Error> {
         Ok(Box::new(self.stream(width, height, quality).map_err(|e| format!("{e:#}"))?))
     }
 }
 
-/// One region's stream: an encoder, the NV12 picture in front of it, and the
-/// frames and packet it reuses — for the hardware, its encoder on the VA
-/// display and the surface the picture is uploaded to.
+/// One stream, the desktop's or a region's: an encoder, the NV12 picture in
+/// front of it, and the frames and packet it reuses — for the hardware, its
+/// encoder on the VA display and the surface the picture is uploaded to.
 pub struct Stream {
     /// The VA display and its surfaces; null for libx264.
     device: *mut ff::AVBufferRef,
@@ -299,12 +301,25 @@ pub struct Stream {
 // SAFETY: as `Coder`'s: owned pointers, one thread at a time.
 unsafe impl Send for Stream {}
 
-/// The QP a dial pins the quantizer to: 40 at 1, 16 at 100, as VP9's 8–63 is
-/// walked by the dial the other way; H.264's step doubles every six.
+/// The QP a dial pins the quantizer to: 40 at 1, 16 at 100, finer as the dial
+/// rises; H.264's step doubles every six.
 fn qp(quality: u8) -> i32 {
     let quality = i32::from(quality.clamp(1, 100));
     40 - ((quality - 1) * 24 + 49) / 99
 }
+
+/// How many threads libx264 gets: the machine less two cores, at most
+/// [`MAX_ENCODER_THREADS`]. An encode is a burst of milliseconds a frame that
+/// the person at the other end is waiting on, and the encoder splits it
+/// across its threads as slices; the two cores kept back are for the
+/// compositor and the session, which are what make the next frame.
+pub fn encoder_threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
+}
+
+/// The most threads libx264 takes, whatever the machine: about one a
+/// megapixel, eight for 4K's 8.3, the largest desktop this is tuned for.
+const MAX_ENCODER_THREADS: usize = 8;
 
 /// The frame rate the level is figured at: twice wlshare's default
 /// `max_fps`, so a daemon set up to 60 still keeps to the level it names.
@@ -312,7 +327,7 @@ const FPS: i32 = 60;
 
 impl Stream {
     /// Open the encoder at the stream's dial: for the hardware, the frames
-    /// context on the device at the region's size and the codec context over
+    /// context on the device at the stream's size and the codec context over
     /// it; for libx264, the codec context over the planes.
     unsafe fn open(&mut self) -> anyhow::Result<()> {
         // SAFETY: the caller holds the stream's pointers; each allocation is
@@ -376,7 +391,7 @@ impl Stream {
                     ctx.hw_frames_ctx = ff::av_buffer_ref(self.frames);
                     anyhow::ensure!(!ctx.hw_frames_ctx.is_null(), "libavutil could not share the frames context");
                 }
-                Backend::X264 => ctx.thread_count = wlshare_vp9::encoder_threads() as i32,
+                Backend::X264 => ctx.thread_count = encoder_threads() as i32,
             }
             let mut dict = ptr::null_mut();
             for (key, value) in options {
@@ -481,8 +496,8 @@ impl Stream {
     }
 }
 
-impl RegionStream for Stream {
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError> {
+impl H264Stream for Stream {
+    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
         let (w, h) = self.size;
         match changed.filter(|_| self.filled) {
             Some(rects) => {
@@ -498,7 +513,7 @@ impl RegionStream for Stream {
         Ok(())
     }
 
-    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError> {
+    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, H264Error> {
         self.frame(keyframe, out).map_err(|e| format!("{e:#}").into())
     }
 }
@@ -707,11 +722,57 @@ mod tests {
     }
 
     /// libx264's frames decode to the picture, on every machine: it is what a
-    /// host without a GPU codes its regions with.
+    /// host without a GPU codes its streams with.
     #[test]
     fn libx264_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
         Encoder::X264.try_frame().expect("libx264 through this libavcodec");
         frames_decode_to_the_picture(&Encoder::X264, (96, 70), 0);
+    }
+
+    /// The video encoding's frames, through their framing, decode with
+    /// libavcodec's software decoder to the desktop they were read from: the
+    /// first an IDR with its parameter sets, a frame of
+    /// damage read from a buffer whose other rows are not the picture a P
+    /// frame of the whole desktop, and an IDR where one is asked. A desktop of
+    /// odd sides, coded a pixel larger.
+    #[test]
+    fn the_video_encodings_frames_decode_to_the_desktop() {
+        use crate::rfb::video::VideoEncoder;
+        let (w, h) = (161usize, 99usize);
+        let mut coder = Encoder::X264.coder().unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, w as u16, h as u16).unwrap();
+        let mut decoder = crate::decode::Decoder::new().unwrap();
+        let frame = |encoder: &mut VideoEncoder, pixels: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
+            encoder.read(pixels, w * 4, changed).unwrap();
+            let mut out = Vec::new();
+            assert!(encoder.encode(keyframe, &mut out).unwrap(), "a frame");
+            assert_eq!(u32::from_be_bytes(out[..4].try_into().unwrap()) as usize, out.len() - 4, "the length word is the access unit's");
+            out.split_off(4)
+        };
+
+        let mut pixels = picture(w, h);
+        let unit = frame(&mut encoder, &pixels, None, false);
+        let types = nal_types(&unit);
+        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "the first frame is an IDR with its parameter sets: {types:?}");
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+
+        // Damage, in a buffer whose rows outside it are not the picture.
+        let damage = Rect { x: 40, y: 20, width: 60, height: 30 };
+        let mut rows = vec![0xAAu8; w * h * 4];
+        for y in 20..50 {
+            for x in 40..100 {
+                pixels[(y * w + x) * 4..][..3].copy_from_slice(&[210, 210, 210]);
+            }
+            rows[y * w * 4..][..w * 4].copy_from_slice(&pixels[y * w * 4..][..w * 4]);
+        }
+        let unit = frame(&mut encoder, &rows, Some(&[damage]), false);
+        let types = nal_types(&unit);
+        assert!(types.contains(&1) && !types.contains(&5), "a P frame: {types:?}");
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+
+        let unit = frame(&mut encoder, &pixels, None, true);
+        assert!(nal_types(&unit).contains(&5), "an IDR where one was asked");
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
     }
 
     /// A region of odd sides, as one clipped to the edge of an odd desktop

@@ -1,66 +1,62 @@
-//! The tiles encoding ([`crate::rfb::tiles`]) measured against the VP9
-//! encoding on captures ([`wlshare_vp9::capture`]): every frame coded both
-//! ways, and what each cost the encoder and the link.
+//! The tiles encoding ([`crate::rfb::tiles`]) measured against the video
+//! encoding ([`crate::rfb::video`]) on captures ([`wlcap`]): every frame
+//! coded both ways, and what each cost the encoder and the link.
 //!
 //! ```text
-//! motion-bench [--threads N] [--quality Q] [--libx264]
-//!              [--wlsv-chroma 444|420 | --tiles-only] [--frames FILE] CAPTURE...
-//! motion-bench check [--threads N] [--quality Q] [--libx264] CAPTURE...
+//! motion-bench [--libx264] [--tiles-only] [--frames FILE] CAPTURE...
+//! motion-bench check [--libx264] CAPTURE...
 //! ```
 //!
-//! An example of the daemon's crate, since its regions are the daemon's H.264
-//! ([`h264`], and [`decode`] to read them back), so it runs where the daemon
-//! builds. A capture ending in `.zst` is read through `zstd -dc`, which must
-//! then be on the path.
+//! An example of the daemon's crate, since both pictures are the daemon's
+//! H.264 ([`h264`], and [`decode`] to read them back), so it runs where the
+//! daemon builds. A capture ending in `.zst` is read through `zstd -dc`,
+//! which must then be on the path.
 //!
-//! **`WLSV`** is coded as `vp9cap streams` codes it: one stream per size, each
-//! frame its rectangles at its dial, a keyframe where one was asked, 4:4:4
-//! unless `--wlsv-chroma` says otherwise. A stream the walk left coarse at the end is settled once at the
-//! capture's highest dial, as a session settles a quiet desktop.
-//! `--tiles-only` codes none, for a change to the tiles measured against the
-//! `WLSV` a run before measured.
+//! **`WLSV`** is coded as a session codes it: one stream per size, at
+//! wlshare's dial ([`crate::rfb::QUALITY`]), each frame its rectangles, an
+//! IDR where a keyframe was asked. `--tiles-only` codes none, for a change to the tiles
+//! measured against the `WLSV` a run before measured.
 //!
 //! **Tiles** is the encoder a session runs, one per size: each frame read with
 //! its rectangles at the time it was captured and encoded, a keyframe asked
 //! being a picture the client asks for whole ([`TilesEncoder::forget`]), and
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
-//! changing. Its dial is the capture's unless `--quality` names one, held
-//! there, the picture exact as a list that holds the dial asks: a walked
+//! changing. Its dial is wlshare's, held there, the picture exact as a list that holds the dial asks: a walked
 //! list's is progressive tiles, which `tiles-walk-sim` walks over a link. Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
-//! each session's is.
+//! each session's is, and `WLSV` on the same encoder.
 //!
 //! **Cost** is the process's CPU time over each coder's own work, both coders
 //! in one pass over the capture: reading it, `zstd`, and the decoders that
-//! check the result all run outside. `WLSV`'s encoder has `--threads` (4);
-//! libx264's region streams have the daemon's count, the machine's less two
-//! at most 8, and are coded one after another with the PNGs, so the CPU time
-//! is the measure and not the wall clock. The hardware's cost the processor
+//! check the result all run outside. libx264's streams, `WLSV`'s and the
+//! regions', have the daemon's threads, the machine's less two at most 8, and
+//! the regions are coded one after another with the PNGs, so the CPU time is
+//! the measure and not the wall clock. The hardware's cost the processor
 //! the conversion and the upload, which is what is counted of them. As every
 //! measurement of the encoder, run it on an idle machine and alone.
 //!
-//! **Checked**: both pictures are decoded as a page would — `WLSV` by libvpx;
-//! the tiles' update parsed by the client's parser, a PNG by the `png` crate
-//! and each region by a libavcodec software H.264 decoder of its own, its
-//! picture turned back from BT.601 at studio swing by `yuv` — and compared with the
+//! **Checked**: both pictures are decoded as a page would — `WLSV` and each
+//! region by a libavcodec software H.264 decoder of its own, its picture
+//! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
+//! by the client's parser and a PNG by the `png` crate — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
 //!
 //! The output is JSON lines, a JSON object a line, one per capture per coder,
 //! which `scripts/motion-tables.py` makes tables of: `capture`, `coder`
-//! (`wlsv` or `tiles`), `chroma` (`WLSV`'s, `444` or `420`; `null` for the
-//! tiles), `quality` (the ceiling), `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
+//! (`wlsv` or `tiles`), `quality` (wlshare's dial),
+//! `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
 //! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png` and
-//! `video` (the regions' H.264, or `WLSV`'s VP9), the tiles' `copies`, which
+//! `video` (the regions' H.264, or `WLSV`'s), the tiles' `copies`, which
 //! carry no payload, `streams` started and
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
 //! squared error over B, G and R averaged over every frame, and `exact_frames`,
 //! the frames it held exactly; where it ended, `end_off` pixels off and
-//! `end_mse`; and the tail, `settled`, `tail_s`, `tail_cpu_ms`, and its longest
+//! `end_mse`; and the tiles' tail, `settled`, `tail_s`, `tail_cpu_ms`, and its longest
 //! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
@@ -86,14 +82,14 @@ use std::time::Duration;
 
 use cpu_time::ProcessTime;
 use wlshare_proto::tiles::TilesPicture;
-use wlshare_vp9::Decoder;
-use wlshare_vp9::capture::Reader;
+use wlcap::Reader;
 use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
 
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::msg;
 use crate::rfb::tiles::TilesEncoder;
-use crate::rfb::vp9::{Chroma, Rect, Vp9Encoder};
+use crate::rfb::Rect;
+use crate::rfb::video::VideoEncoder;
 
 // The daemon's own modules, of which the bench uses the encoders, the
 // decoder and the client's half of the wire, and nothing more.
@@ -106,22 +102,22 @@ mod h264;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
 mod rfb;
+#[allow(dead_code)]
+#[path = "../src/wlcap.rs"]
+mod wlcap;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--threads N] [--quality Q] [--libx264] [--wlsv-chroma 444|420 | --tiles-only] [--frames FILE] CAPTURE...
-       motion-bench check [--threads N] [--quality Q] [--libx264] CAPTURE...";
+const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--frames FILE] CAPTURE...
+       motion-bench check [--libx264] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
 const TAIL: Duration = Duration::from_secs(60);
 
 struct Args {
     captures: Vec<PathBuf>,
-    threads: usize,
-    quality: Option<u8>,
     /// libx264 for the regions, the hardware not looked for.
     libx264: bool,
-    wlsv_chroma: Chroma,
     /// The tiles alone, no `WLSV` coded.
     tiles_only: bool,
     frames: Option<PathBuf>,
@@ -131,20 +127,11 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), threads: 4, quality: None, libx264: false, wlsv_chroma: Chroma::Yuv444, tiles_only: false, frames: None, check: false };
+    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, frames: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
-            "--threads" => parsed.threads = value()?.parse().ok().filter(|&n| n > 0).ok_or("--threads takes a count of at least 1")?,
-            "--quality" => parsed.quality = Some(value()?.parse().ok().filter(|q| (1..=100).contains(q)).ok_or("--quality takes 1 to 100")?),
             "--libx264" => parsed.libx264 = true,
-            "--wlsv-chroma" => {
-                parsed.wlsv_chroma = match value()?.as_str() {
-                    "444" => Chroma::Yuv444,
-                    "420" => Chroma::Yuv420,
-                    other => return Err(format!("{other}: a chroma is 444 or 420")),
-                }
-            }
             "--tiles-only" => parsed.tiles_only = true,
             "--frames" => parsed.frames = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
@@ -155,11 +142,8 @@ fn parse_args() -> Result<Args, String> {
     if parsed.captures.is_empty() {
         return Err("a capture to read".into());
     }
-    if parsed.check && (parsed.frames.is_some() || parsed.wlsv_chroma != Chroma::Yuv444 || parsed.tiles_only) {
+    if parsed.check && (parsed.frames.is_some() || parsed.tiles_only) {
         return Err("check codes no WLSV and writes no frames".into());
-    }
-    if parsed.tiles_only && parsed.wlsv_chroma != Chroma::Yuv444 {
-        return Err("--tiles-only codes no WLSV".into());
     }
     Ok(parsed)
 }
@@ -183,11 +167,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("motion-bench: the regions are H.264 by {}", encoder.name());
+    eprintln!("motion-bench: WLSV and the regions are H.264 by {}", encoder.name());
     if args.check {
         let mut failed = false;
         for capture in &args.captures {
-            match check(capture, &args, &encoder) {
+            match check(capture, &encoder) {
                 Ok(passed) => failed |= !passed,
                 Err(e) => {
                     eprintln!("motion-bench: {}: {e}", capture.display());
@@ -269,7 +253,7 @@ impl Drop for Source {
 #[derive(Default)]
 struct Sent {
     png: u64,
-    /// The frames of the streams: the tiles' regions' H.264, or `WLSV`'s VP9.
+    /// The frames of the streams: the tiles' regions' H.264, or `WLSV`'s.
     video: u64,
     starts: u64,
     /// The tiles' copies, which carry no payload.
@@ -457,15 +441,13 @@ impl Tiles {
     }
 
     /// One captured frame read and encoded, its read's CPU time counted too:
-    /// `whole` for a picture the client asks for whole, `quality` the dial
-    /// the capture names.
-    fn frame(&mut self, pixels: &[u8], changed: Option<&[Rect]>, whole: bool, quality: u8, now: Duration) -> Result<(Duration, Sent), Error> {
+    /// `whole` for a picture the client asks for whole.
+    fn frame(&mut self, pixels: &[u8], changed: Option<&[Rect]>, whole: bool, now: Duration) -> Result<(Duration, Sent), Error> {
         let stride = usize::from(self.encoder.size().0) * 4;
         let cpu = ProcessTime::now();
         if whole {
             self.encoder.forget();
         }
-        self.encoder.set_pace(quality, false);
         self.encoder.read(pixels, stride, changed, now)?;
         let read = cpu.elapsed();
         let (cost, sent) = self.encode(now)?;
@@ -518,31 +500,54 @@ fn json(s: &str) -> String {
 
 // ── WLSV ─────────────────────────────────────────────────────────────────────
 
+/// The bytes of a `WLSV` body ahead of its access unit: the length word.
+const HEADER: usize = wlshare_proto::video::FRAME_HEADER_LEN;
+
 /// `WLSV` at one size, and its decoder.
 struct Wlsv {
-    encoder: Vp9Encoder,
-    decoder: Decoder,
+    encoder: VideoEncoder,
+    decoder: decode::Decoder,
     started: bool,
     picture: Vec<u8>,
+    planes: Vec<u8>,
+    scratch: Vec<u8>,
     out: Vec<u8>,
 }
 
 impl Wlsv {
-    /// The encoder and what making it cost, as a region stream's making is
-    /// the tiles' cost.
-    fn new((w, h): (u16, u16), quality: u8, chroma: Chroma, threads: usize) -> Result<(Self, Duration), Error> {
-        let decoder = Decoder::new(2)?;
+    /// The encoder, on a coder of its own as a session's is, and what making
+    /// it cost, as a region stream's making is the tiles' cost.
+    fn new((w, h): (u16, u16), encoder: &h264::Encoder) -> Result<(Self, Duration), Error> {
+        let decoder = decode::Decoder::new()?;
         let cpu = ProcessTime::now();
-        let encoder = Vp9Encoder::with_threads(w, h, quality, chroma, threads)?;
+        let mut coder = encoder.coder()?;
+        let encoder = VideoEncoder::new(&mut coder, w, h)?;
         let made = cpu.elapsed();
-        Ok((Self { encoder, decoder, started: false, picture: vec![0; usize::from(w) * 4 * usize::from(h)], out: Vec::new() }, made))
+        let picture = vec![0; usize::from(w) * 4 * usize::from(h)];
+        Ok((Self { encoder, decoder, started: false, picture, planes: Vec::new(), scratch: Vec::new(), out: Vec::new() }, made))
     }
 
-    /// Decode what the last encode appended, if anything.
+    /// Decode what the last encode appended, if anything: the picture the
+    /// desktop's size rounded up to even sides, cut to it from its top-left.
     fn check(&mut self) -> Result<(), Error> {
-        if self.out.len() > 5 {
-            let (w, _) = self.encoder.size();
-            self.decoder.decode(&self.out[5..])?.write_bgrx(&mut self.picture, usize::from(w) * 4)?;
+        if self.out.len() <= HEADER {
+            return Ok(());
+        }
+        let (w, h) = self.encoder.size();
+        let (w, h) = (usize::from(w), usize::from(h));
+        let picture = self.decoder.decode(&self.out[HEADER..], &mut self.planes)?.ok_or("a WLSV frame decoded to no picture")?;
+        let (pw, ph) = (picture.width, picture.height);
+        if (pw, ph) != (w.next_multiple_of(2), h.next_multiple_of(2)) {
+            return Err(format!("a {w}x{h} desktop decoded as {pw}x{ph}").into());
+        }
+        let (cw, ch) = picture.chroma();
+        let (luma, chroma) = self.planes.split_at(pw * ph);
+        let (u, v) = chroma.split_at(cw * ch);
+        let planar = YuvPlanarImage { y_plane: luma, y_stride: pw as u32, u_plane: u, u_stride: cw as u32, v_plane: v, v_stride: cw as u32, width: pw as u32, height: ph as u32 };
+        self.scratch.resize(pw * ph * 4, 0);
+        yuv::yuv420_to_bgra(&planar, &mut self.scratch, (pw * 4) as u32, YuvRange::Limited, YuvStandardMatrix::Bt601)?;
+        for (to, from) in self.picture.chunks_exact_mut(w * 4).zip(self.scratch.chunks_exact(pw * 4)) {
+            to.copy_from_slice(&from[..w * 4]);
         }
         Ok(())
     }
@@ -591,11 +596,9 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
     let mut source = Source::open(path)?;
     let (mut wlsv, mut tiles) = (Tally::default(), Tally::default());
     let mut run: Option<Run> = None;
-    let (mut first_at, mut last_at, mut ceiling) = (None, Duration::ZERO, 0u8);
+    let (mut first_at, mut last_at) = (None, Duration::ZERO);
     let mut picture = Vec::new();
     while let Some(frame) = source.reader.next()? {
-        let quality = args.quality.unwrap_or(frame.quality);
-        ceiling = ceiling.max(quality);
         let now = frame.at;
         first_at.get_or_insert(now);
         last_at = now;
@@ -606,11 +609,11 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
             let coder = if args.tiles_only {
                 None
             } else {
-                let (coder, cost) = Wlsv::new(frame.size, quality, args.wlsv_chroma, args.threads)?;
+                let (coder, cost) = Wlsv::new(frame.size, encoder)?;
                 setup = cost;
                 Some(coder)
             };
-            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, TilesPicture { quality, progressive: false }, encoder)? });
+            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, TilesPicture { progressive: false }, encoder)? });
         }
         let run = run.as_mut().expect("just made");
 
@@ -623,9 +626,6 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         let mut wlsv_spent = None;
         if let Some(w) = run.wlsv.as_mut() {
             let cpu = ProcessTime::now();
-            if w.encoder.quality() != quality {
-                w.encoder.set_quality(quality);
-            }
             w.out.clear();
             w.encoder.read(frame.pixels, stride, if w.started { frame.changed } else { None })?;
             let made = w.encoder.encode(!w.started || frame.keyframe, &mut w.out)?;
@@ -634,9 +634,9 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
             wlsv.frames += 1;
             wlsv.cpu += wlsv_cpu;
             wlsv.per_frame.push(wlsv_cpu);
-            let wlsv_bytes = if made { w.out.len() as u64 - 5 } else { 0 };
+            let wlsv_bytes = if made { (w.out.len() - HEADER) as u64 } else { 0 };
             wlsv.sent.video += wlsv_bytes;
-            if made && wlshare_vp9::frame_header(&w.out[5..]).is_some_and(|header| header.keyframe) {
+            if made && h264::nal_types(&w.out[HEADER..]).contains(&5) {
                 wlsv.keyframes += 1;
             }
             w.check()?;
@@ -645,7 +645,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         }
 
         // The tiles.
-        let (tiles_cpu, sent) = run.tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, quality, now)?;
+        let (tiles_cpu, sent) = run.tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, now)?;
         tiles.frames += 1;
         tiles.cpu += tiles_cpu;
         tiles.per_frame.push(tiles_cpu);
@@ -679,21 +679,6 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
     source.finish()?;
     let mut run = run.ok_or("the capture holds no frames")?;
 
-    // WLSV's settle, where the walk left it coarse.
-    if let Some(w) = run.wlsv.as_mut()
-        && w.encoder.coarsest() < ceiling
-    {
-        let cpu = ProcessTime::now();
-        w.out.clear();
-        let made = w.encoder.settle(ceiling, false, &mut w.out)?;
-        wlsv.tail_cpu = cpu.elapsed();
-        wlsv.cpu += wlsv.tail_cpu;
-        if made {
-            wlsv.sent.video += w.out.len() as u64 - 5;
-        }
-        w.check()?;
-    }
-
     // The tiles' tail: the tick on, nothing changing, until nothing is owed.
     let mut ended = last_at;
     while let Some(at) = run.tiles.encoder.tick_at().filter(|at| *at <= last_at + TAIL) {
@@ -710,14 +695,10 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
 
     let seconds = last_at.saturating_sub(first_at.unwrap_or_default()).as_secs_f64();
     wlsv.settled = true;
-    let chroma = match args.wlsv_chroma {
-        Chroma::Yuv444 => "\"444\"",
-        Chroma::Yuv420 => "\"420\"",
-    };
     if let Some(w) = &run.wlsv {
-        row(&name, "wlsv", chroma, ceiling, &wlsv, seconds, compare(&w.picture, &picture));
+        row(&name, "wlsv", &wlsv, seconds, compare(&w.picture, &picture));
     }
-    row(&name, "tiles", "null", ceiling, &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
+    row(&name, "tiles", &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
     Ok(())
 }
 
@@ -736,7 +717,7 @@ const REDRAW_EVERY: Duration = Duration::from_millis(100);
 
 /// Whether the tiles leave a capture's picture be once it is settled: see
 /// the module's `check`.
-fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Error> {
+fn check(path: &Path, encoder: &h264::Encoder) -> Result<bool, Error> {
     let name = capture_name(path);
     let mut source = Source::open(path)?;
     let mut run: Option<((u16, u16), Tiles)> = None;
@@ -745,14 +726,13 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
     while let Some(frame) = source.reader.next()? {
         let now = frame.at;
         last_at = now;
-        let quality = args.quality.unwrap_or(frame.quality);
         let fresh = run.as_ref().is_none_or(|(size, _)| *size != frame.size);
         if fresh {
-            run = Some((frame.size, Tiles::new(frame.size, TilesPicture { quality, progressive: false }, encoder)?));
+            run = Some((frame.size, Tiles::new(frame.size, TilesPicture { progressive: false }, encoder)?));
         }
         let (_, tiles) = run.as_mut().expect("just made");
         tiles.ticks(now)?;
-        tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, quality, now)?;
+        tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, now)?;
         picture.clear();
         picture.extend_from_slice(frame.pixels);
     }
@@ -775,12 +755,11 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
 
     // Redrawn: the whole picture again, every pixel as it was.
     let whole = [Rect { x: 0, y: 0, width: size.0, height: size.1 }];
-    let quality = tiles.encoder.quality();
     let mut redrawn = 0;
     for _ in 0..REDRAWS {
         now += REDRAW_EVERY;
         redrawn += tiles.ticks(now)?.1.bytes();
-        redrawn += tiles.frame(&picture, Some(&whole), false, quality, now)?.1.bytes();
+        redrawn += tiles.frame(&picture, Some(&whole), false, now)?.1.bytes();
     }
     redrawn += tiles.ticks(now + QUIET)?.1.bytes();
 
@@ -798,19 +777,20 @@ fn ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
 
-/// One coder's line: `chroma` is already JSON, and `end` what the page
+/// One coder's line: `end` what the page
 /// ended off by, its pixels and its mean squared error.
 #[allow(clippy::too_many_arguments)]
-fn row(name: &str, coder: &str, chroma: &str, ceiling: u8, tally: &Tally, seconds: f64, (end_off, end_mse): (u64, f64)) {
+fn row(name: &str, coder: &str, tally: &Tally, seconds: f64, (end_off, end_mse): (u64, f64)) {
     let mut per_frame = tally.per_frame.clone();
     per_frame.sort_unstable();
     let p95 = per_frame.get((per_frame.len() * 95 / 100).min(per_frame.len().saturating_sub(1))).copied().unwrap_or_default();
     let mean = if tally.frames == 0 { 0.0 } else { ms(per_frame.iter().sum()) / tally.frames as f64 };
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"chroma\":{chroma},\"quality\":{ceiling},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
+        crate::rfb::QUALITY,
         tally.frames,
         ms(tally.cpu),
         ms(p95),

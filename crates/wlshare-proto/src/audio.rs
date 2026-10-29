@@ -181,7 +181,7 @@ impl AudioFormat {
 /// What the sound is coded as, which the client chooses in its `SetEncodings`:
 /// Opus where [`crate::ENCODING_AUDIO_OPUS`] is listed beside
 /// [`crate::ENCODING_AUDIO`], FLAC where it is not. A pseudo-encoding rather
-/// than a message, as the VP9 stream's choices are, so it rides the list that
+/// than a message, as the video stream's choices are, so it rides the list that
 /// asks for the sound at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {

@@ -5,18 +5,17 @@
 //! client that wants the walk more than a picture that ends exact.
 //!
 //! The encoding — the rectangles and their kinds — is
-//! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::vp9`]'s rather than in
-//! place of it: the VP9 encoding, one stream over the whole desktop walked on
-//! the link, is the picture for a link that is short of bytes, and this one
+//! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::video`]'s rather than in
+//! place of it: the video encoding, one H.264 stream over the whole desktop
+//! paced to the link, is the picture for a desktop that moves, and this one
 //! spends bytes the link has for less of the encoder's time and a picture that
 //! ends exact. Its rules are the zDesk gateway's Motion's, brought here because
 //! only here are the compositor's pixels and damage coded once. A region's
 //! stream is H.264, by the host's hardware encoder or by libx264.
 //!
-//! **The dial walks, where the list lets it.** The dial the list names is a
-//! ceiling, and the session's walk of the link ([`wlshare_vp9::walk`]) moves
-//! the encoder below it ([`TilesEncoder::set_pace`]) as it moves the VP9
-//! encoding's. A list whose dial walks is progressive: every tile, still or
+//! **The dial walks, where the list lets it.** wlshare's dial
+//! ([`crate::rfb::QUALITY`]) is a ceiling, and the session's walk of the link ([`crate::walk`]) moves
+//! the encoder below it ([`TilesEncoder::set_pace`]). A list whose dial walks is progressive: every tile, still or
 //! moving, a RemoteFX Progressive tile ([`progressive`],
 //! [`wlshare_proto::tiles::KIND_PROGRESSIVE`]), and no stream. A tile's first
 //! pass is at 75 while the walk stands at the ceiling and is not coarse, at
@@ -67,11 +66,11 @@
 //! the encoder made for it ([`TilesEncoder::keep_cache`]).
 //!
 //! **What a stream codes.** A region is an encoder over its rectangle alone,
-//! told the damage inside it as the VP9 encoding's whole-desktop stream is, so
-//! the encoder's time follows the area that moves. It is 4:2:0 at the dial the
-//! client's list names, held there: what a stream loses of a picture lasts
+//! told the damage inside it as the video encoding's whole-desktop stream is, so
+//! the encoder's time follows the area that moves. It is 4:2:0 at wlshare's
+//! dial, held there: what a stream loses of a picture lasts
 //! only while the region moves, since it settles. The encoder is the
-//! [`RegionCoder`] the daemon hands this one, its host's H.264 encoder, on a
+//! [`H264Coder`] the daemon hands this one, its host's H.264 encoder, on a
 //! held list alone: the
 //! hardware's, where a region costs the processor its conversion alone, or
 //! else libx264 at its fastest preset. A coder that refuses a stream, or
@@ -91,7 +90,7 @@
 //!
 //! The measurements these rules were chosen by are the daemon crate's
 //! `examples/motion-bench.rs`, which plays the kept captures through this
-//! encoder, on the daemon's H.264, and through the VP9 encoding's, and
+//! encoder and through the video encoding's, both on the daemon's H.264, and
 //! `examples/tiles-walk-sim.rs`, which walks the progressive tiles over a
 //! slow link.
 
@@ -104,39 +103,7 @@ use xxhash_rust::xxh3::Xxh3Default;
 
 use wlshare_proto::tiles::{CACHE_SLOTS, TileHeader, TilesPicture};
 
-use crate::rfb::vp9::Rect;
-
-/// Why a region coder could not open or code a stream: its encoder's reason,
-/// in its own words.
-pub type RegionError = Box<dyn std::error::Error + Send + Sync>;
-
-/// The coder of region streams the daemon hands a [`TilesEncoder`]: its
-/// host's H.264 encoder, the hardware's where the host has one and libx264
-/// otherwise, each frame one Annex B access unit, the parameter sets ahead of
-/// each keyframe's slices, the picture the region's size rounded up to even
-/// sides. The encoder opens a stream of it for each region, and a failure to
-/// open or to code is its encode's.
-pub trait RegionCoder: Send {
-    /// A stream over a `width`×`height` region at `quality`, the 1–100 dial,
-    /// which codes nothing until read into.
-    fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn RegionStream>, RegionError>;
-}
-
-/// One region's stream as a [`RegionCoder`] codes it, in the shape of
-/// [`wlshare_vp9::Stream`]: read, then encode.
-pub trait RegionStream: Send {
-    /// Read `pixels` — `B, G, R, X`, the region's size, rows `stride` bytes
-    /// apart — as the picture the next frame carries, where `changed` says
-    /// it differs from the read before, or anywhere for `None`; the first
-    /// read is the whole picture whatever `changed` says.
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError>;
-    /// Encode the picture as last read and append the frame to `out`, a
-    /// keyframe where `keyframe` asks for one and for the stream's first
-    /// either way: `true` for a frame appended, and `false` where the coder
-    /// made none of the picture, nothing appended, and the whole picture
-    /// owed to the next frame.
-    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError>;
-}
+use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
 
 /// Why a picture could not be read or encoded.
 #[derive(Debug, Error)]
@@ -145,7 +112,7 @@ pub enum TilesError {
     Empty(u16, u16),
     /// The region coder refused a stream, or a stream its pixels or its frame.
     #[error("coding a region: {0}")]
-    Region(RegionError),
+    Region(H264Error),
     #[error(transparent)]
     Png(#[from] png::EncodingError),
     #[error("a {width}x{height} picture at a stride of {stride} does not fit in {bytes} bytes")]
@@ -828,7 +795,7 @@ struct Live {
     id: u8,
     area: Area,
     cells: Vec<(u16, u16)>,
-    stream: Box<dyn RegionStream>,
+    stream: Box<dyn H264Stream>,
     /// The damage inside the region no frame has carried, from its top-left.
     pending: Vec<Rect>,
     dirty: bool,
@@ -889,7 +856,7 @@ impl Out<'_> {
 /// client was sent, which tiles move, the regions' streams and the tiles they
 /// owe. A desktop of another size needs another of these.
 ///
-/// Its two halves are two calls, as the VP9 encoding's are: [`Self::read`]
+/// Its two halves are two calls, as the video encoding's are: [`Self::read`]
 /// takes the damage out of the framebuffer, under its lock, into a picture of
 /// its own, and [`Self::encode`] codes what is owed from there once the lock
 /// is let go. Time is a [`Duration`] from any origin the caller keeps to.
@@ -928,8 +895,8 @@ pub struct TilesEncoder {
     /// A read came since the last encode, which owes a round of the streams.
     read: bool,
     next_tick: Duration,
-    /// The dial the client's list names: what the streams are coded at, and
-    /// the finest the walk asks for.
+    /// wlshare's dial: what the streams are coded at, and the finest the walk
+    /// asks for.
     ceiling: u8,
     /// The walk's dial, which a progressive first pass's stage follows.
     quality: u8,
@@ -938,7 +905,7 @@ pub struct TilesEncoder {
     /// When a read last found a tile changed.
     changed_at: Duration,
     /// The coder every stream is opened on.
-    coder: Box<dyn RegionCoder>,
+    coder: Box<dyn H264Coder>,
     scratch: Vec<u8>,
     /// The progressive encoder, where the list walks and every tile is a
     /// progressive tile; where it holds, every still is a PNG.
@@ -947,10 +914,10 @@ pub struct TilesEncoder {
 
 impl TilesEncoder {
     /// An encoder for a `width`×`height` desktop whose streams are `coder`'s,
-    /// of the picture the client's list asks for: its ceiling (1–100), where
-    /// the walk starts, and whether the dial walks. The client holds nothing
+    /// of the picture the client's list asks for: whether the dial walks, from
+    /// wlshare's own as its ceiling. The client holds nothing
     /// of it yet.
-    pub fn new(width: u16, height: u16, picture: TilesPicture, coder: Box<dyn RegionCoder>) -> Result<Self, TilesError> {
+    pub fn new(width: u16, height: u16, picture: TilesPicture, coder: Box<dyn H264Coder>) -> Result<Self, TilesError> {
         if width == 0 || height == 0 {
             return Err(TilesError::Empty(width, height));
         }
@@ -973,8 +940,8 @@ impl TilesEncoder {
             ended: Vec::new(),
             read: false,
             next_tick: Duration::ZERO,
-            ceiling: picture.quality,
-            quality: picture.quality,
+            ceiling: crate::rfb::QUALITY,
+            quality: crate::rfb::QUALITY,
             coarse: false,
             changed_at: Duration::ZERO,
             coder,
@@ -1005,15 +972,12 @@ impl TilesEncoder {
         self.quality = quality;
     }
 
-    /// A new picture, a ceiling or a walk the list did not name before: what
-    /// the client holds was coded against the old one, and nothing of it is
-    /// owed what the new one would owe, so the picture starts over as
-    /// [`Self::forget`] starts it, every live stream's END owed first, at the
-    /// new ceiling from here. The cache is kept, but a held list is owed
+    /// A new picture, a walk the list did not name before: what the client
+    /// holds was coded against the old one, and nothing of it is owed what the
+    /// new one would owe, so the picture starts over as [`Self::forget`]
+    /// starts it, every live stream's END owed first. The cache is kept, but a held list is owed
     /// exact pixels, which no tile a walked list stored is.
     pub fn set_picture(&mut self, picture: TilesPicture) {
-        self.ceiling = picture.quality;
-        self.quality = picture.quality;
         if self.progressive.is_some() && !picture.progressive {
             self.cache.unsettle();
         }
@@ -1142,7 +1106,7 @@ impl TilesEncoder {
 
     /// The picture as it is now — [`Self::size`] of `B, G, R, X` pixels whose
     /// rows are `stride` bytes apart — where `changed` says it changed since
-    /// the read before, or anywhere for `None`: the caller's word, as the VP9
+    /// the read before, or anywhere for `None`: the caller's word, as the video
     /// encoding takes it. The rectangles are copied into the encoder's own
     /// picture and compared with what the client holds, so `pixels` is the
     /// framebuffer itself, for as long as the copy takes. Nothing is coded: the
@@ -2174,15 +2138,14 @@ mod tests {
         Duration::from_millis(n)
     }
 
-    /// A list that holds the dial at `quality`.
-    fn held(quality: u8) -> TilesPicture {
-        TilesPicture { quality, progressive: false }
+    /// A list that holds the dial.
+    fn held() -> TilesPicture {
+        TilesPicture { progressive: false }
     }
 
-    /// A list that lets the dial walk under `quality`: every tile
-    /// progressive.
-    fn progressive(quality: u8) -> TilesPicture {
-        TilesPicture { quality, progressive: true }
+    /// A list that lets the dial walk: every tile progressive.
+    fn progressive() -> TilesPicture {
+        TilesPicture { progressive: true }
     }
 
     /// A desktop a progressive tile settles close to: a soft gradient with
@@ -2208,7 +2171,7 @@ mod tests {
         const KEYFRAME: u8 = 0xC0;
         const FRAME: u8 = 0xDE;
 
-        fn coder() -> Box<dyn RegionCoder> {
+        fn coder() -> Box<dyn H264Coder> {
             Box::new(Self { refuse: false, fail_after: None, fail_read_after: None })
         }
     }
@@ -2223,8 +2186,8 @@ mod tests {
         fail_read_after: Option<usize>,
     }
 
-    impl RegionCoder for Fake {
-        fn open(&mut self, width: u16, height: u16, _quality: u8) -> Result<Box<dyn RegionStream>, RegionError> {
+    impl H264Coder for Fake {
+        fn open(&mut self, width: u16, height: u16, _quality: u8) -> Result<Box<dyn H264Stream>, H264Error> {
             if self.refuse {
                 return Err("the device is gone".into());
             }
@@ -2233,9 +2196,9 @@ mod tests {
         }
     }
 
-    impl RegionStream for FakeStream {
+    impl H264Stream for FakeStream {
 
-        fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), RegionError> {
+        fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
             if self.fail_read_after.is_some_and(|after| self.frames >= after) {
                 return Err("the upload failed".into());
             }
@@ -2254,7 +2217,7 @@ mod tests {
             Ok(())
         }
 
-        fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, RegionError> {
+        fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, H264Error> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
                 return Err("the encoder hung".into());
             }
@@ -2305,7 +2268,7 @@ mod tests {
         for row in 128..usize::from(h) {
             pixels[row * usize::from(w) * 4..][..usize::from(w) * 4].copy_from_slice(&[10, 20, 30, 0].repeat(usize::from(w)));
         }
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 5, y: 5, width: 1, height: 1 }]), ms(0));
         assert_eq!((first.rects, page.pngs, page.stored), (9, 3, 6), "the whole picture in three bands, whatever the read was told, and its six whole tiles stored");
@@ -2323,7 +2286,7 @@ mod tests {
     fn a_first_pass_is_owed_its_upgrades_which_wait_while_coarse() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 12);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let now = settle(&mut encoder, &mut page, ms(0));
@@ -2368,7 +2331,7 @@ mod tests {
     fn a_progressive_list_is_sent_progressive_tiles_alone() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = soft(w, h, 0);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
         assert!(first.keyframe, "the first picture is one");
@@ -2402,7 +2365,7 @@ mod tests {
     fn a_progressive_copy_of_a_settled_page_is_not_sent_again() {
         let (w, h) = (256u16, 256u16);
         let document = noise(w, 3 * h, 21);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
         let now = settle(&mut encoder, &mut page, ms(0));
@@ -2414,7 +2377,7 @@ mod tests {
         // the last row of tiles, is owed its upgrades.
         assert!(encoder.debts.keys().all(|&(_, row)| row == 3), "owed {:?}", encoder.debts.keys().collect::<Vec<_>>());
         settle(&mut encoder, &mut page, now + ms(200));
-        let mut fresh = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut fresh = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut sent = Page::new(w, h);
         step(&mut fresh, &mut sent, &pixels, None, ms(0));
         settle(&mut fresh, &mut sent, ms(0));
@@ -2431,7 +2394,7 @@ mod tests {
     fn a_progressive_copy_is_sent_again_from_the_desktop() {
         let (w, h) = (256u16, 256u16);
         let document = noise(w, 3 * h, 21);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         encoder.set_pace(30, false);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
@@ -2444,7 +2407,7 @@ mod tests {
         encoder.set_pace(80, false);
         settle(&mut encoder, &mut page, ms(500));
         assert!(!encoder.owed());
-        let mut fresh = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut fresh = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut sent = Page::new(w, h);
         step(&mut fresh, &mut sent, &pixels, None, ms(0));
         settle(&mut fresh, &mut sent, ms(0));
@@ -2459,7 +2422,7 @@ mod tests {
     fn a_progressive_tile_drawn_from_the_cache_starts_over() {
         let (w, h) = (256u16, 128u16);
         let (a, b) = (soft(w, h, 0), soft(w, h, 90));
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &a, None, ms(0));
         settle(&mut encoder, &mut page, ms(0));
@@ -2484,7 +2447,7 @@ mod tests {
     fn a_progressive_tile_settled_by_upgrades_is_kept_settled() {
         let (w, h) = (256u16, 128u16);
         let (a, b) = (noise(w, h, 3), noise(w, h, 4));
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &a, None, ms(0));
         assert!(encoder.owed(), "first passes below the full stage");
@@ -2503,7 +2466,7 @@ mod tests {
     fn a_tick_sends_the_oldest_until_its_bytes_are_spent() {
         let (w, h) = (1024u16, 1024u16);
         let mut pixels = noise(w, h, 16);
-        let mut encoder = TilesEncoder::new(w, h, progressive(90), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         encoder.set_pace(20, false);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
@@ -2547,7 +2510,7 @@ mod tests {
     fn only_tiles_that_changed_are_sent() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 2);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let whole = [Rect { x: 0, y: 0, width: w, height: h }];
@@ -2575,7 +2538,7 @@ mod tests {
     fn what_moves_streams_and_settles_exact() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 3);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let pngs = page.pngs;
@@ -2603,7 +2566,7 @@ mod tests {
     fn a_stream_that_ends_sends_what_it_did_not_carry() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 5);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 128, y: 64, width: 192, height: 128 };
@@ -2639,7 +2602,7 @@ mod tests {
     fn a_stream_that_starts_is_no_keyframe() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 192, height: 128 };
@@ -2663,7 +2626,7 @@ mod tests {
     fn an_update_of_the_tick_alone_says_so() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 21);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
         assert!(first.keyframe && !first.tick, "{first:?}");
@@ -2697,12 +2660,12 @@ mod tests {
         assert!(both.rects > 0 && !both.tick, "a change and the tick: {both:?}");
     }
 
-    /// A new ceiling ends every live stream before the picture starts over.
+    /// A new walk ends every live stream before the picture starts over.
     #[test]
-    fn a_new_ceiling_ends_the_live_streams() {
+    fn a_new_walk_ends_the_live_streams() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 31);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -2711,12 +2674,11 @@ mod tests {
             step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
         }
         assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
-        encoder.set_picture(held(80));
+        encoder.set_picture(progressive());
         let whole = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(700));
         assert!(whole.keyframe, "the picture starts over: {whole:?}");
         assert_eq!(page.ends, 1, "the live stream ended");
         assert!(page.streams.is_empty());
-        assert_eq!(page.off(&pixels), 0, "sent whole, exact at the new ceiling");
     }
 
     /// A redraw of what a live stream carries, the pixels the client holds,
@@ -2725,7 +2687,7 @@ mod tests {
     fn a_redraw_inside_a_stream_codes_nothing() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 5);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -2746,7 +2708,7 @@ mod tests {
     fn a_picture_forgotten_ends_its_streams_and_starts_over() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 4);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -2784,7 +2746,7 @@ mod tests {
     fn a_tile_shown_again_is_drawn_from_the_cache() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 31);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         assert_eq!(page.stored, 8, "every whole tile of the first picture stored");
@@ -2828,7 +2790,7 @@ mod tests {
     fn a_flat_tile_is_not_stored() {
         let (w, h) = (128u16, 64u16);
         let mut pixels = noise(w, h, 41);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         assert_eq!(page.stored, 2);
@@ -2852,7 +2814,7 @@ mod tests {
     fn a_tile_cached_below_the_full_stage_is_owed_it() {
         let (w, h) = (256u16, 128u16);
         let mut pixels = noise(w, h, 51);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let now = settle(&mut encoder, &mut page, ms(0));
@@ -2892,7 +2854,7 @@ mod tests {
     fn a_picture_forgotten_is_drawn_from_the_cache() {
         let (w, h) = (128u16, 64u16);
         let mut pixels = noise(w, h, 61);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let text = Rect { x: 0, y: 0, width: 64, height: 64 };
@@ -2923,7 +2885,7 @@ mod tests {
     fn a_new_size_keeps_the_cache() {
         let (w, h) = (128u16, 64u16);
         let pixels = noise(w, h, 62);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         assert_eq!(page.stored, 2);
@@ -2938,7 +2900,7 @@ mod tests {
                 resized[dst..dst + 64 * 4].copy_from_slice(&pixels[src..src + 64 * 4]);
             }
         }
-        let mut grown = TilesEncoder::new(wide, h, held(80), Fake::coder()).unwrap();
+        let mut grown = TilesEncoder::new(wide, h, held(), Fake::coder()).unwrap();
         grown.keep_cache(encoder);
         let mut bigger = Page::new(wide, h);
         bigger.slots = std::mem::take(&mut page.slots);
@@ -2955,14 +2917,14 @@ mod tests {
     fn a_held_list_draws_no_tile_a_walked_one_stored() {
         let (w, h) = (128u16, 64u16);
         let mut pixels = soft(w, h, 0);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         settle(&mut encoder, &mut page, ms(0));
         let stored = page.stored;
         assert!(stored >= 2, "every tile stored, settled");
 
-        encoder.set_picture(held(80));
+        encoder.set_picture(held());
         step(&mut encoder, &mut page, &pixels, None, ms(5000));
         assert_eq!(page.cached, 0, "nothing a walked list stored is drawn on a held one");
         assert_eq!(page.off(&pixels), 0, "the picture exact");
@@ -3000,7 +2962,7 @@ mod tests {
         let (cols, rows) = (64u16, 65u16);
         let (w, h) = (cols * TILE, rows * TILE);
         let mut pixels = dots(cols, rows);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         assert_eq!(page.stored, usize::from(cols) * usize::from(rows));
@@ -3068,7 +3030,7 @@ mod tests {
     fn a_region_coder_that_refuses_fails_the_encode() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::new(w, h, held(60), Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None })).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None })).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 20);
@@ -3083,7 +3045,7 @@ mod tests {
         let (w, h) = (512u16, 256u16);
         for (seed, fake) in [(8, Fake { refuse: false, fail_after: Some(4), fail_read_after: None }), (10, Fake { refuse: false, fail_after: None, fail_read_after: Some(4) })] {
             let mut pixels = noise(w, h, seed);
-            let mut encoder = TilesEncoder::new(w, h, held(60), Box::new(fake)).unwrap();
+            let mut encoder = TilesEncoder::new(w, h, held(), Box::new(fake)).unwrap();
             let mut page = Page::new(w, h);
             step(&mut encoder, &mut page, &pixels, None, ms(0));
             let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 40);
@@ -3105,7 +3067,7 @@ mod tests {
     fn a_scroll_is_a_copy() {
         let (w, h) = (256u16, 256u16);
         let document = noise(w, 3 * h, 21);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
         let whole = page.bytes;
@@ -3124,7 +3086,7 @@ mod tests {
     fn a_scroll_that_goes_on_is_no_stream() {
         let (w, h) = (320u16, 192u16);
         let document = noise(w, 4 * h, 22);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
         let tops = (1..=12).map(|n| n * 24).chain((0..12).rev().map(|n| n * 24));
@@ -3155,7 +3117,7 @@ mod tests {
             }
             pixels
         };
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
         let pixels = place((110, 90));
@@ -3173,7 +3135,7 @@ mod tests {
     fn a_copy_reads_only_what_the_client_holds() {
         let (w, h) = (256u16, 256u16);
         let document = noise(w, 3 * h, 24);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
         let stride = usize::from(w) * 4;
@@ -3200,7 +3162,7 @@ mod tests {
     fn a_walked_copy_from_a_settled_source_owes_only_the_uncovered_strip() {
         let (w, h) = (256u16, 256u16);
         let document = ramps(w, 3 * h);
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
         let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
@@ -3228,7 +3190,7 @@ mod tests {
         let document = noise(w, 4 * h, 34);
         let whole = [Rect { x: 0, y: 0, width: w, height: h }];
         let scroll = |recently: bool| {
-            let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+            let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
             let mut page = Page::new(w, h);
             step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
             let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
@@ -3268,7 +3230,7 @@ mod tests {
             let at = |y: usize| y * line + 24 * 4;
             old[at(top + 100)..at(top + 100) + 16 * 4].copy_from_slice(&new[at(top)..at(top) + 16 * 4]);
         }
-        let mut encoder = TilesEncoder::new(w, h, progressive(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &old, None, ms(0));
         let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
@@ -3290,7 +3252,7 @@ mod tests {
             }
         };
         page_at(&mut pixels, 0);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let video = Rect { x: 0, y: 0, width: 256, height: 192 };
@@ -3324,7 +3286,7 @@ mod tests {
         for row in 64..256 {
             document[row * line..(row + 1) * line].copy_from_slice(&[0x81, 0x81, 0x81, 0].repeat(usize::from(w)));
         }
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
         // The third row of tiles as a stream leaves it: lossy, and owed.
@@ -3350,7 +3312,7 @@ mod tests {
     #[test]
     fn a_new_picture_is_no_copy() {
         let (w, h) = (256u16, 256u16);
-        let mut encoder = TilesEncoder::new(w, h, held(80), Fake::coder()).unwrap();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &noise(w, h, 28), None, ms(0));
         let pixels = noise(w, h, 29);

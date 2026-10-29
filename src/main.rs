@@ -35,7 +35,12 @@ mod session;
 mod shared;
 mod state;
 mod sway;
+mod walk;
 mod watch;
+// The capture file, which the daemon writes and the tools in `examples/` read
+// back: the reading half is theirs.
+#[allow(dead_code)]
+mod wlcap;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,11 +73,10 @@ struct Args {
     /// Listen on this address instead of the configured one.
     #[arg(long)]
     listen: Option<std::net::SocketAddr>,
-    /// Write what every VP9 stream is handed into this directory, exact: each
-    /// session's frames as a capture file (`wlshare_vp9::capture`), one
+    /// Write what every video stream is handed into this directory, exact:
+    /// each session's frames as a capture file (`wlcap`), one
     /// `<unix millis>-client<id>.wlcap` per session, for an encoder to be
-    /// run again on. A 4:4:4 stream's alone: a client that asks for 4:2:0
-    /// is not captured. Uncompressed and large: run `zstd` on them afterwards.
+    /// run again on. Uncompressed and large: run `zstd` on them afterwards.
     /// For a daemon run by hand: a systemd unit that names it is refused.
     #[arg(long, value_name = "DIR")]
     capture_frames: Option<PathBuf>,
@@ -119,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(dir) = &args.capture_frames {
         refuse_capture_as_a_service()?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        info!("capturing what every VP9 stream is handed into {}", dir.display());
+        info!("capturing what every video stream is handed into {}", dir.display());
     }
     let security = security(&config, &path)?;
     // libavcodec's own log, on stderr, at warnings: what it says at its

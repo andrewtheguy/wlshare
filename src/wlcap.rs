@@ -1,12 +1,12 @@
-//! The capture file: what a session handed its VP9 encoder, frame by frame
+//! The capture file: what a session handed its video encoder, frame by frame
 //! and exact, so that an encoder can be run again on the pictures a desktop
 //! was actually shown as and the rectangles they came with.
 //!
 //! Not the wire: no client is ever sent this. It is here because the daemon
-//! writes it and the tools that play it back read it (`examples/vp9cap.rs`,
-//! `examples/walk-sim.rs`), and this crate is the one both build against. The format
-//! is this module's alone and owes nothing to the codec: a capture is the
-//! pixels in front of an encoder, whichever encoder that is.
+//! writes it, and the tools that play it back read it from here
+//! (`examples/wlcap.rs`, `examples/walk-sim.rs` and the tiles' benches). The
+//! format is this module's alone and owes nothing to the codec: a capture is
+//! the pixels in front of an encoder, whichever encoder that is.
 //!
 //! Everything is little-endian. The file is a magic and then frames until it
 //! ends:
@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::Rect;
+use crate::rfb::Rect;
 
 /// What every capture file begins with.
 pub const MAGIC: &[u8; 8] = b"WLSHCAP1";
