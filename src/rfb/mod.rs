@@ -9,7 +9,8 @@
 //!
 //! Nothing here touches an OS API. The audio extension's FLAC encoder is
 //! `sound-flac`'s own, in plain Rust, and its Opus encoder libopus from a
-//! prebuilt static archive, as libvpx is under `wlshare-vp9`. Tests here use an
+//! prebuilt static archive. The H.264 the video and tiles encodings code with
+//! is the daemon's, handed in as an [`H264Coder`]. Tests here use an
 //! independent decoder for every encoder, so the two halves cannot share a
 //! misunderstanding.
 //!
@@ -17,11 +18,11 @@
 //!
 //! RFB 3.8 as RFC 6143 has it, with these choices:
 //!
-//! - **Raw or ZRLE, and VP9 for a client that lists it.** ZRLE is the standard's
-//!   best lossless encoding, and the zDesk gateway lists it as its first
-//!   standard pixel encoding. **The VP9 encoding** is a private one for the
-//!   gateway: the whole framebuffer as one VP9 stream, 4:4:4 or 4:2:0, at a
-//!   quality its owner sets ([`vp9`]), for a desktop that moves; **the tiles
+//! - **Raw or ZRLE, and the video encoding for a client that lists it.** ZRLE
+//!   is the standard's best lossless encoding, and the zDesk gateway lists it
+//!   as its first standard pixel encoding. **The video encoding** is a private
+//!   one for the gateway: the whole framebuffer as one H.264 stream, at a
+//!   quality its owner sets ([`video`]), for a desktop that moves; **the tiles
 //!   encoding**, another for the gateway, the desktop as exact PNG tiles where
 //!   it is still and a video stream for each region that moves, for a link
 //!   with room to spare ([`tiles`]), or every tile RemoteFX Progressive, still
@@ -64,16 +65,19 @@ pub mod cursor;
 pub mod msg;
 pub mod pixel;
 pub mod progressive;
+mod rect;
 pub mod rsa_aes;
 pub mod tiles;
-pub mod vp9;
+pub mod video;
 pub mod zrle;
+
+pub use rect::Rect;
 
 /// Raw: pixels as they are, in the client's format. RFC 6143 §7.7.1 requires
 /// every server to produce it until asked for something else.
 pub const ENCODING_RAW: i32 = 0;
 /// ZRLE, the encoding this server chooses when the client lists it and neither
-/// [`wlshare_proto::ENCODING_VP9`] nor [`wlshare_proto::ENCODING_TILES`].
+/// [`wlshare_proto::ENCODING_VIDEO`] nor [`wlshare_proto::ENCODING_TILES`].
 pub const ENCODING_ZRLE: i32 = 16;
 /// DesktopSize pseudo-encoding: a rectangle announcing the framebuffer's new size.
 pub const ENCODING_DESKTOP_SIZE: i32 = -223;
@@ -93,3 +97,50 @@ pub const ENCODING_FENCE: i32 = -312;
 pub const ENCODING_CONTINUOUS_UPDATES: i32 = -313;
 /// Extended Clipboard pseudo-encoding: the clipboard as UTF-8 ([`clipboard`]).
 pub const ENCODING_EXTENDED_CLIPBOARD: i32 = 0xc0a1_e5ce_u32 as i32;
+
+/// The coarsest end of the 1–100 quality dial the encoders take, finest last.
+pub const QUALITY_MIN: u8 = 1;
+/// The finest end of the dial.
+pub const QUALITY_MAX: u8 = 100;
+
+/// The dial wlshare codes at: the video stream's and a held tiles picture's
+/// streams' quality, and the ceiling a walked tiles picture's first passes are
+/// coded toward. The server's alone — no client names one — so there is one
+/// way to code each picture. 90 is QP 18 in H.264, where a desktop's text
+/// reads sharp in motion.
+pub const QUALITY: u8 = 90;
+
+/// Why an H.264 coder could not open or code a stream: its encoder's reason,
+/// in its own words.
+pub type H264Error = Box<dyn std::error::Error + Send + Sync>;
+
+/// The H.264 coder the daemon hands the video encoding's encoder and the
+/// tiles encoding's ([`video::VideoEncoder`], [`tiles::TilesEncoder`]): its
+/// host's encoder, the hardware's where the host has one and libx264
+/// otherwise, each frame one Annex B access unit, the parameter sets ahead of
+/// each keyframe's slices, 8-bit 4:2:0 BT.601 at studio swing, the picture
+/// the stream's size rounded up to even sides. The video encoding opens a
+/// stream of it over the whole desktop, the tiles one for each region that
+/// moves, and a failure to open or to code is its encode's.
+pub trait H264Coder: Send {
+    /// A stream over a `width`×`height` picture at `quality`, the 1–100 dial,
+    /// for the stream's life, which codes nothing until read into.
+    fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn H264Stream>, H264Error>;
+}
+
+/// One stream as an [`H264Coder`] codes it: read, then encode.
+pub trait H264Stream: Send {
+    /// Read `pixels` — `B, G, R, X`, the stream's size, rows `stride` bytes
+    /// apart — as the picture the next frame carries, where `changed` says
+    /// it differs from the read before, or anywhere for `None`; the first
+    /// read is the whole picture whatever `changed` says. Only the rectangles
+    /// are read, widened to the 2×2 blocks they touch, so the rest of
+    /// `pixels` need not be the picture.
+    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error>;
+    /// Encode the picture as last read and append the frame to `out`, a
+    /// keyframe where `keyframe` asks for one and for the stream's first
+    /// either way: `true` for a frame appended, and `false` where the coder
+    /// made none of the picture, nothing appended, and the whole picture
+    /// owed to the next frame.
+    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, H264Error>;
+}

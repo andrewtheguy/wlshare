@@ -12,9 +12,9 @@ English | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 A VNC server for wlroots-based Wayland compositors, built for the
 [zDesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
-a client that asks, as zDesk does for its browsers, as one VP9 stream at a
-quality that follows the link, or for a link with room to spare as exact PNG
-tiles with a video stream for each region that moves, H.264 by the host's hardware or libx264,
+a client that asks, as zDesk does for its browsers, as one H.264 stream whose
+frame rate follows the link, or for a link with room to spare as exact PNG
+tiles with a video stream for each region that moves, each H.264 by the host's hardware or libx264,
 or, following the link, as RemoteFX Progressive tiles, still or moving (experimental) — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
@@ -42,12 +42,12 @@ capturing it, requires wlroots 0.19 or newer.
 
 At the framebuffer layer, any RFB 3.8 client that advertises the standard Cursor
 pseudo-encoding and can draw Raw rectangles can connect. ZRLE is used when
-listed unless the client also asks for wlshare's private VP9 stream or its
+listed unless the client also asks for wlshare's private video stream or its
 tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; zDesk asks for both,
-and for the VP9 stream, or with the picker's *Tiles with motion* or *Progressive
+and for the video stream, or with the picker's *Tiles with motion* or *Progressive
 tiles (experimental)* the tiles, on a
 `vnc` target with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
@@ -203,14 +203,11 @@ the server resolves the client's keysyms through the same keymap it uploads.
 
 ## Building
 
-The workspace has three crates: `wlshare`, the daemon, with the RFB protocol
-it speaks inside it; `wlshare-vp9`, the VP9 coding under it; and
-`wlshare-proto`, the bytes of wlshare's private extensions, which the zDesk
-gateway depends on too, pinned by its `proto-v<N>` tag, the protocol version
-the release that brought it tagged. The last two
-have no OS APIs and build and test on the targets covered by the prebuilt
-libvpx archives: macOS arm64, Linux x86_64 and aarch64, and Windows x86_64
-MSVC. The daemon needs libxkbcommon, libpam, libpipewire and
+The workspace has two crates: `wlshare`, the daemon, with the RFB protocol
+it speaks inside it, and `wlshare-proto`, the bytes of wlshare's private
+extensions, which the zDesk gateway depends on too, pinned by its
+`proto-v<N>` tag, the protocol version the release that brought it tagged.
+The second has no OS APIs and builds and tests anywhere. The daemon needs libxkbcommon, libpam, libpipewire and
 libavcodec — the Wayland protocol is spoken in Rust, with no libwayland — and
 only runs under a wlroots-based Wayland compositor; its audio tests
 additionally need `ffmpeg`, the independent decoder that reads the Opus
@@ -219,9 +216,10 @@ packets back. The FLAC coding is
 [sound-opus](https://github.com/andrewtheguy/sound-opus), both shared with
 the zDesk gateway, each pinned by its release tag. Nothing asks of the
 processor more than its target's baseline. The daemon is the package at
-the repository's root, the other two under `crates/`. A bare `cargo test`
-covers all three; elsewhere `cargo test -p wlshare-proto -p wlshare-vp9`
-covers the last two. Build the daemon with `cargo build --release` on a
+the repository's root, the protocol crate under `crates/`. A bare `cargo
+test` covers both; elsewhere `cargo test -p wlshare-proto` covers the
+second. Its H.264 tests decode with the same libavcodec, libx264's frames on
+every machine and the hardware's where there is a VA-API encoder. Build the daemon with `cargo build --release` on a
 Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
 `libavcodec-dev`, `libclang-dev` and `pkg-config`. libclang links nothing:
@@ -231,14 +229,10 @@ loads it at build time.
 `scripts/capture-frames.sh` builds and runs the capture container
 (`docker/capture/`), with docker or with podman: a headless sway and the daemon started with
 `--capture-frames`, playing a scripted desktop at each size, so that what the
-VP9 encoder was handed — every frame's pixels and damage, exact — lands in
+video encoder was handed — every frame's pixels and damage, exact — lands in
 `dist/captures/`; the video scenarios play full screen the file `--video`
-names. `scripts/vp9-samples.sh` plays those captures into the
-encoder again and writes the streams vp9-wasm's benchmark decodes, a quiet
-and a busy one of each size with every frame's MD5, into `dist/vp9-bench/`:
-run it again after a change to `wlshare-vp9` or a bump of its libvpx and
-the samples are the new encoder's, with no desktop played again. It needs
-cargo, `zstd` and an `ffmpeg` with libvpx on the path.
+names. `examples/wlcap.rs` says what a capture holds and plays it out or
+cuts it.
 `scripts/capture-samples.sh` cuts each capture to 120 frames under its own
 name, into `dist/capture-samples/`, for an encoder measured on a part of
 each. `--capture-frames` is for a daemon run by hand, and one

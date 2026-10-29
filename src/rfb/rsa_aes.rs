@@ -2,7 +2,7 @@
 //! authenticated, encrypted RFB session over an ordinary 3.8 wire, and the one
 //! standard way a client can tell this server *who* is connecting.
 //! [`authenticate`] is the server's half; the client's, [`begin`], is the one
-//! the tests run it against and the one `examples/vp9-sink.rs` logs in with.
+//! the tests run it against and the one `examples/video-sink.rs` logs in with.
 //!
 //! The types are RealVNC's, documented in the community `rfbproto` and spoken
 //! on the open side by TigerVNC, neatvnc and the zDesk gateway, whose client
@@ -437,7 +437,7 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 /// The key a client makes for one session and forgets with it.
 ///
 /// The client's end, from here to [`Exchange::login`], is what the tests and
-/// `examples/vp9-sink.rs` speak; the daemon never calls it.
+/// `examples/video-sink.rs` speak; the daemon never calls it.
 #[allow(dead_code)]
 pub struct ClientKey {
     private: RsaPrivateKey,

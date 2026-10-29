@@ -1,5 +1,5 @@
 //! The client's half of the wire, which the tests read the server's with and
-//! `examples/vp9-sink.rs` connects with: the messages a client sends, built
+//! `examples/video-sink.rs` connects with: the messages a client sends, built
 //! into bytes, and the server's, parsed from a byte buffer.
 //!
 //! This is [`crate::rfb::msg`] seen from the other end — it frames exactly what
@@ -17,8 +17,8 @@ use tokio::io::{AsyncRead, AsyncReadExt as _};
 use wlshare_proto::audio::{AUDIO_FRAME_HEADER_LEN, AudioParseError, MSG_AUDIO_FRAME, MSG_QEMU, ServerAudio};
 use wlshare_proto::density::{Density, MSG_DENSITY};
 use wlshare_proto::tiles::{TileHeader, TilesParseError};
-use wlshare_proto::vp9::{FRAME_HEADER_LEN, Vp9FrameError};
-use wlshare_proto::{ENCODING_AUDIO, ENCODING_TILES, ENCODING_VP9};
+use wlshare_proto::video::{FRAME_HEADER_LEN, VideoFrameError};
+use wlshare_proto::{ENCODING_AUDIO, ENCODING_TILES, ENCODING_VIDEO};
 
 use crate::rfb::msg::{
     CLIENT_ENABLE_CONTINUOUS_UPDATES, CLIENT_FENCE, CLIENT_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_KEY_EVENT, CLIENT_POINTER_EVENT,
@@ -227,9 +227,9 @@ pub enum RectBody {
     Raw(Vec<u8>),
     /// A ZRLE payload without its length word.
     Zrle(Vec<u8>),
-    /// One VP9 frame without its length word, and the 1–100 dial it was coded
-    /// at; the rectangle is the whole framebuffer.
-    Vp9 { quality: u8, frame: Vec<u8> },
+    /// One H.264 access unit without its length word; the rectangle is the
+    /// whole framebuffer.
+    Video(Vec<u8>),
     /// A rectangle of the tiles encoding ([`wlshare_proto::tiles`]).
     Tiles(TileBody),
     /// The framebuffer is now the rectangle's width and height.
@@ -321,7 +321,7 @@ pub enum ParseError {
     #[error(transparent)]
     Audio(#[from] AudioParseError),
     #[error(transparent)]
-    Vp9(#[from] Vp9FrameError),
+    Video(#[from] VideoFrameError),
     #[error(transparent)]
     Tiles(#[from] TilesParseError),
 }
@@ -430,12 +430,12 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             let Some(payload) = take(16, len)? else { return Ok(None) };
             (RectBody::Zrle(payload), 16 + len)
         }
-        ENCODING_VP9 => {
+        ENCODING_VIDEO => {
             let Some(header) = buf[12..].first_chunk::<FRAME_HEADER_LEN>() else { return Ok(None) };
-            let (quality, len) = wlshare_proto::vp9::parse_frame_header(header)?;
+            let len = wlshare_proto::video::parse_frame_header(header)?;
             let at = 12 + FRAME_HEADER_LEN;
             let Some(frame) = take(at, len)? else { return Ok(None) };
-            (RectBody::Vp9 { quality, frame }, at + len)
+            (RectBody::Video(frame), at + len)
         }
         ENCODING_TILES => {
             let Some((header, used)) = TileHeader::parse(&buf[12..])? else { return Ok(None) };
@@ -640,8 +640,8 @@ mod tests {
         wire.extend_from_slice(&msg::extended_desktop_size_rect(msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_PROHIBITED, 800, 600, &[Screen::whole(800, 600)]));
         wire.extend_from_slice(&alpha_cursor_rect(Some(&image)));
         wire.extend_from_slice(&cursor_rect(&PixelFormat::NATIVE, Some(&image)));
-        wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VP9));
-        wire.extend_from_slice(&[55, 0, 0, 0, 2, 0x82, 0x49]);
+        wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VIDEO));
+        wire.extend_from_slice(&[0, 0, 0, 2, 0x82, 0x49]);
         wire.extend_from_slice(&msg::rect_header(64, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_PNG, 0, 0, 0, 2, 0x89, 0x50]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(rects[4].body, RectBody::AlphaCursor(vec![255, 0, 0, 255, 0, 0, 128, 128]));
         // Opaque red, and half-transparent blue divided back out; both in the mask.
         assert_eq!(rects[5].body, RectBody::Cursor { pixels: vec![0, 0, 255, 0, 255, 0, 0, 0], mask: vec![0b1100_0000] });
-        assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Vp9 { quality: 55, frame: vec![0x82, 0x49] } });
+        assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Video(vec![0x82, 0x49]) });
         assert_eq!(rects[7], Rect { x: 64, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50])) });
         assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
         assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));

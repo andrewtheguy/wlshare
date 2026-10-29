@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # Build and run the capture container (docker/capture.Dockerfile): a headless
 # sway, the daemon with `--capture-frames`, and the scripted desktop of
-# docker/capture/run.sh, writing what the VP9 encoder was handed into a
+# docker/capture/run.sh, writing what the video encoder was handed into a
 # directory on this host, one `<scenario>-<WxH>.wlcap.zst` per scenario
 # and size, with a README.md beside them.
 #
-#   ./scripts/capture-frames.sh [--out DIR] [--video FILE] [--sizes "..."] [--scenarios "..."] [--seconds N] [--frames N] [--quality Q]
+#   ./scripts/capture-frames.sh [--out DIR] [--video FILE] [--sizes "..."] [--scenarios "..."] [--seconds N] [--frames N]
 #
 # `--out` defaults to dist/captures. `--scenarios` takes the names
 # docker/capture/run.sh lists or the groups `quiet`, `busy` and `all`; the
-# sizes default to run.sh's. The captures are the source: the streams a
-# decoder is tested on are made of them by scripts/vp9-samples.sh, again
-# whenever the encoder changes. `--video` is the video file the video and
+# sizes default to run.sh's. The captures are the source the encoders are
+# measured on (scripts/capture-samples.sh cuts them shorter). `--video` is the video file the video and
 # the walk play full screen, the window in a window and the mixed in both,
 # handed to the container read-only; a run with any of them needs it.
 #
@@ -39,7 +38,6 @@ while [[ $# -gt 0 ]]; do
 		--scenarios) env_args+=(-e "SCENARIOS=$2"); shift 2 ;;
 		--seconds) env_args+=(-e "LENGTH=$2"); shift 2 ;;
 		--frames) env_args+=(-e "FRAMES=$2"); shift 2 ;;
-		--quality) env_args+=(-e "QUALITY=$2"); shift 2 ;;
 		*) echo "$0: $1: not a flag" >&2; exit 2 ;;
 	esac
 done

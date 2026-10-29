@@ -50,12 +50,10 @@ pub struct Config {
     /// most of this waiting on the person.
     #[serde(default = "default_handshake_timeout_secs")]
     pub handshake_timeout_secs: u64,
-    /// Whether the tiles picture's moving regions are coded by the host's
-    /// hardware H.264 encoder, through VA-API, where the daemon finds one at
-    /// startup; on by default. Off, or with none found, they are libx264's.
-    /// They are VP9 by libvpx where libavcodec has no libx264, and until a
-    /// session's tiles picture is made again where its coder cannot be
-    /// opened, or refuses or fails a stream.
+    /// Whether the video stream and the tiles picture's moving regions are
+    /// coded by the host's hardware H.264 encoder, through VA-API, where the
+    /// daemon finds one at startup; on by default. Off, or with none found,
+    /// they are libx264's.
     #[serde(default = "default_true")]
     pub hardware_h264: bool,
     /// The desktop name in ServerInit.
@@ -264,18 +262,6 @@ mod tests {
         assert_eq!(c.handshake_timeout_secs, 30);
         let zero: Config = toml::from_str("handshake_timeout_secs = 0").unwrap();
         assert!(zero.validate().is_err());
-    }
-
-    /// The VP9 keys are gone: the quality is the ceiling the client's list
-    /// names, and its one client always names one; the floor is the walk's
-    /// own, and the settle sharpens a quiet desktop at the ceiling, which is
-    /// what the floor was for. A file that still writes either is refused as
-    /// any unknown key is.
-    #[test]
-    fn the_vp9_keys_are_no_longer_keys() {
-        for key in ["vp9_quality = 80", "vp9_quality_min = 45"] {
-            assert!(toml::from_str::<Config>(key).is_err(), "{key}");
-        }
     }
 
     /// The sound, the camera, the microphone and a client's resize are always

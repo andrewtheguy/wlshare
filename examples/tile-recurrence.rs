@@ -51,7 +51,15 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use wlshare_vp9::capture::Reader;
+use wlcap::Reader;
+
+// The one item of the daemon's RFB module the capture file names.
+mod rfb {
+    include!("../src/rfb/rect.rs");
+}
+#[allow(dead_code)]
+#[path = "../src/wlcap.rs"]
+mod wlcap;
 
 type Error = Box<dyn std::error::Error>;
 

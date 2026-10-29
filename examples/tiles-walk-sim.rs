@@ -2,26 +2,25 @@
 //! tiles encoder ([`crate::rfb::tiles`]) and the walk as a session plays
 //! them, one update in flight, through the zDesk gateway to a browser on a
 //! link of a given rate and round trip — `walk-sim`'s model
-//! (`crates/wlshare-vp9/examples/sim`), with the tiles picture in place of
-//! `WLSV`.
+//! (`examples/sim`), with the tiles picture in place of `WLSV`.
 //!
 //! ```text
 //! tiles-walk-sim CAPTURE [CAPTURE...] [--link MBPS[,MBPS@SECS...]] [--rtt MS]
-//!                [--hop MS] [--paint MS] [--jitter MS] [--ceiling Q]
+//!                [--hop MS] [--paint MS] [--jitter MS]
 //!                [--held] [--libx264] [--encode MS]
 //!                [--timeline FILE]
 //! ```
 //!
-//! An example of the daemon's crate, since its regions are the daemon's H.264
-//! ([`h264`]), so it runs where the daemon builds; `--libx264` takes libx264
-//! where the machine has a VA-API encoder too. The flags are `walk-sim`'s:
+//! Its regions are the daemon's H.264 ([`h264`]), as `walk-sim`'s stream is;
+//! `--libx264` takes libx264 where the machine has a VA-API encoder too. The
+//! flags are `walk-sim`'s:
 //! `--link` the browser's link in Mbit/s, 10 by default, and the rate it
 //! changes to from each `@` second on; `--rtt` its round trip, 40 ms; `--hop`
 //! the round trip between the session and the gateway, 1 ms; `--paint` how
 //! long the browser takes to paint an update once it has it and the one before
 //! is painted, 5 ms, and `--jitter` up to how much more, at random.
-//! `--ceiling` is the dial the walk starts at and never passes, 90. The walk
-//! is over every tile progressive, as a client that lists the tiles with no
+//! The walk starts at wlshare's dial ([`rfb::QUALITY`]) and never passes it,
+//! over every tile progressive, as a client that lists the tiles with no
 //! `WLSD` is sent them, and the passes are counted by kind on stderr;
 //! `--held` holds the dial there instead, as a client that lists `WLSD`
 //! beside the tiles, every still exact and the regions streamed.
@@ -45,8 +44,11 @@
 //! of its own, its body taking its share of the budget. Each update is the
 //! walk's to judge as the session judges it: a keyframe or the tick's alone is
 //! no verdict, and the first of the tick's settles the walk where it stands.
-//! What it says of a run, one JSON object on stdout, is `walk-sim`'s, `picture` `tiles`, with `ticks` in place of its
-//! `settles`, and `keyframes` the updates that crossed the link as one.
+//! What it says of a run, one JSON object on stdout, is `walk-sim`'s, `picture`
+//! `tiles`, with `ticks`, the updates of the tick alone, the dial the motion
+//! was coded at (`motion_q_mean`, `motion_q_p10`) and how often it moved
+//! (`moves`, `downs`), and `keyframes` the updates that crossed the link as
+//! one.
 //! Every update is drawn as the page draws it ([`Page`]), and `psnr_mean_db`
 //! and `psnr_p10_db` are how close each update left the page to the desktop
 //! it was coded from, `psnr_end_db` the page once nothing more is owed.
@@ -61,16 +63,16 @@ use std::io::Write as _;
 use std::time::{Duration, Instant};
 
 use wlshare_proto::tiles::{TileHeader, TilesPicture};
-use wlshare_vp9::walk::QualityWalk;
 
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::tiles::TilesEncoder;
-use crate::rfb::vp9::Rect;
+use crate::rfb::Rect;
+use crate::walk::QualityWalk;
 use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 
 // The daemon's own modules, of which the simulation uses the encoders and
 // nothing more, the decoder the H.264 encoder's tests read it back with, and
-// `walk-sim`'s model of the link.
+// `walk-sim`'s model of the link and the walk it plays over it.
 #[path = "../src/decode.rs"]
 mod decode;
 #[allow(dead_code)]
@@ -79,8 +81,13 @@ mod h264;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
 mod rfb;
-#[path = "../crates/wlshare-vp9/examples/sim/mod.rs"]
 mod sim;
+#[allow(dead_code)]
+#[path = "../src/walk.rs"]
+mod walk;
+#[allow(dead_code)]
+#[path = "../src/wlcap.rs"]
+mod wlcap;
 
 #[global_allocator]
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
@@ -304,7 +311,8 @@ fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
     let (mut hop, mut held, mut libx264, mut encode_ms) = (1.0, false, false, None::<f64>);
-    let (mut rtt, mut paint, mut jitter, mut ceiling) = (40.0, 5.0, 0.0, 90u8);
+    let (mut rtt, mut paint, mut jitter) = (40.0, 5.0, 0.0);
+    let ceiling = rfb::QUALITY;
     let mut timeline = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -318,7 +326,6 @@ fn main() -> Result<(), Error> {
             "--encode" => encode_ms = Some(millis(&arg, value()?)?),
             "--paint" => paint = millis(&arg, value()?)?,
             "--jitter" => jitter = millis(&arg, value()?)?,
-            "--ceiling" => ceiling = value()?.parse::<u8>().ok().filter(|q| (1..=100).contains(q)).ok_or("--ceiling takes 1 to 100")?,
             "--timeline" => timeline = Some(std::io::BufWriter::new(File::create(value()?)?)),
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}").into()),
             _ => paths.push(arg),
@@ -342,7 +349,7 @@ fn main() -> Result<(), Error> {
 
     // A 30 Hz capture, the daemon's default.
     let base = Instant::now();
-    let picture = TilesPicture { quality: ceiling, progressive: !held };
+    let picture = TilesPicture { progressive: !held };
     let mut walk = QualityWalk::new(ceiling, Duration::from_micros(33_333), !held);
     // Where the walk stands, as the session hands it the encoder.
     let pace = |walk: &QualityWalk| if held { (ceiling, false) } else { (walk.quality(), walk.slowed()) };
@@ -470,7 +477,6 @@ fn main() -> Result<(), Error> {
         // The fence comes back; the next update waits for it.
         now = back;
         let moved = walk.fenced(delivery, verdict, base + now);
-        walk.delivered(base + now);
         if let Some(t) = &mut timeline {
             let kind = if update.keyframe { "key" } else if update.tick { "tick" } else { "frame" };
             let (stills, streams) = split(&out)?;

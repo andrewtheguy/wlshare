@@ -1,4 +1,4 @@
-//! The model `walk-sim` and the daemon's `tiles-walk-sim` share: the captures
+//! The model `walk-sim` and `tiles-walk-sim` share: the captures
 //! played one after the other, the browser's link, and the zDesk gateway
 //! between the session and the browser. Each includes it as a module of its
 //! own, so a picture and its walk are played over the same link.
@@ -9,8 +9,8 @@ use std::io::{BufReader, Read};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use wlshare_vp9::Rect;
-use wlshare_vp9::capture::Reader;
+use crate::rfb::Rect;
+use crate::wlcap::Reader;
 
 pub type Error = Box<dyn std::error::Error>;
 

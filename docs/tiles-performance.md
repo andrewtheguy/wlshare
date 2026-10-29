@@ -15,6 +15,12 @@ moves an H.264 stream walked with it. Progressive tiles replaced it, and
 its figures stay as what they were measured against; motion-bench's
 `--walk-at`, which coded it, went with it.
 
+`WLSV` in every figure here is the VP9 stream it was until 2026-10-29,
+4:4:4 or 4:2:0, its dial walked on the link, which H.264 at a fixed dial
+replaced ([The video encoding](architecture.md#the-video-encoding)); its
+figures stay as what the tiles were measured against, and the dials and
+`--quality` the runs name are the options the lists then had.
+
 ## The three pictures
 
 Measured 2026-10-26 on an eight-core AMD EPYC (Milan) VM, idle and with no
@@ -180,11 +186,10 @@ bench, with no link, does not show, so below the ceiling the settle keeps
 
 ## The walk's verdicts
 
-What the walk ([The VP9 encoding](architecture.md#the-vp9-encoding)) makes
+What the walk ([The video encoding](architecture.md#the-video-encoding)) makes
 of the tiles' updates on a slow link, by `examples/tiles-walk-sim.rs` in the
 daemon's crate: `walk-sim`'s model of the browser's link and the gateway
-([The walk on a slow link](vp9-performance.md#the-walk-on-a-slow-link))
-played over the tiles, each update coded as the session codes it, the regions
+(`examples/sim`) played over the tiles, each update coded as the session codes it, the regions
 by libx264, and each of its rectangles a record of the gateway's own, its
 body taking its share of the budget. Measured 2026-10-27 on the eight-core
 AMD EPYC (Milan) VM, idle and with no swap, with this machine's encode
