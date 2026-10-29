@@ -272,15 +272,22 @@ pub const CLEANUP_TICK: Duration = Duration::from_millis(250);
 /// lossy. Longer than [`CLEANUP_IDLE`], so a pause in typing is not chased
 /// while the link is behind.
 const COARSE_QUIET: Duration = Duration::from_millis(2000);
-/// The most tiles a tick codes on a held list or while the walk stands at the
-/// ceiling.
+/// The most tiles a tick codes.
 const SETTLE_TILES: usize = 320;
-/// The most tiles a tick sends while the walk is below the ceiling, where the
-/// link is short of bytes.
-const SETTLE_TILES_BELOW: usize = 40;
-/// The bytes after which a tick sends no more: 8 Mbit/s at a tick every
-/// quarter of a second.
+/// The bytes after which a tick sends no more while the walk stands at the
+/// ceiling, and at most below it, where what it may send on a quiet desktop
+/// walks between this and [`SETTLE_BYTES_LEAST`] on how long the updates
+/// that carried a settle took to cross ([`TilesEncoder::delivered`]).
 const SETTLE_BYTES: usize = 256 * 1024;
+/// The fewest bytes a tick may send before it stops, and what it starts at:
+/// 13 ms of a 5 Mbit/s link.
+const SETTLE_BYTES_LEAST: usize = 8 * 1024;
+/// An update that crossed within this had the link to itself: the next tick
+/// may send twice as much. The walk's own word for a link that is clear.
+const SETTLE_QUICK: Duration = Duration::from_millis(30);
+/// An update that took this long or more to cross queued on the link: the
+/// next tick sends half as much.
+const SETTLE_LATE: Duration = Duration::from_millis(60);
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
@@ -895,6 +902,11 @@ pub struct TilesEncoder {
     /// A read came since the last encode, which owes a round of the streams.
     read: bool,
     next_tick: Duration,
+    /// The bytes the next tick may send ([`SETTLE_BYTES_LEAST`] to
+    /// [`SETTLE_BYTES`]), and whether the update in flight carried a settle,
+    /// whose crossing moves it.
+    settle_bytes: usize,
+    settling: bool,
     /// wlshare's dial: what the streams are coded at, and the finest the walk
     /// asks for.
     ceiling: u8,
@@ -940,6 +952,8 @@ impl TilesEncoder {
             ended: Vec::new(),
             read: false,
             next_tick: Duration::ZERO,
+            settle_bytes: SETTLE_BYTES_LEAST,
+            settling: false,
             ceiling: crate::rfb::QUALITY,
             quality: crate::rfb::QUALITY,
             coarse: false,
@@ -1087,10 +1101,14 @@ impl TilesEncoder {
             out.out.extend_from_slice(&block);
             out.length(from, header_at, header)?;
         }
+        // An upgrade is no change: the tile stays owed from when it last
+        // changed, so its next stage is ready at once.
         if settled {
             self.debts.remove(&cell);
-        } else {
+        } else if pass == ProgressivePass::First {
             self.debts.insert(cell, now);
+        } else {
+            self.debts.entry(cell).or_insert(now);
         }
         Ok(settled)
     }
@@ -1532,9 +1550,15 @@ impl TilesEncoder {
         }
         let brought = out.count;
         if now >= self.next_tick {
-            self.next_tick = now + CLEANUP_TICK;
-            self.tick(now, &mut out)?;
+            // On a quiet desktop a tick its budget cut short is owed again at
+            // the next update's turn, which waits for this one's fence: the
+            // settle goes as fast as the link takes it. While it moves, a
+            // tick alone between its updates would hold back the next, and
+            // start the walk's verdicts over.
+            let more = self.tick(now, &mut out)?;
+            self.next_tick = if more && self.quiet(now) { now } else { now + CLEANUP_TICK };
         }
+        self.settling = out.count > brought;
         // What the streams that ended here had not carried, after their ENDs.
         let stills = std::mem::take(&mut self.stills);
         self.precode(&stills);
@@ -1546,6 +1570,29 @@ impl TilesEncoder {
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
         Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0 })
+    }
+
+    /// How long the last update took to cross: its fence's round trip, or
+    /// where the client has no fence how long its write blocked. One that
+    /// carried a settle and crossed within [`SETTLE_QUICK`] lets the next
+    /// tick send twice the bytes, up to [`SETTLE_BYTES`]; one that took
+    /// [`SETTLE_LATE`] or more, half, down to [`SETTLE_BYTES_LEAST`]. So a
+    /// desktop that stops settles as fast as the link carries it, whatever
+    /// the walk's dial, and a settle never queues on a link with no room.
+    pub fn delivered(&mut self, took: Duration) {
+        if !std::mem::take(&mut self.settling) {
+            return;
+        }
+        if took <= SETTLE_QUICK {
+            self.settle_bytes = (self.settle_bytes * 2).min(SETTLE_BYTES);
+        } else if took >= SETTLE_LATE {
+            self.settle_bytes = (self.settle_bytes / 2).max(SETTLE_BYTES_LEAST);
+        }
+    }
+
+    /// No tile has changed for [`CLEANUP_IDLE`].
+    fn quiet(&self, now: Duration) -> bool {
+        now.saturating_sub(self.changed_at) >= CLEANUP_IDLE
     }
 
     /// Whether anything is owed that no read will bring: a stream is live, or
@@ -1810,12 +1857,15 @@ impl TilesEncoder {
     /// The streams whose motion stopped ended, and the tiles still for
     /// [`CLEANUP_IDLE`] settled — a PNG, or a progressive tile's next
     /// upgrade — as runs along a row, the oldest
-    /// runs first until [`SETTLE_BYTES`] are sent, of the [`SETTLE_TILES`]
-    /// longest owed, or [`SETTLE_TILES_BELOW`] while the walk is below the
-    /// ceiling — none while the walk is
+    /// runs first until [`SETTLE_BYTES`] are sent while the walk stands at
+    /// the ceiling; below it [`SETTLE_BYTES_LEAST`] while the desktop moves,
+    /// and once it is quiet the bytes the link was found to take
+    /// ([`Self::delivered`]); of the [`SETTLE_TILES`]
+    /// longest owed — none while the walk is
     /// coarse, since the link is behind on what it has, until the desktop has
-    /// been still for [`COARSE_QUIET`].
-    fn tick(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    /// been still for [`COARSE_QUIET`]. Whether it stopped short of a tile
+    /// that was ready.
+    fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
         let mut unsent = Vec::new();
         for live in self.live.extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE) {
             if live.started {
@@ -1826,37 +1876,60 @@ impl TilesEncoder {
         self.cover();
         self.owe(&unsent);
         if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
-            return Ok(());
+            return Ok(false);
         }
 
         let mut ready: Vec<((u16, u16), Duration)> = self.debts.iter().filter(|(cell, at)| !self.covered.contains(*cell) && now.saturating_sub(**at) >= CLEANUP_IDLE).map(|(cell, at)| (*cell, *at)).collect();
-        ready.sort_unstable_by_key(|((col, row), at)| (*at, *row, *col));
-        ready.truncate(if self.quality < self.ceiling { SETTLE_TILES_BELOW } else { SETTLE_TILES });
+        // The coarsest progressive tiles first, so the picture is refined
+        // all over a stage at a time, as the host's is; then the longest owed.
+        let stage = |cell: (u16, u16)| self.progressive.as_ref().and_then(|enc| enc.stage_of(cell)).unwrap_or(0);
+        ready.sort_unstable_by_key(|&(cell, at)| (stage(cell), at, cell.1, cell.0));
+        let mut more = ready.len() > SETTLE_TILES;
+        ready.truncate(SETTLE_TILES);
         ready.sort_unstable_by_key(|((col, row), _)| (*row, *col));
-        // Each run with the time its oldest tile was owed from, and sent
-        // oldest first.
-        let mut runs: Vec<(CellBox, Duration)> = Vec::new();
+        // Each run with the coarsest stage of its tiles and the time its
+        // oldest was owed from, and sent coarsest, then oldest, first.
+        let mut runs: Vec<(CellBox, (usize, Duration))> = Vec::new();
         for ((col, row), at) in ready {
+            let first = (stage((col, row)), at);
             match runs.last_mut() {
                 Some((run, oldest)) if run.r0 == row && run.c1.checked_add(1) == Some(col) => {
                     run.c1 = col;
-                    *oldest = (*oldest).min(at);
+                    *oldest = (*oldest).min(first);
                 }
-                _ => runs.push((CellBox::of((col, row)), at)),
+                _ => runs.push((CellBox::of((col, row)), first)),
             }
         }
         runs.sort_by_key(|(run, oldest)| (*oldest, run.r0, run.c0));
+        // At the ceiling the walk found the link with room: the most. Below
+        // it the link is short of bytes, for the motion itself while the
+        // desktop moves: the least; once it is quiet, what the link was found
+        // to take.
+        let budget = if self.quality >= self.ceiling {
+            SETTLE_BYTES
+        } else if self.quiet(now) {
+            self.settle_bytes
+        } else {
+            SETTLE_BYTES_LEAST
+        };
         let from = out.out.len();
-        for (run, _) in runs {
-            if out.out.len() - from >= SETTLE_BYTES {
+        'runs: for (run, _) in runs {
+            if out.out.len() - from >= budget {
+                more = true;
                 break;
             }
             if let Some(area) = run.to_area(self.size) {
                 if self.progressive.is_some() {
                     // A whole tile not one colour that settles is stored
-                    // settled, as a PNG is.
+                    // settled, as a PNG is. The bytes are counted a tile at
+                    // a time, a row of them being up to 60 of a 4K desktop.
                     for (cell, part) in tiles_of(area) {
+                        if out.out.len() - from >= budget {
+                            more = true;
+                            break 'runs;
+                        }
                         let settled = self.progressive_tile(cell, ProgressivePass::Upgrade, now, out)?;
+                        more |= !settled;
                         if settled
                             && part == self.cell_area(cell)
                             && part.w() == TILE
@@ -1872,7 +1945,7 @@ impl TilesEncoder {
                 }
             }
         }
-        Ok(())
+        Ok(more)
     }
 }
 
@@ -2239,6 +2312,7 @@ mod tests {
         encoder.read(pixels, stride, changed, now).unwrap();
         let mut out = Vec::new();
         let update = encoder.encode(now, &mut out).unwrap();
+        encoder.delivered(Duration::ZERO);
         page.draw(update.rects, &out);
         update
     }
@@ -2251,6 +2325,7 @@ mod tests {
             now = now.max(at);
             out.clear();
             let update = encoder.encode(now, &mut out).unwrap();
+            encoder.delivered(Duration::ZERO);
             page.draw(update.rects, &out);
             assert!(now < ms(60_000), "never settled");
         }
@@ -2460,8 +2535,10 @@ mod tests {
         assert!(!encoder.owed(), "kept settled");
     }
 
-    /// A tick sends the oldest runs owed: below the ceiling
-    /// [`SETTLE_TILES_BELOW`] tiles, at it until [`SETTLE_BYTES`] are sent.
+    /// Below the ceiling, on a quiet desktop, a tick sends the oldest owed
+    /// until its bytes are spent, and the next is owed at once:
+    /// [`SETTLE_BYTES_LEAST`] at first, twice that after an update that
+    /// crossed quickly, half after one that queued.
     #[test]
     fn a_tick_sends_the_oldest_until_its_bytes_are_spent() {
         let (w, h) = (1024u16, 1024u16);
@@ -2478,28 +2555,32 @@ mod tests {
         // tick has upgraded since.
         let top = |encoder: &TilesEncoder| (0..16).all(|col| encoder.debts.get(&(col, 0)) == Some(&ms(300)));
 
-        let mut out = Vec::new();
-        let at = encoder.tick_at().unwrap();
+        // Each tick's bytes, and the tiles it sent, its fence back in `took`.
+        let tick = |encoder: &mut TilesEncoder, page: &mut Page, took: Duration| {
+            let mut out = Vec::new();
+            // Quiet from the top row's change on.
+            let at = encoder.tick_at().unwrap().max(ms(300) + CLEANUP_IDLE);
+            let sent = page.progressives;
+            let tick = encoder.encode(at, &mut out).unwrap();
+            encoder.delivered(took);
+            page.draw(tick.rects, &out);
+            assert_eq!(encoder.tick_at(), Some(at), "more owed at once");
+            (at, out.len(), page.progressives - sent)
+        };
+        let (at, first, tiles) = tick(&mut encoder, &mut page, Duration::ZERO);
         assert!(at >= CLEANUP_IDLE, "the first owed once still: {at:?}");
-        let sent = page.progressives;
-        let tick = encoder.encode(at, &mut out).unwrap();
-        page.draw(tick.rects, &out);
-        assert_eq!(page.progressives - sent, SETTLE_TILES_BELOW, "below the ceiling, {SETTLE_TILES_BELOW} tiles");
+        let tile = first / tiles;
+        assert!(first >= SETTLE_BYTES_LEAST && first < SETTLE_BYTES_LEAST + 2 * tile, "{first} bytes, {tiles} tiles");
         assert!(top(&encoder), "the oldest first");
-
+        let (_, quick, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
+        assert!(quick >= 2 * SETTLE_BYTES_LEAST && quick < 2 * SETTLE_BYTES_LEAST + 2 * tile, "twice after a quick one: {quick}");
+        let (_, late, _) = tick(&mut encoder, &mut page, Duration::ZERO);
+        assert!(late >= SETTLE_BYTES_LEAST && late < SETTLE_BYTES_LEAST + 2 * tile, "half after a late one: {late}");
+        assert!(top(&encoder), "the oldest first");
+        // At the ceiling, the most.
         encoder.set_pace(90, false);
-        out.clear();
-        let at = encoder.tick_at().unwrap();
-        let sent = page.progressives;
-        let tick = encoder.encode(at, &mut out).unwrap();
-        page.draw(tick.rects, &out);
-        let upgraded = page.progressives - sent;
-        assert!(upgraded > SETTLE_TILES_BELOW && upgraded < 256 - SETTLE_TILES_BELOW, "at the ceiling more, and not all: {upgraded}");
-        // Each run is a row of 16 tiles, and the last one is sent only while
-        // what came before it is under the bytes.
-        let run = out.len() / (upgraded / 16);
-        assert!(out.len() >= SETTLE_BYTES && out.len() < SETTLE_BYTES + 2 * run, "{} bytes, runs of {run}", out.len());
-        assert!(top(&encoder), "the oldest first");
+        let (at, most, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
+        assert!(most >= SETTLE_BYTES && most < SETTLE_BYTES + 2 * tile, "at the ceiling: {most}");
         settle(&mut encoder, &mut page, at);
         assert!(!encoder.owed());
     }

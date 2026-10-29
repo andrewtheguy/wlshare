@@ -1073,6 +1073,9 @@ impl Session {
                         let now = Instant::now();
                         let delivery = now.saturating_duration_since(sent);
                         let moved = self.walk.fenced(delivery, verdict, now);
+                        if let Some(encoder) = self.tiles.as_mut().filter(|_| self.use_tiles) {
+                            encoder.delivered(delivery);
+                        }
                         if moved.is_some() {
                             debug!("client {}: the frame before took {}ms to deliver", self.id.0, delivery.as_millis());
                         }
@@ -1732,6 +1735,9 @@ impl Session {
         self.tiles_quiet = update.tick;
         self.frame_sent = Some(sent);
         let now = Instant::now();
+        if !self.fence_supported {
+            self.tiles.as_mut().expect("made for the read").delivered(now.saturating_duration_since(sent));
+        }
         if verdict {
             let moved = self.walk.written(now.saturating_duration_since(sent), self.fence_supported, now);
             self.follow_walk(moved);

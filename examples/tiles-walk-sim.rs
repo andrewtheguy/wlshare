@@ -31,7 +31,8 @@
 //! and progressive tiles, and of its streams' frames), `encode_ms`, `cpu_ms` (the
 //! processor time of that encode, on every thread, which `encoder_cpu_pct`
 //! sums), `delivery_ms`,
-//! `latency_ms` and, where its fence moved the dial, `moved_to`.
+//! `latency_ms`, `psnr_db` (how close it left the page to the desktop it was
+//! coded from) and, where its fence moved the dial, `moved_to`.
 //!
 //! Time is the simulation's own, as `walk-sim`'s is: an encode, the read of
 //! what changed with it, takes what it took on this machine, or `--encode`;
@@ -447,7 +448,8 @@ fn main() -> Result<(), Error> {
         }
         let page = page.as_mut().unwrap();
         page.draw(update.rects, &out, encoder, &mut passes)?;
-        psnrs.push(psnr(page.mse(&d.pixels)));
+        let close = psnr(page.mse(&d.pixels));
+        psnrs.push(close);
         let sent = now + encode;
         let coded_at = encoder.quality();
         let size = out.len() + FRAMING;
@@ -461,6 +463,7 @@ fn main() -> Result<(), Error> {
         quiet = update.tick;
         update_sent = Some(sent);
         let delivery = back - sent;
+        encoder.delivered(delivery);
         let verdict = !update.keyframe && !update.tick;
         let latency = painted.saturating_sub(d.at);
         shown.extend(unshown.drain(..).map(|at: Duration| (painted - at).as_secs_f64() * 1e3));
@@ -483,7 +486,7 @@ fn main() -> Result<(), Error> {
             let moved_to = moved.map_or_else(String::new, |moved| format!(",\"moved_to\":{}", moved.quality));
             writeln!(
                 t,
-                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}{moved_to}}}",
+                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1},\"psnr_db\":{close:.2}{moved_to}}}",
                 sent.as_secs_f64() * 1e3,
                 interval.as_secs_f64() * 1e3,
                 encode.as_secs_f64() * 1e3,
