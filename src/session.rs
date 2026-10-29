@@ -41,16 +41,15 @@
 //! rectangle over the whole framebuffer, the next frame of one H.264 stream
 //! ([`crate::rfb::video`]), by the encoder the daemon found at startup
 //! ([`crate::h264`]), the host's hardware or libx264. The encoder is made again
-//! at every new size and every new dial, its first frame an IDR; a
-//! non-incremental request or the encoding's being listed anew also asks for
-//! one. A frame between them is handed the damage since the client's last
+//! at every new size, its first frame an IDR; a non-incremental request or the
+//! encoding's being listed anew also asks for one. A frame between them is handed the damage since the client's last
 //! one, and the encoder converts that alone: a small change costs a small
 //! conversion. The encode runs on this task's worker, told it is blocking,
 //! and the fence keeps it to one frame in flight as it does a standard pixel
-//! update. Nothing beside the encoding says what the stream is to be: every
-//! frame is at wlshare's dial ([`crate::rfb::QUALITY`]), the quantizer the
-//! stream's for its life, so what follows the link is the frame rate, through
-//! the walk of the frames alone ([`QualityWalk::frames`]): each frame's fence,
+//! update. Nothing beside the encoding says what the stream is to be: the walk
+//! ([`QualityWalk`]) moves each frame's quality from wlshare's dial
+//! ([`crate::rfb::QUALITY`]) down, and the frame rate after it, on the running
+//! stream with no keyframe: each frame's fence,
 //! answered once the client has the frame — zDesk answers once the browser
 //! has taken it, so the walk reads the whole path to the screen — is how long
 //! that frame took, and a client without Fence is measured by how long
@@ -599,7 +598,7 @@ impl Session {
     /// A session on `desk` before its first SetEncodings: no encoding listed,
     /// the client holding a desktop of `known_size`.
     fn new(id: ClientId, desk: usize, shared: Arc<Shared>, config: Arc<SessionConfig>, events: broadcast::Receiver<Event>, frames: watch::Receiver<u64>, known_size: (u16, u16)) -> Self {
-        let walk = QualityWalk::frames(crate::rfb::QUALITY, config.capture, true);
+        let walk = QualityWalk::new(crate::rfb::QUALITY, config.capture, true);
         Self {
             id,
             desk,
@@ -862,11 +861,11 @@ impl Session {
                 }
                 let video = has(ENCODING_VIDEO);
                 if video && !self.use_video {
-                    info!("client {}: asked for video, H.264 by {} at quality {}, paced by its lag", self.id.0, self.config.h264.name(), crate::rfb::QUALITY);
+                    info!("client {}: asked for video, H.264 by {} up to quality {}, walked by its lag", self.id.0, self.config.h264.name(), crate::rfb::QUALITY);
                 }
                 if video && (!self.use_video || self.use_tiles) {
                     // The walk was the tiles picture's, where that was listed.
-                    self.walk = QualityWalk::frames(crate::rfb::QUALITY, self.config.capture, true);
+                    self.walk = QualityWalk::new(crate::rfb::QUALITY, self.config.capture, true);
                 }
                 if video && !self.use_video {
                     // A decoder that has seen nothing of this stream starts at an IDR.
@@ -1646,6 +1645,7 @@ impl Session {
         self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VIDEO));
         let (encoder, out) = (self.video.as_mut().expect("made for the read"), &mut self.out);
         let keyframe = full || self.keyframe_owed;
+        let quality = self.walk.quality();
         if let Some(dir) = &self.config.capture_frames {
             let capture = match &mut self.capture {
                 Some(capture) => capture,
@@ -1661,12 +1661,12 @@ impl Session {
             // The frame as the encoder is handed it; what it says is what
             // the stream reads.
             let stride = usize::from(width) * 4;
-            tokio::task::block_in_place(|| capture.frame((width, height), crate::rfb::QUALITY, keyframe, changed, &self.scratch, stride))
+            tokio::task::block_in_place(|| capture.frame((width, height), quality, keyframe, changed, &self.scratch, stride))
                 .context("writing the capture")?;
         }
         // Tens of milliseconds for a large desktop that changed all over, which
         // is the worker's to spend and not the runtime's to wait on.
-        let encoded = tokio::task::block_in_place(|| encoder.encode(keyframe, out)).with_context(|| format!("encoding a {width}x{height} video frame"))?;
+        let encoded = tokio::task::block_in_place(|| encoder.encode(keyframe, quality, out)).with_context(|| format!("encoding a {width}x{height} video frame"))?;
         if !encoded {
             self.out.truncate(rect_at);
             return Ok(None);
@@ -1758,9 +1758,10 @@ impl Session {
     }
 
     /// Move the tiles picture's dial to where the walk went, if it went
-    /// anywhere; an encoder made later starts there anyway. The interval the
+    /// anywhere; an encoder made later starts there anyway. The video stream
+    /// reads the walk's quality as it codes each frame, and the interval the
     /// walk asks for is read when a frame goes out, the video stream's as the
-    /// tiles picture's, whose dial is the walk's alone to move.
+    /// tiles picture's.
     fn follow_walk(&mut self, moved: Option<Pace>) {
         let Some(pace) = moved else {
             return;

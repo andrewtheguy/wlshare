@@ -76,7 +76,7 @@ use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 #[path = "../src/decode.rs"]
 mod decode;
 #[allow(dead_code)]
-#[path = "../src/h264.rs"]
+#[path = "../src/h264/mod.rs"]
 mod h264;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]

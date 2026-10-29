@@ -1,5 +1,6 @@
-//! H.264 into pictures, for the client's camera: the system's libavcodec,
-//! linked dynamically, and nothing else of FFmpeg's.
+//! H.264 into pictures, for the client's camera, and into the quantizers it
+//! was coded at, for the H.264 encoder's trial frames: the system's
+//! libavcodec, linked dynamically, and nothing else of FFmpeg's.
 //!
 //! The client encoded the stream — a browser's `VideoEncoder`, Constrained
 //! Baseline — so what arrives is one Annex B access unit at a time, parameter
@@ -51,6 +52,17 @@ impl Picture {
 
 impl Decoder {
     pub fn new() -> anyhow::Result<Self> {
+        Self::open(false)
+    }
+
+    /// A decoder that also says the quantizer of every macroblock it decodes
+    /// ([`Self::qps`]): the word, for the H.264 encoder's trial frames and its
+    /// tests, on what an encoder coded a frame at.
+    pub fn with_qps() -> anyhow::Result<Self> {
+        Self::open(true)
+    }
+
+    fn open(qps: bool) -> anyhow::Result<Self> {
         // SAFETY: each allocation is checked before use, and a failure part way
         // through frees what came before it through `Drop`.
         unsafe {
@@ -63,6 +75,9 @@ impl Decoder {
             );
             (*decoder.context).thread_count = 1;
             (*decoder.context).flags |= ff::AV_CODEC_FLAG_LOW_DELAY as i32;
+            if qps {
+                (*decoder.context).export_side_data |= ff::AV_CODEC_EXPORT_DATA_VIDEO_ENC_PARAMS;
+            }
             check(ff::avcodec_open2(decoder.context, codec, ptr::null_mut()), "opening the H.264 decoder")?;
             Ok(decoder)
         }
@@ -97,6 +112,55 @@ impl Decoder {
                 picture = Some(copied?);
             }
             Ok(picture)
+        }
+    }
+
+    /// Decode one access unit, as [`Self::decode`] does, and return the QP of
+    /// each of its picture's macroblocks, as the decoder read them: the
+    /// picture's and each block's delta from it. For a decoder made
+    /// [`Self::with_qps`].
+    pub fn qps(&mut self, unit: &[u8]) -> anyhow::Result<Vec<i32>> {
+        /// libavutil's `AVVideoEncParams` and `AVVideoBlockParams`, which its
+        /// bindings leave out.
+        #[repr(C)]
+        struct Params {
+            nb_blocks: u32,
+            blocks_offset: usize,
+            block_size: usize,
+            kind: i32,
+            qp: i32,
+            delta_qp: [[i32; 2]; 4],
+        }
+        #[repr(C)]
+        struct Block {
+            src_x: i32,
+            src_y: i32,
+            w: i32,
+            h: i32,
+            delta_qp: i32,
+        }
+        let len = i32::try_from(unit.len())?;
+        // SAFETY: as `decode`'s; the side data is read within the block count
+        // and offsets libavutil laid it out with.
+        unsafe {
+            check(ff::av_new_packet(self.packet, len), "allocating a packet")?;
+            ptr::copy_nonoverlapping(unit.as_ptr(), (*self.packet).data, unit.len());
+            let sent = ff::avcodec_send_packet(self.context, self.packet);
+            ff::av_packet_unref(self.packet);
+            check(sent, "decoding an access unit")?;
+            check(ff::avcodec_receive_frame(self.context, self.frame), "receiving a picture")?;
+            let side = ff::av_frame_get_side_data(self.frame, ff::AVFrameSideDataType::AV_FRAME_DATA_VIDEO_ENC_PARAMS);
+            anyhow::ensure!(!side.is_null(), "the decoder said no quantizer of the picture");
+            let mut qps = Vec::new();
+            {
+                let params = &*((*side).data as *const Params);
+                for block in 0..params.nb_blocks as usize {
+                    let at = (*side).data.add(params.blocks_offset + block * params.block_size) as *const Block;
+                    qps.push(params.qp + (*at).delta_qp);
+                }
+            }
+            ff::av_frame_unref(self.frame);
+            Ok(qps)
         }
     }
 

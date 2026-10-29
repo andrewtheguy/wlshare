@@ -32,9 +32,10 @@
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
-  `-sys` crates run — and `libavcodec-dev` for the camera's H.264 decoder and the
-  H.264 encoder of the video and the tiles' regions (`h264.rs`), the system's
-  libavcodec linked dynamically.
+  `-sys` crates and cros-libva run — `libavcodec-dev` for the camera's H.264
+  decoder, and `libx264-dev` and `libva-dev` for the H.264 encoder of the
+  video and the tiles' regions (`h264/`), libx264 through its own API and the
+  GPU through libva itself, each linked dynamically from the system.
   The audio extension's FLAC coding is not here: it is the `sound-flac`
   repository, shared with the zDesk gateway and pinned by its release tag,
   its own encoder in plain Rust: nothing is needed to build or to run.
@@ -45,8 +46,8 @@
 - Every protocol byte comes from the daemon's `rfb` module or, for a private
   extension, from `wlshare-proto`; the rest of the daemon writes none itself.
   Every encoder gets an independent decoder in its tests. The daemon's
-  H.264 encoder (`h264.rs`) is tested against libavcodec's software decoder:
-  libx264 on every machine, and the hardware, libavcodec's `h264_vaapi`, where
+  H.264 encoder (`h264/`) is tested against libavcodec's software decoder:
+  libx264 on every machine, and the hardware, through libva, where
   the machine has a VA-API encoder, its test passing with a word where it has
   none; testdesktop2
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
@@ -63,5 +64,6 @@
   软件包/套件, 会话/工作階段, 文件/檔案), so each keeps its own vocabulary.
   Everything under `docs/` is English alone, untranslated.
 - Design and wire details live in `docs/architecture.md`, not here.
-  Measurements live in their own documents (`docs/tiles-performance.md`),
+  Measurements live in their own documents (`docs/tiles-performance.md`,
+  `docs/video-performance.md`),
   which the architecture links to rather than repeats.

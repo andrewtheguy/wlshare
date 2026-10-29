@@ -3,44 +3,20 @@
 Work that is planned but not started. Once something here is done, its design
 moves to [`architecture.md`](architecture.md) and it comes off this list.
 
-## The whole-desktop stream in hardware
+## Text's colour on the whole-desktop stream
 
-`WLSV` is H.264 now, by the daemon's `h264.rs` — the GPU's encoder through
-libavcodec's `h264_vaapi`, libx264 where there is none — at wlshare's dial,
-and a link that falls behind gives up frames alone
-([The video encoding](architecture.md#the-video-encoding)): libavcodec fixes
-the quantizer when it opens an encoder, so the dial cannot walk as VP9's did
-without a keyframe at every step. What is left is a quantizer that walks again,
-and text's colour.
+`WLSV` is H.264 at 4:2:0, by the GPU through libva where there is one and
+libx264 where there is none, each frame at the quantizer the walk asks
+([The video encoding](architecture.md#the-video-encoding)). What is left is
+text's colour, which 4:2:0 halves.
 
-- **Its own encoder over libva.** The walk moves the quantizer every frame,
-  with no keyframe, and libavcodec's `h264_vaapi` and `hevc_vaapi` fix it
-  when they open. Its region-of-interest offset is no substitute: on
-  testdesktop2's normal encoder it leaves a few macroblocks of every frame
-  at the base, and on the low-power one it is ignored beyond about eight
-  either side. Coded through libva itself — the sequence, picture and slice
-  headers written by the daemon, the walk's quantizer in each slice's
-  `slice_qp_delta` — every frame of a walk jumping between 18 and 51 came
-  out at the quantizer asked, on both encoders, with no keyframe but the
-  first, and libavcodec's software decoder read back the GPU's own
-  reconstruction byte for byte. The headers and parameter buffers are all
-  that is H.264's, so HEVC is a second set of them, not a second design.
-  The walk is then `QualityWalk::new`'s again, quality before frames, from
-  wlshare's dial as its ceiling.
-- **libx264 through its own API.** Not through libavcodec, whose wrapper
-  ignores a `qp` changed between frames and a region's offset alike: x264
-  itself, the quantizer forced on each picture by `i_qpplus1`. That holds
-  only under its CRF rate control, every frame of the same walk at the
-  quantizer asked with no keyframe but the first; under CQP x264 clamps a
-  forced quantizer to about three either side of its constant. libx264 is
-  linked directly beside the libavcodec that already links it. `walk-sim` on
-  lab1, which has no GPU, times libx264, and the hardware's walk replays with
-  `--encode MS`.
-- **HEVC 4:4:4 after it.** `VAProfileHEVCMain444` on Intel's low-power
-  encoder, from Ice Lake; NVIDIA has no VA-API encoder and would be a
-  backend of its own over NVENC, and AMD has no 4:4:4 encoder at all. A
-  browser decodes HEVC only where its machine's decoder does, and 4:4:4 on
-  fewer, so the gateway keeps a 4:2:0 stream for the rest.
+- **HEVC 4:4:4.** `VAProfileHEVCMain444` on Intel's low-power encoder, from
+  Ice Lake: a second set of the headers and parameter buffers the daemon
+  hands libva for H.264, not a second design. NVIDIA has no VA-API encoder
+  and would be a backend of its own over NVENC, and AMD has no 4:4:4
+  encoder at all. A browser decodes HEVC only where its machine's decoder
+  does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
+  rest.
 
 ## The tiles' cache
 
