@@ -8,10 +8,14 @@
 #
 # For every capture in `--captures` (dist/captures), `--out`
 # (dist/capture-samples) gets `--frames` (120) frames of it under its name,
-# cut by `vp9cap trim --frames` from the capture's longest run of a size: a
-# quiet scenario's (terminal, still, uncover) first N, as vp9-samples.sh cuts
-# the terminal, and a busy one's the N in a row whose frames said the most
-# pixels changed, as it cuts the video, the earliest where several tie. The
+# cut by `vp9cap trim --frames` from the capture's longest run of a size,
+# past the whole pictures that open it where nothing follows them for over a
+# second: a quiet scenario's (still, uncover) first N, and a busy one's the N
+# in a row whose frames said the most pixels changed, a whole picture
+# counting as none, as vp9-samples.sh cuts the video, the earliest where
+# several tie. The terminal's N are where they
+# were chosen by eye (`chosen` below), from just before a 40-line output to a
+# second and a half after a page printed across the screen. The
 # cut's first frame is a whole picture with a keyframe asked, the picture as
 # it stood, and the rest are as the session handed them to its encoder. A
 # capture whose longest run is N frames or fewer is copied whole, and so are
@@ -38,6 +42,20 @@ while [[ $# -gt 0 ]]; do
 done
 # The quiet scenarios of docker/capture/run.sh; every other is busy.
 quiet=" terminal still uncover "
+# The cuts chosen by eye, `name from`: the frame their N start at, which the
+# terminal's 2026-10-13 captures put 3.5 s before the for loop's output.
+chosen="
+terminal-1280x800 82
+terminal-1440x900 85
+terminal-1600x1000 83
+terminal-1920x1080 84
+terminal-2048x1536@2 83
+terminal-2560x1600@2 83
+terminal-2880x1800@2 82
+terminal-3200x2000@2 82
+terminal-3456x2168@2 81
+terminal-3840x2160@2 79
+"
 # The scenarios copied whole, whatever their length.
 whole=" walk mixed "
 
@@ -66,7 +84,14 @@ for capture in "${all[@]}"; do
 		cp "$capture" "$out/$name.part" && mv "$out/$name.part" "$out/$name"
 		window="all $total"
 	else
-		[[ "$quiet" == *" $scenario "* ]] && how=() || how=(--busiest)
+		from="$(awk -v name="${name%.wlcap.zst}" '$1 == name { print $2 }' <<<"$chosen")"
+		if [[ -n "$from" ]]; then
+			how=(--from "$from")
+		elif [[ "$quiet" == *" $scenario "* ]]; then
+			how=()
+		else
+			how=(--busiest)
+		fi
 		said="$(mktemp)"
 		"$vp9cap" trim "$capture" --out "$out/$name" --frames "$frames" "${how[@]}" >/dev/null 2>"$said" || { cat "$said" >&2; rm -f "$said"; exit 1; }
 		# `vp9cap: trim: frames A..B`
@@ -81,7 +106,7 @@ done
 	echo
 	echo "The captures of what a wlshare session handed its VP9 encoder, cut to $frames frames each by \`scripts/capture-samples.sh\` in the wlshare repository on $(date -u +%Y-%m-%d), under the names of the captures they are cut from, for an encoder measured on a part of each. What the scenarios are is in the README.md beside the captures."
 	echo
-	echo "Each is cut from the capture's longest run of a size: a quiet scenario's (terminal, still, uncover) first $frames frames, and a busy one's the $frames in a row whose frames said the most pixels changed, the earliest where several tie. Its first frame is a whole picture with a keyframe asked, the picture as it stood, its times are counted from it, and every frame after is as captured. A capture whose longest run is $frames frames or fewer is here whole, and so are walk, whose dial walks down, back up and settles over all of it, and mixed, minutes at the desk."
+	echo "Each is cut from the capture's longest run of a size, past the whole pictures that open it where nothing follows them for over a second: a quiet scenario's (still, uncover) first $frames frames, a busy one's the $frames in a row whose frames said the most pixels changed, a whole picture counting as none, the earliest where several tie, and the terminal's where they were chosen by eye, from just before the for loop's 40 lines of output to a second and a half after the page printed across the screen. Its first frame is a whole picture with a keyframe asked, the picture as it stood, its times are counted from it, and every frame after is as captured. A capture whose longest run is $frames frames or fewer is here whole, and so are walk, whose dial walks down, back up and settles over all of it, and mixed, minutes at the desk."
 	echo
 	echo "| Capture | Frames | Size |"
 	echo "|---|---|---|"

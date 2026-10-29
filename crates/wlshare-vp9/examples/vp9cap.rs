@@ -52,9 +52,10 @@
 //! stream's first, and it is the IVF timestamp too.
 //!
 //! `sample` cuts one stream of exactly N frames from the capture's longest
-//! run of a size ([`window`]): its first N, or with `--busiest` the N in a
-//! row whose frames said the most pixels changed, the earliest such where
-//! several tie. The cut starts with a keyframe of the picture as it stood, and codes the
+//! run of a size ([`window`]), past the whole pictures that open it where
+//! nothing follows them for over a second: its first N, or with `--busiest` the N in a
+//! row whose frames said the most pixels changed, a whole picture counting as
+//! none, the earliest such where several tie. The cut starts with a keyframe of the picture as it stood, and codes the
 //! frames after it as the session did. It is named for what a decoder's
 //! threads make of it, read from the keyframe's own header and not from the
 //! encoder's rule: `DIR/NAME-WxH-<tile columns>col-<lf|nolf>.ivf`. A run
@@ -491,26 +492,43 @@ fn streams(args: &Args) -> Result<(), Error> {
 }
 
 /// Where the `frames` that `sample` cuts begin, in the capture's longest run
-/// of a size: its start, or with `busiest` the start of the `frames` in a row
-/// whose frames said the most pixels changed, the earliest where several tie.
+/// of a size from where it moves ([`moving`]): its start, or with `busiest`
+/// the start of the `frames` in a row whose frames said the most pixels
+/// changed, the earliest where several tie. A whole picture says nothing
+/// changed: it is a keyframe asked or the desktop shown, not motion, and
+/// counted as every pixel it would draw the window to wherever one is.
 fn window(seen: &[Seen], frames: usize, busiest: bool) -> Result<usize, Error> {
+    let moved = |f: &Seen| if f.whole { 0 } else { f.changed };
     let run = runs(seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?;
     let (width, height) = seen[run.start].size;
+    let run = moving(seen, run);
     if run.len() < frames {
-        return Err(format!("its longest run of a size is {} frames of {width}x{height}, short of the {frames} asked", run.len()).into());
+        return Err(format!("its longest run of a size, from where it moves, is {} frames of {width}x{height}, short of the {frames} asked", run.len()).into());
     }
     let mut start = run.start;
     if busiest {
-        let mut window: u64 = seen[start..start + frames].iter().map(|f| f.changed).sum();
+        let mut window: u64 = seen[start..start + frames].iter().map(moved).sum();
         let mut most = window;
         for at in run.start + 1..=run.end - frames {
-            window = window - seen[at - 1].changed + seen[at + frames - 1].changed;
+            window = window - moved(&seen[at - 1]) + moved(&seen[at + frames - 1]);
             if window > most {
                 (most, start) = (window, at);
             }
         }
     }
     Ok(start)
+}
+
+/// A run from where it moves: past its opening whole pictures where the next
+/// frame comes more than a second after them, a scenario's desktop shown
+/// before anything on it is under way, which a window would otherwise count
+/// as frames the encoder takes in no time.
+fn moving(seen: &[Seen], run: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    let at = run.start + seen[run.clone()].iter().take_while(|f| f.whole).count();
+    match at > run.start && at < run.end && seen[at].micros - seen[at - 1].micros > 1_000_000 {
+        true => at..run.end,
+        false => run,
+    }
 }
 
 fn sample(args: &Args) -> Result<(), Error> {
@@ -793,6 +811,44 @@ mod tests {
         let mut out = Vec::new();
         frames(&args, &mut out).unwrap();
         out.chunks(4).map(|pixel| pixel[0]).collect()
+    }
+
+    /// A run of 1×1 frames at `micros`, the first `whole` of them whole
+    /// pictures and every one changing as much as the next.
+    fn seen(micros: &[u64], whole: usize) -> Vec<Seen> {
+        micros.iter().enumerate().map(|(i, &micros)| Seen { size: (1, 1), micros, quality: 50, keyframe: i < whole, whole: i < whole, changed: 1 }).collect()
+    }
+
+    #[test]
+    fn a_window_starts_where_a_still_opening_ends() {
+        // Two whole pictures, 1.5 s of nothing, then the motion: the first
+        // frames of it, quiet or busiest, the earliest of the ties.
+        let frames = seen(&[0, 30_000, 1_530_000, 1_560_000, 1_590_000, 1_620_000], 2);
+        assert_eq!(window(&frames, 3, false).unwrap(), 2);
+        assert_eq!(window(&frames, 3, true).unwrap(), 2);
+        assert!(window(&frames, 5, false).is_err(), "the still opening is not counted towards the frames asked");
+    }
+
+    #[test]
+    fn a_whole_picture_does_not_draw_the_busiest_window() {
+        // Even motion with a keyframe asked at the end: the earliest window,
+        // not the one that ends on the keyframe.
+        let mut frames = seen(&[0, 50_000, 100_000, 150_000, 200_000, 250_000], 0);
+        frames[5].whole = true;
+        frames[5].changed = 100;
+        assert_eq!(window(&frames, 3, true).unwrap(), 0);
+        // Where the motion is, it still wins.
+        frames[3].changed = 10;
+        assert_eq!(window(&frames, 3, true).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_window_keeps_an_opening_the_motion_follows() {
+        // The motion within the second: the run from its first frame.
+        let frames = seen(&[0, 30_000, 80_000, 130_000], 2);
+        assert_eq!(window(&frames, 3, false).unwrap(), 0);
+        // A run with no whole picture to open it is as it is.
+        assert_eq!(window(&seen(&[0, 1_500_000, 1_550_000], 0), 3, false).unwrap(), 0);
     }
 
     #[test]
