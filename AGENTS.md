@@ -2,10 +2,13 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 
-- Three crates: `wlshare-proto` (the private extensions' bytes) and
-  `wlshare-vp9` (the VP9 coding), platform-independent and tested by a bare
-  `cargo test`, and `wlshare` (the daemon, Linux + wlroots-based Wayland only),
-  whose RFB protocol is its own module (`src/rfb/`), not a crate. Its one
+- Three crates: `wlshare` (the daemon, Linux + wlroots-based Wayland only),
+  the package at the repository's root, whose RFB protocol is its own module
+  (`src/rfb/`), not a crate; and under `crates/`, `wlshare-proto` (the
+  private extensions' bytes) and `wlshare-vp9` (the VP9 coding),
+  platform-independent and tested elsewhere with
+  `cargo test -p wlshare-proto -p wlshare-vp9`. All three are default
+  members: a bare `cargo test` tests the workspace. The daemon's one
   client is the zDesk gateway; there is no native client. `wlshare-proto` is
   the one crate anything outside this repository depends on: the gateway pins
   it by its `proto-v<N>` tag, behind its `wlshare` feature, and it
@@ -57,11 +60,12 @@
   wlroots, Sway and labwc the APT repository serves, never on the host.
 - Do not run `cargo fmt`. Use `anyhow` for application errors and `thiserror` for
   typed protocol errors.
-- Translate Simplified (`zh-CN`) and Traditional (`zh-TW`) Chinese each from the
-  English, never one by converting the other's characters: their technical terms
-  differ (网关/閘道, 配置/設定, 软件包/套件, 会话/工作階段, 文件/檔案), so each
-  keeps its own vocabulary.
+- Translate the READMEs' Simplified (`zh-CN`) and Traditional (`zh-TW`)
+  Chinese each from the English, never one by converting the other's
+  characters: their technical terms differ (网关/閘道, 配置/設定,
+  软件包/套件, 会话/工作階段, 文件/檔案), so each keeps its own vocabulary.
+  Everything under `docs/` is English alone, untranslated.
 - Design and wire details live in `docs/architecture.md`, not here.
-  Measurements live in their own English documents, untranslated
-  (`docs/vp9-performance.md`, `docs/tiles-performance.md`), which the
-  architecture links to rather than repeats.
+  Measurements live in their own documents (`docs/vp9-performance.md`,
+  `docs/tiles-performance.md`), which the architecture links to rather than
+  repeats.

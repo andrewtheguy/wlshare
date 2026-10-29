@@ -1,18 +1,18 @@
-# The daemon, with the RFB protocol it speaks inside it; the bytes of its
-# private extensions, `wlshare-proto`, which the zDesk gateway depends on too;
-# and the VP9 coding, libvpx as `wlshare-vp9` sets it up (see
-# docs/architecture.md). The FLAC coding is sound-flac and the Opus coding
-# sound-opus, each its own repository.
+# The daemon, with the RFB protocol it speaks inside it, is the package at the
+# root; beside it the bytes of its private extensions, `wlshare-proto`, which
+# the zDesk gateway depends on too, and the VP9 coding, libvpx as `wlshare-vp9`
+# sets it up (see docs/architecture.md). The FLAC coding is sound-flac and the
+# Opus coding sound-opus, each its own repository.
 #
-# `default-members` deliberately omits the daemon: it needs libxkbcommon, libpam,
-# libpipewire and libavcodec and only runs against a Wayland compositor, so a bare
-# `cargo test` on a target covered by libvpx-prebuilt exercises the private
-# extensions and the VP9 coding and nothing else. The daemon's tests, the Opus
-# ones with the ffmpeg that machine has installed, run where it builds.
-# Build the daemon explicitly with `-p wlshare`.
+# All three are default members, so a plain `cargo test` and `cargo clippy` on
+# the Linux host the daemon builds on check the whole workspace, the Opus tests
+# with the ffmpeg that machine has installed. The daemon needs libxkbcommon,
+# libpam, libpipewire and libavcodec and only runs against a Wayland
+# compositor; elsewhere, on a target covered by libvpx-prebuilt, the other two
+# are tested with `-p wlshare-proto -p wlshare-vp9`.
 [workspace]
-members = ["crates/wlshare-proto", "crates/wlshare-vp9", "crates/wlshare"]
-default-members = ["crates/wlshare-proto", "crates/wlshare-vp9"]
+members = ["crates/wlshare-proto", "crates/wlshare-vp9"]
+default-members = [".", "crates/wlshare-proto", "crates/wlshare-vp9"]
 resolver = "3"
 
 [workspace.package]
@@ -25,6 +25,169 @@ repository = "https://github.com/andrewtheguy/wlshare"
 anyhow = "1"
 log = "0.4"
 thiserror = "2"
+
+[package]
+name = "wlshare"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A VNC server for wlroots-based Wayland compositors that reports pixel density to the zDesk gateway"
+
+[[bin]]
+name = "wlshare"
+path = "src/main.rs"
+
+[dependencies]
+# The private extensions' bytes (src/rfb/), the crate the zDesk gateway reads
+# and writes them with too.
+wlshare-proto = { path = "crates/wlshare-proto" }
+# The VP9 encoding's codec, libvpx set up for a desktop, and the quality walk
+# its dial follows a link with. Its decoder is what the encoding's tests read
+# every frame back with.
+wlshare-vp9 = { path = "crates/wlshare-vp9" }
+anyhow.workspace = true
+log.workspace = true
+thiserror.workspace = true
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+# sway's IPC replies (sway.rs).
+serde_json = "1"
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+# ZRLE's per-client deflate stream (src/rfb/zrle.rs). zlib-rs is the fastest
+# backend and pure Rust.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+# RSA-AES (src/rfb/rsa_aes.rs): RSA-PKCS#1 v1.5 around the two randoms, with
+# `encoding` for the PKCS#8 PEM the server's key file holds; SHA-1 and SHA-256
+# for the two types' key derivation and the fingerprint; AES-EAX for every byte
+# after. The release-candidate `rsa` is the line on `rand_core` 0.10 and
+# `digest` 0.11.
+rsa = { version = "0.10.0-rc.18", default-features = false, features = ["std", "encoding", "hazmat"] }
+subtle = { version = "2.6", default-features = false }
+pkcs8 = { version = "0.11", default-features = false, features = ["pem", "std"] }
+rand = "0.10"
+aes = "0.9"
+eax = "0.6"
+sha1 = "0.11"
+sha2 = "0.11"
+# The audio extension's FLAC frames: the one place a desktop's sound is made
+# FLAC, for this workspace and for the zDesk gateway, each pinned to its
+# release tag. Its own encoder in plain Rust, encode only, so no C is compiled
+# and nothing is downloaded or looked for at run time.
+sound-flac = { git = "https://github.com/andrewtheguy/sound-flac", tag = "v0.0.9" }
+# The audio extension's Opus packets, for a client that asks for them in place
+# of FLAC: the one place a desktop's sound is coded as Opus, for this workspace
+# and for the zDesk gateway, each pinned to its release tag. libopus is linked
+# from a prebuilt static archive, so nothing of it is compiled here or looked
+# for at run time.
+sound-opus = { git = "https://github.com/andrewtheguy/sound-opus", tag = "v0.0.7" }
+# The tiles encoding's PNGs (src/rfb/tiles.rs), pure Rust; `fdeflate` is its
+# fast compression.
+png = "0.18"
+# The progressive tiles' first passes (src/rfb/progressive.rs), coded ahead on
+# its pool: a thread per core, kept for the process and shared by every
+# session, not spawned for each update.
+rayon = "1"
+# The hash the tiles' cache keys a tile by (src/rfb/tiles.rs).
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# The Wayland side. wayland-client speaks the protocol in its own Rust, with no
+# libwayland linked or loaded.
+wayland-client = { version = "0.31", features = ["log"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+# The keymap the virtual keyboard uploads, and the keysym -> keycode lookup.
+xkbcommon = "0.9"
+# wl_shm buffers: a memfd, mapped.
+rustix = { version = "1", features = ["fs", "mm", "pipe"] }
+memmap2 = "0.9"
+# The PAM conversation's allocations and the process's passwd entry (pam.rs).
+libc = "0.2"
+# The desktop's sound, and the client's camera and microphone as nodes; 0.3.34 is
+# where a driving stream can be told a frame is ready (trigger_process), and
+# 0.3.49 where a buffer says how many frames the graph wants of the microphone.
+pipewire = { version = "0.10", features = ["v0_3_49"] }
+# The client's camera arrives as H.264, decoded by the system's libavcodec,
+# linked dynamically; avcodec alone, since nothing here demuxes or scales. The
+# same libavcodec's h264_vaapi is the hardware encoder of the tiles picture's
+# moving regions (h264.rs), its VA-API device and surfaces libavutil's, and its
+# libx264 their encoder on a host with no GPU: Debian's libavcodec links it.
+ffmpeg-sys-next = { version = "7.1", default-features = false, features = ["avcodec"] }
+# The conversion from the framebuffer's pixels to the NV12 the H.264
+# encoders take, as wlshare-vp9 converts to its planes: pure Rust, AVX2 or
+# NEON chosen at run time.
+yuv = { version = "0.8", features = ["professional_mode"] }
+# The [password] table's hash: Argon2id and the PHC string it is stored as.
+argon2 = "0.6"
+# The global allocator (src/main.rs), as the zDesk gateway's: glibc's per-thread
+# arenas keep what a thread frees. Unprefixed, so jemalloc is `malloc` itself and
+# not only Rust's allocator: libvpx and libopus, and the linked libpipewire
+# and libavcodec, allocate through it too.
+tikv-jemallocator = "0.7"
+tikv-jemalloc-sys = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
+
+# `cargo deb -p wlshare` (scripts/build-debs.sh runs it in Docker per architecture;
+# the package version is the crate's, and the file is named wlshare-trixie-<arch>.deb).
+[dev-dependencies]
+# `examples/motion-bench.rs`, the tiles encoding measured against the VP9
+# encoding: the process's CPU time around each coder.
+cpu-time = "1"
+# The FLAC encoder's tests read every frame back with symphonia's decoder,
+# which shares nothing with `sound-flac`'s encoder; only the FLAC bundle of it
+# — `symphonia-core` for the decoder trait and the packet it takes.
+symphonia-bundle-flac = "0.6"
+symphonia-core = "0.6"
+# `io-std` for `examples/vp9-sink.rs`, the client the capture container runs
+# against the daemon, which types what it reads.
+tokio = { version = "1", features = ["io-std"] }
+
+[package.metadata.deb]
+name = "wlshare"
+maintainer = "Andrew Chen <hello@andrewtheguy.com>"
+extended-description = """A VNC server for wlroots-based Wayland compositors that captures one output through
+wlr-screencopy, serves it over RFB 3.8 with ZRLE, reports the output's
+pixel density to the zDesk gateway over a private extension, and offers the
+desktop's applications a camera and a microphone fed from the client's."""
+section = "net"
+priority = "optional"
+# libpipewire, libpam and libavcodec/libavutil (the camera's H.264 decoder) are
+# linked, so $auto names them from the binary.
+# libxkbcommon too. libopus, the audio extension's Opus encoder, and jemalloc,
+# the allocator, are linked statically and need nothing; its FLAC encoder is
+# plain Rust.
+
+# wlroots is the compositor's, not linked here: 0.19 is the first whose headless
+# backend keeps the cursor out of a screencopy without overlay_cursor.
+# libpipewire is only the client library: the speaker, the camera and the
+# microphone are nodes in a graph the session's PipeWire server runs. Trixie's
+# `pipewire` is that server alone, with no session manager to make the speaker
+# the default or link anything to it, and no PulseAudio server for most
+# applications to play through, so wireplumber and pipewire-pulse come with it.
+depends = "$auto, libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
+# The VA-API drivers the hardware H.264 encoder of the tiles' regions reaches the
+# GPU through: Intel's and Mesa's. Without one the regions are libx264's, on the CPU.
+# And the portal a browser reaches the client's camera through: xdg-desktop-portal's
+# Camera interface, which it exports only beside a backend that implements Access,
+# xdg-desktop-portal-gtk (xdg-desktop-portal-wlr does not). Recommends rather than
+# Depends: the daemon uses neither, the applications on the desktop do, and an
+# application that opens PipeWire itself needs no portal.
+recommends = "va-driver-all, xdg-desktop-portal, xdg-desktop-portal-gtk"
+# The PAM stack an RSA-AES login is checked against; a conffile, so an operator's
+# edits survive an upgrade.
+conf-files = ["/etc/pam.d/wlshare"]
+assets = [
+    ["target/release/wlshare", "usr/bin/", "755"],
+    ["packaging/wlshare.service", "usr/lib/systemd/user/", "644"],
+    ["packaging/pam.d/wlshare", "etc/pam.d/", "644"],
+    ["wlshare.example.toml", "usr/share/doc/wlshare/", "644"],
+    ["README.md", "usr/share/doc/wlshare/", "644"],
+    ["docs/architecture.md", "usr/share/doc/wlshare/", "644"],
+]
 
 [profile.release]
 strip = true

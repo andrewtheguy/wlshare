@@ -191,7 +191,7 @@ mod tests {
     /// reads, so a key removed here cannot linger in it.
     #[test]
     fn the_sample_is_a_configuration() {
-        let c: Config = toml::from_str(include_str!("../../../wlshare.example.toml")).unwrap();
+        let c: Config = toml::from_str(include_str!("../wlshare.example.toml")).unwrap();
         c.validate().unwrap();
     }
 
