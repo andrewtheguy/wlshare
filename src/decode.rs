@@ -1,5 +1,6 @@
-//! H.264 into pictures, for the client's camera: the system's libavcodec,
-//! linked dynamically, and nothing else of FFmpeg's.
+//! H.264 into pictures, for the client's camera, and into the quantizers it
+//! was coded at, for the H.264 encoder's trial frames: the system's
+//! libavcodec, linked dynamically, and nothing else of FFmpeg's.
 //!
 //! The client encoded the stream — a browser's `VideoEncoder`, Constrained
 //! Baseline — so what arrives is one Annex B access unit at a time, parameter
@@ -55,8 +56,8 @@ impl Decoder {
     }
 
     /// A decoder that also says the quantizer of every macroblock it decodes
-    /// ([`Self::qps`]): the tests' word on what an encoder coded a frame at.
-    #[cfg(test)]
+    /// ([`Self::qps`]): the word, for the H.264 encoder's trial frames and its
+    /// tests, on what an encoder coded a frame at.
     pub fn with_qps() -> anyhow::Result<Self> {
         Self::open(true)
     }
@@ -118,7 +119,6 @@ impl Decoder {
     /// each of its picture's macroblocks, as the decoder read them: the
     /// picture's and each block's delta from it. For a decoder made
     /// [`Self::with_qps`].
-    #[cfg(test)]
     pub fn qps(&mut self, unit: &[u8]) -> anyhow::Result<Vec<i32>> {
         /// libavutil's `AVVideoEncParams` and `AVVideoBlockParams`, which its
         /// bindings leave out.

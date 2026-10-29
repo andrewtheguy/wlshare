@@ -15,9 +15,11 @@
 //! reconstructed ones, the picture coded and the one it refers to, in turn,
 //! and one buffer the frame is coded into; one frame in flight, synced before
 //! it is read. The sequence parameter set goes ahead of every IDR, with the
-//! picture one; frame numbers restart at each. A driver that takes packed
-//! headers is handed the daemon's, and one that takes some writes the rest
-//! from the same parameters.
+//! picture one; frame numbers restart at each. The driver takes the daemon's
+//! sequence parameter set packed, or is no encoder, since VA's parameters
+//! carry no colour description; of the picture and slice headers, it writes
+//! from the same parameters any it does not take packed. A frame the driver
+//! flags, overflowed or a bad bitstream, is an error and not the reference.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::fs::{File, OpenOptions};
@@ -228,10 +230,15 @@ impl Stream {
                 va::VAConfigAttrib { type_: va::VAConfigAttribType::VAConfigAttribRTFormat, value: va::VA_RT_FORMAT_YUV420 },
                 va::VAConfigAttrib { type_: va::VAConfigAttribType::VAConfigAttribRateControl, value: va::VA_RC_CQP },
             ];
-            if packed != va::VA_ATTRIB_NOT_SUPPORTED {
-                stream.packed = packed & (va::VA_ENC_PACKED_HEADER_SEQUENCE | va::VA_ENC_PACKED_HEADER_PICTURE | va::VA_ENC_PACKED_HEADER_SLICE);
-                config.push(va::VAConfigAttrib { type_: va::VAConfigAttribType::VAConfigAttribEncPackedHeaders, value: stream.packed });
-            }
+            // The sequence parameter set is the daemon's own: VA's sequence
+            // parameters have no colour description, so a driver's would
+            // leave the decoder to guess BT.709 at HD for BT.601's pixels.
+            anyhow::ensure!(
+                packed != va::VA_ATTRIB_NOT_SUPPORTED && packed & va::VA_ENC_PACKED_HEADER_SEQUENCE != 0,
+                "the encoder takes no packed sequence parameter set"
+            );
+            stream.packed = packed & (va::VA_ENC_PACKED_HEADER_SEQUENCE | va::VA_ENC_PACKED_HEADER_PICTURE | va::VA_ENC_PACKED_HEADER_SLICE);
+            config.push(va::VAConfigAttrib { type_: va::VAConfigAttribType::VAConfigAttribEncPackedHeaders, value: stream.packed });
             status(va::vaCreateConfig(dpy, profile, entrypoint, config.as_mut_ptr(), config.len() as i32, &mut stream.config), "making the encoder's configuration")?;
             status(va::vaCreateSurfaces(dpy, va::VA_RT_FORMAT_YUV420, width as u32, height as u32, &mut stream.input, 1, ptr::null_mut(), 0), "making the input surface")?;
             let (w, h) = (mbs.0 * 16, mbs.1 * 16);
@@ -400,9 +407,7 @@ impl Backend for Stream {
                 vui.set_log2_max_mv_length_horizontal(15);
                 vui.set_log2_max_mv_length_vertical(15);
                 buffers.add(va::VABufferType::VAEncSequenceParameterBufferType, &seq, "making the sequence's parameters")?;
-                if self.packed & va::VA_ENC_PACKED_HEADER_SEQUENCE != 0 {
-                    buffers.packed(va::VAEncPackedHeaderTypeH264::VAEncPackedHeaderH264_SPS, &sequence.sps(), "making the sequence parameter set")?;
-                }
+                buffers.packed(va::VAEncPackedHeaderTypeH264::VAEncPackedHeaderH264_SPS, &sequence.sps(), "making the sequence parameter set")?;
             }
 
             let mut pic: va::VAEncPictureParameterBufferH264 = std::mem::zeroed();
@@ -452,15 +457,21 @@ impl Backend for Stream {
             let mut mapped: *mut c_void = ptr::null_mut();
             status(va::vaMapBuffer(dpy, self.coded, &mut mapped), "mapping the coded frame")?;
             let mut segment = mapped.cast::<va::VACodedBufferSegment>().cast_const();
-            let mut overflowed = false;
+            let (start, mut flags) = (out.len(), 0);
             while !segment.is_null() {
                 let s = &*segment;
-                overflowed |= s.status & va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK != 0;
+                flags |= s.status & (va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK | va::VA_CODED_BUF_STATUS_BAD_BITSTREAM);
                 out.extend_from_slice(std::slice::from_raw_parts(s.buf.cast::<u8>(), s.size as usize));
                 segment = s.next.cast::<va::VACodedBufferSegment>().cast_const();
             }
             va::vaUnmapBuffer(dpy, self.coded);
-            anyhow::ensure!(!overflowed, "the coded frame overflowed its buffer");
+            // A flagged frame is neither sent nor made the reference: the
+            // stream stands on the frame before it.
+            if flags != 0 {
+                out.truncate(start);
+            }
+            anyhow::ensure!(flags & va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK == 0, "the coded frame overflowed its buffer");
+            anyhow::ensure!(flags & va::VA_CODED_BUF_STATUS_BAD_BITSTREAM == 0, "the encoder flagged the coded frame a bad bitstream");
         }
         self.reference = Some(Reference { surface: current, frame_num: self.frame_num, poc });
         self.frame_num = (self.frame_num + 1) % (1 << syntax::LOG2_MAX_FRAME_NUM);

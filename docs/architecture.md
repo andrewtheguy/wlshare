@@ -862,7 +862,11 @@ the picture.
   the low-power encoder first — Intel's fixed-function block, which leaves
   the execution units to the desktop and codes CQP without the HuC firmware —
   and the shader one after it, then libx264, each on two frames of a small
-  picture at two quantizers, since a driver lists more than it codes; the log says
+  picture at two quantizers, decoded and held to them, since a driver lists
+  more than it codes; a VA-API encoder must also take the daemon's sequence
+  parameter set packed, whose colour description VA's parameters cannot
+  carry. A frame the driver flags as overflowed or a bad bitstream fails its
+  stream, and is neither sent nor made the reference. The log says
   what it found, and with nothing found the daemon does not start: neither a
   region nor the video stream has another codec. A coder that cannot be opened for a session's tiles
   picture, refuses a stream or fails one midway ends that session, as any

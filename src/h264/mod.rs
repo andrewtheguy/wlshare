@@ -112,21 +112,28 @@ impl Encoder {
         }
     }
 
-    /// Open a coder and code two frames of a small grey picture with it: an
-    /// IDR at the dial's middle and a P frame at its fine end, so an encoder
-    /// that cannot move its quantizer between frames is not one.
+    /// Open a coder and code two frames of a small picture of noise with it:
+    /// an IDR at the dial's middle and a P frame at its fine end, each decoded
+    /// by libavcodec and its median macroblock held to the QP asked, so an
+    /// encoder that cannot move its quantizer between frames is not one.
     fn try_frames(&self) -> anyhow::Result<()> {
         let mut coder = self.coder()?;
         let (w, h) = PROBE_SIZE;
         let mut stream = coder.open(w, h).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let pixels = vec![0x80u8; usize::from(w) * usize::from(h) * 4];
-        stream.read_bgrx(&pixels, usize::from(w) * 4, None).map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut out = Vec::new();
-        anyhow::ensure!(stream.encode(true, 50, &mut out).map_err(|e| anyhow::anyhow!("{e}"))?, "the encoder made no frame of the picture");
-        anyhow::ensure!(nal_types(&out).contains(&5), "the first frame is not an IDR picture");
-        out.clear();
-        anyhow::ensure!(stream.encode(false, 100, &mut out).map_err(|e| anyhow::anyhow!("{e}"))?, "the encoder made no second frame");
-        anyhow::ensure!(nal_types(&out).contains(&1), "the second frame is not a P frame");
+        let mut decoder = crate::decode::Decoder::with_qps()?;
+        for (n, (quality, nal, kind)) in [(50, 5, "an IDR picture"), (100, 1, "a P frame")].into_iter().enumerate() {
+            // A new picture each frame, so the P frame's macroblocks are coded
+            // and not skipped at the first's quantizer.
+            stream.read_bgrx(&noise(w.into(), h.into(), 0x9E37_79B9 + n as u32), usize::from(w) * 4, None).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut out = Vec::new();
+            anyhow::ensure!(stream.encode(n == 0, quality, &mut out).map_err(|e| anyhow::anyhow!("{e}"))?, "the encoder made no frame {n}");
+            anyhow::ensure!(nal_types(&out).contains(&nal), "frame {n} is not {kind}");
+            let mut blocks = decoder.qps(&out).context("decoding a trial frame")?;
+            blocks.sort_unstable();
+            let asked = i32::from(qp(quality));
+            let median = blocks.get(blocks.len() / 2).copied();
+            anyhow::ensure!(median == Some(asked), "frame {n} was asked QP {asked} and coded at {median:?}");
+        }
         Ok(())
     }
 
@@ -337,6 +344,20 @@ pub fn nal_types(unit: &[u8]) -> Vec<u8> {
     types
 }
 
+/// A picture of noise as `B, G, R, X`, which no prediction codes for free.
+fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
+    let mut state = seed;
+    (0..w * h)
+        .flat_map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let [b, g, r, _] = state.to_le_bytes();
+            [b, g, r, 0]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,20 +391,6 @@ mod tests {
             }
         }
         pixels
-    }
-
-    /// A picture of noise as `B, G, R, X`, which no prediction codes for free.
-    fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
-        let mut state = seed;
-        (0..w * h)
-            .flat_map(|_| {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
-                let [b, g, r, _] = state.to_le_bytes();
-                [b, g, r, 0]
-            })
-            .collect()
     }
 
     /// Decode `unit` with libavcodec's software decoder and compare its luma
