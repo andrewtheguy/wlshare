@@ -425,8 +425,8 @@ word and its ceiling. What a frame holds is fixed:
   the last minute's, so distance does not read as queueing; an IDR counts
   towards that floor but is no verdict. Without Fence it is how long writing
   the frame blocked, 20 ms of it being behind. Two behind frames (60 ms of queueing or more) among the last
-  four double the capture's frame interval, up to three times: 33 ms to
-  267 at the default `max_fps`. The interval is read when the next frame is
+  four double the capture's frame interval, at most three doublings: 33 ms
+  to 267 at the default `max_fps`. The interval is read when the next frame is
   due, so a step the last frame's fence brings paces that frame. The cursor,
   the audio announcement and a desktop that changed size never wait for a
   slowed frame's turn. A step is taken at most once a second — half a second
@@ -500,8 +500,8 @@ started has another id and is not taken for one.
 `docker/capture/` runs that without a person: a headless sway on wlroots
 0.19, the daemon started by the container's script with the flag and no
 authentication on loopback, and `video-sink` (`examples/`),
-the one client the container has, which lists the video at a quality with
-Fence, ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's
+the one client the container has, which lists the video, coded at the
+daemon's dial, with Fence, ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's
 size, echoes the fences, throws the frames away, on cue reads late for a
 while, and types what the scenarios have it type, so the keys reach the
 desktop through the daemon as a person's do. The
@@ -1173,7 +1173,7 @@ lists only `-259`, gtk-vnc for one, hears nothing.
 
 - **Opus**, client → server: the pseudo-encoding `WLOP`, listed beside `WLSF`,
   asks for the sound as Opus in place of FLAC. A pseudo-encoding rather than a
-  message, as the video stream's choices are, so it rides the list that asks for
+  message, as the tiles picture's choices are, so it rides the list that asks for
   the sound at all. A list that changes the codec while a stream runs restarts
   the stream in the new one, between an end and a begin.
 - **Set bitrate**, client → server, operation `3` beside QEMU's three and
@@ -1589,8 +1589,8 @@ bare reason "authentication failed"; the actual reason is logged.
 
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the
 private ones, the video and the tiles' region streams: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
-lossless choice. A video quality other than the dial the stream was asked
-for, however much room the link has, and the video encoding for any client
+lossless choice. A video quality other than the daemon's fixed dial,
+however much room the link has, and the video encoding for any client
 that does not list it.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the

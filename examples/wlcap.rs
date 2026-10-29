@@ -108,7 +108,7 @@ fn parse_args() -> Result<(String, Args), String> {
             if parsed.out.as_os_str().is_empty() || (parsed.from == 0 && parsed.frames == 0) {
                 return Err("trim takes --out, and --from, a frame after the first, or --frames".into());
             }
-            if parsed.busiest && (parsed.from > 0 || parsed.frames == 0) {
+            if parsed.busiest && (parsed.from_given || parsed.frames == 0) {
                 return Err("--busiest takes --frames and no --from".into());
             }
         }
@@ -361,13 +361,13 @@ fn moving(seen: &[Seen], run: std::ops::Range<usize>) -> std::ops::Range<usize> 
 
 fn trim(args: &Args) -> Result<(), Error> {
     // The frames kept, `start..end`.
-    let (start, end) = match (args.from, args.frames as u64) {
-        (from, 0) => (from, u64::MAX),
-        (0, frames) => {
+    let (start, end) = match (args.from_given, args.frames as u64) {
+        (true, 0) => (args.from, u64::MAX),
+        (true, frames) => (args.from, args.from + frames),
+        (false, frames) => {
             let start = window(&scan(&args.capture)?, args.frames, args.busiest)? as u64;
             (start, start + frames)
         }
-        (from, frames) => (from, from + frames),
     };
     let part = args.out.with_file_name(format!(".wlcap-{}.part", std::process::id()));
     let file = File::create(&part)?;

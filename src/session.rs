@@ -1441,7 +1441,9 @@ impl Session {
                         break fb;
                     }
                     drop(fb);
-                    let coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
+                    // Opening a VA-API device blocks, as coding does.
+                    let coder = tokio::task::block_in_place(|| self.config.h264.coder())
+                        .with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
                     let mut encoder = TilesEncoder::new(width, height, self.tiles_picture, Box::new(coder))
                         .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
                     let (quality, coarse) = self.tiles_pace();
@@ -1458,9 +1460,12 @@ impl Session {
                     break fb;
                 }
                 drop(fb);
-                let mut coder = self.config.h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the video stream", self.config.h264.name()))?;
-                let encoder = VideoEncoder::new(&mut coder, width, height)
-                    .with_context(|| format!("starting the video stream of a {width}x{height} desktop"))?;
+                // Opening a VA-API device and an encoder on it blocks, as coding does.
+                let h264 = &self.config.h264;
+                let encoder = tokio::task::block_in_place(|| {
+                    let mut coder = h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the video stream", h264.name()))?;
+                    VideoEncoder::new(&mut coder, width, height).with_context(|| format!("starting the video stream of a {width}x{height} desktop"))
+                })?;
                 self.video = Some(encoder);
                 self.keyframe_owed = true;
             };
