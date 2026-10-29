@@ -79,7 +79,7 @@ mod h264;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
 mod rfb;
-#[path = "../../wlshare-vp9/examples/sim/mod.rs"]
+#[path = "../crates/wlshare-vp9/examples/sim/mod.rs"]
 mod sim;
 
 #[global_allocator]

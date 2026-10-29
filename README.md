@@ -218,9 +218,11 @@ packets back. The FLAC coding is
 [sound-flac](https://github.com/andrewtheguy/sound-flac) and the Opus coding
 [sound-opus](https://github.com/andrewtheguy/sound-opus), both shared with
 the zDesk gateway, each pinned by its release tag. Nothing asks of the
-processor more than its target's baseline. A bare `cargo test` covers
-`wlshare-proto` and `wlshare-vp9`, not the daemon; build it with
-`cargo build --release -p wlshare` on a Linux host with
+processor more than its target's baseline. The daemon is the package at
+the repository's root, the other two under `crates/`. A bare `cargo test`
+covers all three; elsewhere `cargo test -p wlshare-proto -p wlshare-vp9`
+covers the last two. Build the daemon with `cargo build --release` on a
+Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
 `libavcodec-dev`, `libclang-dev` and `pkg-config`. libclang links nothing:
 PipeWire's and FFmpeg's `-sys` crates generate their bindings with bindgen, which

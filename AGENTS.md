@@ -2,10 +2,13 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 
-- Three crates: `wlshare-proto` (the private extensions' bytes) and
-  `wlshare-vp9` (the VP9 coding), platform-independent and tested by a bare
-  `cargo test`, and `wlshare` (the daemon, Linux + wlroots-based Wayland only),
-  whose RFB protocol is its own module (`src/rfb/`), not a crate. Its one
+- Three crates: `wlshare` (the daemon, Linux + wlroots-based Wayland only),
+  the package at the repository's root, whose RFB protocol is its own module
+  (`src/rfb/`), not a crate; and under `crates/`, `wlshare-proto` (the
+  private extensions' bytes) and `wlshare-vp9` (the VP9 coding),
+  platform-independent and tested elsewhere with
+  `cargo test -p wlshare-proto -p wlshare-vp9`. All three are default
+  members: a bare `cargo test` tests the workspace. The daemon's one
   client is the zDesk gateway; there is no native client. `wlshare-proto` is
   the one crate anything outside this repository depends on: the gateway pins
   it by its `proto-v<N>` tag, behind its `wlshare` feature, and it

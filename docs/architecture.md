@@ -30,7 +30,7 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   nothing about the wire, and has no OS APIs. Its current prebuilt archives
   cover macOS arm64, Linux x86_64 and aarch64, and Windows x86_64 MSVC. See
   [The VP9 encoding](#the-vp9-encoding).
-- `crates/wlshare` is the daemon. `rfb/` decides every byte on the wire that
+- The package at the root, `wlshare`, is the daemon. `rfb/` decides every byte on the wire that
   is not a private extension's: handshake, message parsing and building,
   RSA-AES and its frames, the ZRLE encoder, the VP9 encoder over
   `wlshare-vp9`, the tiles encoder, the audio extension's encoders, and the
@@ -404,7 +404,7 @@ it, so a client decodes them all with one decoder, in order. The coding is
 libvpx's, as `wlshare-vp9` sets it up: the quantizer
 pinned to the dial, no lag, no dropped frames, no keyframe that was not
 asked for, and the colour declared in the bitstream.
-`crates/wlshare/src/rfb/vp9.rs` is the framebuffer's pixels in and the
+`src/rfb/vp9.rs` is the framebuffer's pixels in and the
 frame out in the rectangle's framing, which is `wlshare-proto`'s `vp9`
 module — the quality byte, the length word and its ceiling.
 What a frame holds is fixed:
@@ -580,7 +580,7 @@ started has another id and is not taken for one.
 
 `docker/capture/` runs that without a person: a headless sway on wlroots
 0.19, the daemon started by the container's script with the flag and no
-authentication on loopback, and `vp9-sink` (`crates/wlshare/examples/`),
+authentication on loopback, and `vp9-sink` (`examples/`),
 the one client the container has, which lists VP9 at a quality with Fence,
 ContinuousUpdates, ExtendedDesktopSize and Cursor, sets the desktop's size, echoes
 the fences, throws the frames away, on cue reads late for a while, and
@@ -700,7 +700,7 @@ gets that too. It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
-coded once. `crates/wlshare/src/rfb/tiles.rs` is the encoder, and
+coded once. `src/rfb/tiles.rs` is the encoder, and
 `wlshare-proto`'s `tiles` module its framing.
 
 A client that lists it, with a quality beside it (`WLQ` and the value, as
@@ -884,7 +884,7 @@ the picture.
 - **On a walked list, every tile progressive (experimental).** A list whose dial walks
   gets no PNG or stream: every tile that changed, still or moving, is a
   PROGRESSIVE, as a Windows host draws its desktop where it has no H.264,
-  and copies and the cache as above. `crates/wlshare/src/rfb/progressive.rs`
+  and copies and the cache as above. `src/rfb/progressive.rs`
   is the encoder: a tile to YCbCr in 11.5 fixed point, three levels of the
   reduce-extrapolate 5/3 wavelet, quantized by the protocol's table, and sent
   in passes. A first pass holds back the low bits of every coefficient at a
@@ -915,7 +915,7 @@ the picture.
   search. On a host with none, or with the key off, it is libx264 at its
   `ultrafast` preset, which costs the processor about a third of VP9's time a
   frame for about twice its bytes, on a link that has them ([measured](tiles-performance.md#the-regions-encoder)).
-  `crates/wlshare/src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
+  `src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
   `libx264` through the libavcodec already linked for the camera — Debian's,
   which links libx264 itself — and the `RegionCoder` of the daemon's tiles
   encoder, which opens a stream of it for each region. The coding
@@ -1665,7 +1665,7 @@ username and a password, for `[pam]`; subtype 2, a password alone, for
 `[password]` — and RFB's SecurityResult, ClientInit and everything after
 follow. The credentials have one shape on the wire either way, a length-prefixed
 username then a length-prefixed password, and a client answering subtype 2 sends
-the username empty. `crates/wlshare/src/rfb/rsa_aes.rs` has the exchange byte by
+the username empty. `src/rfb/rsa_aes.rs` has the exchange byte by
 byte.
 
 The server's key is long-lived — generated once into `rsa_key_file`, logged as
