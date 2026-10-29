@@ -426,12 +426,9 @@ word and its ceiling. What a frame holds is fixed:
   CRF rate control, whose own choice is never made. What CRF brings is the
   half-size picture x264 estimates its rate on and the motion it searches
   for there, which seeds the full search: `ultrafast`'s own does not follow
-  a window dragged far in a frame, and with it a drag takes a fifth of the
-  bytes, for 4–23% more of the processor a frame than 0.0.107's constant
-  quantizer through libavcodec took, where a constant quantizer through
-  x264's API, its I and B ratios set wide so that its bounds take any forced
-  quantizer, took 0.0.107's or less with 0.0.107's bytes
-  ([measured](video-performance.md)).
+  a window dragged far in a frame. What that costs the processor and saves
+  in bytes, against a constant quantizer, is in
+  [The video's encoder](video-performance.md).
 - **A quality and a frame rate that follow the link.** What a link that
   falls behind gives up is quality, and frames once the quality is on its
   floor: the walk of `src/walk.rs`, which walks the tiles' dial too
@@ -457,10 +454,10 @@ word and its ceiling. What a frame holds is fixed:
   IDR the verdicts wait two seconds, since the frames behind it queue behind
   its crossing. A second of clear frames (30 ms or less), four at the least,
   takes a step back, and after a step back the link took, half a second of
-  them is enough while none has more than 15 ms queued. A walk that stood
-  at the ceiling over a 1280x800 video on 50 Mbit/s walked the running
-  stream down to 50 on 3, with no keyframe but the first (`walk-sim`, on
-  testdesktop2's low-power encoder). A slowed session
+  them is enough while none has more than 15 ms queued; how the walk went
+  over the hardware's encoder is in
+  [The walk on the hardware](video-performance.md#the-walk-on-the-hardware).
+  A slowed session
   paces its own frames; an unslowed one is paced by the capture and its one
   fence in flight.
 - **IDRs only when a decoder needs one**: the first frame after the encoding

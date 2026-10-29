@@ -97,3 +97,13 @@ where the picture moves all over: a frame of video at 4K took 43 ms at 90,
 | `video-1920x1080` | 12.3 ms, 82.4 KB | 11.2 ms, 26.9 KB | 10.1 ms, 9.8 KB |
 | `video-2880x1800@2` | 29.0 ms, 178.8 KB | 25.9 ms, 56.5 KB | 23.3 ms, 20.7 KB |
 | `video-3840x2160@2` | 43.0 ms, 201.1 KB | 37.3 ms, 66.1 KB | 33.6 ms, 25.4 KB |
+
+### The walk on the hardware
+
+`walk-sim` over the `video-1280x800` capture on testdesktop2, its UHD 630's
+low-power encoder coding every frame, each encode's time fixed at 5 ms
+(`--encode 5`) so that the walk followed the link and the hardware's bytes
+alone. On 50 Mbit/s the walk stood at the ceiling: 120 frames, every one at
+90. On 3 Mbit/s it walked the running stream down, 90 to 70 to 50, the
+quantizer moving between frames with no keyframe but the first: 70 frames,
+26 at 90, 7 at 70 and 37 at 50.
