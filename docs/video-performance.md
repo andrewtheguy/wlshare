@@ -17,7 +17,7 @@ recut): browser, drag, terminal and video at 1920x1080, 2880x1800@2 and
 (90, QP 18), and of the tiles picture, held; and `walk-sim` at 1000 Mbit/s,
 where the walk stays at the ceiling, for the wall time of each encode. The
 builds are 0.0.107 (`9125621`), libavcodec's wrapper at a constant QP 18;
-`d7426dd`, x264's API under CRF with every picture's QP forced; and the same
+`a6ac7e1`, x264's API under CRF with every picture's QP forced; and the same
 with a constant quantizer whose I/P and P/B ratios are 512, so that its
 bounds take any forced quantizer, which was not kept. The figures are each
 build's mean over the two rounds; 0.0.107's moved by up to 15% between the
