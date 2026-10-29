@@ -144,6 +144,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -163,6 +165,8 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -425,6 +429,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cros-libva"
+version = "0.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0d5dfcdd9b868cc52eb2b5f5b8dea053314b205073ab9f13fa118c479d3a161"
+dependencies = [
+ "bindgen 0.70.1",
+ "bitflags 2.13.1",
+ "log",
+ "pkg-config",
+ "regex",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,7 +555,7 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1097,6 +1115,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,7 +1421,7 @@ name = "sound-flac"
 version = "0.0.9"
 source = "git+https://github.com/andrewtheguy/sound-flac?tag=v0.0.9#e74c0001d7fd5d47925bba146e1448a378548b6c"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1402,7 +1430,7 @@ version = "0.0.7"
 source = "git+https://github.com/andrewtheguy/sound-opus?tag=v0.0.7#1d4b53692a5e5a6e9c6789357a037013c7b452b6"
 dependencies = [
  "opus-prebuilt",
- "thiserror",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -1520,11 +1548,31 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.20",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1821,6 +1869,7 @@ dependencies = [
  "calloop-wayland-source",
  "clap",
  "cpu-time",
+ "cros-libva",
  "eax",
  "env_logger",
  "ffmpeg-sys-next",
@@ -1844,7 +1893,7 @@ dependencies = [
  "subtle",
  "symphonia-bundle-flac",
  "symphonia-core",
- "thiserror",
+ "thiserror 2.0.20",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
@@ -1854,6 +1903,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wlshare-proto",
+ "x264-sys",
  "xkbcommon",
  "xxhash-rust",
  "yuv",
@@ -1863,7 +1913,17 @@ dependencies = [
 name = "wlshare-proto"
 version = "8.0.0"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "x264-sys"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b694bc460acd21d48a05977f57025a93e2a4d4a10feffde9f0c66925d6e72ff4"
+dependencies = [
+ "bindgen 0.72.1",
+ "system-deps",
 ]
 
 [[package]]

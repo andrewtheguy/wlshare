@@ -126,9 +126,9 @@ fn main() -> anyhow::Result<()> {
         info!("capturing what every video stream is handed into {}", dir.display());
     }
     let security = security(&config, &path)?;
-    // libavcodec's own log, on stderr, at warnings: what it says at its
-    // default level is an encoder's summary as it closes, libx264's ten lines
-    // for every region's stream.
+    // libavcodec's own log, on stderr, at warnings, as libx264's is
+    // (`h264/x264.rs`): below them the camera's decoder says nothing an
+    // operator acts on.
     // SAFETY: a store of the level, before any thread uses libavcodec.
     unsafe { ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_WARNING) };
     let h264 = Arc::new(h264::Encoder::find(config.hardware_h264)?);

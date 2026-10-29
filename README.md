@@ -13,7 +13,7 @@ A VNC server for wlroots-based Wayland compositors, built for the
 [zDesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
 a client that asks, as zDesk does for its browsers, as one H.264 stream whose
-frame rate follows the link, or for a link with room to spare as exact PNG
+quality and frame rate follow the link, or for a link with room to spare as exact PNG
 tiles with a video stream for each region that moves, each H.264 by the host's hardware or libx264,
 or, following the link, as RemoteFX Progressive tiles, still or moving (experimental) — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
@@ -207,8 +207,9 @@ The workspace has two crates: `wlshare`, the daemon, with the RFB protocol
 it speaks inside it, and `wlshare-proto`, the bytes of wlshare's private
 extensions, which the zDesk gateway depends on too, pinned by its
 `proto-v<N>` tag, the protocol version the release that brought it tagged.
-The second has no OS APIs and builds and tests anywhere. The daemon needs libxkbcommon, libpam, libpipewire and
-libavcodec — the Wayland protocol is spoken in Rust, with no libwayland — and
+The second has no OS APIs and builds and tests anywhere. The daemon needs libxkbcommon, libpam, libpipewire,
+libavcodec, libx264 and libva — the Wayland protocol is spoken in Rust, with
+no libwayland — and
 only runs under a wlroots-based Wayland compositor; its audio tests
 additionally need `ffmpeg`, the independent decoder that reads the Opus
 packets back. The FLAC coding is
@@ -218,12 +219,13 @@ the zDesk gateway, each pinned by its release tag. Nothing asks of the
 processor more than its target's baseline. The daemon is the package at
 the repository's root, the protocol crate under `crates/`. A bare `cargo
 test` covers both; elsewhere `cargo test -p wlshare-proto` covers the
-second. Its H.264 tests decode with the same libavcodec, libx264's frames on
-every machine and the hardware's where there is a VA-API encoder. Build the daemon with `cargo build --release` on a
+second. Its H.264 tests decode with libavcodec, libx264's frames on every
+machine and the hardware's where there is a VA-API encoder. Build the daemon with `cargo build --release` on a
 Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
-`libavcodec-dev`, `libclang-dev` and `pkg-config`. libclang links nothing:
-PipeWire's and FFmpeg's `-sys` crates generate their bindings with bindgen, which
+`libavcodec-dev`, `libx264-dev`, `libva-dev`, `libclang-dev` and
+`pkg-config`. libclang links nothing: PipeWire's, FFmpeg's and x264's `-sys`
+crates and cros-libva, libva's, generate their bindings with bindgen, which
 loads it at build time.
 
 `scripts/capture-frames.sh` builds and runs the capture container

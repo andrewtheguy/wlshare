@@ -103,9 +103,9 @@ pub const QUALITY_MIN: u8 = 1;
 /// The finest end of the dial.
 pub const QUALITY_MAX: u8 = 100;
 
-/// The dial wlshare codes at: the video stream's and a held tiles picture's
-/// streams' quality, and the ceiling a walked tiles picture's first passes are
-/// coded toward. The server's alone — no client names one — so there is one
+/// The dial wlshare codes at: the ceiling the video stream and a walked tiles
+/// picture's first passes are walked down from, and a held tiles picture's
+/// streams' quality. The server's alone — no client names one — so there is one
 /// way to code each picture. 90 is QP 18 in H.264, where a desktop's text
 /// reads sharp in motion.
 pub const QUALITY: u8 = 90;
@@ -123,9 +123,9 @@ pub type H264Error = Box<dyn std::error::Error + Send + Sync>;
 /// stream of it over the whole desktop, the tiles one for each region that
 /// moves, and a failure to open or to code is its encode's.
 pub trait H264Coder: Send {
-    /// A stream over a `width`×`height` picture at `quality`, the 1–100 dial,
-    /// for the stream's life, which codes nothing until read into.
-    fn open(&mut self, width: u16, height: u16, quality: u8) -> Result<Box<dyn H264Stream>, H264Error>;
+    /// A stream over a `width`×`height` picture, which codes nothing until
+    /// read into.
+    fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error>;
 }
 
 /// One stream as an [`H264Coder`] codes it: read, then encode.
@@ -137,10 +137,11 @@ pub trait H264Stream: Send {
     /// are read, widened to the 2×2 blocks they touch, so the rest of
     /// `pixels` need not be the picture.
     fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error>;
-    /// Encode the picture as last read and append the frame to `out`, a
-    /// keyframe where `keyframe` asks for one and for the stream's first
-    /// either way: `true` for a frame appended, and `false` where the coder
-    /// made none of the picture, nothing appended, and the whole picture
-    /// owed to the next frame.
-    fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, H264Error>;
+    /// Encode the picture as last read at `quality`, the 1–100 dial, and
+    /// append the frame to `out`, a keyframe where `keyframe` asks for one and
+    /// for the stream's first either way: `true` for a frame appended, and
+    /// `false` where the coder made none of the picture, nothing appended, and
+    /// the whole picture owed to the next frame. The quality is each frame's
+    /// own, so a stream follows the walk with no keyframe.
+    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error>;
 }

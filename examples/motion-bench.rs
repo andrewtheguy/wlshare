@@ -3,7 +3,7 @@
 //! coded both ways, and what each cost the encoder and the link.
 //!
 //! ```text
-//! motion-bench [--libx264] [--tiles-only] [--frames FILE] CAPTURE...
+//! motion-bench [--libx264] [--tiles-only] [--quality Q] [--frames FILE] CAPTURE...
 //! motion-bench check [--libx264] CAPTURE...
 //! ```
 //!
@@ -13,8 +13,9 @@
 //! which must then be on the path.
 //!
 //! **`WLSV`** is coded as a session codes it: one stream per size, at
-//! wlshare's dial ([`crate::rfb::QUALITY`]), each frame its rectangles, an
-//! IDR where a keyframe was asked. `--tiles-only` codes none, for a change to the tiles
+//! wlshare's dial ([`crate::rfb::QUALITY`]), the walk's ceiling, or at
+//! `--quality Q`, a dial the walk can stand at, held for the run; each frame
+//! its rectangles, an IDR where a keyframe was asked. `--tiles-only` codes none, for a change to the tiles
 //! measured against the `WLSV` a run before measured.
 //!
 //! **Tiles** is the encoder a session runs, one per size: each frame read with
@@ -47,7 +48,7 @@
 //!
 //! The output is JSON lines, a JSON object a line, one per capture per coder,
 //! which `scripts/motion-tables.py` makes tables of: `capture`, `coder`
-//! (`wlsv` or `tiles`), `quality` (wlshare's dial),
+//! (`wlsv` or `tiles`), `quality` (the dial it was coded at),
 //! `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
 //! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png` and
@@ -97,7 +98,7 @@ use crate::rfb::video::VideoEncoder;
 #[path = "../src/decode.rs"]
 mod decode;
 #[allow(dead_code)]
-#[path = "../src/h264.rs"]
+#[path = "../src/h264/mod.rs"]
 mod h264;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
@@ -108,7 +109,7 @@ mod wlcap;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--frames FILE] CAPTURE...
+const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--quality Q] [--frames FILE] CAPTURE...
        motion-bench check [--libx264] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
@@ -120,6 +121,8 @@ struct Args {
     libx264: bool,
     /// The tiles alone, no `WLSV` coded.
     tiles_only: bool,
+    /// The dial `WLSV` is coded at.
+    quality: u8,
     frames: Option<PathBuf>,
     /// `check` rather than the bench.
     check: bool,
@@ -127,12 +130,15 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, frames: None, check: false };
+    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, quality: crate::rfb::QUALITY, frames: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
             "--libx264" => parsed.libx264 = true,
             "--tiles-only" => parsed.tiles_only = true,
+            "--quality" => {
+                parsed.quality = value()?.parse().ok().filter(|q| (crate::rfb::QUALITY_MIN..=crate::rfb::QUALITY_MAX).contains(q)).ok_or("--quality takes a dial, 1 to 100")?;
+            }
             "--frames" => parsed.frames = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
             "check" if parsed.captures.is_empty() && !parsed.check => parsed.check = true,
@@ -628,7 +634,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
             let cpu = ProcessTime::now();
             w.out.clear();
             w.encoder.read(frame.pixels, stride, if w.started { frame.changed } else { None })?;
-            let made = w.encoder.encode(!w.started || frame.keyframe, &mut w.out)?;
+            let made = w.encoder.encode(!w.started || frame.keyframe, args.quality, &mut w.out)?;
             let wlsv_cpu = cpu.elapsed() + setup;
             w.started = true;
             wlsv.frames += 1;
@@ -696,9 +702,9 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
     let seconds = last_at.saturating_sub(first_at.unwrap_or_default()).as_secs_f64();
     wlsv.settled = true;
     if let Some(w) = &run.wlsv {
-        row(&name, "wlsv", &wlsv, seconds, compare(&w.picture, &picture));
+        row(&name, "wlsv", args.quality, &wlsv, seconds, compare(&w.picture, &picture));
     }
-    row(&name, "tiles", &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
+    row(&name, "tiles", crate::rfb::QUALITY, &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
     Ok(())
 }
 
@@ -780,7 +786,7 @@ fn ms(d: Duration) -> f64 {
 /// One coder's line: `end` what the page
 /// ended off by, its pixels and its mean squared error.
 #[allow(clippy::too_many_arguments)]
-fn row(name: &str, coder: &str, tally: &Tally, seconds: f64, (end_off, end_mse): (u64, f64)) {
+fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_off, end_mse): (u64, f64)) {
     let mut per_frame = tally.per_frame.clone();
     per_frame.sort_unstable();
     let p95 = per_frame.get((per_frame.len() * 95 / 100).min(per_frame.len().saturating_sub(1))).copied().unwrap_or_default();
@@ -790,7 +796,7 @@ fn row(name: &str, coder: &str, tally: &Tally, seconds: f64, (end_off, end_mse):
         "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
-        crate::rfb::QUALITY,
+        quality,
         tally.frames,
         ms(tally.cpu),
         ms(p95),

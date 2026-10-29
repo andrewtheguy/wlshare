@@ -2,9 +2,7 @@
 //!
 //! The configured quality is a ceiling. For a ceiling at or above
 //! [`QUALITY_FLOOR`], that is the adaptive floor; a lower ceiling stays at its
-//! own quality and gives up frame rate alone, and so does a walk of the frames
-//! alone ([`QualityWalk::frames`]), whatever its ceiling: the video stream's,
-//! whose quantizer is its stream's for its life. Between the ceiling and floor the
+//! own quality and gives up frame rate alone. Between the ceiling and floor the
 //! dial walks down when the client falls behind and back up when it keeps up,
 //! and at the floor it is the frame rate that goes. Severe queueing can move
 //! both in the same step. The signal is queueing: time a frame spent behind
@@ -242,8 +240,7 @@ pub struct QualityWalk {
     /// The quality in force for a moving picture.
     quality: u8,
     /// The lowest quality the walk gives up to before frames: [`QUALITY_FLOOR`]
-    /// or a ceiling below it, and the ceiling itself for a walk of the frames
-    /// alone.
+    /// or a ceiling below it.
     floor: u8,
     /// How many times the frame interval is doubled, at most [`SLOW_MAX`].
     slow: u8,
@@ -295,26 +292,13 @@ impl QualityWalk {
     /// already stopped, giving up nothing while the link fell further behind,
     /// and one below [`QUALITY_MIN`] would hold a quality the encoder is not at.
     pub fn new(ceiling: u8, frame: Duration, adaptive: bool) -> Self {
-        Self::walk(ceiling, QUALITY_FLOOR, frame, adaptive)
-    }
-
-    /// A walk that holds the quality at `ceiling` and gives up frames alone,
-    /// as [`Self::new`]'s does once it is on its floor: for a stream whose
-    /// quantizer cannot move without starting it over.
-    pub fn frames(ceiling: u8, frame: Duration, adaptive: bool) -> Self {
-        Self::walk(ceiling, QUALITY_MAX, frame, adaptive)
-    }
-
-    /// A walk from `ceiling`, clamped to the dial, whose quality goes no lower
-    /// than `floor` or the ceiling, whichever is the lower.
-    fn walk(ceiling: u8, floor: u8, frame: Duration, adaptive: bool) -> Self {
         let ceiling = ceiling.clamp(QUALITY_MIN, QUALITY_MAX);
         Self {
             ceiling,
             lag_aware: adaptive,
             frame,
             quality: ceiling,
-            floor: floor.min(ceiling),
+            floor: QUALITY_FLOOR.min(ceiling),
             slow: 0,
             recent: VecDeque::new(),
             verdicts: 0,
@@ -660,30 +644,6 @@ mod tests {
     /// A ceiling under the floor starts in the frame-rate handoff: a link behind
     /// takes frames, a clear one gives them back, and the quality stays the one
     /// that was asked for.
-    /// A walk of the frames alone holds a ceiling far above the floor as one
-    /// under it is held: a link behind takes frames, however far behind, and
-    /// a clear one gives them back.
-    #[test]
-    fn a_walk_of_the_frames_alone_never_moves_the_quality() {
-        let start = Instant::now();
-        let mut walk = QualityWalk::frames(90, CAPTURE, true);
-        assert_eq!(walk.fenced(40 * MS, true, start), None);
-        walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start), Some(Pace { quality: 90, interval: CAPTURE * 2 }));
-        let later = start + ADJUST_COOLDOWN;
-        walk.fenced(40 * MS + LAG_SEVERE, true, later);
-        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, later), Some(Pace { quality: 90, interval: CAPTURE * 4 }));
-        let mut at = later + ADJUST_COOLDOWN;
-        let mut seen = Vec::new();
-        for _ in 0..6 {
-            let (moved, then) = clear(&mut walk, CLEAR_RUN, at);
-            seen.extend(moved);
-            at = then + ADJUST_COOLDOWN;
-        }
-        assert_eq!(seen, [Pace { quality: 90, interval: CAPTURE * 2 }, Pace { quality: 90, interval: CAPTURE }]);
-        assert_eq!(QualityWalk::frames(101, CAPTURE, true).pace(), Pace { quality: QUALITY_MAX, interval: CAPTURE }, "a ceiling off the dial is clamped to it");
-    }
-
     #[test]
     fn a_ceiling_under_the_floor_gives_up_frames_alone() {
         let start = Instant::now();

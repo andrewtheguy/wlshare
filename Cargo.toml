@@ -107,12 +107,16 @@ libc = "0.2"
 # 0.3.49 where a buffer says how many frames the graph wants of the microphone.
 pipewire = { version = "0.10", features = ["v0_3_49"] }
 # The client's camera arrives as H.264, decoded by the system's libavcodec,
-# linked dynamically; avcodec alone, since nothing here demuxes or scales. The
-# same libavcodec's h264_vaapi is the hardware encoder of the video stream and
-# of the tiles picture's moving regions (h264.rs), its VA-API device and
-# surfaces libavutil's, and its libx264 their encoder on a host with no GPU:
-# Debian's libavcodec links it.
+# linked dynamically; avcodec alone, since nothing here demuxes or scales.
 ffmpeg-sys-next = { version = "7.1", default-features = false, features = ["avcodec"] }
+# The H.264 encoders the video stream and the tiles' regions are coded by
+# (h264/): libx264 through its own API, which takes a quantizer on every
+# picture where libavcodec's wrapper fixes it at open, linked from the system's
+# libx264; and the GPU's through libva itself, the daemon writing the stream's
+# headers, cros-libva for libva's bindings alone, linked from the system's
+# libva and libva-drm.
+x264-sys = "0.2.3"
+cros-libva = "0.0.13"
 # The conversion from the framebuffer's pixels to the NV12 the H.264
 # encoders take: pure Rust, AVX2 or NEON chosen at run time.
 yuv = { version = "0.8", features = ["professional_mode"] }
@@ -155,8 +159,9 @@ pixel density to the zDesk gateway over a private extension, and offers the
 desktop's applications a camera and a microphone fed from the client's."""
 section = "net"
 priority = "optional"
-# libpipewire, libpam and libavcodec/libavutil (the camera's H.264 decoder) are
-# linked, so $auto names them from the binary.
+# libpipewire, libpam, libavcodec/libavutil (the camera's H.264 decoder),
+# libx264 and libva/libva-drm (the H.264 encoders) are linked, so $auto names
+# them from the binary.
 # libxkbcommon too. libopus, the audio extension's Opus encoder, and jemalloc,
 # the allocator, are linked statically and need nothing; its FLAC encoder is
 # plain Rust.

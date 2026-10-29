@@ -36,10 +36,10 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   `clipboard.rs` are the protocols it speaks, and `sway.rs` is sway's IPC, which
   makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
   `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
-  and `h264.rs` the H.264 encoder through the same libavcodec, the host's
-  hardware or libx264, for the video stream and the tiles picture's moving
-  regions; `walk.rs` is the walk of the frame rate and the tiles' dial a link
-  bears, and `wlcap.rs` the capture file of what a session's encoder was
+  and `h264/` the H.264 encoder, the host's hardware through libva itself or
+  libx264 through its own API, for the video stream and the tiles picture's
+  moving regions; `walk.rs` is the walk of the quality and the frame rate a
+  link bears, and `wlcap.rs` the capture file of what a session's encoder was
   handed;
   `framebuffer.rs` is the shared pixels and damage;
   `session.rs` is one client; `auth.rs` checks an RSA-AES login and `pam.rs` is
@@ -389,10 +389,10 @@ u8[length]   one H.264 access unit, Annex B
 
 Successive rectangles are one stream, each frame coded against the ones before it, so a client decodes them
 all with one decoder, in order. The coding is the daemon's H.264
-(`src/h264.rs`), the one the tiles picture's regions are coded by
-([below](#the-tiles-encoding)): the host's hardware encoder through
-libavcodec's `h264_vaapi` where the startup finds one, libx264 at its
-`ultrafast` preset otherwise, found once and the same for every session.
+(`src/h264/`), the one the tiles picture's regions are coded by
+([below](#the-tiles-encoding)): the host's hardware encoder through libva
+where the startup finds one, libx264 at its `ultrafast` preset through its
+own API otherwise, found once and the same for every session.
 `src/rfb/video.rs` is the framebuffer's pixels in and the frame out in the
 rectangle's framing, which is `wlshare-proto`'s `video` module — the length
 word and its ceiling. What a frame holds is fixed:
@@ -407,26 +407,47 @@ word and its ceiling. What a frame holds is fixed:
   no B-frames, so each frame in is one out, and no frame is dropped. Every
   IDR has its sequence and picture parameter sets ahead of it, so the gateway
   reads the stream's `avc1` codec string out of the stream itself.
-- **wlshare's dial pins the quantizer.** The dial is 90 of the 1–100 scale
-  both encodings' coders take (`QUALITY` in `src/rfb/mod.rs`), finest last,
-  which maps onto QP 18 of H.264's 40 down to 16, with no bitrate and no
-  adaptive quantization: every frame is at exactly that quality. libavcodec
-  fixes the quantizer when it opens an encoder, its `h264_vaapi` and its
-  libx264 alike, so a stream cannot move it without starting over from an
-  IDR; a quantizer that walks frame by frame with no keyframe, as VP9's did,
-  is the daemon's own encoder over libva and x264's own API, still to be
-  built ([roadmap](roadmap.md#the-whole-desktop-stream-in-hardware)).
-- **A frame rate that follows the link.** What a link that falls behind
-  gives up is frames: the walk of `src/walk.rs`, which walks the tiles'
-  dial too, holds the quality at the dial and moves the frame interval alone
-  (`QualityWalk::frames`). A frame's queueing is its fence's round trip —
+- **Each frame at the quantizer the walk asks.** The 1–100 dial both
+  encodings' coders take maps onto H.264's QP 40 down to 16, finest last,
+  with no bitrate and no adaptive quantization: every frame is at exactly
+  the quality it was asked at. wlshare's dial (`QUALITY` in
+  `src/rfb/mod.rs`), 90 or QP 18, is the ceiling, and each frame is coded at
+  wlshare's walk's dial below it, the quantizer moving between any two
+  frames with no keyframe. libavcodec fixes the quantizer when it opens an
+  encoder, its `h264_vaapi` and its libx264 alike, so neither encoder is
+  reached through it. The hardware's is the daemon's own encoder over libva:
+  it writes the stream's sequence, picture and slice headers (`syntax.rs`)
+  and hands the driver them packed, with each picture's parameters, the
+  walk's quantizer as the slice's `slice_qp_delta`; libavcodec's
+  region-of-interest offset was no substitute, on testdesktop2's shader
+  encoder leaving a few macroblocks of every frame at the base and on the
+  low-power one ignored beyond about eight either side. libx264's is x264's
+  own API, the quantizer forced on each picture by `i_qpplus1` under its
+  CRF rate control, whose own choice is never made. What CRF brings is the
+  half-size picture x264 estimates its rate on and the motion it searches
+  for there, which seeds the full search: `ultrafast`'s own does not follow
+  a window dragged far in a frame, and with it a drag takes a fifth of the
+  bytes, for 4–23% more of the processor a frame than 0.0.107's constant
+  quantizer through libavcodec took, where a constant quantizer through
+  x264's API, its I and B ratios set wide so that its bounds take any forced
+  quantizer, took 0.0.107's or less with 0.0.107's bytes
+  ([measured](video-performance.md)).
+- **A quality and a frame rate that follow the link.** What a link that
+  falls behind gives up is quality, and frames once the quality is on its
+  floor: the walk of `src/walk.rs`, which walks the tiles' dial too
+  (`QualityWalk::new`), from the ceiling to 20 in steps of ten, twenty or
+  thirty points the further behind the link is, and back in steps of three
+  that double while the link takes them, to 24, short of a quality it
+  refused for fifteen seconds. A frame's queueing is its fence's round trip —
   answered once the client has the frame, which for zDesk means once the
   browser has taken it ([below](#the-clients-paint)) — less the shortest of
   the last minute's, so distance does not read as queueing; an IDR counts
   towards that floor but is no verdict. Without Fence it is how long writing
   the frame blocked, 20 ms of it being behind. Two behind frames (60 ms of queueing or more) among the last
-  four double the capture's frame interval, at most three doublings: 33 ms
-  to 267 at the default `max_fps`. The interval is read when the next frame is
+  four take a step down, and on the floor double the capture's frame
+  interval, at most three doublings: 33 ms to 267 at the default `max_fps`;
+  400 ms of queueing halves the frames whatever the quality. Frames come back
+  before quality. The interval is read when the next frame is
   due, so a step the last frame's fence brings paces that frame. The cursor,
   the audio announcement and a desktop that changed size never wait for a
   slowed frame's turn. A step is taken at most once a second — half a second
@@ -436,13 +457,17 @@ word and its ceiling. What a frame holds is fixed:
   IDR the verdicts wait two seconds, since the frames behind it queue behind
   its crossing. A second of clear frames (30 ms or less), four at the least,
   takes a step back, and after a step back the link took, half a second of
-  them is enough while none has more than 15 ms queued. A slowed session
+  them is enough while none has more than 15 ms queued. A walk that stood
+  at the ceiling over a 1280x800 video on 50 Mbit/s walked the running
+  stream down to 50 on 3, with no keyframe but the first (`walk-sim`, on
+  testdesktop2's low-power encoder). A slowed session
   paces its own frames; an unslowed one is paced by the capture and its one
   fence in flight.
 - **IDRs only when a decoder needs one**: the first frame after the encoding
   is listed, the first at a new size (the encoder is made again for it), and
   the frame that answers a non-incremental request. There is
-  no periodic keyframe; nothing is lost on TCP.
+  no periodic keyframe; nothing is lost on TCP, and a step of the walk is
+  the next frame's quantizer, not a new stream.
 
 A video update is sent when anything is damaged; a non-incremental request
 can also owe one. The frame is the whole picture, and what did
@@ -556,7 +581,8 @@ nothing handed before it is unpainted and otherwise once the oldest such has
 been owed past the link's ping round trip, 500 ms at most — over a link of a
 given rate, changing at given times, and round trip. It says how long each
 change of the desktop took to be painted, the frames a second, the link it
-used and the encoder's processor time, and with `--timeline` every frame,
+used, the quality the motion was coded at and the encoder's processor
+time, and with `--timeline` every frame,
 as JSON lines, a JSON object a line. The time is the model's, so a run takes
 seconds; `--encode` fixes what an encode takes, so that two walks are
 compared on the same frames. Its stream is the hardware's where the machine
@@ -751,8 +777,9 @@ the picture.
   held: a walked list streams nothing.
 - **The dial walks, unless the list holds it.** wlshare's dial is a
   ceiling, and the session's walk of the link — the same one, with the same
-  thresholds and steps, that paces `WLSV`'s frames ([above](#the-video-encoding)),
-  walking the quality down before the frames — moves this picture's below it
+  thresholds and steps, that walks `WLSV`'s quality and frames
+  ([above](#the-video-encoding)), the quality down before the frames — moves
+  this picture's below it
   on each update's fence, and on how long
   its write blocked where there is no fence. An update that carries the
   picture whole crosses the link as a keyframe does and is no verdict, and
@@ -813,20 +840,22 @@ the picture.
   search. On a host with none, or with the key off, it is libx264 at its
   `ultrafast` preset, which cost the processor about a third of VP9's time a
   frame for about twice its bytes, on a link that has them ([measured](tiles-performance.md#the-regions-encoder)).
-  `src/h264.rs` is that encoder, libavcodec's `h264_vaapi` or
-  `libx264` through the libavcodec already linked for the camera — Debian's,
-  which links libx264 itself — and the `H264Coder` of the daemon's tiles
+  `src/h264/` is that encoder, the GPU's through libva itself or libx264
+  through its own API ([above](#the-video-encoding)), linked from the
+  system's libva and libx264, and the `H264Coder` of the daemon's tiles
   encoder, which opens a stream of it for each region, as the video encoder
   opens one over the whole desktop. The coding
-  is pinned as the video stream's is: constant quantizer, the dial mapped onto QP 40 down
+  is the video stream's: each frame at the quantizer it is handed, the dial mapped onto QP 40 down
   to 16, no bitrate, nothing dropped, no B-frames, one frame in and one out,
   BT.601 at studio swing in the stream's VUI; the picture the region's size
   rounded up to even sides, which libx264 requires, so a region of an odd
   side, as one at the edge of an odd desktop is, is coded a pixel larger, its
   last row again below it and black to its right, which the gateway clips; each frame one Annex B access
   unit, the parameter sets ahead of every IDR, and an IDR at the stream's
-  START; the dial is the stream's for its life. The
-  hardware's is High profile with CABAC; libx264's is Constrained Baseline,
+  START; a region's dial is wlshare's, held. The
+  hardware's is High profile with CABAC and the 8×8 transform, one slice, the
+  frame before its one reference, no reordering, which its VUI says so a
+  decoder holds no picture back; libx264's is Constrained Baseline,
   which `ultrafast` comes to, tuned `zerolatency` — no lookahead, the
   picture sliced among the machine's cores less two, at most eight — with no scene
   cut, and with its version SEI ahead of a stream's first IDR, which a
@@ -835,18 +864,22 @@ the picture.
   in hardware where it has one. At startup the daemon tries each render node,
   the low-power encoder first — Intel's fixed-function block, which leaves
   the execution units to the desktop and codes CQP without the HuC firmware —
-  and the shader one after it, then libx264, each on a frame of a small
-  picture, since a driver lists more profiles than it opens; the log says
+  and the shader one after it, then libx264, each on two frames of a small
+  picture at two quantizers, since a driver lists more than it codes; the log says
   what it found, and with nothing found the daemon does not start: neither a
   region nor the video stream has another codec. A coder that cannot be opened for a session's tiles
   picture, refuses a stream or fails one midway ends that session, as any
   encoder's failure does. Each session opens the device itself, so a VA
-  display is one thread's.
+  display is one session's.
   `examples/tiles-sink.rs` in the daemon's crate is a client that keeps
   each stream, for FFmpeg's own decoders to read back whole. The daemon's unit
   tests code frames on libx264, on every machine, and on the hardware, and
-  decode them with libavcodec's software decoder; the hardware's passes with
-  a word on a machine with no encoder.
+  decode them with libavcodec's software decoder, which also reads back each
+  macroblock's quantizer over a stream walked across the dial: libx264's
+  every one at the QP asked, the hardware's at its median and within three,
+  since a driver's macroblocks are its own; the hardware's passes with a
+  word on a machine with no encoder. ffmpeg's `trace_headers` reads the
+  daemon's headers back field by field.
 - **It settles.** Every tile a stream carried is owed a PNG, and every
   progressive tile below the full stage its next stage's upgrade, once it
   has been still for half a second. What
@@ -872,9 +905,10 @@ tiles' updates through the client's parser, a copy from the page's own
 picture, and `WLSV` and each region by libavcodec's software H.264 decoder,
 the dial held and every still exact. It writes JSON lines as `walk-sim` does,
 and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
-regions and `WLSV` are the daemon's own H.264 — `h264.rs`, found as the
+regions and `WLSV` are the daemon's own H.264 — `h264/`, found as the
 daemon finds it, or libx264 with `--libx264` — so it runs where the daemon
-builds.
+builds. `WLSV` is held at wlshare's dial, or at `--quality Q`, a dial the walk
+can stand at, for the encoder's cost there.
 `--tiles-only` codes no `WLSV`, so a change to the tiles is measured
 against the `WLSV` of a run before. Its `check` holds the encoder to sending nothing once settled,
 through 5 s of quiet and 10 redraws of the pixels the page already has, and
@@ -1589,8 +1623,8 @@ bare reason "authentication failed"; the actual reason is logged.
 
 Tight, TightPNG, Hextile, RRE, CopyRect and every lossy encoding but the
 private ones, the video and the tiles' region streams: the gateway re-encodes every tile anyway, and ZRLE is the standard's best
-lossless choice. A video quality other than the daemon's fixed dial,
-however much room the link has, and the video encoding for any client
+lossless choice. A video quality above the daemon's dial, however much
+room the link has, and the video encoding for any client
 that does not list it.
 8- and 16-bit pixel formats and colour maps. Moving the client's pointer: the
 PointerPos pseudo-encoding would carry a warp the compositor made, and the

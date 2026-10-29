@@ -16,12 +16,13 @@
 //! from each `@` second on; `--rtt` its round trip, 40 ms; `--hop` the round
 //! trip between the session and the gateway, 1 ms; `--paint` how long the
 //! browser takes to paint a frame once it has it and the one before is
-//! painted, 5 ms, and `--jitter` up to how much more, at random. Every frame
-//! is at wlshare's dial ([`crate::rfb::QUALITY`]), and the walk gives up
-//! frames alone ([`QualityWalk::frames`]). `--timeline` writes
+//! painted, 5 ms, and `--jitter` up to how much more, at random. The walk
+//! ([`QualityWalk`]) moves each frame's quality from wlshare's dial
+//! ([`crate::rfb::QUALITY`]) down, and the frames after it. `--timeline` writes
 //! every frame as a JSON object a line: `t_ms`, `kind` (`key` or `frame`),
-//! `interval_ms`, `bytes`, `encode_ms`, `cpu_ms` (the processor time of that
-//! read and encode, on every thread), `delivery_ms` and `latency_ms`.
+//! `quality`, `interval_ms`, `bytes`, `encode_ms`, `cpu_ms` (the processor
+//! time of that read and encode, on every thread), `delivery_ms` and
+//! `latency_ms`.
 //!
 //! Time is the simulation's own: an encode, the read of what changed with
 //! it, takes what it took on this machine, or `--encode` for a run that is the
@@ -35,12 +36,14 @@
 //! one JSON object on stdout, is how long each change of the desktop took to
 //! be painted (`shown_mean_ms`, `shown_p50_ms`, `shown_p95_ms`,
 //! `shown_max_ms`), the frames a second (`fps`, of `frames`, `motion_frames`
-//! and `keyframes`), the link it used (`mbps`, and `delivery_p50_ms`,
-//! `delivery_p95_ms`), how often the frame rate moved (`moves`, `downs`) and
+//! and `keyframes`), the quality the motion was coded at (`motion_q_mean`,
+//! `motion_q_p10`), the link it used (`mbps`, and `delivery_p50_ms`,
+//! `delivery_p95_ms`), how often the walk moved, its quality or its frames
+//! (`moves`, and `downs` of them toward coarser or fewer) and
 //! the processor time the encoder took as a share of one core over the
 //! session (`encoder_cpu_pct`), beside what it was run with: `capture`,
 //! `picture` (`video`), `encoder`, `link` (each rate in Mbit/s and the second
-//! it starts at), `rtt_ms` and `quality`.
+//! it starts at), `rtt_ms` and `ceiling`.
 
 use std::fs::File;
 use std::io::Write as _;
@@ -57,7 +60,7 @@ use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 #[allow(dead_code)]
 mod decode;
 #[allow(dead_code)]
-#[path = "../src/h264.rs"]
+#[path = "../src/h264/mod.rs"]
 mod h264;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
@@ -117,7 +120,7 @@ fn main() -> Result<(), Error> {
 
     // A 30 Hz capture, the daemon's default.
     let base = Instant::now();
-    let mut walk = QualityWalk::frames(rfb::QUALITY, Duration::from_micros(33_333), true);
+    let mut walk = QualityWalk::new(rfb::QUALITY, Duration::from_micros(33_333), true);
     let mut encoder: Option<VideoEncoder> = None;
     let mut now = Duration::ZERO;
     // The desktop as it stands and what changed since the client's last frame.
@@ -127,7 +130,8 @@ fn main() -> Result<(), Error> {
     let mut asked_key = false;
     let mut frame_sent: Option<Duration> = None;
     let mut out = Vec::new();
-    let mut interval_was = walk.interval();
+    let mut pace_was = walk.pace();
+    let mut qualities = Vec::new();
     let mut deliveries = Vec::new();
     // When each change of the desktop the client has not seen yet was made,
     // and how long each one took to be painted.
@@ -179,12 +183,13 @@ fn main() -> Result<(), Error> {
         }
         let encoder = encoder.as_mut().unwrap();
         let keyframe = asked_key;
+        let quality = walk.quality();
         out.clear();
         let (started, cpu_from) = (Instant::now(), process_cpu());
         encoder.read(&d.pixels, usize::from(w) * 4, if keyframe { None } else { damage.as_deref() })?;
         // The encoder making no frame of a picture is the session's to skip,
         // as it skips it.
-        let produced = encoder.encode(keyframe, &mut out)?;
+        let produced = encoder.encode(keyframe, quality, &mut out)?;
         let spent = process_cpu().saturating_sub(cpu_from);
         cpu += spent;
         let encode = encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
@@ -213,12 +218,13 @@ fn main() -> Result<(), Error> {
         if verdict {
             motion_frames += 1;
             deliveries.push(delivery.as_secs_f64() * 1e3);
+            qualities.push(f64::from(quality));
         }
         if let Some(t) = &mut timeline {
             let kind = if keyframe { "key" } else { "frame" };
             writeln!(
                 t,
-                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"interval_ms\":{:.0},\"bytes\":{size},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}}}",
+                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{quality},\"interval_ms\":{:.0},\"bytes\":{size},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}}}",
                 sent.as_secs_f64() * 1e3,
                 walk.interval().as_secs_f64() * 1e3,
                 encode.as_secs_f64() * 1e3,
@@ -230,21 +236,23 @@ fn main() -> Result<(), Error> {
         // The fence comes back; the next frame waits for it.
         now = back;
         if let Some(pace) = walk.fenced(delivery, verdict, base + now)
-            && pace.interval != interval_was
+            && pace != pace_was
         {
             moves += 1;
-            downs += u32::from(pace.interval > interval_was);
-            interval_was = pace.interval;
+            downs += u32::from(pace.quality < pace_was.quality || pace.interval > pace_was.interval);
+            pace_was = pace;
         }
     }
     // Through the last frame's paint, which its own fence can come back before.
     let span = now.max(gateway.painted).as_secs_f64();
     println!(
-        "{{\"capture\":{},\"picture\":\"video\",\"encoder\":{},\"link\":{link_json},\"rtt_ms\":{rtt},\"quality\":{},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"fps\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"encoder_cpu_pct\":{:.1}}}",
+        "{{\"capture\":{},\"picture\":\"video\",\"encoder\":{},\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"encoder_cpu_pct\":{:.1}}}",
         json(&name),
         json(h264.name()),
         rfb::QUALITY,
         f64::from(frames) / span,
+        qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,
+        pct(&qualities, 0.1),
         shown.iter().sum::<f64>() / shown.len().max(1) as f64,
         pct(&shown, 0.5),
         pct(&shown, 0.95),

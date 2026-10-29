@@ -5,21 +5,22 @@ FROM ${BASE_IMAGE} AS build
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# The daemon links libxkbcommon, libpam, libpipewire and libavcodec (the
-# camera's H.264 decoder and the tiles' H.264 encoder) — the Wayland protocol is wayland-client's own Rust,
+# The daemon links libxkbcommon, libpam, libpipewire, libavcodec (the
+# camera's H.264 decoder), and libx264 and libva (the H.264 encoders of the
+# video and the tiles' regions) — the Wayland protocol is wayland-client's own Rust,
 # with no libwayland; cargo-deb reads the resulting .so
 # dependencies into the package's Depends. libopus, the audio extension's
 # Opus encoder, is a static archive the build downloads, its FLAC encoder
 # plain Rust; jemalloc, the
 # allocator, is built from source with build-essential. libclang-dev is a build-time need
-# with nothing to link: pipewire-sys, libspa-sys and ffmpeg-sys-next generate
-# their bindings with bindgen, which loads libclang, and without it a clean
+# with nothing to link: pipewire-sys, libspa-sys, ffmpeg-sys-next, x264-sys and
+# cros-libva generate their bindings with bindgen, which loads libclang, and without it a clean
 # build fails with "Unable to find libclang".
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config \
         libxkbcommon-dev libpam0g-dev \
-        libpipewire-0.3-dev libspa-0.2-dev libavcodec-dev libclang-dev dpkg-dev && \
+        libpipewire-0.3-dev libspa-0.2-dev libavcodec-dev libx264-dev libva-dev libclang-dev dpkg-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \

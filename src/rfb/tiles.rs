@@ -1685,7 +1685,7 @@ impl TilesEncoder {
             let coded = live.stream.read_bgrx(&self.mirror[at..], stride, Some(&live.pending)).and_then(|()| {
                 headed = true;
                 let header_at = out.header(live.area, header);
-                Ok((live.stream.encode(!live.started, out.out)?, header_at))
+                Ok((live.stream.encode(!live.started, self.ceiling, out.out)?, header_at))
             });
             match coded {
                 Ok((true, header_at)) => {
@@ -1799,7 +1799,7 @@ impl TilesEncoder {
 
     /// A stream of the region coder over `area`, every tile of it owed from now.
     fn build(&mut self, id: u8, area: Area, now: Duration) -> Result<Live, TilesError> {
-        let stream = self.coder.open(area.w(), area.h(), self.quality).map_err(TilesError::Region)?;
+        let stream = self.coder.open(area.w(), area.h()).map_err(TilesError::Region)?;
         let cells: Vec<(u16, u16)> = tiles_of(area).map(|(cell, _)| cell).collect();
         for cell in &cells {
             self.debts.insert(*cell, now);
@@ -2187,7 +2187,7 @@ mod tests {
     }
 
     impl H264Coder for Fake {
-        fn open(&mut self, width: u16, height: u16, _quality: u8) -> Result<Box<dyn H264Stream>, H264Error> {
+        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
             if self.refuse {
                 return Err("the device is gone".into());
             }
@@ -2217,7 +2217,7 @@ mod tests {
             Ok(())
         }
 
-        fn encode(&mut self, keyframe: bool, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+        fn encode(&mut self, keyframe: bool, _quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
                 return Err("the encoder hung".into());
             }

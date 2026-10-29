@@ -16,8 +16,8 @@ its figures stay as what they were measured against; motion-bench's
 `--walk-at`, which coded it, went with it.
 
 `WLSV` in every figure here is the VP9 stream it was until 2026-10-29,
-4:4:4 or 4:2:0, its dial walked on the link, which H.264 at a fixed dial
-replaced ([The video encoding](architecture.md#the-video-encoding)); its
+4:4:4 or 4:2:0, its dial walked on the link, which H.264 replaced, its
+dial walked on the link as VP9's was ([The video encoding](architecture.md#the-video-encoding)); its
 figures stay as what the tiles were measured against, and the dials and
 `--quality` the runs name are the options the lists then had.
 
