@@ -803,7 +803,7 @@ the picture.
   — an update's queueing on the link — and a second set of thresholds would
   be a second thing to measure.
 
-- **On a walked list, every tile progressive (experimental).** A list whose dial walks
+- **On a walked list, every tile progressive (alpha).** A list whose dial walks
   gets no PNG or stream: every tile that changed, still or moving, is a
   PROGRESSIVE, as a Windows host draws its desktop where it has no H.264,
   and copies and the cache as above. `src/rfb/progressive.rs`
