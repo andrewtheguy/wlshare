@@ -188,12 +188,11 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(4);
 /// here before the frames go; severe lag can slow the frames sooner. A lower
 /// ceiling remains below it and gives up frames from the start. Fixed rather
 /// than configured, as every adaptive stream's is — WebRTC's quality scaler
-/// hands off to resolution and frame rate at an internal quantizer threshold
-/// in the coarsest fifth of VP9's range, TigerVNC's AutoSelect has a built-in
-/// bottom rung — because past it a finer quantizer step buys nothing a viewer
-/// can see, and a quiet desktop's tiles are upgraded to the ceiling whatever
-/// the walk holds. A ceiling below it starts in the frame-rate handoff and gives
-/// up frames alone.
+/// hands off to resolution and frame rate at a built-in quantizer threshold,
+/// TigerVNC's AutoSelect has a built-in bottom rung — because past it a finer
+/// quantizer step buys nothing a viewer can see, and a quiet desktop's tiles
+/// are upgraded to the ceiling whatever the walk holds. A ceiling below it
+/// starts in the frame-rate handoff and gives up frames alone.
 pub const QUALITY_FLOOR: u8 = 20;
 
 /// How many times the frame interval may be doubled — a 30 Hz stream down to
