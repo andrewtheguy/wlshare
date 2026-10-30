@@ -99,7 +99,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::time::Duration;
 
 use thiserror::Error;
-use xxhash_rust::xxh3::Xxh3Default;
+use xxhash_rust::xxh3::xxh3_64;
 
 use wlshare_proto::tiles::{CACHE_SLOTS, TileHeader, TilesPicture};
 
@@ -139,6 +139,10 @@ const PROGRESSIVE_SLACK: f32 = 1.25;
 /// alike sent 7% fewer bytes than 50 alone and showed a change 11% sooner,
 /// 0.8 dB coarser on the mean; 70 the window's sooner too).
 const PROGRESSIVE_COARSE_BELOW: u8 = 70;
+
+/// The fewest first passes an update codes ahead on the pool
+/// ([`TilesEncoder::precode`]); fewer are coded as they are sent.
+const PRECODE_LEAST: usize = 4;
 
 /// What a progressive tile is sent as: its first pass, or the upgrades from
 /// the stage it stands at.
@@ -503,17 +507,19 @@ fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: 
 
 /// A whole tile's pixels as a cache keys them: a hash of `area` of a
 /// `B, G, R, X` picture, and whether it is one colour, which is never stored.
+/// Its rows are put together and hashed at once: xxh3 fed a row at a time
+/// spent as long again on its buffering as on the hash.
 fn tile_key(pixels: &[u8], stride: usize, area: Area) -> (u64, bool) {
     let (from, to) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
-    let mut hasher = Xxh3Default::new();
+    let mut tile = [0u8; TILE as usize * TILE as usize * 4];
     let first = &pixels[usize::from(area.top) * stride + from..usize::from(area.top) * stride + to];
     let mut flat = first.as_chunks::<4>().0.iter().all(|px| px == first.first_chunk::<4>().expect("a pixel"));
-    for y in area.top..=area.bottom {
+    for (y, line) in (area.top..=area.bottom).zip(tile.chunks_exact_mut(to - from)) {
         let row = &pixels[usize::from(y) * stride + from..usize::from(y) * stride + to];
-        hasher.update(row);
+        line.copy_from_slice(row);
         flat &= row == first;
     }
-    (hasher.digest(), flat)
+    (xxh3_64(&tile[..(to - from) * usize::from(area.h())]), flat)
 }
 
 /// `area` of a `B, G, R, X` picture as packed RGB.
@@ -919,6 +925,9 @@ pub struct TilesEncoder {
     /// The coder every stream is opened on.
     coder: Box<dyn H264Coder>,
     scratch: Vec<u8>,
+    /// The cache's key of each whole tile [`Self::precode`] looked up, for
+    /// the still it goes in to take rather than hash it again.
+    keys: HashMap<(u16, u16), (u64, bool)>,
     /// The progressive encoder, where the list walks and every tile is a
     /// progressive tile; where it holds, every still is a PNG.
     progressive: Option<progressive::Encoder>,
@@ -960,6 +969,7 @@ impl TilesEncoder {
             changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
+            keys: HashMap::new(),
             progressive: picture.progressive.then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
         };
         encoder.forget();
@@ -1059,18 +1069,25 @@ impl TilesEncoder {
             return;
         }
         let mut seen = HashSet::new();
+        let (mirror, stride, size, cache, keys) = (&self.mirror, self.stride, self.size, &self.cache, &mut self.keys);
+        let cell_area = |cell: (u16, u16)| CellBox::of(cell).to_area(size).expect("a tile of the desktop");
         let jobs: Vec<progressive::Job> = stills
             .iter()
             .flat_map(|&area| tiles_of(area))
             .filter(|&(cell, part)| {
-                let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                seen.insert(cell) && !(whole && self.cache.find(tile_key(&self.mirror, self.stride, part).0).is_some())
+                let whole = part.w() == TILE && part.h() == TILE && part == cell_area(cell);
+                seen.insert(cell) && !(whole && cache.find(keys.entry(cell).or_insert_with(|| tile_key(mirror, stride, part)).0).is_some())
             })
             .map(|(cell, _)| {
-                let area = self.cell_area(cell);
-                progressive::Job { cell, at: usize::from(area.top) * self.stride + usize::from(area.left) * 4, w: usize::from(area.w()), h: usize::from(area.h()) }
+                let area = cell_area(cell);
+                progressive::Job { cell, at: usize::from(area.top) * stride + usize::from(area.left) * 4, w: usize::from(area.w()), h: usize::from(area.h()) }
             })
             .collect();
+        // A few tiles are coded as they are sent, on this thread: waking the
+        // pool for them costs more than it saves.
+        if jobs.len() < PRECODE_LEAST {
+            return;
+        }
         let stage = self.first_stage();
         self.progressive.as_mut().expect("progressive").precode(&jobs, &self.mirror, self.stride, stage, PROGRESSIVE_SLACK);
     }
@@ -1567,6 +1584,7 @@ impl TilesEncoder {
         }
         if let Some(enc) = &mut self.progressive {
             enc.drop_ready();
+            self.keys.clear();
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
         Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0 })
@@ -1660,7 +1678,7 @@ impl TilesEncoder {
         let tiles: Vec<StillTile> = tiles_of(area)
             .map(|(cell, part)| {
                 let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                (cell, part, whole.then(|| tile_key(&self.mirror, self.stride, part)))
+                (cell, part, whole.then(|| self.keys.remove(&cell).unwrap_or_else(|| tile_key(&self.mirror, self.stride, part))))
             })
             .collect();
         for (cell, part, key) in tiles {
