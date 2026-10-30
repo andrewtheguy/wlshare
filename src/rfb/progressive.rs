@@ -178,37 +178,84 @@ static NOTHING: [i16; COEFFS * 3] = [0; COEFFS * 3];
 /// at a time, for the next tile coded: each is past jemalloc's thread cache,
 /// and a tile coded on one thread is let go on another, so a buffer of its
 /// own each was the allocator's slow path. Every one is written whole before
-/// it is read.
+/// it is read. Each thread keeps a stash of its own ([`STASH`]) and moves
+/// them to and from this one [`BATCH`] at a time, so the threads coding an
+/// update's tiles do not queue on its lock.
 static SPARE: Mutex<Spare> = Mutex::new(Spare { coefficients: Vec::new(), signs: Vec::new() });
 
+#[derive(Default)]
 struct Spare {
     coefficients: Vec<Vec<i16>>,
     signs: Vec<Vec<i8>>,
 }
 
-/// How many of each [`SPARE`] keeps: a busy update's tiles on every core.
-const SPARE_MAX: usize = 256;
+thread_local! {
+    static STASH: RefCell<Spare> = RefCell::default();
+}
+
+/// How many of each [`SPARE`] keeps: two updates of a 4K desktop changed all
+/// over, its 2,040 tiles each coded into a component's coefficients and
+/// signs while the ones they replace are still held, 125 MB at most. It
+/// holds only as many as were let go at once, so a smaller desktop's never
+/// reach it. With 256 of each, as it kept before, a 4K video's tiles went
+/// back to the allocator and came from it zeroed again every update, and
+/// the coding threads queued on the lock: a third of the encoder's time.
+const SPARE_MAX: (usize, usize) = (4096, 2048);
+
+/// How many buffers move between a thread's [`STASH`] and [`SPARE`] at once.
+const BATCH: usize = 32;
+
+/// One of a thread's stash, `pick`ed from a [`Spare`], refilled from
+/// [`SPARE`] where it has none; a new one where neither has.
+fn spare<T: Clone + Default>(pick: fn(&mut Spare) -> &mut Vec<Vec<T>>) -> Vec<T> {
+    STASH
+        .with_borrow_mut(|stash| {
+            let mine = pick(stash);
+            if mine.is_empty() {
+                let mut spare = SPARE.lock().expect("spare");
+                let shared = pick(&mut spare);
+                let at = shared.len().saturating_sub(BATCH);
+                mine.extend(shared.drain(at..));
+            }
+            mine.pop()
+        })
+        .unwrap_or_else(|| vec![T::default(); COEFFS * 3])
+}
 
 fn spare_coefficients() -> Vec<i16> {
-    SPARE.lock().expect("spare").coefficients.pop().unwrap_or_else(|| vec![0; COEFFS * 3])
+    spare(|spare| &mut spare.coefficients)
 }
 
 fn spare_signs() -> Vec<i8> {
-    SPARE.lock().expect("spare").signs.pop().unwrap_or_else(|| vec![0; COEFFS * 3])
+    spare(|spare| &mut spare.signs)
 }
 
-/// Give `coefficients` and `signs` back to [`SPARE`]; an empty one is one
-/// moved out already.
+/// Give `coefficients` and `signs` back to the thread's stash, and a
+/// [`BATCH`] of it to [`SPARE`] where it has two; an empty one is one moved
+/// out already. Past [`SPARE_MAX`] they go back to the allocator.
 fn let_go(coefficients: [&mut Vec<i16>; 2], signs: &mut Vec<i8>) {
-    let mut spare = SPARE.lock().expect("spare");
-    for c in coefficients {
-        if !c.is_empty() && spare.coefficients.len() < SPARE_MAX {
-            spare.coefficients.push(std::mem::take(c));
+    // A thread's stash is gone once it ends: a tile let go then goes back to
+    // the allocator.
+    let _ = STASH.try_with(|stash| {
+        let mut stash = stash.borrow_mut();
+        stash.coefficients.extend(coefficients.into_iter().filter(|c| !c.is_empty()).map(std::mem::take));
+        if !signs.is_empty() {
+            stash.signs.push(std::mem::take(signs));
         }
-    }
-    if !signs.is_empty() && spare.signs.len() < SPARE_MAX {
-        spare.signs.push(std::mem::take(signs));
-    }
+        if stash.coefficients.len() >= 2 * BATCH || stash.signs.len() >= 2 * BATCH {
+            let mut spare = SPARE.lock().expect("spare");
+            give(&mut stash.coefficients, &mut spare.coefficients, SPARE_MAX.0);
+            give(&mut stash.signs, &mut spare.signs, SPARE_MAX.1);
+        }
+    });
+}
+
+/// A [`BATCH`] of `mine` to `shared`, as many as fit under `most`, the rest
+/// to the allocator.
+fn give<T>(mine: &mut Vec<Vec<T>>, shared: &mut Vec<Vec<T>>, most: usize) {
+    let at = mine.len().saturating_sub(BATCH);
+    let room = most.saturating_sub(shared.len());
+    shared.extend(mine.drain(at..).take(room));
 }
 
 /// The fewest tiles a thread of the pool takes at once in
