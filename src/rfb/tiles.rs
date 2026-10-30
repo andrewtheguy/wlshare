@@ -79,9 +79,12 @@
 //! **It settles.** Every tile a stream carried is owed a PNG, and every
 //! progressive tile below the full stage its next upgrade, once it has been
 //! still for half a second, looked for every quarter of a second
-//! ([`TilesEncoder::tick_at`]), the longest owed first, at most 320 tiles or
-//! 256 KiB at a time — 40 tiles while the walk is below the ceiling, where
-//! the link is short of bytes — and sent after the stream's END, so a
+//! ([`TilesEncoder::tick_at`]), the coarsest and longest owed first, at most
+//! 320 tiles at a time and 256 KiB at the ceiling; below it, where the link
+//! is short of bytes, 8 KiB while the desktop moves and what the link was
+//! found to take once it is still, a look cut short owed again at the next
+//! update's turn ([`TilesEncoder::delivered`]) — and sent after the stream's
+//! END, so a
 //! desktop that stops is exact on a held list and at the full stage on a
 //! walked one. A picture that
 //! starts over — an encoder's first, or one a client asks for whole
