@@ -499,16 +499,15 @@ and the rows the rectangles span as the framebuffer holds them,
 `B, G, R, X`. The file is the capture file of `src/wlcap.rs`, whose layout is
 written out there: this repository's own, read and written here, and owing
 nothing to the codec, since a capture is the pixels in front of an encoder
-whichever encoder that is — the captures kept from VP9's sessions are read as
-they are. There is one `<unix millis>-client<id>.wlcap` per session, written
-at the one call that hands the encoder its pixels and so spanning every
-encoder the session makes across resizes. Nothing on the way is lossy, which
-is the point: an encoder is run again on the pictures a desktop is actually
-shown as and the rectangles they came with, not on a decode of a stream. The
-files are uncompressed and large — a 4K whole frame is 33 MB — and are `zstd`
-compressed afterwards. `examples/wlcap.rs` says what a capture holds, lists
-its frames' times, plays a run of a size out as raw pictures and cuts part of
-it into a capture of its own.
+whichever encoder that is. There is one `<unix millis>-client<id>.wlcap` per
+session, written at the one call that hands the encoder its pixels and so
+spanning every encoder the session makes across resizes. Nothing on the way
+is lossy, which is the point: an encoder is run again on the pictures a
+desktop is actually shown as and the rectangles they came with, not on a
+decode of a stream. The files are uncompressed and large — a 4K whole frame
+is 33 MB — and are `zstd` compressed afterwards. `examples/wlcap.rs` says
+what a capture holds, lists its frames' times, plays a run of a size out as
+raw pictures and cuts part of it into a capture of its own.
 
 The flag is on the command line alone, with no key in the configuration, and
 on purpose: a capture writes every frame of every session to disk and removes
