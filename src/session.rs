@@ -70,7 +70,8 @@
 //! wlshare's dial is a ceiling the same walk of the link moves the encoder
 //! below, unless the list holds it: each update's fence is the
 //! walk's verdict as a video frame's is, a picture sent whole counting as a
-//! keyframe and one of the tick alone as a settle, no verdict, and every
+//! keyframe and one of the tick alone as no verdict, a settle once the
+//! desktop has stopped, and every
 //! tile a RemoteFX Progressive tile whose first pass follows the dial,
 //! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), with
 //! no stream; a list that holds the dial is sent every still exact. A
@@ -504,8 +505,8 @@ struct Session {
     tiles_picture: TilesPicture,
     /// What the tiles encoder's time is counted from.
     tiles_origin: Instant,
-    /// The last tiles update was the tick's alone: the desktop is quiet, and
-    /// the walk was told so at the first.
+    /// The last tiles update was the tick's alone with the desktop stopped:
+    /// it is quiet, and the walk was told so at the first.
     tiles_quiet: bool,
     /// The next video frame must be an IDR.
     keyframe_owed: bool,
@@ -1698,10 +1699,11 @@ impl Session {
     /// and the request waits for what will; `answered` is what is done of it then.
     /// The update is the walk's to judge as a video frame is: one with the
     /// picture whole crosses the link as a keyframe and is no verdict, and one
-    /// of the tick alone — what the desktop stopping owes — is no verdict
-    /// either: the walk keeps its place through the
-    /// quiet, its verdicts starting over at the first such
-    /// ([`QualityWalk::settle`]). Any other is a verdict, a START among it.
+    /// of the tick alone — what tiles already sent are owed — is no verdict
+    /// either; once the desktop has stopped the walk keeps its place through
+    /// the quiet, its verdicts starting over at the first such
+    /// ([`QualityWalk::settle`]), where one between a typist's keys leaves it
+    /// where it was going. Any other is a verdict, a START among it.
     async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(0));
@@ -1729,10 +1731,13 @@ impl Session {
             // The updates behind it queue behind its crossing.
             self.walk.keyframe(sent);
         }
-        if update.tick && !self.tiles_quiet {
+        // The desktop stopping settles the walk; a tick between a typist's
+        // keys is no verdict, and leaves the walk where it was going: one
+        // after every key kept a walk on the floor while it typed.
+        if update.stopped && !self.tiles_quiet {
             self.walk.settle(sent);
         }
-        self.tiles_quiet = update.tick;
+        self.tiles_quiet = update.stopped;
         self.frame_sent = Some(sent);
         let now = Instant::now();
         if !self.fence_supported {

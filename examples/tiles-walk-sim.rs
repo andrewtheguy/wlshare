@@ -44,7 +44,8 @@
 //! The gateway passes each rectangle as a record
 //! of its own, its body taking its share of the budget. Each update is the
 //! walk's to judge as the session judges it: a keyframe or the tick's alone is
-//! no verdict, and the first of the tick's settles the walk where it stands.
+//! no verdict, and the first of the tick's once the desktop has stopped
+//! settles the walk where it stands.
 //! What it says of a run, one JSON object on stdout, is `walk-sim`'s, `picture`
 //! `tiles`, with `ticks`, the updates of the tick alone, the dial the motion
 //! was coded at (`motion_q_mean`, `motion_q_p10`) and how often it moved
@@ -374,7 +375,8 @@ fn main() -> Result<(), Error> {
     let (mut unshown, mut shown) = (Vec::new(), Vec::new());
     let (mut frames, mut ticks, mut keyframes, mut bytes, mut moves, mut downs) = (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
     let mut motion_frames = 0u32;
-    // The last update was the tick's alone, as the session keeps it.
+    // The last update was the tick's alone with the desktop stopped, as the
+    // session keeps it.
     let mut quiet = false;
 
     loop {
@@ -457,10 +459,10 @@ fn main() -> Result<(), Error> {
         if update.keyframe {
             walk.keyframe(base + sent);
         }
-        if update.tick && !quiet {
+        if update.stopped && !quiet {
             walk.settle(base + sent);
         }
-        quiet = update.tick;
+        quiet = update.stopped;
         update_sent = Some(sent);
         let delivery = back - sent;
         encoder.delivered(delivery);

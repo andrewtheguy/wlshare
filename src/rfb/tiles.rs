@@ -601,14 +601,17 @@ fn encode_png(w: u16, h: u16, rgb: &[u8], indexed: Option<(Vec<u8>, Vec<u8>)>, o
 
 /// What one [`TilesEncoder::encode`] appended: how many rectangles; whether
 /// any of them is a still of what the client held nothing of — the whole
-/// picture over again, which crosses a link as a keyframe does; and whether
-/// all of them are the tick's ([`TilesEncoder::tick_at`]), what was owed once
-/// the desktop stopped and none of what a read brought.
+/// picture over again, which crosses a link as a keyframe does; whether all
+/// of them are the tick's ([`TilesEncoder::tick_at`]), what was owed of
+/// tiles already sent and none of what a read brought; and whether the
+/// desktop had stopped then, still for half a second ([`CLEANUP_IDLE`]):
+/// what its stopping owes, where a tick between a typist's keys is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Update {
     pub rects: u16,
     pub keyframe: bool,
     pub tick: bool,
+    pub stopped: bool,
 }
 
 // ── What moved ───────────────────────────────────────────────────────────────
@@ -1608,7 +1611,7 @@ impl TilesEncoder {
             self.keys.clear();
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
-        Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0 })
+        Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0, stopped: brought == 0 && self.quiet(now) })
     }
 
     /// How long the last update took to cross: its fence's round trip, or
@@ -2742,6 +2745,8 @@ mod tests {
     /// stopping owes — a progressive tile's upgrade, a stream's end —
     /// with a read before it that changed nothing or none, and not once a
     /// read brought anything; the session hands the walk no verdict of it.
+    /// Stopped where nothing changed for half a second before it, and not
+    /// between a typist's keys.
     #[test]
     fn an_update_of_the_tick_alone_says_so() {
         let (w, h) = (256u16, 128u16);
@@ -2766,15 +2771,31 @@ mod tests {
             }
             assert!(paid.tick);
         };
-        assert!(paid.rects > 0 && paid.tick, "the debt, an upgrade: {paid:?}");
+        assert!(paid.rects > 0 && paid.tick && paid.stopped, "the debt, an upgrade, the desktop stopped: {paid:?}");
         let now = settle(&mut encoder, &mut page, now + ms(100));
         assert!(!encoder.owed());
+
+        // A tick between a typist's keys: the first key's debt, paid while
+        // the second's change is under half a second old.
+        let other = Rect { x: 192, y: 64, width: 64, height: 64 };
+        paint(&mut pixels, w, busy, 25);
+        update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
+        paint(&mut pixels, w, other, 26);
+        update(&mut encoder, &mut page, &pixels, Some(&[other]), now + ms(500));
+        let between = loop {
+            let at = encoder.tick_at().expect("owed");
+            let paid = update(&mut encoder, &mut page, &pixels, Some(&[]), at);
+            if paid.rects > 0 {
+                break paid;
+            }
+        };
+        assert!(between.tick && !between.stopped, "the tick's alone, the desktop not stopped: {between:?}");
+        let now = settle(&mut encoder, &mut page, now + ms(600));
 
         // A change read at the tick's time is the read's, debts and all.
         paint(&mut pixels, w, busy, 23);
         update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
         let at = encoder.tick_at().expect("owed again");
-        let other = Rect { x: 192, y: 64, width: 64, height: 64 };
         paint(&mut pixels, w, other, 24);
         let both = update(&mut encoder, &mut page, &pixels, Some(&[other]), at);
         assert!(both.rects > 0 && !both.tick, "a change and the tick: {both:?}");
