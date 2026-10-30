@@ -646,3 +646,136 @@ tiles from wlshare in a container, through the gateway, with the page's
 decoder, against the exact picture of the tiles with motion; headless
 Chromium drew a test card of bars, gradients and noise from 505
 progressive tiles without asking for the picture again.
+
+## Adapting to the link
+
+What the progressive picture does when the link changes under it, and what
+it costs the processor, measured on 2026-10-29 and 30 and changed by what
+was found. The samples were recut that day: browser, drag, video and window
+had begun with two whole pictures and 1.4 to 1.6 s with nothing moving,
+which every figure above counts, so main (0.0.108) was walked again on the
+recut samples first, and every comparison here is against that. lab1 (eight
+cores of EPYC Rome), alone, with its own encode times: `tiles-walk-sim` over
+every scenario at 1280x800, 1920x1080, 2880x1800@2 and 3840x2160@2 and the
+mixed session at its two sizes, on links of 5, 10, 25 and 100 Mbit/s, 136
+runs; changes that move no byte checked the same with `--encode 20`, which
+is deterministic; and the encoder alone over the samples, the walk held at
+a dial, three rounds, for its processor time. Flood is in every run, for
+reference. The runs are `bench/progressive-opt-20261030/` in the artifacts.
+
+**The settle.** Below the walk's ceiling a tick sent 40 tiles a quarter of a
+second, however idle the link, so a desktop that stopped took as long to
+settle as its tiles took at that pace: a 4K video on 10 Mbit/s stopped, and
+21 s of 5 KB ticks followed on a link carrying 160 kbit/s. The settle is now
+paced by the link ([It settles](architecture.md#the-tiles-encoding)): the
+bytes a tick sends walk on how long the updates that carried one queued, and
+on a still desktop the next tick goes at the fence. The upgrades of a tile no
+longer wait half a second each, as an upgrade is no change, and the coarsest
+go first, so the picture is refined all over a stage at a time. While the
+desktop moves nothing changes: every update the same with `--encode 20`.
+The settle, summed over each scenario's runs, main then the branch:
+
+| Scenario | Settle | Mean PSNR, 4K at 5 Mbit/s |
+|---|---|---|
+| browser | 66.7 → 15.2 s | 32.9 → 32.0 dB |
+| video | 124.7 → 20.9 s | 41.7 → 44.8 dB |
+| walk | 110.6 → 11.8 s | 41.7 → 42.2 dB |
+| window | 27.4 → 11.6 s | 40.5 → 41.1 dB |
+| drag | 25.3 → 10.7 s | 38.1 → 39.9 dB |
+| mixed, both sizes | 23.2 → 4.0 s | |
+
+A tick between a typist's keys started the walk's verdicts over, as the
+desktop stopping does, so a walk once on its floor never gathered the
+second of clear updates a step up needs: the mixed session at 2880x1800 on
+5 Mbit/s held the dial at 20 from 33 s to the end, through three minutes of
+reading and typing on a link with room. Only a tick on a desktop still for
+half a second settles the walk now; that session climbs back to 90 while it
+types, 1.7 dB finer over the whole (38.3 → 40.0) for 9% more bytes.
+
+A tick's bytes follow the queueing behind the fence, its round trip less
+the link's own as the walk keeps it, and go back to the least whenever the
+walk steps down: with `--encode 20` that settled the browser at 2880x1800 on
+5 Mbit/s in 1.10 s where the budget it learned before took 0.98, and moved
+nothing else.
+
+**Drags.** The copy search dropped a run found at more than 32 places, so a
+terminal's text, which is most of a terminal, left too few runs to agree on
+where it moved, and a terminal dragged across a large desktop went as
+stills. The offsets the last read's copies were at are now checked first
+([What moved is a copy](architecture.md#the-tiles-encoding)), every run
+found there counting. With `--encode 20`, a scroll, a terminal and the mixed
+sessions sent the same bytes; on lab1:
+
+| Capture | Link | fps | p50 ms | p95 ms | MB |
+|---|---|---|---|---|---|
+| drag-2880x1800@2 | 5 | 13.8 → 20.7 | 234 → 32 | 588 → 418 | 2.05 → 0.92 |
+| drag-2880x1800@2 | 10 | 18.4 → 20.7 | 43 → 32 | 280 → 266 | 2.34 → 1.45 |
+| drag-3840x2160@2 | 5 | 15.2 → 19.4 | 205 → 32 | 698 → 551 | 2.05 → 0.95 |
+| drag-3840x2160@2 | 10 | 19.8 → 21.5 | 32 → 32 | 311 → 229 | 2.06 → 0.89 |
+
+**The processor.** The encoder alone, the median of three, main then the
+branch, the same bytes but the drag's:
+
+| Sample | Dial 90 | Dial 40 |
+|---|---|---|
+| video-3840x2160@2 | 8.54 → 5.93 s | 8.29 → 5.76 s |
+| video-1920x1080 | 2.01 → 1.69 s | |
+| walk-1920x1080 | 3.14 → 2.62 s | |
+| browser-2880x1800@2 | 2.99 → 2.60 s | 2.72 → 2.48 s |
+| drag-2880x1800@2 | 1.28 → 0.77 s | |
+| window-1920x1080 | 0.73 → 0.68 s | |
+| terminal-1920x1080 | 0.19 → 0.15 s | |
+
+Four changes, in order of what they took off:
+
+- The coder's spare buffers were one pool of 256 under one lock. A 4K update
+  codes 2,040 tiles into new buffers while the ones they replace are still
+  held, so most went back to the allocator and came from it zeroed every
+  update, and the eight coding threads queued on the lock. Each thread now
+  keeps a stash, moved to and from a pool of two 4K updates' worth 32 at a
+  time: a third off a 4K video, a sixth off a 1080p one and the walk.
+- A first pass coded the full stage beside its own to compare wherever the
+  full stage kept at most half as many coefficients again, which at 75 is
+  nearly every tile: a scroll and a drag tried it for 99% of their tiles,
+  and it won for 42 and 75%. It is now tried where the bits the stage holds
+  back, in bytes, and the coefficients it holds back whole come to at most
+  twice the margin the full stage is allowed: over nine samples at three
+  dials, 15% of the tiles tried where it had been 26%, and 99.6% of those
+  sent whole found.
+- A walked list hashed each changed tile for the cache twice an update, and
+  through xxh3's streaming hasher a row at a time; once now, its rows put
+  together and hashed in one call.
+- An update's first passes went to the pool a tile a task, so a few tiles
+  woke every thread, each to spin idle after; four a task now, and fewer
+  than four are coded as they are sent. The terminal took a fifth less.
+
+In the walks, which code more of what moves as the encoder gets faster,
+the encoder's processor time over each scenario's runs fell 15% on the
+browser to 33% on the terminal, 21 to 22% on the video, the walk and the mixed
+sessions, and its share of a core at 100 Mbit/s:
+
+| Capture | Share of a core | Per update | fps |
+|---|---|---|---|
+| video-3840x2160@2 | 136 → 105% | 71.6 → 47.4 ms | 18.9 → 22.0 |
+| mixed-2880x1800@2 | 45.2 → 32.0% | 29.2 → 20.5 ms | 15.5 → 15.6 |
+| browser-2880x1800@2 | 37.3 → 34.4% | 24.1 → 20.3 ms | 15.3 → 16.7 |
+| drag-2880x1800@2 | 23.5 → 14.7% | 10.1 → 6.1 ms | 23.2 → 24.1 |
+| window-3840x2160@2 | 42.4 → 35.5% | 19.4 → 16.1 ms | 21.9 → 22.1 |
+| mixed-1920x1080 | 17.9 → 15.2% | 11.1 → 9.4 ms | 16.0 → 16.1 |
+| flood-1920x1080 | 51.7 → 46.5% | 56.1 → 47.9 ms | 9.2 → 9.7 |
+
+The frame rates and what changed shown at 5 and 10 Mbit/s are otherwise
+within a run's noise, which with measured encode times is a frame or two a
+second and up to a hundred milliseconds on one run: the 4K window at 5
+Mbit/s showed its changes at a median 440 ms where main's run showed them
+at 308, and with `--encode 20` its every update while it plays is main's.
+
+**Tried, and not kept.** A first pass at the coarsest stage while the last
+update's fence was late, as the host's first passes go to 25 when its socket
+backs up: over the samples it shortened a scroll's and a drag's latency at 5
+Mbit/s and lengthened a 4K video's, coarse and fine passes alternating under
+the walk, and over the mixed sessions moved nothing beyond 1 to 2%. The copy
+search's rolling hash a rotating one, its chain a rotate and an xor where a
+polynomial's is two multiplies: no gain, the scan's time being its loop and
+its filter's lookups. Looking along each probe's own row and column before
+the scan: a scroll 6% cheaper, a drag a fifth dearer and 2% more bytes.
