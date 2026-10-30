@@ -884,6 +884,10 @@ pub struct TilesEncoder {
     /// churns may be a scroll the search missed rather than a video, and is
     /// looked among all the same.
     copied_at: Option<Duration>,
+    /// The offsets of the copies the last read that found any found, from
+    /// where each draws to where it reads, which the next read's search
+    /// checks first.
+    copied_by: Vec<(i32, i32)>,
     /// Tiles the client cannot be counted on to hold.
     unknown: HashSet<(u16, u16)>,
     /// The stills the next encode sends are of a picture the client held
@@ -949,6 +953,7 @@ impl TilesEncoder {
             mirror: vec![0; stride * usize::from(height)],
             churn: Churn::default(),
             copied_at: None,
+            copied_by: Vec::new(),
             unknown: HashSet::new(),
             restarting: false,
             live: Vec::new(),
@@ -1026,6 +1031,7 @@ impl TilesEncoder {
         self.retuned_at = None;
         self.churn.clear();
         self.copied_at = None;
+        self.copied_by.clear();
         self.stills.clear();
         self.copies.clear();
         self.restarting = true;
@@ -1168,6 +1174,8 @@ impl TilesEncoder {
         let copies = self.find_copies(pixels, stride, &areas, &differ, now);
         if !copies.is_empty() {
             self.copied_at = Some(now);
+            self.copied_by = copies.iter().map(|copy| (i32::from(copy.src.0) - i32::from(copy.dst.left), i32::from(copy.src.1) - i32::from(copy.dst.top))).collect();
+            self.copied_by.dedup();
         }
         // A copy draws what the client holds of its source over every tile it
         // touches, changed or not: each is owed what the source is owed, and
@@ -1322,12 +1330,25 @@ impl TilesEncoder {
                     *found.entry(*offset).or_default() += 1;
                 }
             }
+            // The offsets the last read's copies were at, checked whatever
+            // the scan found of them: a window dragged on moves as it did,
+            // and its text, found at too many places to say anything, leaves
+            // the scan too few runs that agree (measured: a terminal dragged
+            // at 2880x1800 sent 2.2 to 3.9 times the bytes without).
+            for offset in self.copied_by.iter().filter(|offset| !tried.contains(offset)) {
+                *found.entry(*offset).or_default() = usize::MAX;
+            }
             let mut found: Vec<((i32, i32), usize)> = found.into_iter().collect();
             found.sort_unstable_by_key(|&(offset, seeds)| (Reverse(seeds), offset));
             found.truncate(MAX_CHECKED);
             let mut offsets: Vec<((i32, i32), Vec<usize>)> = found
                 .into_iter()
-                .map(|(offset, _)| (offset, (0..probes.len()).filter(|&i| hits[i].len() <= MAX_PROBE_HITS && matches(&probes[i], offset)).collect::<Vec<_>>()))
+                .map(|(offset, _)| {
+                    // At an offset a copy was at, every probe found there
+                    // counts, those found at many places too.
+                    let known = self.copied_by.contains(&offset);
+                    (offset, (0..probes.len()).filter(|&i| (known || hits[i].len() <= MAX_PROBE_HITS) && matches(&probes[i], offset)).collect::<Vec<_>>())
+                })
                 .filter(|(_, seeds)| seeds.len() >= 2)
                 .collect();
             offsets.sort_unstable_by_key(|(offset, seeds)| (Reverse(seeds.len()), *offset));
@@ -3225,6 +3246,39 @@ mod tests {
         assert_eq!(page.copies, 1, "the window");
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed());
+    }
+
+    /// A window whose every run is found at too many places for the scan to
+    /// agree on any, dragged on as it was dragged before, is a copy at the
+    /// offset it moved by then.
+    #[test]
+    fn a_window_dragged_on_is_a_copy_where_it_went_before() {
+        let (w, h) = (512u16, 384u16);
+        let desktop = vec![128; usize::from(w) * usize::from(h) * 4];
+        let place = |at: (u16, u16)| {
+            let mut pixels = desktop.clone();
+            for row in 0..128 {
+                for col in 0..192 {
+                    let v = if (col % 8 < 3) ^ (row % 6 < 2) { 40 } else { 220 };
+                    let to = ((usize::from(at.1) + row) * usize::from(w) + usize::from(at.0) + col) * 4;
+                    pixels[to..to + 4].copy_from_slice(&[v, v, v, 0]);
+                }
+            }
+            pixels
+        };
+        let drag = |copied_by: Vec<(i32, i32)>| {
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
+            encoder.copied_by = copied_by;
+            let pixels = place((110, 90));
+            let moved = Rect { x: 40, y: 30, width: 192 + 70, height: 128 + 60 };
+            step(&mut encoder, &mut page, &pixels, Some(&[moved]), ms(100));
+            assert_eq!(page.off(&pixels), 0);
+            page.copies
+        };
+        assert_eq!(drag(Vec::new()), 0, "no run the scan finds says where");
+        assert!(drag(vec![(-70, -60)]) > 0, "where it went before");
     }
 
     /// Two reads before an encode, a scroll each: the second's copy reads
