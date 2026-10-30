@@ -443,6 +443,9 @@ impl Tiles {
         let cpu = ProcessTime::now();
         let update = self.encoder.encode(now, &mut self.out)?;
         let cost = cpu.elapsed();
+        // No link: every update crosses at once, so the settle sends as
+        // much a tick as it ever does.
+        self.encoder.delivered(Duration::ZERO);
         Ok((cost, self.page.draw(update.rects, &self.out)?))
     }
 

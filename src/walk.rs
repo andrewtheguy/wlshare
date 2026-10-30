@@ -347,6 +347,13 @@ impl QualityWalk {
         Pace { quality: self.quality, interval: self.interval() }
     }
 
+    /// The link's own round trip: the least delivery of the last
+    /// [`BASELINE_WINDOW`], of which the rest of a delivery is queueing;
+    /// zero before one, or on a walk that is not lag-aware.
+    pub fn floor(&self) -> Duration {
+        self.recent.iter().map(|(_, delivery)| *delivery).min().unwrap_or_default()
+    }
+
     /// A frame's fence came back `delivery` after the frame was written.
     /// Every delivery counts towards the link's floor; only a `verdict` frame's
     /// is one — a delta frame at the walk's quality. A keyframe is the whole
@@ -365,8 +372,7 @@ impl QualityWalk {
         if !verdict {
             return None;
         }
-        let floor = self.recent.iter().map(|(_, delivery)| *delivery).min().unwrap_or_default();
-        self.observe(Duration::ZERO, delivery.saturating_sub(floor), now)
+        self.observe(Duration::ZERO, delivery.saturating_sub(self.floor()), now)
     }
 
     /// A delta frame took `blocked` to write: time the socket had no room for
@@ -1016,6 +1022,7 @@ mod tests {
         assert_eq!(walk.quality(), 60);
         // The floor is the smallest delivery, whichever frame it was.
         walk.fenced(10 * MS, false, start);
+        assert_eq!(walk.floor(), 10 * MS);
         walk.fenced(100 * MS, true, start);
         assert_eq!(walk.fenced(100 * MS, true, start).map(|pace| pace.quality), Some(50));
     }

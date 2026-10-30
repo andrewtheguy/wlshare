@@ -31,7 +31,8 @@
 //! and progressive tiles, and of its streams' frames), `encode_ms`, `cpu_ms` (the
 //! processor time of that encode, on every thread, which `encoder_cpu_pct`
 //! sums), `delivery_ms`,
-//! `latency_ms` and, where its fence moved the dial, `moved_to`.
+//! `latency_ms`, `psnr_db` (how close it left the page to the desktop it was
+//! coded from) and, where its fence moved the dial, `moved_to`.
 //!
 //! Time is the simulation's own, as `walk-sim`'s is: an encode, the read of
 //! what changed with it, takes what it took on this machine, or `--encode`;
@@ -43,7 +44,8 @@
 //! The gateway passes each rectangle as a record
 //! of its own, its body taking its share of the budget. Each update is the
 //! walk's to judge as the session judges it: a keyframe or the tick's alone is
-//! no verdict, and the first of the tick's settles the walk where it stands.
+//! no verdict, and the first of the tick's once the desktop has stopped
+//! settles the walk where it stands.
 //! What it says of a run, one JSON object on stdout, is `walk-sim`'s, `picture`
 //! `tiles`, with `ticks`, the updates of the tick alone, the dial the motion
 //! was coded at (`motion_q_mean`, `motion_q_p10`) and how often it moved
@@ -373,7 +375,8 @@ fn main() -> Result<(), Error> {
     let (mut unshown, mut shown) = (Vec::new(), Vec::new());
     let (mut frames, mut ticks, mut keyframes, mut bytes, mut moves, mut downs) = (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
     let mut motion_frames = 0u32;
-    // The last update was the tick's alone, as the session keeps it.
+    // The last update was the tick's alone with the desktop stopped, as the
+    // session keeps it.
     let mut quiet = false;
 
     loop {
@@ -447,7 +450,8 @@ fn main() -> Result<(), Error> {
         }
         let page = page.as_mut().unwrap();
         page.draw(update.rects, &out, encoder, &mut passes)?;
-        psnrs.push(psnr(page.mse(&d.pixels)));
+        let close = psnr(page.mse(&d.pixels));
+        psnrs.push(close);
         let sent = now + encode;
         let coded_at = encoder.quality();
         let size = out.len() + FRAMING;
@@ -455,10 +459,10 @@ fn main() -> Result<(), Error> {
         if update.keyframe {
             walk.keyframe(base + sent);
         }
-        if update.tick && !quiet {
+        if update.stopped && !quiet {
             walk.settle(base + sent);
         }
-        quiet = update.tick;
+        quiet = update.stopped;
         update_sent = Some(sent);
         let delivery = back - sent;
         let verdict = !update.keyframe && !update.tick;
@@ -477,13 +481,14 @@ fn main() -> Result<(), Error> {
         // The fence comes back; the next update waits for it.
         now = back;
         let moved = walk.fenced(delivery, verdict, base + now);
+        encoder.delivered(delivery.saturating_sub(walk.floor()));
         if let Some(t) = &mut timeline {
             let kind = if update.keyframe { "key" } else if update.tick { "tick" } else { "frame" };
             let (stills, streams) = split(&out)?;
             let moved_to = moved.map_or_else(String::new, |moved| format!(",\"moved_to\":{}", moved.quality));
             writeln!(
                 t,
-                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1}{moved_to}}}",
+                "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1},\"psnr_db\":{close:.2}{moved_to}}}",
                 sent.as_secs_f64() * 1e3,
                 interval.as_secs_f64() * 1e3,
                 encode.as_secs_f64() * 1e3,

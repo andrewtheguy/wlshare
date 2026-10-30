@@ -707,7 +707,13 @@ the picture.
   at is checked against every run, its 16 pixels against the old picture's
   there: a run on a row the scan stepped over is found at no offset, and on a
   fast scroll, whose new rows hold most of the rest, the scan alone left
-  fewer than two to agree. An offset two runs agree on
+  fewer than two to agree. The offsets the last read's copies were at are
+  checked the same way whatever the scan found, every run found there
+  counting, those at many places too: a window dragged on moves as it did,
+  and a terminal's text, found at too many places to say anything, left the
+  scan too few runs to agree, so a drag across a large desktop went as
+  stills ([measured](tiles-performance.md#adapting-to-the-link)). An offset
+  two runs agree on
   is grown from each into the largest rectangle whose every row is the old
   picture's at that offset, and sent as a COPY ahead of the update's stills,
   at most 8 a read, where it draws some changed tile whole: one that draws
@@ -780,9 +786,13 @@ the picture.
   on each update's fence, and on how long
   its write blocked where there is no fence. An update that carries the
   picture whole crosses the link as a keyframe does and is no verdict, and
-  nor is one of the tick's alone, what the desktop stopping owes: the walk
-  keeps its place through the quiet, its
-  verdicts starting over at the first. Any other is a verdict, a START
+  nor is one of the tick's alone, what tiles already sent are owed. Once the
+  desktop has been still for half a second that is what its stopping owes:
+  the walk keeps its place through the quiet, its verdicts starting over at
+  the first. One between a typist's keys leaves the walk where it was going,
+  since a tick that paid the last key's upgrades started it over before it
+  had the second of clear updates a step up needs, and kept it on the floor
+  while it typed. Any other is a verdict, a START
   among it: a region's IDR is the load a desktop that moves keeps sending,
   which the walk is there to judge, and were its verdicts held two seconds
   after each, as a keyframe holds them, the walk would hear almost nothing
@@ -815,13 +825,18 @@ the picture.
   holds back a bit more in every band, a third fewer bytes than 50, since the
   host's first pass stays at 50 however slow the link and a walk that lowers
   its dial would shrink nothing — or is the full stage at once where that
-  costs at most a quarter more, as a flat tile's does. A changed tile the
+  costs at most a quarter more, or 64 bytes, as a flat tile's does. The full
+  stage is coded to compare only where it could win: where the bits the
+  stage holds back of the coefficients, in bytes, and the coefficients it
+  holds back whole come to at most twice that margin. A changed tile the
   client holds goes as the difference of its coefficients from what the
   client holds where that has more zeros, which is how motion is carried
   without a stream. The encoder keeps what the client holds of every tile,
   so each pass is coded against it; a tile a copy or a cache slot draws over
   is forgotten, and goes next as a first pass that is no difference. An
-  update's first passes are coded ahead on every core and sent in order.
+  update's first passes are coded ahead on every core, four tiles a task,
+  and sent in order; an update of fewer than four codes them as it sends
+  them.
   What is owed is the stages after: the settle sends a tile's upgrade, one
   stage at a time, the bits the stage before held back, until it stands at
   full, and nothing is owed after. Its tests read every pass back with a
@@ -886,14 +901,27 @@ the picture.
   has been still for half a second. What
   is owed is looked for every quarter of a
   second, each look an update that waits for a request and the fence as any
-  other: the 320 tiles owed longest at most, as runs along a row, the oldest
-  runs first until 256 KiB have gone, and 40 tiles at most while the walk
-  is below the ceiling, where the link is short of bytes; none while the
-  walk is slowed until the desktop has been still for two seconds. So a
-  desktop that stops is exact on the page on a held list and at the full
-  stage on a walked one, at 4K within 4.3 s held where it took 13
-  ([measured](tiles-performance.md#the-settle)), and once it is nothing
-  more is sent.
+  other: the 320 tiles owed longest at most, as runs along a row, the
+  coarsest stage first, then the oldest, until the look's bytes have gone —
+  an upgrade is no change, so a tile's next stage is ready at once. While
+  the walk is at the ceiling those are 256 KiB. Below it, where the link is
+  short of bytes, they are 8 KiB while the desktop moves; once it has been
+  still for half a second, what the link was found to take: twice the last
+  look's after an update that carried one and queued under 30 ms, its
+  fence's round trip less the link's own as the walk keeps it, half after
+  one that queued 60 ms or more, from 8 to 256 KiB, and 8 again whenever
+  the walk steps down, which says the link is short of what it was. On a
+  still desktop
+  a look its bytes cut short is owed again at once, after its update's
+  fence, so the settle goes as fast as the link carries it rather than a
+  look a quarter of a second, 40 tiles of a 4K desktop at a time: one that
+  stopped on a 10 Mbit/s link took 21 s where it now takes about one
+  ([measured](tiles-performance.md#adapting-to-the-link)). None is sent
+  while the walk is slowed until the desktop has been still for two
+  seconds. So a desktop that stops is exact on the page on a held list and
+  at the full stage on a walked one, at 4K within 4.3 s held where it took
+  13 ([measured](tiles-performance.md#the-settle)), and once it is
+  nothing more is sent.
 - **Rounds as any other.** Each update ends with its fence, and one is in
   flight at a time. A new size ends every stream with no END — the size goes
   out first, and the picture whole after it — and a non-incremental request

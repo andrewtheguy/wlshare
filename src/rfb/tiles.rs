@@ -79,9 +79,12 @@
 //! **It settles.** Every tile a stream carried is owed a PNG, and every
 //! progressive tile below the full stage its next upgrade, once it has been
 //! still for half a second, looked for every quarter of a second
-//! ([`TilesEncoder::tick_at`]), the longest owed first, at most 320 tiles or
-//! 256 KiB at a time — 40 tiles while the walk is below the ceiling, where
-//! the link is short of bytes — and sent after the stream's END, so a
+//! ([`TilesEncoder::tick_at`]), the coarsest and longest owed first, at most
+//! 320 tiles at a time and 256 KiB at the ceiling; below it, where the link
+//! is short of bytes, 8 KiB while the desktop moves and what the link was
+//! found to take once it is still, a look cut short owed again at the next
+//! update's turn ([`TilesEncoder::delivered`]) — and sent after the stream's
+//! END, so a
 //! desktop that stops is exact on a held list and at the full stage on a
 //! walked one. A picture that
 //! starts over — an encoder's first, or one a client asks for whole
@@ -99,7 +102,7 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::time::Duration;
 
 use thiserror::Error;
-use xxhash_rust::xxh3::Xxh3Default;
+use xxhash_rust::xxh3::xxh3_64;
 
 use wlshare_proto::tiles::{CACHE_SLOTS, TileHeader, TilesPicture};
 
@@ -139,6 +142,10 @@ const PROGRESSIVE_SLACK: f32 = 1.25;
 /// alike sent 7% fewer bytes than 50 alone and showed a change 11% sooner,
 /// 0.8 dB coarser on the mean; 70 the window's sooner too).
 const PROGRESSIVE_COARSE_BELOW: u8 = 70;
+
+/// The fewest first passes an update codes ahead on the pool
+/// ([`TilesEncoder::precode`]); fewer are coded as they are sent.
+const PRECODE_LEAST: usize = 4;
 
 /// What a progressive tile is sent as: its first pass, or the upgrades from
 /// the stage it stands at.
@@ -272,15 +279,22 @@ pub const CLEANUP_TICK: Duration = Duration::from_millis(250);
 /// lossy. Longer than [`CLEANUP_IDLE`], so a pause in typing is not chased
 /// while the link is behind.
 const COARSE_QUIET: Duration = Duration::from_millis(2000);
-/// The most tiles a tick codes on a held list or while the walk stands at the
-/// ceiling.
+/// The most tiles a tick codes.
 const SETTLE_TILES: usize = 320;
-/// The most tiles a tick sends while the walk is below the ceiling, where the
-/// link is short of bytes.
-const SETTLE_TILES_BELOW: usize = 40;
-/// The bytes after which a tick sends no more: 8 Mbit/s at a tick every
-/// quarter of a second.
+/// The bytes after which a tick sends no more while the walk stands at the
+/// ceiling, and at most below it, where what it may send on a quiet desktop
+/// walks between this and [`SETTLE_BYTES_LEAST`] on how long the updates
+/// that carried a settle took to cross ([`TilesEncoder::delivered`]).
 const SETTLE_BYTES: usize = 256 * 1024;
+/// The fewest bytes a tick may send before it stops, and what it starts at:
+/// 13 ms of a 5 Mbit/s link.
+const SETTLE_BYTES_LEAST: usize = 8 * 1024;
+/// An update that crossed within this had the link to itself: the next tick
+/// may send twice as much. The walk's own word for a link that is clear.
+const SETTLE_QUICK: Duration = Duration::from_millis(30);
+/// An update that took this long or more to cross queued on the link: the
+/// next tick sends half as much.
+const SETTLE_LATE: Duration = Duration::from_millis(60);
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
@@ -496,17 +510,19 @@ fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: 
 
 /// A whole tile's pixels as a cache keys them: a hash of `area` of a
 /// `B, G, R, X` picture, and whether it is one colour, which is never stored.
+/// Its rows are put together and hashed at once: xxh3 fed a row at a time
+/// spent as long again on its buffering as on the hash.
 fn tile_key(pixels: &[u8], stride: usize, area: Area) -> (u64, bool) {
     let (from, to) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
-    let mut hasher = Xxh3Default::new();
+    let mut tile = [0u8; TILE as usize * TILE as usize * 4];
     let first = &pixels[usize::from(area.top) * stride + from..usize::from(area.top) * stride + to];
     let mut flat = first.as_chunks::<4>().0.iter().all(|px| px == first.first_chunk::<4>().expect("a pixel"));
-    for y in area.top..=area.bottom {
+    for (y, line) in (area.top..=area.bottom).zip(tile.chunks_exact_mut(to - from)) {
         let row = &pixels[usize::from(y) * stride + from..usize::from(y) * stride + to];
-        hasher.update(row);
+        line.copy_from_slice(row);
         flat &= row == first;
     }
-    (hasher.digest(), flat)
+    (xxh3_64(&tile[..(to - from) * usize::from(area.h())]), flat)
 }
 
 /// `area` of a `B, G, R, X` picture as packed RGB.
@@ -588,14 +604,17 @@ fn encode_png(w: u16, h: u16, rgb: &[u8], indexed: Option<(Vec<u8>, Vec<u8>)>, o
 
 /// What one [`TilesEncoder::encode`] appended: how many rectangles; whether
 /// any of them is a still of what the client held nothing of — the whole
-/// picture over again, which crosses a link as a keyframe does; and whether
-/// all of them are the tick's ([`TilesEncoder::tick_at`]), what was owed once
-/// the desktop stopped and none of what a read brought.
+/// picture over again, which crosses a link as a keyframe does; whether all
+/// of them are the tick's ([`TilesEncoder::tick_at`]), what was owed of
+/// tiles already sent and none of what a read brought; and whether the
+/// desktop had stopped then, still for half a second ([`CLEANUP_IDLE`]):
+/// what its stopping owes, where a tick between a typist's keys is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Update {
     pub rects: u16,
     pub keyframe: bool,
     pub tick: bool,
+    pub stopped: bool,
 }
 
 // ── What moved ───────────────────────────────────────────────────────────────
@@ -871,6 +890,10 @@ pub struct TilesEncoder {
     /// churns may be a scroll the search missed rather than a video, and is
     /// looked among all the same.
     copied_at: Option<Duration>,
+    /// The offsets of the copies the last read that found any found, from
+    /// where each draws to where it reads, which the next read's search
+    /// checks first.
+    copied_by: Vec<(i32, i32)>,
     /// Tiles the client cannot be counted on to hold.
     unknown: HashSet<(u16, u16)>,
     /// The stills the next encode sends are of a picture the client held
@@ -895,6 +918,11 @@ pub struct TilesEncoder {
     /// A read came since the last encode, which owes a round of the streams.
     read: bool,
     next_tick: Duration,
+    /// The bytes the next tick may send ([`SETTLE_BYTES_LEAST`] to
+    /// [`SETTLE_BYTES`]), and whether the update in flight carried a settle,
+    /// whose crossing moves it.
+    settle_bytes: usize,
+    settling: bool,
     /// wlshare's dial: what the streams are coded at, and the finest the walk
     /// asks for.
     ceiling: u8,
@@ -907,6 +935,9 @@ pub struct TilesEncoder {
     /// The coder every stream is opened on.
     coder: Box<dyn H264Coder>,
     scratch: Vec<u8>,
+    /// The cache's key of each whole tile [`Self::precode`] looked up, for
+    /// the still it goes in to take rather than hash it again.
+    keys: HashMap<(u16, u16), (u64, bool)>,
     /// The progressive encoder, where the list walks and every tile is a
     /// progressive tile; where it holds, every still is a PNG.
     progressive: Option<progressive::Encoder>,
@@ -928,6 +959,7 @@ impl TilesEncoder {
             mirror: vec![0; stride * usize::from(height)],
             churn: Churn::default(),
             copied_at: None,
+            copied_by: Vec::new(),
             unknown: HashSet::new(),
             restarting: false,
             live: Vec::new(),
@@ -940,12 +972,15 @@ impl TilesEncoder {
             ended: Vec::new(),
             read: false,
             next_tick: Duration::ZERO,
+            settle_bytes: SETTLE_BYTES_LEAST,
+            settling: false,
             ceiling: crate::rfb::QUALITY,
             quality: crate::rfb::QUALITY,
             coarse: false,
             changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
+            keys: HashMap::new(),
             progressive: picture.progressive.then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
         };
         encoder.forget();
@@ -968,6 +1003,11 @@ impl TilesEncoder {
     /// the walk has slowed the frames, which holds the upgrades owed until
     /// it has not. A held list's pace is its ceiling, never coarse.
     pub fn set_pace(&mut self, quality: u8, coarse: bool) {
+        // A walk that steps down found the link short of what it was: what a
+        // settle was found to take before says nothing of it now.
+        if quality < self.quality || (coarse && !self.coarse) {
+            self.settle_bytes = SETTLE_BYTES_LEAST;
+        }
         self.coarse = coarse;
         self.quality = quality;
     }
@@ -1002,6 +1042,7 @@ impl TilesEncoder {
         self.retuned_at = None;
         self.churn.clear();
         self.copied_at = None;
+        self.copied_by.clear();
         self.stills.clear();
         self.copies.clear();
         self.restarting = true;
@@ -1045,18 +1086,25 @@ impl TilesEncoder {
             return;
         }
         let mut seen = HashSet::new();
+        let (mirror, stride, size, cache, keys) = (&self.mirror, self.stride, self.size, &self.cache, &mut self.keys);
+        let cell_area = |cell: (u16, u16)| CellBox::of(cell).to_area(size).expect("a tile of the desktop");
         let jobs: Vec<progressive::Job> = stills
             .iter()
             .flat_map(|&area| tiles_of(area))
             .filter(|&(cell, part)| {
-                let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                seen.insert(cell) && !(whole && self.cache.find(tile_key(&self.mirror, self.stride, part).0).is_some())
+                let whole = part.w() == TILE && part.h() == TILE && part == cell_area(cell);
+                seen.insert(cell) && !(whole && cache.find(keys.entry(cell).or_insert_with(|| tile_key(mirror, stride, part)).0).is_some())
             })
             .map(|(cell, _)| {
-                let area = self.cell_area(cell);
-                progressive::Job { cell, at: usize::from(area.top) * self.stride + usize::from(area.left) * 4, w: usize::from(area.w()), h: usize::from(area.h()) }
+                let area = cell_area(cell);
+                progressive::Job { cell, at: usize::from(area.top) * stride + usize::from(area.left) * 4, w: usize::from(area.w()), h: usize::from(area.h()) }
             })
             .collect();
+        // A few tiles are coded as they are sent, on this thread: waking the
+        // pool for them costs more than it saves.
+        if jobs.len() < PRECODE_LEAST {
+            return;
+        }
         let stage = self.first_stage();
         self.progressive.as_mut().expect("progressive").precode(&jobs, &self.mirror, self.stride, stage, PROGRESSIVE_SLACK);
     }
@@ -1087,10 +1135,14 @@ impl TilesEncoder {
             out.out.extend_from_slice(&block);
             out.length(from, header_at, header)?;
         }
+        // An upgrade is no change: the tile stays owed from when it last
+        // changed, so its next stage is ready at once.
         if settled {
             self.debts.remove(&cell);
-        } else {
+        } else if pass == ProgressivePass::First {
             self.debts.insert(cell, now);
+        } else {
+            self.debts.entry(cell).or_insert(now);
         }
         Ok(settled)
     }
@@ -1133,6 +1185,8 @@ impl TilesEncoder {
         let copies = self.find_copies(pixels, stride, &areas, &differ, now);
         if !copies.is_empty() {
             self.copied_at = Some(now);
+            self.copied_by = copies.iter().map(|copy| (i32::from(copy.src.0) - i32::from(copy.dst.left), i32::from(copy.src.1) - i32::from(copy.dst.top))).collect();
+            self.copied_by.dedup();
         }
         // A copy draws what the client holds of its source over every tile it
         // touches, changed or not: each is owed what the source is owed, and
@@ -1287,12 +1341,25 @@ impl TilesEncoder {
                     *found.entry(*offset).or_default() += 1;
                 }
             }
+            // The offsets the last read's copies were at, checked whatever
+            // the scan found of them: a window dragged on moves as it did,
+            // and its text, found at too many places to say anything, leaves
+            // the scan too few runs that agree (measured: a terminal dragged
+            // at 2880x1800 sent 2.2 to 3.9 times the bytes without).
+            for offset in self.copied_by.iter().filter(|offset| !tried.contains(offset)) {
+                *found.entry(*offset).or_default() = usize::MAX;
+            }
             let mut found: Vec<((i32, i32), usize)> = found.into_iter().collect();
             found.sort_unstable_by_key(|&(offset, seeds)| (Reverse(seeds), offset));
             found.truncate(MAX_CHECKED);
             let mut offsets: Vec<((i32, i32), Vec<usize>)> = found
                 .into_iter()
-                .map(|(offset, _)| (offset, (0..probes.len()).filter(|&i| hits[i].len() <= MAX_PROBE_HITS && matches(&probes[i], offset)).collect::<Vec<_>>()))
+                .map(|(offset, _)| {
+                    // At an offset a copy was at, every probe found there
+                    // counts, those found at many places too.
+                    let known = self.copied_by.contains(&offset);
+                    (offset, (0..probes.len()).filter(|&i| (known || hits[i].len() <= MAX_PROBE_HITS) && matches(&probes[i], offset)).collect::<Vec<_>>())
+                })
                 .filter(|(_, seeds)| seeds.len() >= 2)
                 .collect();
             offsets.sort_unstable_by_key(|(offset, seeds)| (Reverse(seeds.len()), *offset));
@@ -1512,6 +1579,9 @@ impl TilesEncoder {
     /// Tens of milliseconds for a desktop that changed all over. An error
     /// takes back the rectangle it was in, and leaves the ones before it.
     pub fn encode(&mut self, now: Duration, out: &mut Vec<u8>) -> Result<Update, TilesError> {
+        // Keys of the picture an encode that failed was coding, before
+        // anything here can fail.
+        self.keys.clear();
         let mut out = Out { out, count: 0, keyframe: false };
         for (id, area) in std::mem::take(&mut self.ended) {
             out.end(id, area);
@@ -1532,9 +1602,15 @@ impl TilesEncoder {
         }
         let brought = out.count;
         if now >= self.next_tick {
-            self.next_tick = now + CLEANUP_TICK;
-            self.tick(now, &mut out)?;
+            // On a quiet desktop a tick its budget cut short is owed again at
+            // the next update's turn, which waits for this one's fence: the
+            // settle goes as fast as the link takes it. While it moves, a
+            // tick alone between its updates would hold back the next, and
+            // start the walk's verdicts over.
+            let more = self.tick(now, &mut out)?;
+            self.next_tick = if more && self.quiet(now) { now } else { now + CLEANUP_TICK };
         }
+        self.settling = out.count > brought;
         // What the streams that ended here had not carried, after their ENDs.
         let stills = std::mem::take(&mut self.stills);
         self.precode(&stills);
@@ -1543,9 +1619,35 @@ impl TilesEncoder {
         }
         if let Some(enc) = &mut self.progressive {
             enc.drop_ready();
+            self.keys.clear();
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
-        Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0 })
+        Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0, stopped: brought == 0 && self.quiet(now) })
+    }
+
+    /// How long the last update queued on its way: its fence's round trip
+    /// less the link's own, the least of the last minute's as the walk keeps
+    /// it ([`crate::walk::QualityWalk::floor`]), or where the client has no
+    /// fence how long its write blocked. One that
+    /// carried a settle and crossed within [`SETTLE_QUICK`] lets the next
+    /// tick send twice the bytes, up to [`SETTLE_BYTES`]; one that took
+    /// [`SETTLE_LATE`] or more, half, down to [`SETTLE_BYTES_LEAST`]. So a
+    /// desktop that stops settles as fast as the link carries it, whatever
+    /// the walk's dial, and a settle never queues on a link with no room.
+    pub fn delivered(&mut self, took: Duration) {
+        if !std::mem::take(&mut self.settling) {
+            return;
+        }
+        if took <= SETTLE_QUICK {
+            self.settle_bytes = (self.settle_bytes * 2).min(SETTLE_BYTES);
+        } else if took >= SETTLE_LATE {
+            self.settle_bytes = (self.settle_bytes / 2).max(SETTLE_BYTES_LEAST);
+        }
+    }
+
+    /// No tile has changed for [`CLEANUP_IDLE`].
+    fn quiet(&self, now: Duration) -> bool {
+        now.saturating_sub(self.changed_at) >= CLEANUP_IDLE
     }
 
     /// Whether anything is owed that no read will bring: a stream is live, or
@@ -1613,7 +1715,7 @@ impl TilesEncoder {
         let tiles: Vec<StillTile> = tiles_of(area)
             .map(|(cell, part)| {
                 let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                (cell, part, whole.then(|| tile_key(&self.mirror, self.stride, part)))
+                (cell, part, whole.then(|| self.keys.remove(&cell).unwrap_or_else(|| tile_key(&self.mirror, self.stride, part))))
             })
             .collect();
         for (cell, part, key) in tiles {
@@ -1810,12 +1912,15 @@ impl TilesEncoder {
     /// The streams whose motion stopped ended, and the tiles still for
     /// [`CLEANUP_IDLE`] settled — a PNG, or a progressive tile's next
     /// upgrade — as runs along a row, the oldest
-    /// runs first until [`SETTLE_BYTES`] are sent, of the [`SETTLE_TILES`]
-    /// longest owed, or [`SETTLE_TILES_BELOW`] while the walk is below the
-    /// ceiling — none while the walk is
+    /// runs first until [`SETTLE_BYTES`] are sent while the walk stands at
+    /// the ceiling; below it [`SETTLE_BYTES_LEAST`] while the desktop moves,
+    /// and once it is quiet the bytes the link was found to take
+    /// ([`Self::delivered`]); of the [`SETTLE_TILES`]
+    /// longest owed — none while the walk is
     /// coarse, since the link is behind on what it has, until the desktop has
-    /// been still for [`COARSE_QUIET`].
-    fn tick(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    /// been still for [`COARSE_QUIET`]. Whether it stopped short of a tile
+    /// that was ready.
+    fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
         let mut unsent = Vec::new();
         for live in self.live.extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE) {
             if live.started {
@@ -1826,37 +1931,60 @@ impl TilesEncoder {
         self.cover();
         self.owe(&unsent);
         if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
-            return Ok(());
+            return Ok(false);
         }
 
         let mut ready: Vec<((u16, u16), Duration)> = self.debts.iter().filter(|(cell, at)| !self.covered.contains(*cell) && now.saturating_sub(**at) >= CLEANUP_IDLE).map(|(cell, at)| (*cell, *at)).collect();
-        ready.sort_unstable_by_key(|((col, row), at)| (*at, *row, *col));
-        ready.truncate(if self.quality < self.ceiling { SETTLE_TILES_BELOW } else { SETTLE_TILES });
+        // The coarsest progressive tiles first, so the picture is refined
+        // all over a stage at a time, as the host's is; then the longest owed.
+        let stage = |cell: (u16, u16)| self.progressive.as_ref().and_then(|enc| enc.stage_of(cell)).unwrap_or(0);
+        ready.sort_unstable_by_key(|&(cell, at)| (stage(cell), at, cell.1, cell.0));
+        let mut more = ready.len() > SETTLE_TILES;
+        ready.truncate(SETTLE_TILES);
         ready.sort_unstable_by_key(|((col, row), _)| (*row, *col));
-        // Each run with the time its oldest tile was owed from, and sent
-        // oldest first.
-        let mut runs: Vec<(CellBox, Duration)> = Vec::new();
+        // Each run with the coarsest stage of its tiles and the time its
+        // oldest was owed from, and sent coarsest, then oldest, first.
+        let mut runs: Vec<(CellBox, (usize, Duration))> = Vec::new();
         for ((col, row), at) in ready {
+            let first = (stage((col, row)), at);
             match runs.last_mut() {
                 Some((run, oldest)) if run.r0 == row && run.c1.checked_add(1) == Some(col) => {
                     run.c1 = col;
-                    *oldest = (*oldest).min(at);
+                    *oldest = (*oldest).min(first);
                 }
-                _ => runs.push((CellBox::of((col, row)), at)),
+                _ => runs.push((CellBox::of((col, row)), first)),
             }
         }
         runs.sort_by_key(|(run, oldest)| (*oldest, run.r0, run.c0));
+        // At the ceiling the walk found the link with room: the most. Below
+        // it the link is short of bytes, for the motion itself while the
+        // desktop moves: the least; once it is quiet, what the link was found
+        // to take.
+        let budget = if self.quality >= self.ceiling {
+            SETTLE_BYTES
+        } else if self.quiet(now) {
+            self.settle_bytes
+        } else {
+            SETTLE_BYTES_LEAST
+        };
         let from = out.out.len();
-        for (run, _) in runs {
-            if out.out.len() - from >= SETTLE_BYTES {
+        'runs: for (run, _) in runs {
+            if out.out.len() - from >= budget {
+                more = true;
                 break;
             }
             if let Some(area) = run.to_area(self.size) {
                 if self.progressive.is_some() {
                     // A whole tile not one colour that settles is stored
-                    // settled, as a PNG is.
+                    // settled, as a PNG is. The bytes are counted a tile at
+                    // a time, a row of them being up to 60 of a 4K desktop.
                     for (cell, part) in tiles_of(area) {
+                        if out.out.len() - from >= budget {
+                            more = true;
+                            break 'runs;
+                        }
                         let settled = self.progressive_tile(cell, ProgressivePass::Upgrade, now, out)?;
+                        more |= !settled;
                         if settled
                             && part == self.cell_area(cell)
                             && part.w() == TILE
@@ -1872,7 +2000,7 @@ impl TilesEncoder {
                 }
             }
         }
-        Ok(())
+        Ok(more)
     }
 }
 
@@ -2239,6 +2367,7 @@ mod tests {
         encoder.read(pixels, stride, changed, now).unwrap();
         let mut out = Vec::new();
         let update = encoder.encode(now, &mut out).unwrap();
+        encoder.delivered(Duration::ZERO);
         page.draw(update.rects, &out);
         update
     }
@@ -2251,6 +2380,7 @@ mod tests {
             now = now.max(at);
             out.clear();
             let update = encoder.encode(now, &mut out).unwrap();
+            encoder.delivered(Duration::ZERO);
             page.draw(update.rects, &out);
             assert!(now < ms(60_000), "never settled");
         }
@@ -2460,8 +2590,11 @@ mod tests {
         assert!(!encoder.owed(), "kept settled");
     }
 
-    /// A tick sends the oldest runs owed: below the ceiling
-    /// [`SETTLE_TILES_BELOW`] tiles, at it until [`SETTLE_BYTES`] are sent.
+    /// Below the ceiling, on a quiet desktop, a tick sends the oldest owed
+    /// until its bytes are spent, and the next is owed at once:
+    /// [`SETTLE_BYTES_LEAST`] at first, twice that after an update that
+    /// crossed quickly, half after one that queued, and the least again once
+    /// the walk steps down.
     #[test]
     fn a_tick_sends_the_oldest_until_its_bytes_are_spent() {
         let (w, h) = (1024u16, 1024u16);
@@ -2478,28 +2611,37 @@ mod tests {
         // tick has upgraded since.
         let top = |encoder: &TilesEncoder| (0..16).all(|col| encoder.debts.get(&(col, 0)) == Some(&ms(300)));
 
-        let mut out = Vec::new();
-        let at = encoder.tick_at().unwrap();
+        // Each tick's bytes, and the tiles it sent, its fence back in `took`.
+        let tick = |encoder: &mut TilesEncoder, page: &mut Page, took: Duration| {
+            let mut out = Vec::new();
+            // Quiet from the top row's change on.
+            let at = encoder.tick_at().unwrap().max(ms(300) + CLEANUP_IDLE);
+            let sent = page.progressives;
+            let tick = encoder.encode(at, &mut out).unwrap();
+            encoder.delivered(took);
+            page.draw(tick.rects, &out);
+            assert_eq!(encoder.tick_at(), Some(at), "more owed at once");
+            (at, out.len(), page.progressives - sent)
+        };
+        let (at, first, tiles) = tick(&mut encoder, &mut page, Duration::ZERO);
         assert!(at >= CLEANUP_IDLE, "the first owed once still: {at:?}");
-        let sent = page.progressives;
-        let tick = encoder.encode(at, &mut out).unwrap();
-        page.draw(tick.rects, &out);
-        assert_eq!(page.progressives - sent, SETTLE_TILES_BELOW, "below the ceiling, {SETTLE_TILES_BELOW} tiles");
+        let tile = first / tiles;
+        assert!(first >= SETTLE_BYTES_LEAST && first < SETTLE_BYTES_LEAST + 2 * tile, "{first} bytes, {tiles} tiles");
         assert!(top(&encoder), "the oldest first");
-
+        let (_, quick, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
+        assert!(quick >= 2 * SETTLE_BYTES_LEAST && quick < 2 * SETTLE_BYTES_LEAST + 2 * tile, "twice after a quick one: {quick}");
+        let (_, late, _) = tick(&mut encoder, &mut page, Duration::ZERO);
+        assert!(late >= SETTLE_BYTES_LEAST && late < SETTLE_BYTES_LEAST + 2 * tile, "half after a late one: {late}");
+        assert!(top(&encoder), "the oldest first");
+        // Twice that after a quick one, until the walk steps down: then the
+        // least again.
+        encoder.set_pace(10, false);
+        let (_, stepped, _) = tick(&mut encoder, &mut page, Duration::ZERO);
+        assert!(stepped >= SETTLE_BYTES_LEAST && stepped < SETTLE_BYTES_LEAST + 2 * tile, "the least after a step down: {stepped}");
+        // At the ceiling, the most.
         encoder.set_pace(90, false);
-        out.clear();
-        let at = encoder.tick_at().unwrap();
-        let sent = page.progressives;
-        let tick = encoder.encode(at, &mut out).unwrap();
-        page.draw(tick.rects, &out);
-        let upgraded = page.progressives - sent;
-        assert!(upgraded > SETTLE_TILES_BELOW && upgraded < 256 - SETTLE_TILES_BELOW, "at the ceiling more, and not all: {upgraded}");
-        // Each run is a row of 16 tiles, and the last one is sent only while
-        // what came before it is under the bytes.
-        let run = out.len() / (upgraded / 16);
-        assert!(out.len() >= SETTLE_BYTES && out.len() < SETTLE_BYTES + 2 * run, "{} bytes, runs of {run}", out.len());
-        assert!(top(&encoder), "the oldest first");
+        let (at, most, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
+        assert!(most >= SETTLE_BYTES && most < SETTLE_BYTES + 2 * tile, "at the ceiling: {most}");
         settle(&mut encoder, &mut page, at);
         assert!(!encoder.owed());
     }
@@ -2622,6 +2764,8 @@ mod tests {
     /// stopping owes — a progressive tile's upgrade, a stream's end —
     /// with a read before it that changed nothing or none, and not once a
     /// read brought anything; the session hands the walk no verdict of it.
+    /// Stopped where nothing changed for half a second before it, and not
+    /// between a typist's keys.
     #[test]
     fn an_update_of_the_tick_alone_says_so() {
         let (w, h) = (256u16, 128u16);
@@ -2646,15 +2790,31 @@ mod tests {
             }
             assert!(paid.tick);
         };
-        assert!(paid.rects > 0 && paid.tick, "the debt, an upgrade: {paid:?}");
+        assert!(paid.rects > 0 && paid.tick && paid.stopped, "the debt, an upgrade, the desktop stopped: {paid:?}");
         let now = settle(&mut encoder, &mut page, now + ms(100));
         assert!(!encoder.owed());
+
+        // A tick between a typist's keys: the first key's debt, paid while
+        // the second's change is under half a second old.
+        let other = Rect { x: 192, y: 64, width: 64, height: 64 };
+        paint(&mut pixels, w, busy, 25);
+        update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
+        paint(&mut pixels, w, other, 26);
+        update(&mut encoder, &mut page, &pixels, Some(&[other]), now + ms(500));
+        let between = loop {
+            let at = encoder.tick_at().expect("owed");
+            let paid = update(&mut encoder, &mut page, &pixels, Some(&[]), at);
+            if paid.rects > 0 {
+                break paid;
+            }
+        };
+        assert!(between.tick && !between.stopped, "the tick's alone, the desktop not stopped: {between:?}");
+        let now = settle(&mut encoder, &mut page, now + ms(600));
 
         // A change read at the tick's time is the read's, debts and all.
         paint(&mut pixels, w, busy, 23);
         update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
         let at = encoder.tick_at().expect("owed again");
-        let other = Rect { x: 192, y: 64, width: 64, height: 64 };
         paint(&mut pixels, w, other, 24);
         let both = update(&mut encoder, &mut page, &pixels, Some(&[other]), at);
         assert!(both.rects > 0 && !both.tick, "a change and the tick: {both:?}");
@@ -3126,6 +3286,39 @@ mod tests {
         assert_eq!(page.copies, 1, "the window");
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed());
+    }
+
+    /// A window whose every run is found at too many places for the scan to
+    /// agree on any, dragged on as it was dragged before, is a copy at the
+    /// offset it moved by then.
+    #[test]
+    fn a_window_dragged_on_is_a_copy_where_it_went_before() {
+        let (w, h) = (512u16, 384u16);
+        let desktop = vec![128; usize::from(w) * usize::from(h) * 4];
+        let place = |at: (u16, u16)| {
+            let mut pixels = desktop.clone();
+            for row in 0..128 {
+                for col in 0..192 {
+                    let v = if (col % 8 < 3) ^ (row % 6 < 2) { 40 } else { 220 };
+                    let to = ((usize::from(at.1) + row) * usize::from(w) + usize::from(at.0) + col) * 4;
+                    pixels[to..to + 4].copy_from_slice(&[v, v, v, 0]);
+                }
+            }
+            pixels
+        };
+        let drag = |copied_by: Vec<(i32, i32)>| {
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
+            encoder.copied_by = copied_by;
+            let pixels = place((110, 90));
+            let moved = Rect { x: 40, y: 30, width: 192 + 70, height: 128 + 60 };
+            step(&mut encoder, &mut page, &pixels, Some(&[moved]), ms(100));
+            assert_eq!(page.off(&pixels), 0);
+            page.copies
+        };
+        assert_eq!(drag(Vec::new()), 0, "no run the scan finds says where");
+        assert!(drag(vec![(-70, -60)]) > 0, "where it went before");
     }
 
     /// Two reads before an encode, a scroll each: the second's copy reads

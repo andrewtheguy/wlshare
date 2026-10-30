@@ -178,38 +178,91 @@ static NOTHING: [i16; COEFFS * 3] = [0; COEFFS * 3];
 /// at a time, for the next tile coded: each is past jemalloc's thread cache,
 /// and a tile coded on one thread is let go on another, so a buffer of its
 /// own each was the allocator's slow path. Every one is written whole before
-/// it is read.
+/// it is read. Each thread keeps a stash of its own ([`STASH`]) and moves
+/// them to and from this one [`BATCH`] at a time, so the threads coding an
+/// update's tiles do not queue on its lock.
 static SPARE: Mutex<Spare> = Mutex::new(Spare { coefficients: Vec::new(), signs: Vec::new() });
 
+#[derive(Default)]
 struct Spare {
     coefficients: Vec<Vec<i16>>,
     signs: Vec<Vec<i8>>,
 }
 
-/// How many of each [`SPARE`] keeps: a busy update's tiles on every core.
-const SPARE_MAX: usize = 256;
+thread_local! {
+    static STASH: RefCell<Spare> = RefCell::default();
+}
+
+/// How many of each [`SPARE`] keeps: two updates of a 4K desktop changed all
+/// over, its 2,040 tiles each coded into a component's coefficients and
+/// signs while the ones they replace are still held, 125 MB at most. It
+/// holds only as many as were let go at once, so a smaller desktop's never
+/// reach it. With 256 of each, as it kept before, a 4K video's tiles went
+/// back to the allocator and came from it zeroed again every update, and
+/// the coding threads queued on the lock: a third of the encoder's time.
+const SPARE_MAX: (usize, usize) = (4096, 2048);
+
+/// How many buffers move between a thread's [`STASH`] and [`SPARE`] at once.
+const BATCH: usize = 32;
+
+/// One of a thread's stash, `pick`ed from a [`Spare`], refilled from
+/// [`SPARE`] where it has none; a new one where neither has.
+fn spare<T: Clone + Default>(pick: fn(&mut Spare) -> &mut Vec<Vec<T>>) -> Vec<T> {
+    STASH
+        .with_borrow_mut(|stash| {
+            let mine = pick(stash);
+            if mine.is_empty() {
+                let mut spare = SPARE.lock().expect("spare");
+                let shared = pick(&mut spare);
+                let at = shared.len().saturating_sub(BATCH);
+                mine.extend(shared.drain(at..));
+            }
+            mine.pop()
+        })
+        .unwrap_or_else(|| vec![T::default(); COEFFS * 3])
+}
 
 fn spare_coefficients() -> Vec<i16> {
-    SPARE.lock().expect("spare").coefficients.pop().unwrap_or_else(|| vec![0; COEFFS * 3])
+    spare(|spare| &mut spare.coefficients)
 }
 
 fn spare_signs() -> Vec<i8> {
-    SPARE.lock().expect("spare").signs.pop().unwrap_or_else(|| vec![0; COEFFS * 3])
+    spare(|spare| &mut spare.signs)
 }
 
-/// Give `coefficients` and `signs` back to [`SPARE`]; an empty one is one
-/// moved out already.
+/// Give `coefficients` and `signs` back to the thread's stash, and a
+/// [`BATCH`] of it to [`SPARE`] where it has two; an empty one is one moved
+/// out already. Past [`SPARE_MAX`] they go back to the allocator.
 fn let_go(coefficients: [&mut Vec<i16>; 2], signs: &mut Vec<i8>) {
-    let mut spare = SPARE.lock().expect("spare");
-    for c in coefficients {
-        if !c.is_empty() && spare.coefficients.len() < SPARE_MAX {
-            spare.coefficients.push(std::mem::take(c));
+    // A thread's stash is gone once it ends: a tile let go then goes back to
+    // the allocator.
+    let _ = STASH.try_with(|stash| {
+        let mut stash = stash.borrow_mut();
+        stash.coefficients.extend(coefficients.into_iter().filter(|c| !c.is_empty()).map(std::mem::take));
+        if !signs.is_empty() {
+            stash.signs.push(std::mem::take(signs));
         }
-    }
-    if !signs.is_empty() && spare.signs.len() < SPARE_MAX {
-        spare.signs.push(std::mem::take(signs));
-    }
+        if stash.coefficients.len() >= 2 * BATCH || stash.signs.len() >= 2 * BATCH {
+            let mut spare = SPARE.lock().expect("spare");
+            give(&mut stash.coefficients, &mut spare.coefficients, SPARE_MAX.0);
+            give(&mut stash.signs, &mut spare.signs, SPARE_MAX.1);
+        }
+    });
 }
+
+/// A [`BATCH`] of `mine` to `shared`, as many as fit under `most`, the rest
+/// to the allocator.
+fn give<T>(mine: &mut Vec<Vec<T>>, shared: &mut Vec<Vec<T>>, most: usize) {
+    let at = mine.len().saturating_sub(BATCH);
+    let room = most.saturating_sub(shared.len());
+    shared.extend(mine.drain(at..).take(room));
+}
+
+/// The fewest tiles a thread of the pool takes at once in
+/// [`Encoder::precode`]: a tile a task woke every thread for each update's
+/// few tiles, which then spun idle (measured: 1 to 22% less of the
+/// processor over the samples than a tile a task).
+const TASK_TILES: usize = 4;
 
 /// A tile [`Encoder::precode`] codes: its cell, where its pixels start, and
 /// its width and height under the picture's edge.
@@ -233,14 +286,11 @@ impl Encoder {
     /// do.
     pub fn precode(&mut self, jobs: &[Job], pixels: &[u8], stride: usize, stage: usize, slack: f32) {
         let (tables, tiles) = (&self.tables, &self.tiles);
-        let done: Vec<_> = jobs
-            .par_iter()
-            .with_max_len(1)
-            .map(|job| {
-                let (pass, held) = SCRATCH.with_borrow_mut(|scratch| code_tile(tables, scratch, job.cell, tiles.get(&job.cell), &pixels[job.at..], stride, job.w, job.h, stage, Some(slack)));
-                (job.cell, pass, held)
-            })
-            .collect();
+        let code = |job: &Job| {
+            let (pass, held) = SCRATCH.with_borrow_mut(|scratch| code_tile(tables, scratch, job.cell, tiles.get(&job.cell), &pixels[job.at..], stride, job.w, job.h, stage, Some(slack)));
+            (job.cell, pass, held)
+        };
+        let done: Vec<_> = jobs.par_iter().with_min_len(TASK_TILES).map(code).collect();
         for (cell, pass, held) in done {
             self.ready.insert(cell, Ready { stage, slack, pass, held });
         }
@@ -292,10 +342,11 @@ impl Encoder {
     /// first pass there costs at most `slack` times the one at `stage`, or
     /// 64 bytes more, as a flat tile's does: refining it would cost more
     /// than the difference. Otherwise at `stage`. The full stage is tried
-    /// only where it could be so: the pass at `stage` under 96 bytes, or the
-    /// full stage keeping at most half as many coefficients again and 32 more
-    /// (measured: every tile sent whole over the window and mixed sessions at
-    /// 1920x1080, from a fifth of the tries).
+    /// only where it could be so: where the bits `stage` holds back, in bytes,
+    /// and the coefficients it holds back whole come to at most twice that
+    /// margin ([`held_back`]; measured: over the samples at three dials, 15%
+    /// of the tiles tried where the rule before tried 26%, and 99.6% of those
+    /// sent whole found, where it was all of them).
     #[allow(clippy::too_many_arguments)]
     pub fn first_or_full(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: f32) -> Pass {
         let (pass, held) = match self.ready.remove(&cell) {
@@ -434,33 +485,39 @@ fn code_tile_in(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before
     let Some(slack) = slack.filter(|_| stage != full) else {
         return code_first(tables, scratch, cell, before, &target, stage).into_held(target, tables.stages[stage].shifts);
     };
-    let (kept_full, kept) = kept(tables, &target, stage);
+    let (held_back, zeroed) = held_back(tables, &target, stage);
     let coarse = code_first(tables, scratch, cell, before, &target, stage);
-    if coarse.pass.block.len() >= 96 && kept_full * 2 > kept * 3 + 64 {
+    let len = coarse.pass.block.len() as f32;
+    if held_back as f32 / 8.0 + zeroed as f32 > 2.0 * (len * (slack - 1.0)).max(64.0) {
         return coarse.into_held(target, tables.stages[stage].shifts);
     }
     let whole = code_first(tables, scratch, cell, before, &target, full);
-    let len = coarse.pass.block.len() as f32;
     if whole.pass.block.len() as f32 <= (len * slack).max(len + 64.0) {
         return whole.into_held(target, tables.stages[full].shifts);
     }
     coarse.into_held(target, tables.stages[stage].shifts)
 }
 
-/// How many of `target`'s coefficients are not zero, and how many of them
-/// the shifts of `stage` keep.
+/// What the full stage would add to a first pass at `stage`, in what it
+/// costs: the bits `stage` holds back of `target`'s coefficients, each as
+/// many as its magnitude has of them, and how many it holds back whole, each
+/// a value the full stage codes where `stage` codes a zero. A stage holds back
+/// a few bits at most, so each is a compare a coefficient.
 #[inline(always)]
-fn kept(tables: &Tables, target: &[i16], stage: usize) -> (u32, u32) {
-    let (mut all, mut kept) = (0, 0);
+fn held_back(tables: &Tables, target: &[i16], stage: usize) -> (u32, u32) {
+    let (mut bits, mut zeroed) = (0, 0);
     for (c, shifts) in tables.stages[stage].shifts.iter().enumerate() {
         for (&(at, len), &shift) in BANDS.iter().zip(&shifts.0) {
-            for &t in &target[c * COEFFS + at..c * COEFFS + at + len] {
-                all += u32::from(t != 0);
-                kept += u32::from(i32::from(t).abs() >> shift != 0);
+            let band = &target[c * COEFFS + at..c * COEFFS + at + len];
+            for k in 0..shift {
+                bits += band.iter().map(|&t| u32::from(i32::from(t).unsigned_abs() >> k != 0)).sum::<u32>();
+            }
+            if shift > 0 {
+                zeroed += band.iter().map(|&t| u32::from(t != 0 && i32::from(t).unsigned_abs() >> shift == 0)).sum::<u32>();
             }
         }
     }
-    (all, kept)
+    (bits, zeroed)
 }
 
 /// The tile's quantized coefficients: YCbCr, the wavelet, the quantizer.
