@@ -1075,7 +1075,7 @@ impl Session {
                         let delivery = now.saturating_duration_since(sent);
                         let moved = self.walk.fenced(delivery, verdict, now);
                         if let Some(encoder) = self.tiles.as_mut().filter(|_| self.use_tiles) {
-                            encoder.delivered(delivery);
+                            encoder.delivered(delivery.saturating_sub(self.walk.floor()));
                         }
                         if moved.is_some() {
                             debug!("client {}: the frame before took {}ms to deliver", self.id.0, delivery.as_millis());

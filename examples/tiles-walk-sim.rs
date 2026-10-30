@@ -465,7 +465,6 @@ fn main() -> Result<(), Error> {
         quiet = update.stopped;
         update_sent = Some(sent);
         let delivery = back - sent;
-        encoder.delivered(delivery);
         let verdict = !update.keyframe && !update.tick;
         let latency = painted.saturating_sub(d.at);
         shown.extend(unshown.drain(..).map(|at: Duration| (painted - at).as_secs_f64() * 1e3));
@@ -482,6 +481,7 @@ fn main() -> Result<(), Error> {
         // The fence comes back; the next update waits for it.
         now = back;
         let moved = walk.fenced(delivery, verdict, base + now);
+        encoder.delivered(delivery.saturating_sub(walk.floor()));
         if let Some(t) = &mut timeline {
             let kind = if update.keyframe { "key" } else if update.tick { "tick" } else { "frame" };
             let (stills, streams) = split(&out)?;

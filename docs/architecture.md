@@ -907,8 +907,11 @@ the picture.
   the walk is at the ceiling those are 256 KiB. Below it, where the link is
   short of bytes, they are 8 KiB while the desktop moves; once it has been
   still for half a second, what the link was found to take: twice the last
-  look's after an update that carried one and crossed within 30 ms, half
-  after one that took 60 ms or more, from 8 to 256 KiB. On a still desktop
+  look's after an update that carried one and queued under 30 ms, its
+  fence's round trip less the link's own as the walk keeps it, half after
+  one that queued 60 ms or more, from 8 to 256 KiB, and 8 again whenever
+  the walk steps down, which says the link is short of what it was. On a
+  still desktop
   a look its bytes cut short is owed again at once, after its update's
   fence, so the settle goes as fast as the link carries it rather than a
   look a quarter of a second, 40 tiles of a 4K desktop at a time: one that

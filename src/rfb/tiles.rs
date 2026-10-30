@@ -1003,6 +1003,11 @@ impl TilesEncoder {
     /// the walk has slowed the frames, which holds the upgrades owed until
     /// it has not. A held list's pace is its ceiling, never coarse.
     pub fn set_pace(&mut self, quality: u8, coarse: bool) {
+        // A walk that steps down found the link short of what it was: what a
+        // settle was found to take before says nothing of it now.
+        if quality < self.quality || (coarse && !self.coarse) {
+            self.settle_bytes = SETTLE_BYTES_LEAST;
+        }
         self.coarse = coarse;
         self.quality = quality;
     }
@@ -1574,6 +1579,9 @@ impl TilesEncoder {
     /// Tens of milliseconds for a desktop that changed all over. An error
     /// takes back the rectangle it was in, and leaves the ones before it.
     pub fn encode(&mut self, now: Duration, out: &mut Vec<u8>) -> Result<Update, TilesError> {
+        // Keys of the picture an encode that failed was coding, before
+        // anything here can fail.
+        self.keys.clear();
         let mut out = Out { out, count: 0, keyframe: false };
         for (id, area) in std::mem::take(&mut self.ended) {
             out.end(id, area);
@@ -1617,8 +1625,10 @@ impl TilesEncoder {
         Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0, stopped: brought == 0 && self.quiet(now) })
     }
 
-    /// How long the last update took to cross: its fence's round trip, or
-    /// where the client has no fence how long its write blocked. One that
+    /// How long the last update queued on its way: its fence's round trip
+    /// less the link's own, the least of the last minute's as the walk keeps
+    /// it ([`crate::walk::QualityWalk::floor`]), or where the client has no
+    /// fence how long its write blocked. One that
     /// carried a settle and crossed within [`SETTLE_QUICK`] lets the next
     /// tick send twice the bytes, up to [`SETTLE_BYTES`]; one that took
     /// [`SETTLE_LATE`] or more, half, down to [`SETTLE_BYTES_LEAST`]. So a
@@ -2583,7 +2593,8 @@ mod tests {
     /// Below the ceiling, on a quiet desktop, a tick sends the oldest owed
     /// until its bytes are spent, and the next is owed at once:
     /// [`SETTLE_BYTES_LEAST`] at first, twice that after an update that
-    /// crossed quickly, half after one that queued.
+    /// crossed quickly, half after one that queued, and the least again once
+    /// the walk steps down.
     #[test]
     fn a_tick_sends_the_oldest_until_its_bytes_are_spent() {
         let (w, h) = (1024u16, 1024u16);
@@ -2622,6 +2633,11 @@ mod tests {
         let (_, late, _) = tick(&mut encoder, &mut page, Duration::ZERO);
         assert!(late >= SETTLE_BYTES_LEAST && late < SETTLE_BYTES_LEAST + 2 * tile, "half after a late one: {late}");
         assert!(top(&encoder), "the oldest first");
+        // Twice that after a quick one, until the walk steps down: then the
+        // least again.
+        encoder.set_pace(10, false);
+        let (_, stepped, _) = tick(&mut encoder, &mut page, Duration::ZERO);
+        assert!(stepped >= SETTLE_BYTES_LEAST && stepped < SETTLE_BYTES_LEAST + 2 * tile, "the least after a step down: {stepped}");
         // At the ceiling, the most.
         encoder.set_pace(90, false);
         let (at, most, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
