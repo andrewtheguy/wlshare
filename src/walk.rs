@@ -44,6 +44,8 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use wlshare_proto::tiles::TilesPicture;
+
 use crate::rfb::{QUALITY_MAX, QUALITY_MIN};
 
 /// How long writing a frame may block before it counts as one the link could
@@ -281,6 +283,33 @@ pub struct QualityWalk {
 }
 
 impl QualityWalk {
+    /// The walk a tiles picture is paced by, `frame` apart at most: a
+    /// progressive one's walks the dial from wlshare's down by the lag its
+    /// fences show, and the frames once the dial is on its floor; a lossless
+    /// one's has no dial to walk, so its ceiling is the floor and the lag
+    /// slows its frames alone; a held one's hears no lag, only a blocked
+    /// write.
+    pub fn tiles(picture: TilesPicture, frame: Duration) -> Self {
+        match picture {
+            TilesPicture::Progressive => Self::new(crate::rfb::QUALITY, frame, true),
+            TilesPicture::Lossless => Self::new(QUALITY_FLOOR, frame, true),
+            TilesPicture::Held => Self::new(crate::rfb::QUALITY, frame, false),
+        }
+    }
+
+    /// The dial and the coarseness a tiles picture paced by this walk is
+    /// coded at ([`crate::rfb::tiles::TilesEncoder::set_pace`]): the walk's
+    /// where it walks; wlshare's dial and never coarse where the client
+    /// holds it — every still lossless and the streams at the dial whatever
+    /// the link does, the walk slowing the frames alone — and where it is
+    /// lossless, which no dial touches.
+    pub fn tiles_pace(&self, picture: TilesPicture) -> (u8, bool) {
+        match picture {
+            TilesPicture::Progressive => (self.quality, self.slowed()),
+            TilesPicture::Held | TilesPicture::Lossless => (crate::rfb::QUALITY, false),
+        }
+    }
+
     /// A walk that starts at `ceiling` and goes down to [`QUALITY_FLOOR`], on
     /// frames that come `frame` apart when the link is not slowed; `adaptive`
     /// is whether the client's lag moves it, and without it only a blocked

@@ -779,3 +779,84 @@ search's rolling hash a rotating one, its chain a rotate and an xor where a
 polynomial's is two multiplies: no gain, the scan's time being its loop and
 its filter's lookups. Looking along each probe's own row and column before
 the scan: a scroll 6% cheaper, a drag a fifth dearer and 2% more bytes.
+
+## Lossless tiles
+
+The lossless picture (experimental), every tile that changed a planar
+bitmap in a zstd frame whatever moves, against the held picture, every
+still a PNG and what moves a region's H.264 stream, measured on
+2026-10-31. lab1 (eight cores of EPYC Rome, rebuilt that day), alone, the
+regions by libx264 as it has no GPU: `motion-bench --tiles-only` and
+`--tiles-only --lossless` over every sample at every size, and
+`check --lossless` over the still ones, of the bitmaps alone, framed at
+zstd's level 1, and framed as they are now. Archived in the artifacts as
+`bench/lossless-20261031/`.
+
+Every frame of every capture was exact on the page, and every still capture
+settled at once and sent nothing through 5 s of quiet and 10 redraws, each
+way. Summed over the sizes, flood for reference, the processor's time over
+every thread:
+
+| Scenario | CPU, held → lossless | Bytes, held → lossless | Bytes, the bitmaps alone |
+|---|---:|---:|---:|
+| browser | 12.1 → 14.3 s | 89 → 30 MB (0.34×) | 152 MB |
+| drag | 4.3 → 4.4 s | 6.6 → 1.0 MB (0.15×) | 9.1 MB |
+| terminal | 0.7 → 1.0 s | 9.9 → 3.3 MB (0.33×) | 28 MB |
+| uncover | 2.2 → 2.9 s | 24 → 6.4 MB (0.27×) | 30 MB |
+| video | 22.8 → 46.2 s | 324 → 2,672 MB (8.2×) | 4,648 MB |
+| walk | 36.0 → 66.7 s | 578 → 3,667 MB (6.3×) | 6,487 MB |
+| window | 6.7 → 10.3 s | 96 → 706 MB (7.3×) | 1,127 MB |
+| mixed | 75.4 → 134.0 s | 660 → 7,996 MB (12×) | 14,192 MB |
+| flood | 59.0 → 64.4 s | 2,598 → 3,143 MB (1.2×) | 5,364 MB |
+| all but flood | 160 → 280 s (1.75×) | 1,786 → 15,082 MB (8.4×) | 26,673 MB |
+
+- **The link.** Where the desktop is still, or moves by copies, it is a
+  third of the PNG's bytes or less: the planes' runs leave a page's
+  repeats, which the frame takes 5 to 10 times off where deflate's matches
+  in a PNG did less. Where it moves, it is 6 to 12 times the held
+  picture's, every moving tile sent exact at the frame rate rather than a
+  stream's: at 30 frames a second a video at 1920×1080 is 248 Mbit/s, at
+  4K 723, a video in a 4K window 249, and the mixed session 89 Mbit/s at
+  1920×1080 and 196 at 2880×1800 on the mean. On a link short of that the
+  walk slows the updates, never what a tile shows.
+- **The processor.** 1.75 times the held picture's, all of it where the
+  desktop moves: a still or a scroll costs what a PNG did, give or take a
+  fifth, and a video at 1920×1080 17.2 ms a frame against 9.9, its 95th
+  percentile 24, at 4K 72 against 33, the bitmaps and their frames each
+  about half of it. A run is packed on any core, so an update's wait is
+  its largest run's and not their sum; the time is the same. On a host
+  whose GPU codes the held picture's regions, the held picture is the
+  cheaper by more.
+- **What the frame was chosen by.** The bitmaps alone cost 1.14 times the
+  held picture's processor and were 15 times its bytes, 1.3 to 2.8 times
+  where it is still. Framed at zstd's level 1 they were 14,764 MB for
+  306 s; the fast strategy with a 4096-entry table and 7-byte matches took
+  9% off that time for 2% more bytes, a moving picture's frame being its
+  literals' entropy coding more than its matches. Offline, one zstd
+  stream across a picture's frames would have taken a desktop of pages
+  nine times more off than frames of their own do (the browser capture at
+  1920×1080: 9.0 MB of bitmaps, 1.7 MB framed, 0.2 MB as one stream) and
+  a moving picture nothing; its history is state both ends would start
+  over together, and the page's zstd decoder, ruzstd, does not hand out a
+  stream's bytes as each block ends. Levels below 1, which code no
+  literal, took a video's bitmaps 1.07 to 1.13 times smaller, where
+  level 1 took them 1.67.
+
+At 1920×1080:
+
+| Capture | Held: ms a frame, MB | Lossless: ms a frame, MB, Mbit/s at its frame rate |
+|---|---:|---:|
+| browser | 4.61, 4.0 | 5.47, 1.9, 2 |
+| terminal | 0.25, 0.6 | 0.43, 0.2, 0 |
+| drag | 1.24, 0.3 | 1.19, 0.03, 0 |
+| window | 3.90, 7.2 | 5.47, 49, 91 |
+| video | 9.94, 19.1 | 17.19, 148, 248 |
+| walk | 10.56, 34.2 | 17.90, 218, 116 |
+| mixed | 6.53, 221 | 10.59, 2,497, 89 |
+
+A Windows host set to Lossless measured the same way: at 1920×1080 a video
+in a 960×600 window came to 76 to 106 Mbit/s of planar, its bulk
+compression taking a fifth off, against 5 Mbit/s from a stock host's
+RemoteFX Progressive (zDesk's
+[Lossless, by the host's policy](https://github.com/andrewtheguy/zdesk/blob/main/docs/rdp-client.md#lossless-by-the-hosts-policy)).
+The picture is the host's, for a LAN, and costs what it costs there.

@@ -3,7 +3,7 @@
 //! gateway, the way `video-sink` checks the video encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--held]
+//! tiles-sink ADDR --size WxH [--held | --lossless]
 //!            [--seconds N] [--streams DIR] [--keys]
 //! ```
 //!
@@ -17,9 +17,10 @@
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
 //! client's parser; a PNG, a progressive tile (all a list whose dial walks
-//! is sent; `--held` holds it, for PNGs and streams), a copy and a region's
-//! START are counted, a copy's source and a progressive tile's tile checked,
-//! and with
+//! is sent; `--held` holds it, for PNGs and streams), a planar bitmap (all a
+//! lossless list is sent, `--lossless`), a copy and a region's START are
+//! counted, a copy's source and a progressive tile's tile checked, a planar
+//! body read back whole at its rectangle's size, and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -36,10 +37,15 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpStream;
+use wlshare_proto::tiles::TilesPicture;
 
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
 use crate::rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE};
+
+// The tests' reader of the lossless tiles' bodies.
+#[path = "../src/rfb/planar_decoder.rs"]
+mod planar_decoder;
 
 // The daemon's protocol module, of which the sink uses the client's half.
 #[allow(unused)]
@@ -52,8 +58,9 @@ struct Args {
     seconds: u64,
     streams: Option<String>,
     keys: bool,
-    /// The dial held, not walked: PNGs and streams, not progressive tiles.
-    held: bool,
+    /// The picture asked for: progressive tiles unless `--held` (PNGs and
+    /// streams) or `--lossless` (planar tiles).
+    picture: TilesPicture,
 }
 
 /// One region stream as it came: its rectangle, frames and bytes, and the
@@ -80,8 +87,8 @@ fn size(s: &str) -> Result<(u16, u16), String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held] [--seconds N] [--streams DIR] [--keys]")?;
-    let mut parsed = Args { addr, size: (0, 0), seconds: 10, streams: None, keys: false, held: false };
+    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held | --lossless] [--seconds N] [--streams DIR] [--keys]")?;
+    let mut parsed = Args { addr, size: (0, 0), seconds: 10, streams: None, keys: false, picture: TilesPicture::Progressive };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -89,7 +96,8 @@ fn parse_args() -> Result<Args, String> {
             "--seconds" => parsed.seconds = value()?.parse().map_err(|_| "--seconds takes a number")?,
             "--streams" => parsed.streams = Some(value()?),
             "--keys" => parsed.keys = true,
-            "--held" => parsed.held = true,
+            "--held" => parsed.picture = TilesPicture::Held,
+            "--lossless" => parsed.picture = TilesPicture::Lossless,
             other => return Err(format!("{other}: unknown flag")),
         }
     }
@@ -131,7 +139,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let init = client::read_server_init(&mut reader).await?;
     eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
 
-    let mut encodings = wlshare_proto::tiles::TilesPicture { progressive: !args.held }.encodings();
+    let mut encodings = args.picture.encodings();
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
     out.write_all(&client::set_encodings(&encodings)).await?;
@@ -152,7 +160,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut progressives, mut progressive_bytes) = (0u64, 0u64);
+    let (mut progressives, mut progressive_bytes, mut planars, mut planar_bytes) = (0u64, 0u64, 0u64, 0u64);
     let (mut pngs, mut png_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
@@ -215,6 +223,11 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 progressives += 1;
                                 progressive_bytes += block.len() as u64;
                             }
+                            RectBody::Tiles(TileBody::Planar(body)) => {
+                                planar_decoder::unpack(&body, usize::from(rect.width), usize::from(rect.height))?;
+                                planars += 1;
+                                planar_bytes += body.len() as u64;
+                            }
                             RectBody::Tiles(TileBody::Store { .. }) => {}
                             RectBody::Tiles(TileBody::Start { stream, frame }) => {
                                 if live.contains_key(&stream) {
@@ -268,7 +281,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
+            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
         }
     }
     done.extend(live.drain().map(|(_, stream)| stream));
@@ -280,7 +293,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let (x, y, w, h) = stream.rect;
         eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
     }
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
+    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
 
     Ok(())
 }

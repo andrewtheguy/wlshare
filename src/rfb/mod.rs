@@ -64,6 +64,7 @@ pub mod clipboard;
 pub mod cursor;
 pub mod msg;
 pub mod pixel;
+pub mod planar;
 pub mod progressive;
 mod rect;
 pub mod rsa_aes;

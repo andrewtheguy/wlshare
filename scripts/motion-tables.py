@@ -37,12 +37,14 @@ def mb(n):
 def bench_section(name, rows):
     out = [f"## {name}", "", "| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames lossless | ends at | detail |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for r in rows:
-        coder = "WLSV" if r["coder"] == "wlsv" else "tiles"
+        coder = {"wlsv": "WLSV", "tiles": "tiles", "lossless": "lossless tiles"}[r["coder"]]
         rate = f"{r['bytes'] * 8 / r['seconds'] / 1e6:.1f}" if r["seconds"] > 0 else "–"
         lossless = 100 * r["lossless_frames"] / r["frames"] if r["frames"] else 0
         ends = "lossless" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
         if r["coder"] == "wlsv":
             detail = f"{r['keyframes']} keyframes"
+        elif r["coder"] == "lossless":
+            detail = f"planar {mb(r['planar']):.2f} MB"
         else:
             detail = f"PNG {mb(r['png']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
         out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {lossless:.0f}% | {ends} | {detail} |")
@@ -60,14 +62,17 @@ def check_section(name, rows):
 
 def walk_section(rows):
     # walk-sim's video is at wlshare's dial throughout, its walk the frames'
-    # alone and never held; tiles-walk-sim's walks the dial from its ceiling.
+    # alone and never held; tiles-walk-sim's walks the dial from its ceiling,
+    # holds it, or, lossless, has none and walks the frames alone.
     out = ["## walk-sim", "", "| capture | picture | link Mbit/s | rtt | ceiling | walk | frames/s | motion q mean | p10 | shown mean ms | p50 | p95 | max | delivery p50 ms | p95 | Mbit/s | moves | down |", "|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in rows:
         link = ", ".join(f"{s['mbps']:g}" + (f" from {s['from_s']:g} s" if s["from_s"] else "") for s in r["link"])
         video = r["picture"] == "video"
         ceiling = r["quality"] if video else r["ceiling"]
         mean, p10 = (ceiling, ceiling) if video else (r["motion_q_mean"], r["motion_q_p10"])
-        out.append(f"| {r['capture']} | {'WLSV' if video else 'tiles'} | {link} | {r['rtt_ms']:g} | {ceiling} | {'held' if r.get('held') else 'walked'} | {r['fps']:.1f} | {mean:.1f} | {p10:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
+        picture = "WLSV" if video else r["picture"]
+        walk = "lossless" if r["picture"] == "lossless" else "held" if r.get("held") else "walked"
+        out.append(f"| {r['capture']} | {picture} | {link} | {r['rtt_ms']:g} | {ceiling} | {walk} | {r['fps']:.1f} | {mean:.1f} | {p10:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
     return out
 
 

@@ -2,11 +2,14 @@
 //! and a video stream of its own for each region that moves, for a client on
 //! a link with room to spare — or, on a list that lets the dial walk, every
 //! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
-//! client that wants the walk more than a picture that ends lossless.
+//! client that wants the walk more than a picture that ends lossless — or,
+//! on a list that asks for it lossless, every tile that changed a planar
+//! bitmap of its pixels, still or moving, and no stream, for a client on a
+//! LAN that wants every picture it is shown exact.
 //!
 //! A private encoding, [`crate::ENCODING_TILES`], beside the video encoding
 //! ([`crate::video`]) rather than in place of it: a client lists one or the
-//! other, and beside it whether it walks ([`TilesPicture`]).
+//! other, and beside it which of the three pictures ([`TilesPicture`]).
 //!
 //! A pixel update in this encoding is any number of rectangles of it, drawn in
 //! order, each a rectangle of the desktop whose body begins with a kind
@@ -22,6 +25,7 @@
 //! 5 CACHED  u16 slot             the tile kept in slot N, drawn at the rectangle
 //! 6 STORE   u16 slot             what the client holds at the rectangle, kept in slot N
 //! 7 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
+//! 8 PLANAR  u32 length | u8[length]  a zstd frame of a planar bitmap of exactly the rectangle's pixels
 //! ```
 //!
 //! - A **PNG** is the desktop's pixels in the rectangle, lossless, 8-bit RGB or
@@ -39,6 +43,18 @@
 //!   and a STORE: no PNG or stream. A first pass below the full stage is
 //!   owed its upgrades once the link has room, and the full stage is the
 //!   settled picture, lossy still: nothing is owed a lossless picture.
+//! - A **PLANAR** is the desktop's pixels in the rectangle, lossless, as
+//!   RDP 6.0 bitmap compression codes them ([MS-RDPEGDI] 2.2.2.5.1), the
+//!   graphics pipeline's planar codec ([MS-RDPEGFX] `RDPGFX_CODECID_PLANAR`):
+//!   a format header of no alpha plane (`NA`), no colour loss and no
+//!   subsampling, then the red, green and blue planes, top row first, each
+//!   run-length coded over its rows' differences (`RLE`), or else plain and
+//!   followed by a padding byte; the body is that bitmap as one zstd frame
+//!   ([RFC 8878]), and nothing after it. It depends on nothing before it, and is the
+//!   picture there until a later rectangle draws over it. It is every
+//!   rectangle of a lossless list but a COPY, a CACHED and a STORE, the
+//!   desktop changing or still: no PNG, progressive tile or stream, and
+//!   nothing is owed, since what the client is shown is already exact.
 //! - A **START** begins a stream on `stream`, over its rectangle: an H.264
 //!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
 //!   4:2:0, BT.601 at studio swing, of the rectangle's size rounded up to even
@@ -111,6 +127,8 @@ pub const KIND_STORE: u8 = 6;
 /// A RemoteFX Progressive tile block of the rectangle's tile, on a list
 /// whose dial walks.
 pub const KIND_PROGRESSIVE: u8 = 7;
+/// A zstd frame of a planar bitmap of the rectangle's pixels, on a lossless list.
+pub const KIND_PLANAR: u8 = 8;
 
 /// A tile's side: the desktop is in tiles this square from its top-left, and
 /// a STORE or a CACHED rectangle is one of them.
@@ -145,21 +163,29 @@ pub fn parse_cache_empty(buf: &[u8]) -> usize {
 }
 
 /// What a client's list asks the tiles picture to be, beside
-/// [`crate::ENCODING_TILES`]: whether it walks — progressive, every tile a
-/// RemoteFX Progressive tile, the server's dial the ceiling its first passes
-/// are coded toward while the link keeps up, walked down while it does not,
-/// nothing owed a lossless picture — or is held, `WLSD` ([`ENCODING_HELD`])
-/// beside it, every still lossless and the streams at the server's dial
-/// whatever the link does. The dial is the server's alone.
+/// [`crate::ENCODING_TILES`]. The dial is the server's alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TilesPicture {
-    pub progressive: bool,
+pub enum TilesPicture {
+    /// The encoding alone: every tile a RemoteFX Progressive tile, the
+    /// server's dial the ceiling its first passes are coded toward while the
+    /// link keeps up, walked down while it does not, nothing owed a lossless
+    /// picture.
+    Progressive,
+    /// `WLSD` ([`ENCODING_HELD`]) beside it: every still a lossless PNG and
+    /// each region that moves a stream at the server's dial, whatever the
+    /// link does.
+    Held,
+    /// `WLSL` ([`crate::ENCODING_LOSSLESS`]) beside it: every tile that
+    /// changed a lossless planar bitmap, still or moving, and no stream; the
+    /// link slows how often a change is sent, never what a tile shows.
+    Lossless,
 }
 
 impl TilesPicture {
     /// The picture `encodings` asks for, or `None` where the list does not
     /// name the encoding. A list that names the video encoding beside it is
-    /// fatal: they are two pictures, of which a client wants one.
+    /// fatal: they are two pictures, of which a client wants one; and so is
+    /// one that names both `WLSD` and `WLSL`.
     pub fn listed(encodings: &[i32]) -> Result<Option<Self>, TilesListError> {
         let has = |e: i32| encodings.contains(&e);
         if !has(crate::ENCODING_TILES) {
@@ -168,18 +194,23 @@ impl TilesPicture {
         if has(crate::ENCODING_VIDEO) {
             return Err(TilesListError::Both);
         }
-        Ok(Some(Self { progressive: !has(ENCODING_HELD) }))
+        Ok(Some(match (has(ENCODING_HELD), has(crate::ENCODING_LOSSLESS)) {
+            (true, true) => return Err(TilesListError::HeldAndLossless),
+            (true, false) => Self::Held,
+            (false, true) => Self::Lossless,
+            (false, false) => Self::Progressive,
+        }))
     }
 
     /// The list that asks for this picture: the encoding, and `WLSD` where it
-    /// is held. A client puts it ahead of the rest of its list, and lists no
-    /// video beside it.
+    /// is held or `WLSL` where it is lossless. A client puts it ahead of the
+    /// rest of its list, and lists no video beside it.
     pub fn encodings(self) -> Vec<i32> {
-        let mut listed = vec![crate::ENCODING_TILES];
-        if !self.progressive {
-            listed.push(ENCODING_HELD);
+        match self {
+            Self::Progressive => vec![crate::ENCODING_TILES],
+            Self::Held => vec![crate::ENCODING_TILES, ENCODING_HELD],
+            Self::Lossless => vec![crate::ENCODING_TILES, crate::ENCODING_LOSSLESS],
         }
-        listed
     }
 }
 
@@ -189,12 +220,14 @@ impl TilesPicture {
 pub enum TilesListError {
     #[error("the list names both the tiles and the video encoding")]
     Both,
+    #[error("the list asks for the tiles both held and lossless")]
+    HeldAndLossless,
 }
 
 /// Why a tiles rectangle's body is not one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
-    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE and PROGRESSIVE")]
+    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE and PLANAR")]
     UnknownKind(u8),
     #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
     Slot(u16),
@@ -225,13 +258,15 @@ pub enum TileHeader {
     Store { slot: u16 },
     /// A progressive tile block of `len` bytes follows.
     Progressive { len: usize },
+    /// A zstd frame of a planar bitmap, `len` bytes, follows.
+    Planar { len: usize },
 }
 
 impl TileHeader {
     /// The bytes of a header that begins with `kind`, the kind included.
     pub fn len_of(kind: u8) -> Result<usize, TilesParseError> {
         match kind {
-            KIND_PNG | KIND_COPY | KIND_PROGRESSIVE => Ok(5),
+            KIND_PNG | KIND_COPY | KIND_PROGRESSIVE | KIND_PLANAR => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
             KIND_CACHED | KIND_STORE => Ok(3),
@@ -253,6 +288,7 @@ impl TileHeader {
             Self::Cached { slot } => Self::Cached { slot },
             Self::Store { slot } => Self::Store { slot },
             Self::Progressive { .. } => Self::Progressive { len },
+            Self::Planar { .. } => Self::Planar { len },
         }
     }
 
@@ -269,6 +305,7 @@ impl TileHeader {
             Self::Cached { slot } => [&[KIND_CACHED][..], &slot.to_be_bytes()].concat(),
             Self::Store { slot } => [&[KIND_STORE][..], &slot.to_be_bytes()].concat(),
             Self::Progressive { len } => [&[KIND_PROGRESSIVE][..], &length(len)].concat(),
+            Self::Planar { len } => [&[KIND_PLANAR][..], &length(len)].concat(),
         }
     }
 
@@ -291,6 +328,7 @@ impl TileHeader {
             KIND_START => Self::Start { stream: buf[1], len: len(2)? },
             KIND_FRAME => Self::Frame { stream: buf[1], len: len(2)? },
             KIND_PROGRESSIVE => Self::Progressive { len: len(1)? },
+            KIND_PLANAR => Self::Planar { len: len(1)? },
             KIND_COPY => Self::Copy { x: u16::from_be_bytes([buf[1], buf[2]]), y: u16::from_be_bytes([buf[3], buf[4]]) },
             KIND_CACHED | KIND_STORE => {
                 let slot = u16::from_be_bytes([buf[1], buf[2]]);
@@ -312,16 +350,20 @@ mod tests {
     #[test]
     fn the_list_names_one_picture_and_whether_it_walks() {
         let listed = TilesPicture::listed;
-        assert_eq!(listed(&[crate::ENCODING_TILES, 16]), Ok(Some(TilesPicture { progressive: true })));
-        assert_eq!(listed(&[crate::ENCODING_TILES, ENCODING_HELD]), Ok(Some(TilesPicture { progressive: false })));
+        let lossless = crate::ENCODING_LOSSLESS;
+        assert_eq!(listed(&[crate::ENCODING_TILES, 16]), Ok(Some(TilesPicture::Progressive)));
+        assert_eq!(listed(&[crate::ENCODING_TILES, ENCODING_HELD]), Ok(Some(TilesPicture::Held)));
+        assert_eq!(listed(&[16, lossless, crate::ENCODING_TILES]), Ok(Some(TilesPicture::Lossless)));
         assert_eq!(listed(&[crate::ENCODING_TILES, crate::ENCODING_VIDEO]), Err(TilesListError::Both));
+        assert_eq!(listed(&[crate::ENCODING_TILES, ENCODING_HELD, lossless]), Err(TilesListError::HeldAndLossless));
         assert_eq!(listed(&[16, ENCODING_HELD]), Ok(None));
-        let progressive = TilesPicture { progressive: true };
-        let held = TilesPicture { progressive: false };
-        assert_eq!(progressive.encodings(), [crate::ENCODING_TILES]);
-        assert_eq!(held.encodings(), [crate::ENCODING_TILES, ENCODING_HELD]);
-        assert_eq!(listed(&progressive.encodings()), Ok(Some(progressive)));
-        assert_eq!(listed(&held.encodings()), Ok(Some(held)));
+        assert_eq!(listed(&[16, lossless]), Ok(None));
+        assert_eq!(TilesPicture::Progressive.encodings(), [crate::ENCODING_TILES]);
+        assert_eq!(TilesPicture::Held.encodings(), [crate::ENCODING_TILES, ENCODING_HELD]);
+        assert_eq!(TilesPicture::Lossless.encodings(), [crate::ENCODING_TILES, lossless]);
+        for picture in [TilesPicture::Progressive, TilesPicture::Held, TilesPicture::Lossless] {
+            assert_eq!(listed(&picture.encodings()), Ok(Some(picture)));
+        }
     }
 
     #[test]
@@ -342,6 +384,7 @@ mod tests {
             (TileHeader::Cached { slot: 0x0102 }, vec![5, 1, 2]),
             (TileHeader::Store { slot: 0x0FFF }, vec![6, 0x0F, 0xFF]),
             (TileHeader::Progressive { len: 0x0102 }, vec![7, 0, 0, 1, 2]),
+            (TileHeader::Planar { len: 0x01_0203 }, vec![8, 0, 1, 2, 3]),
         ] {
             assert_eq!(header.to_bytes(), bytes);
             assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -352,7 +395,7 @@ mod tests {
 
     #[test]
     fn a_length_filled_in_keeps_the_header_its_size() {
-        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Copy { x: 1, y: 2 }, TileHeader::Cached { slot: 3 }, TileHeader::Store { slot: 4 }, TileHeader::Progressive { len: 0 }] {
+        for header in [TileHeader::Png { len: 0 }, TileHeader::Start { stream: 2, len: 0 }, TileHeader::Frame { stream: 2, len: 0 }, TileHeader::End { stream: 2 }, TileHeader::Copy { x: 1, y: 2 }, TileHeader::Cached { slot: 3 }, TileHeader::Store { slot: 4 }, TileHeader::Progressive { len: 0 }, TileHeader::Planar { len: 0 }] {
             let filled = header.with_len(9);
             assert_eq!(filled.to_bytes().len(), header.to_bytes().len());
             assert_eq!(filled.to_bytes()[0], header.to_bytes()[0], "the kind is kept");
@@ -365,8 +408,9 @@ mod tests {
 
     #[test]
     fn a_bad_kind_length_or_slot_is_fatal() {
-        assert_eq!(TileHeader::parse(&[8]), Err(TilesParseError::UnknownKind(8)));
+        assert_eq!(TileHeader::parse(&[9]), Err(TilesParseError::UnknownKind(9)));
         assert_eq!(TileHeader::parse(&[7, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
+        assert_eq!(TileHeader::parse(&[8, 0, 0, 0, 0]), Err(TilesParseError::Length(0)));
         assert_eq!(TileHeader::parse(&[5, 0x10, 0]), Err(TilesParseError::Slot(4096)));
         assert_eq!(TileHeader::parse(&[6, 0xFF, 0xFF]), Err(TilesParseError::Slot(65535)));
         assert_eq!(TileHeader::parse(&[5, 0x0F, 0xFF, 9]), Ok(Some((TileHeader::Cached { slot: 4095 }, 3))), "the last slot");

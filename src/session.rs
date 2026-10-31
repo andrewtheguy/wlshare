@@ -613,7 +613,7 @@ impl Session {
             use_video: false,
             tiles: None,
             use_tiles: false,
-            tiles_picture: TilesPicture { progressive: true },
+            tiles_picture: TilesPicture::Progressive,
             tiles_origin: Instant::now(),
             tiles_quiet: false,
             keyframe_owed: false,
@@ -883,10 +883,10 @@ impl Session {
                 if let Some(picture) = listed {
                     let changed = !self.use_tiles || picture != self.tiles_picture;
                     if changed {
-                        if picture.progressive {
-                            info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, crate::rfb::QUALITY);
-                        } else {
-                            info!("client {}: asked for tiles at quality {}, held there, H.264 by {}", self.id.0, crate::rfb::QUALITY, self.config.h264.name());
+                        match picture {
+                            TilesPicture::Progressive => info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, crate::rfb::QUALITY),
+                            TilesPicture::Held => info!("client {}: asked for tiles at quality {}, held there, H.264 by {}", self.id.0, crate::rfb::QUALITY, self.config.h264.name()),
+                            TilesPicture::Lossless => info!("client {}: asked for lossless tiles, their frames walked by its lag", self.id.0),
                         }
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
@@ -909,7 +909,7 @@ impl Session {
                     if changed {
                         // A fresh walk from the ceiling, which the running
                         // streams follow with no keyframe.
-                        self.walk = QualityWalk::new(crate::rfb::QUALITY, self.config.capture, picture.progressive);
+                        self.walk = QualityWalk::tiles(picture, self.config.capture);
                         let (quality, coarse) = self.tiles_pace();
                         if let Some(encoder) = &mut self.tiles {
                             encoder.set_pace(quality, coarse);
@@ -1789,15 +1789,10 @@ impl Session {
         }
     }
 
-    /// The dial and the coarseness the tiles picture is coded at: the walk's
-    /// where it walks; where the client holds it, the ceiling and never
-    /// coarse, every still lossless and the streams at the dial whatever the
-    /// link does ([`TilesPicture`]), the walk slowing the frames alone.
+    /// The dial and the coarseness the tiles picture is coded at
+    /// ([`QualityWalk::tiles_pace`]).
     fn tiles_pace(&self) -> (u8, bool) {
-        match self.tiles_picture.progressive {
-            true => (self.walk.quality(), self.walk.slowed()),
-            false => (crate::rfb::QUALITY, false),
-        }
+        self.walk.tiles_pace(self.tiles_picture)
     }
 
     /// The damaged rectangles, each as ZRLE or — for a client that never listed
