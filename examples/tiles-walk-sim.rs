@@ -82,6 +82,9 @@ mod decode;
 #[allow(dead_code)]
 #[path = "../src/h264/mod.rs"]
 mod h264;
+// The tests' reader of the lossless tiles' bodies.
+#[path = "../src/rfb/planar_decoder.rs"]
+mod planar_decoder;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
 mod rfb;
@@ -237,8 +240,8 @@ impl Page {
                     let bgrx = Self::rgb(&buf[..info.buffer_size()]);
                     self.paste(place, &bgrx, w);
                 }
-                TileBody::Planar(bitmap) => {
-                    let (rgb, _) = rfb::planar::decoder::decode(&bitmap, w, h)?;
+                TileBody::Planar(body) => {
+                    let rgb = planar_decoder::unpack(&body, w, h)?;
                     self.paste(place, &Self::rgb(&rgb), w);
                 }
                 TileBody::Progressive(block) => {

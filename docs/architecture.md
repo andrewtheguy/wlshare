@@ -647,7 +647,7 @@ u8 kind
 5 CACHED  u16 slot                                         the tile kept in slot N, drawn here
 6 STORE   u16 slot                                         what the client holds here, kept in slot N
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
-8 PLANAR  u32 length | u8[length]                          a planar bitmap of exactly the rectangle's pixels
+8 PLANAR  u32 length | u8[length]                          a zstd frame of a planar bitmap of exactly the rectangle's pixels
 ```
 
 A PNG is the desktop's pixels there, lossless, 8-bit RGB or a palette of it,
@@ -686,7 +686,8 @@ compression codes them ([MS-RDPEGDI] 2.2.2.5.1), the graphics pipeline's
 planar codec: a format header of no alpha plane and no colour loss or
 subsampling, then the red, green and blue planes, top row first, each
 run-length coded over its rows' differences, or plain with the padding byte
-that form ends with. It depends on nothing before it, and is every
+that form ends with; the body is that bitmap as one zstd frame, and nothing
+after it. It depends on nothing before it, and is every
 rectangle of a lossless list but a COPY, a CACHED and a STORE.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
@@ -876,11 +877,19 @@ the picture.
   those as segments of bytes as they are and a run of the last of them; a
   flat 64×64 tile is a few hundred bytes, and a rectangle whose segments would
   come to more than its planes as they are, noise or a photograph's grain,
-  goes plain. It spends a little of the processor and many of the link's
-  bytes, for a LAN ([measured](tiles-performance.md#lossless-tiles)). Its
-  tests read every bitmap back with a reader of their own, written from the
-  specification, and the page decodes it with the planar codec of the
-  compositor that draws an RDP host's pipeline.
+  goes plain. Each bitmap is then one zstd frame, as a Windows host's bulk
+  compression wraps its pipeline — level 1's fast strategy with a small
+  table and long matches, a moving picture's frame being its literals'
+  entropy coding — a frame of its own, so every run of an update is packed
+  at once on every core and read alone, where one stream across the
+  picture would be state both ends start over together. A still or a
+  scroll is then a third of a PNG's bytes or less, and a desktop that moves
+  several times the held tiles' bytes and nearly twice their processor,
+  for a LAN ([measured](tiles-performance.md#lossless-tiles)). Its tests read every
+  body back with a reader of their own, written from the specification, the
+  frame by ruzstd, a zstd decoder that shares nothing with libzstd, and the
+  page decodes it with ruzstd and the planar codec of the compositor that
+  draws an RDP host's pipeline.
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
   region of a held list is H.264, by an encoder found once at startup; the client has no

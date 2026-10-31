@@ -86,6 +86,10 @@ png = "0.18"
 rayon = "1"
 # The hash the tiles' cache keys a tile by (src/rfb/tiles.rs).
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# The lossless tiles' compression stream (src/rfb/planar.rs): libzstd, built
+# from the crate's own copy of its source and linked in, so nothing is needed
+# to build or to run.
+zstd = { version = "0.13", default-features = false }
 
 # The Wayland side. wayland-client speaks the protocol in its own Rust, with no
 # libwayland linked or loaded.
@@ -140,6 +144,10 @@ cpu-time = "1"
 # — `symphonia-core` for the decoder trait and the packet it takes.
 symphonia-bundle-flac = "0.6"
 symphonia-core = "0.6"
+# The lossless tiles' tests, and the examples that draw them, read the
+# compression stream back with ruzstd, a zstd decoder in Rust that shares
+# nothing with libzstd; zDesk's page decodes with it too.
+ruzstd = "0.8"
 # `io-std` for `examples/video-sink.rs`, the client the capture container runs
 # against the daemon, which types what it reads.
 tokio = { version = "1", features = ["io-std"] }

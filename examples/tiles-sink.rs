@@ -20,7 +20,7 @@
 //! is sent; `--held` holds it, for PNGs and streams), a planar bitmap (all a
 //! lossless list is sent, `--lossless`), a copy and a region's START are
 //! counted, a copy's source and a progressive tile's tile checked, a planar
-//! bitmap read back whole at its rectangle's size, and with
+//! body read back whole at its rectangle's size, and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -42,6 +42,10 @@ use wlshare_proto::tiles::TilesPicture;
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
 use crate::rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE};
+
+// The tests' reader of the lossless tiles' bodies.
+#[path = "../src/rfb/planar_decoder.rs"]
+mod planar_decoder;
 
 // The daemon's protocol module, of which the sink uses the client's half.
 #[allow(unused)]
@@ -219,13 +223,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 progressives += 1;
                                 progressive_bytes += block.len() as u64;
                             }
-                            RectBody::Tiles(TileBody::Planar(bitmap)) => {
-                                let (_, used) = crate::rfb::planar::decoder::decode(&bitmap, usize::from(rect.width), usize::from(rect.height))?;
-                                if used != bitmap.len() {
-                                    return Err(format!("a planar bitmap of {} bytes, {used} of them its {}x{} pixels", bitmap.len(), rect.width, rect.height).into());
-                                }
+                            RectBody::Tiles(TileBody::Planar(body)) => {
+                                planar_decoder::unpack(&body, usize::from(rect.width), usize::from(rect.height))?;
                                 planars += 1;
-                                planar_bytes += bitmap.len() as u64;
+                                planar_bytes += body.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Store { .. }) => {}
                             RectBody::Tiles(TileBody::Start { stream, frame }) => {

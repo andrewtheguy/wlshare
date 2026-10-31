@@ -118,6 +118,8 @@ pub enum TilesError {
     Region(H264Error),
     #[error(transparent)]
     Png(#[from] png::EncodingError),
+    #[error("framing a planar bitmap: {0}")]
+    Planar(std::io::Error),
     #[error("a {width}x{height} picture at a stride of {stride} does not fit in {bytes} bytes")]
     Buffer { width: u16, height: u16, stride: usize, bytes: usize },
     #[error("a rectangle of {0} bytes is over the {max}-byte ceiling", max = wlshare_proto::MAX_BODY)]
@@ -130,6 +132,8 @@ pub enum TilesError {
 
 /// A tile's side, ZRLE's, from the desktop's top-left: the encoding's.
 const TILE: u16 = wlshare_proto::tiles::TILE;
+
+use rayon::prelude::*;
 
 use super::{planar, progressive};
 
@@ -944,8 +948,6 @@ pub struct TilesEncoder {
     /// progressive tile; where it holds every still is a PNG, and where it
     /// is lossless every tile a planar bitmap.
     progressive: Option<progressive::Encoder>,
-    /// The planar coder's working space.
-    planar: planar::Rows,
 }
 
 impl TilesEncoder {
@@ -988,7 +990,6 @@ impl TilesEncoder {
             keys: HashMap::new(),
             picture,
             progressive: (picture == TilesPicture::Progressive).then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
-            planar: planar::Rows::default(),
         };
         encoder.forget();
         Ok(encoder)
@@ -1601,10 +1602,7 @@ impl TilesEncoder {
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
             out.keyframe = true;
         }
-        self.precode(&stills);
-        for area in stills {
-            self.still(area, now, &mut out)?;
-        }
+        self.stills(stills, now, &mut out)?;
         if std::mem::take(&mut self.read) {
             self.round(now, &mut out)?;
         }
@@ -1621,10 +1619,7 @@ impl TilesEncoder {
         self.settling = out.count > brought;
         // What the streams that ended here had not carried, after their ENDs.
         let stills = std::mem::take(&mut self.stills);
-        self.precode(&stills);
-        for area in stills {
-            self.still(area, now, &mut out)?;
-        }
+        self.stills(stills, now, &mut out)?;
         if let Some(enc) = &mut self.progressive {
             enc.drop_ready();
             self.keys.clear();
@@ -1688,6 +1683,7 @@ impl TilesEncoder {
     /// coded around it ([`Self::coded`]). A PNG pays the debt of every tile it
     /// covers whole, and so does a draw.
     fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        debug_assert!(self.picture != TilesPicture::Lossless, "a lossless list's stills are packed together");
         if self.progressive.is_some() {
             return self.progressive_still(area, now, out);
         }
@@ -1715,6 +1711,95 @@ impl TilesEncoder {
             self.debts.remove(&cell);
         }
         self.coded(&tiles[run..], out)
+    }
+
+    /// Send `stills`, each a run of tiles along one row: on a lossless list
+    /// packed together ([`Self::lossless_stills`]), on any other one at a
+    /// time ([`Self::still`]), a walked list's first passes coded ahead.
+    fn stills(&mut self, stills: Vec<Area>, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        if self.picture == TilesPicture::Lossless {
+            return self.lossless_stills(stills, out);
+        }
+        self.precode(&stills);
+        for area in stills {
+            self.still(area, now, out)?;
+        }
+        Ok(())
+    }
+
+    /// A lossless list's `stills`, as a held list's would go but every run a
+    /// planar body in place of a PNG: each whole tile the client's cache
+    /// keeps a draw of its slot, the run coded around it, and every whole
+    /// tile of a run not one colour stored after it. Laid out first, in
+    /// order, the cache's record moved as the rectangles will move the
+    /// client's; then every run packed ([`planar::pack`]) on rayon's threads
+    /// where there are two or more and two runs to pack, and written in
+    /// order. Nothing is owed: every pixel goes exact.
+    fn lossless_stills(&mut self, stills: Vec<Area>, out: &mut Out) -> Result<(), TilesError> {
+        enum Piece {
+            Run { area: Area, stores: Vec<(Area, u16)> },
+            Cached { part: Area, slot: u16 },
+        }
+        let mut plan = Vec::new();
+        for area in stills {
+            let tiles: Vec<StillTile> = tiles_of(area)
+                .map(|(cell, part)| {
+                    let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
+                    (cell, part, whole.then(|| tile_key(&self.mirror, self.stride, part)))
+                })
+                .collect();
+            // Every slot drawn from is touched before any of the run is
+            // stored, as a held list's are.
+            let hits: Vec<Option<u16>> = tiles.iter().map(|(_, _, key)| key.and_then(|(hash, _)| self.cache.find(hash)).filter(|(_, kept)| *kept).map(|(slot, _)| slot)).collect();
+            for slot in hits.iter().flatten() {
+                self.cache.touch(*slot);
+            }
+            let cache = &mut self.cache;
+            let mut run_of = |tiles: &[StillTile], plan: &mut Vec<Piece>| {
+                let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else { return };
+                let stores = tiles.iter().filter_map(|(_, part, key)| match key {
+                    Some((hash, false)) => Some((*part, cache.store(*hash, true))),
+                    _ => None,
+                });
+                plan.push(Piece::Run { area: Area { right: last.1.right, ..first.1 }, stores: stores.collect() });
+            };
+            let mut run = 0;
+            for (i, hit) in hits.into_iter().enumerate() {
+                let Some(slot) = hit else { continue };
+                run_of(&tiles[run..i], &mut plan);
+                run = i + 1;
+                plan.push(Piece::Cached { part: tiles[i].1, slot });
+            }
+            run_of(&tiles[run..], &mut plan);
+        }
+        let (mirror, stride) = (&self.mirror, self.stride);
+        let pack = |area: &Area| planar::pack(&mirror[usize::from(area.top) * stride + usize::from(area.left) * 4..], stride, area.w(), area.h());
+        let runs: Vec<&Area> = plan.iter().filter_map(|piece| if let Piece::Run { area, .. } = piece { Some(area) } else { None }).collect();
+        let bodies: Vec<std::io::Result<Vec<u8>>> = if runs.len() >= 2 && rayon::current_num_threads() >= 2 {
+            runs.par_iter().map(|area| pack(area)).collect()
+        } else {
+            runs.iter().map(|area| pack(area)).collect()
+        };
+        let mut bodies = bodies.into_iter();
+        for piece in plan {
+            match piece {
+                Piece::Run { area, stores } => {
+                    let body = bodies.next().expect("a body for every run").map_err(TilesError::Planar)?;
+                    let from = out.out.len();
+                    let header = TileHeader::Planar { len: 0 };
+                    let at = out.header(area, header);
+                    out.out.extend_from_slice(&body);
+                    out.length(from, at, header)?;
+                    for (part, slot) in stores {
+                        out.header(part, TileHeader::Store { slot });
+                    }
+                }
+                Piece::Cached { part, slot } => {
+                    out.header(part, TileHeader::Cached { slot });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The progressive still of a run: each tile a first pass, a whole tile
@@ -1749,30 +1834,21 @@ impl TilesEncoder {
     }
 
     /// Code `tiles`, a run of parts of tiles along one row with each whole
-    /// tile's key, as one PNG, or on a lossless list one planar bitmap, and
-    /// store every whole tile of it that is not one colour in the client's
-    /// cache, after it.
+    /// tile's key, as one PNG, and store every whole tile of it that is not
+    /// one colour in the client's cache, after it.
     fn coded(&mut self, tiles: &[StillTile], out: &mut Out) -> Result<(), TilesError> {
         let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else { return Ok(()) };
         let area = Area { right: last.1.right, ..first.1 };
         let from = out.out.len();
-        if self.picture == TilesPicture::Lossless {
-            let header = TileHeader::Planar { len: 0 };
-            let at = out.header(area, header);
-            let origin = usize::from(area.top) * self.stride + usize::from(area.left) * 4;
-            planar::encode(&self.mirror[origin..], self.stride, area.w(), area.h(), &mut self.planar, out.out);
-            out.length(from, at, header)?;
-        } else {
-            crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
-            let header = TileHeader::Png { len: 0 };
-            let at = out.header(area, header);
-            if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, palette(&self.scratch), out.out) {
-                out.out.truncate(from);
-                out.count -= 1;
-                return Err(e.into());
-            }
-            out.length(from, at, header)?;
+        crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
+        let header = TileHeader::Png { len: 0 };
+        let at = out.header(area, header);
+        if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, palette(&self.scratch), out.out) {
+            out.out.truncate(from);
+            out.count -= 1;
+            return Err(e.into());
         }
+        out.length(from, at, header)?;
         for (cell, part, key) in tiles {
             if area.contains(self.cell_area(*cell)) {
                 self.debts.remove(cell);
@@ -2202,10 +2278,9 @@ mod tests {
                             self.canvas[at..at + line].copy_from_slice(pixels);
                         }
                     }
-                    TileBody::Planar(bitmap) => {
+                    TileBody::Planar(body) => {
                         self.planars += 1;
-                        let (rgb, used) = super::planar::decoder::decode(&bitmap, usize::from(w), usize::from(h)).expect("a planar bitmap");
-                        assert_eq!(used, bitmap.len(), "a planar bitmap of the rectangle");
+                        let rgb = super::planar::decoder::unpack(&body, usize::from(w), usize::from(h)).expect("a planar body of the rectangle");
                         self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Progressive(block) => {

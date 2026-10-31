@@ -45,7 +45,8 @@
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
 //! by the client's parser, a PNG by the `png` crate and a planar bitmap by
-//! the tests' reader ([`crate::rfb::planar::decoder`]) — and compared with the
+//! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by ruzstd)
+//! — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
 //!
@@ -103,6 +104,9 @@ mod decode;
 #[allow(dead_code)]
 #[path = "../src/h264/mod.rs"]
 mod h264;
+// The tests' reader of the lossless tiles' bodies.
+#[path = "../src/rfb/planar_decoder.rs"]
+mod planar_decoder;
 #[allow(unused)]
 #[path = "../src/rfb/mod.rs"]
 mod rfb;
@@ -393,12 +397,9 @@ impl Page {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
                     }
                 }
-                TileBody::Planar(bitmap) => {
-                    sent.planar += bitmap.len() as u64;
-                    let (rgb, used) = crate::rfb::planar::decoder::decode(&bitmap, w, h)?;
-                    if used != bitmap.len() {
-                        return Err(format!("a planar bitmap of {} bytes past its {used}", bitmap.len()).into());
-                    }
+                TileBody::Planar(body) => {
+                    sent.planar += body.len() as u64;
+                    let rgb = planar_decoder::unpack(&body, w, h)?;
                     self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Progressive(_) => return Err("a progressive tile, which neither a held list nor a lossless one is sent".into()),

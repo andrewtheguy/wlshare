@@ -25,7 +25,7 @@
 //! 5 CACHED  u16 slot             the tile kept in slot N, drawn at the rectangle
 //! 6 STORE   u16 slot             what the client holds at the rectangle, kept in slot N
 //! 7 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
-//! 8 PLANAR  u32 length | u8[length]  a planar bitmap of exactly the rectangle's pixels
+//! 8 PLANAR  u32 length | u8[length]  a zstd frame of a planar bitmap of exactly the rectangle's pixels
 //! ```
 //!
 //! - A **PNG** is the desktop's pixels in the rectangle, lossless, 8-bit RGB or
@@ -49,7 +49,8 @@
 //!   a format header of no alpha plane (`NA`), no colour loss and no
 //!   subsampling, then the red, green and blue planes, top row first, each
 //!   run-length coded over its rows' differences (`RLE`), or else plain and
-//!   followed by a padding byte. It depends on nothing before it, and is the
+//!   followed by a padding byte; the body is that bitmap as one zstd frame
+//!   ([RFC 8878]), and nothing after it. It depends on nothing before it, and is the
 //!   picture there until a later rectangle draws over it. It is every
 //!   rectangle of a lossless list but a COPY, a CACHED and a STORE, the
 //!   desktop changing or still: no PNG, progressive tile or stream, and
@@ -126,7 +127,7 @@ pub const KIND_STORE: u8 = 6;
 /// A RemoteFX Progressive tile block of the rectangle's tile, on a list
 /// whose dial walks.
 pub const KIND_PROGRESSIVE: u8 = 7;
-/// A planar bitmap of the rectangle's pixels, on a lossless list.
+/// A zstd frame of a planar bitmap of the rectangle's pixels, on a lossless list.
 pub const KIND_PLANAR: u8 = 8;
 
 /// A tile's side: the desktop is in tiles this square from its top-left, and
@@ -257,7 +258,7 @@ pub enum TileHeader {
     Store { slot: u16 },
     /// A progressive tile block of `len` bytes follows.
     Progressive { len: usize },
-    /// A planar bitmap of `len` bytes follows.
+    /// A zstd frame of a planar bitmap, `len` bytes, follows.
     Planar { len: usize },
 }
 

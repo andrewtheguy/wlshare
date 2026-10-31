@@ -1,7 +1,8 @@
 //! The lossless tiles' coding: RDP 6.0 bitmap compression, the planar codec
 //! of RDP's graphics pipeline ([MS-RDPEGDI] 2.2.2.5.1, [MS-RDPEGFX]
 //! `RDPGFX_CODECID_PLANAR`), which a Windows host whose policy asks for a
-//! lossless picture draws everything with. What a
+//! lossless picture draws everything with, each bitmap then one zstd frame
+//! ([`pack`]), as the host's own bulk compression wraps its pipeline. What a
 //! [`wlshare_proto::tiles::KIND_PLANAR`] rectangle's body is.
 //!
 //! A rectangle's pixels are cut into a red, a green and a blue plane, and
@@ -19,10 +20,86 @@
 //! instead, with no `RLE` flag and the padding byte the format ends that
 //! form with.
 //!
-//! Its tests decode with a reader written here from the specification,
-//! which shares nothing with the encoder; zDesk's page decodes it with its
-//! RDP compositor's planar codec, the one that draws a Windows host's
-//! lossless pipeline.
+//! **zstd.** Each bitmap is one zstd frame, depending on no frame before it,
+//! so a rectangle is packed on any thread and read on its own:
+//! the planes' runs leave a text's or a window's repeats and a photograph's
+//! skewed bytes, which the frame takes a further 1.5 to 10 times off, and
+//! more where a rectangle repeats itself. One stream across a picture's
+//! rectangles took a desktop of pages several times more again, measured;
+//! but a stream's history is state both ends would have to keep and start
+//! over together, and a page's zstd decoder would have to hand out every
+//! byte as its block ends, which the one in Rust the page decodes with does
+//! not. Its parameters are level 1's fast strategy with a smaller table and
+//! longer matches ([`zstd_parameters`]): a moving picture's frames are the
+//! literals' entropy coding more than its matches, and these coded a video's
+//! nearly twice as fast as level 1 for 1.67 times off the planes against
+//! 1.69, a page of text 4.9 times against 5.2. Levels below 1, which code no
+//! literal, gave a moving picture back almost nothing over the planes, and
+//! above it cost twice the time for a percent.
+//!
+//! Its tests decode with a reader written here from the specifications,
+//! which shares nothing with the encoder, the frames by ruzstd, a zstd
+//! decoder in Rust that shares nothing with libzstd; zDesk's page decodes
+//! the frames with ruzstd too, and the bitmaps with its RDP compositor's
+//! planar codec, the one that draws a Windows host's lossless pipeline.
+
+use std::cell::RefCell;
+use std::io;
+
+/// The zstd parameters a bitmap is framed with: the fast strategy, a
+/// 128 KiB window, a 4096-entry table and matches of 7 bytes or more.
+fn zstd_parameters() -> [zstd::zstd_safe::CParameter; 7] {
+    use zstd::zstd_safe::{CParameter, Strategy};
+    [
+        CParameter::Strategy(Strategy::ZSTD_fast),
+        CParameter::WindowLog(17),
+        CParameter::HashLog(12),
+        CParameter::ChainLog(12),
+        CParameter::SearchLog(1),
+        CParameter::MinMatch(7),
+        CParameter::TargetLength(0),
+    ]
+}
+
+/// A zstd context set to [`zstd_parameters`].
+fn compressor() -> io::Result<zstd::bulk::Compressor<'static>> {
+    let mut zstd = zstd::bulk::Compressor::new(1)?;
+    for parameter in zstd_parameters() {
+        zstd.set_parameter(parameter)?;
+    }
+    Ok(zstd)
+}
+
+/// What a thread packs a rectangle with: the planar coder's rows, the bitmap
+/// it codes, and a zstd context, made on the thread's first rectangle and
+/// kept for the process.
+struct Packer {
+    rows: Rows,
+    bitmap: Vec<u8>,
+    zstd: zstd::bulk::Compressor<'static>,
+}
+
+thread_local! {
+    static PACKER: RefCell<Option<Packer>> = const { RefCell::new(None) };
+}
+
+/// The body of a [`wlshare_proto::tiles::KIND_PLANAR`] rectangle of the
+/// `w`×`h` rectangle of `pixels`, `B, G, R, X` whose rows are `stride` bytes
+/// apart from its top-left: its planar bitmap ([`encode`]) as one zstd frame,
+/// which says its size. On whichever thread calls it, with that thread's
+/// working space. An error is zstd's, which a frame of a bitmap this size
+/// has none of.
+pub fn pack(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8>> {
+    PACKER.with_borrow_mut(|packer| {
+        let packer = match packer {
+            Some(packer) => packer,
+            None => packer.insert(Packer { rows: Rows::default(), bitmap: Vec::new(), zstd: compressor()? }),
+        };
+        packer.bitmap.clear();
+        encode(pixels, stride, w, h, &mut packer.rows, &mut packer.bitmap);
+        packer.zstd.compress(&packer.bitmap)
+    })
+}
 
 /// The format header's `RLE`: the planes are differences of rows, run-length coded.
 const RLE: u8 = 0x10;
@@ -164,87 +241,11 @@ fn segments(mut literals: &[u8], mut run: usize, value: u8, out: &mut Vec<u8>) {
     }
 }
 
-// The examples draw with it too; the daemon never decodes.
-#[allow(dead_code)]
-pub mod decoder {
-    //! A planar bitmap read back as the specification lays it out
-    //! ([MS-RDPEGDI] 2.2.2.5.1 and its RLE planes, 2.2.2.5.1.1–3), written
-    //! for the tests from the text and not from the encoder; the examples'
-    //! pages draw with it too.
-
-    /// The `w`×`h` pixels of `bitmap`, `R, G, B` a pixel, top row first, and
-    /// the bytes it took; `Err` where it is not a whole lossless bitmap of
-    /// that size with no alpha plane.
-    pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), String> {
-        let header = *bitmap.first().ok_or("no format header")?;
-        if header & 0x07 != 0 || header & 0x08 != 0 {
-            return Err(format!("format header {header:#04x}: colour loss or subsampling"));
-        }
-        if header & 0x20 == 0 {
-            return Err("an alpha plane".into());
-        }
-        if header & 0xC0 != 0 {
-            return Err(format!("reserved bits in {header:#04x}"));
-        }
-        let mut planes = vec![vec![0u8; w * h]; 3];
-        let mut at = 1;
-        if header & 0x10 == 0 {
-            for plane in &mut planes {
-                plane.copy_from_slice(bitmap.get(at..at + w * h).ok_or("short raw plane")?);
-                at += w * h;
-            }
-            // The padding byte.
-            bitmap.get(at).ok_or("no padding byte")?;
-            at += 1;
-        } else {
-            for plane in &mut planes {
-                for y in 0..h {
-                    let mut x = 0;
-                    let mut previous = 0u8;
-                    while x < w {
-                        let control = *bitmap.get(at).ok_or("short row")?;
-                        at += 1;
-                        let (mut raw, mut run) = ((control >> 4) as usize, (control & 0x0F) as usize);
-                        if run == 1 {
-                            run = 16 + raw;
-                            raw = 0;
-                        } else if run == 2 {
-                            run = 32 + raw;
-                            raw = 0;
-                        }
-                        if raw + run == 0 {
-                            return Err("an empty segment".into());
-                        }
-                        if x + raw + run > w {
-                            return Err(format!("a segment past the row at {x} of {w}"));
-                        }
-                        for _ in 0..raw {
-                            previous = *bitmap.get(at).ok_or("short literals")?;
-                            at += 1;
-                            plane[y * w + x] = previous;
-                            x += 1;
-                        }
-                        for _ in 0..run {
-                            plane[y * w + x] = previous;
-                            x += 1;
-                        }
-                    }
-                    if y > 0 {
-                        for x in 0..w {
-                            let v = plane[y * w + x];
-                            // The bottom bit is the sign of the difference.
-                            let delta = if v & 1 == 0 { (v >> 1) as i16 } else { -(((v >> 1) as i16) + 1) };
-                            plane[y * w + x] = (plane[(y - 1) * w + x] as i16 + delta).rem_euclid(256) as u8;
-                        }
-                    }
-                }
-            }
-        }
-        let [red, green, blue] = &planes[..] else { unreachable!("three planes") };
-        let rgb = red.iter().zip(green).zip(blue).flat_map(|((&r, &g), &b)| [r, g, b]).collect();
-        Ok((rgb, at))
-    }
-}
+// The tests' reader, written from the specifications; the examples include
+// it themselves. The daemon never decodes.
+#[cfg(test)]
+#[path = "planar_decoder.rs"]
+pub mod decoder;
 
 #[cfg(test)]
 mod tests {
@@ -265,6 +266,39 @@ mod tests {
 
     fn rgb(pixels: &[u8], stride: usize, w: usize, h: usize) -> Vec<u8> {
         (0..h).flat_map(|y| (0..w).flat_map(move |x| [pixels[y * stride + x * 4 + 2], pixels[y * stride + x * 4 + 1], pixels[y * stride + x * 4]])).collect()
+    }
+
+    /// Pack and unpack, asserting the round trip exact, and return the body.
+    fn packed(w: usize, h: usize, f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
+        let (pixels, stride) = picture(w, h, f);
+        let body = pack(&pixels, stride, w as u16, h as u16).unwrap();
+        assert_eq!(decoder::unpack(&body, w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}")), rgb(&pixels, stride, w, h), "{w}x{h}");
+        body
+    }
+
+    /// A body is one zstd frame of the bitmap, read back by ruzstd: every
+    /// shape exact, a flat or a repeating picture a few bytes, and noise
+    /// little more than its bitmap.
+    #[test]
+    fn a_body_is_the_bitmap_in_one_zstd_frame() {
+        for (w, h) in [(1, 1), (17, 5), (64, 64), (200, 64), (1920, 64)] {
+            packed(w, h, |x, y| [x as u8, y as u8, (x * y) as u8]);
+            packed(w, h, noise(w as u32 + h as u32));
+        }
+        let flat = packed(1920, 64, |_, _| [40, 50, 60]);
+        assert!(flat.len() < 256, "a flat run of tiles is {} bytes", flat.len());
+        // A line of text, the same glyph every 8 pixels: the planes' runs
+        // leave the glyph, and the frame its repeats.
+        let text = |x: usize, y: usize| if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 { [0, 0, 0] } else { [255, 255, 255] };
+        let mut bitmap = Vec::new();
+        let (pixels, stride) = picture(1920, 64, text);
+        encode(&pixels, stride, 1920, 64, &mut Rows::default(), &mut bitmap);
+        let body = packed(1920, 64, text);
+        assert!(body.len() * 4 < bitmap.len(), "{} bytes framed of a {}-byte bitmap", body.len(), bitmap.len());
+        let (pixels, stride) = picture(64, 64, noise(3));
+        let mut bitmap = Vec::new();
+        encode(&pixels, stride, 64, 64, &mut Rows::default(), &mut bitmap);
+        assert!(packed(64, 64, noise(3)).len() <= bitmap.len() + 32, "noise framed is the bitmap and a frame's few bytes");
     }
 
     /// Code and decode, asserting the round trip exact, and return the bitmap.
