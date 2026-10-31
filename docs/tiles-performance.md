@@ -779,3 +779,67 @@ search's rolling hash a rotating one, its chain a rotate and an xor where a
 polynomial's is two multiplies: no gain, the scan's time being its loop and
 its filter's lookups. Looking along each probe's own row and column before
 the scan: a scroll 6% cheaper, a drag a fifth dearer and 2% more bytes.
+
+## Lossless tiles
+
+The lossless picture (experimental), every tile that changed a planar bitmap
+whatever moves, against the held picture, every still a PNG and what moves
+a region's H.264 stream, measured on 2026-10-31. lab1 (eight cores of EPYC
+Rome, rebuilt that day), alone, the regions by libx264 as it has no GPU:
+`motion-bench --tiles-only` and `--tiles-only --lossless` over every sample
+at every size, and `check --lossless` over the still ones. Archived in the
+artifacts as `bench/lossless-20261031/`.
+
+Every frame of every capture was exact on the page, and every still capture
+settled at once and sent nothing through 5 s of quiet and 10 redraws.
+Summed over the sizes, flood for reference:
+
+| Scenario | CPU, held → lossless | Bytes, held → lossless |
+|---|---:|---:|
+| browser | 12.1 → 12.6 s | 89 → 152 MB (1.7×) |
+| drag | 4.3 → 4.3 s | 6.6 → 9.1 MB (1.4×) |
+| terminal | 0.7 → 0.7 s | 9.9 → 28 MB (2.8×) |
+| uncover | 2.2 → 2.2 s | 24 → 30 MB (1.3×) |
+| video | 22.8 → 29.6 s | 324 → 4,648 MB (14×) |
+| walk | 36.0 → 44.2 s | 578 → 6,487 MB (11×) |
+| window | 6.7 → 6.0 s | 96 → 1,127 MB (12×) |
+| mixed | 75.4 → 83.2 s | 660 → 14,192 MB (22×) |
+| flood | 59.0 → 42.9 s | 2,598 → 5,364 MB (2.1×) |
+| all but flood | 160 → 183 s (1.14×) | 1,786 → 26,673 MB (15×) |
+
+- **The processor.** About what the held picture costs: the planar coder
+  in place of the PNG's deflate and libx264's regions together, 1.14 times
+  over the scenarios. Where a still is most of what is sent it is the same
+  or a few percent more, and a window that plays is a tenth less than the
+  regions' libx264. A desktop moving all over costs most: a 4K video
+  48.3 ms a frame against 33.4 held, its 95th percentile 67.5 ms, about
+  20 frames a second of one thread's coding. On a host whose GPU codes the
+  held picture's regions, the held picture is the cheaper.
+- **The link.** Where the desktop is still, or moves by copies, it is 1.3
+  to 2.8 times the PNG's bytes: planar's runs over the rows' differences
+  against deflate's matches, text the furthest behind. Where it moves, it
+  is 11 to 22 times the held picture's, every moving tile sent exact at the
+  frame rate rather than a stream's: at 30 frames a second a video at
+  1920×1080 is 412 Mbit/s, at 4K 1.25 Gbit/s, a video in a 4K window
+  415 Mbit/s, and the mixed session 149 Mbit/s at 1920×1080 and 355 at
+  2880×1800 on the mean. On a link short of that the walk slows the
+  updates, never what a tile shows.
+
+At 1920×1080:
+
+| Capture | Held: ms a frame, MB | Lossless: ms a frame, MB, Mbit/s at its frame rate |
+|---|---:|---:|
+| browser | 4.61, 4.0 | 4.86, 9.0, 11 |
+| terminal | 0.25, 0.6 | 0.28, 1.7, 2 |
+| drag | 1.24, 0.3 | 1.21, 0.4, 1 |
+| window | 3.90, 7.2 | 2.90, 74, 138 |
+| video | 9.94, 19.1 | 10.49, 246, 412 |
+| walk | 10.56, 34.2 | 11.27, 368, 195 |
+| mixed | 6.53, 221 | 6.32, 4,198, 149 |
+
+A Windows host set to Lossless measured the same way: at 1920×1080 a video
+in a 960×600 window came to 76 to 106 Mbit/s of planar, its bulk
+compression taking a fifth off, against 5 Mbit/s from a stock host's
+RemoteFX Progressive (zDesk's
+[Lossless, by the host's policy](https://github.com/andrewtheguy/zdesk/blob/main/docs/rdp-client.md#lossless-by-the-hosts-policy)).
+The picture is the host's, for a LAN, and costs what it costs there.
