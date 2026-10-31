@@ -26,7 +26,8 @@
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
   architecture-specific but the progressive tiles' coder (`code_tile` in
-  `src/rfb/progressive.rs`), compiled a second time for AVX2 on x86-64 and
+  `src/rfb/progressive.rs`) and the lossless tiles' (`encode` in
+  `src/rfb/planar.rs`), each compiled a second time for AVX2 on x86-64 and
   chosen at run time, the same source, which a test holds to the baseline's
   bytes; and the release builds each architecture in Docker on its own native
   runner.

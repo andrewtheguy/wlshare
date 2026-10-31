@@ -789,7 +789,8 @@ still a PNG and what moves a region's H.264 stream, measured on
 regions by libx264 as it has no GPU: `motion-bench --tiles-only` and
 `--tiles-only --lossless` over every sample at every size, and
 `check --lossless` over the still ones, of the bitmaps alone, framed at
-zstd's level 1, and framed as they are now. Archived in the artifacts as
+zstd's level 1, framed as they are now, and coded by the planar coder as it
+is now, the same bytes. Archived in the artifacts as
 `bench/lossless-20261031/`.
 
 Every frame of every capture was exact on the page, and every still capture
@@ -799,16 +800,16 @@ every thread:
 
 | Scenario | CPU, held → lossless | Bytes, held → lossless | Bytes, the bitmaps alone |
 |---|---:|---:|---:|
-| browser | 12.1 → 14.3 s | 89 → 30 MB (0.34×) | 152 MB |
-| drag | 4.3 → 4.4 s | 6.6 → 1.0 MB (0.15×) | 9.1 MB |
-| terminal | 0.7 → 1.0 s | 9.9 → 3.3 MB (0.33×) | 28 MB |
-| uncover | 2.2 → 2.9 s | 24 → 6.4 MB (0.27×) | 30 MB |
-| video | 22.8 → 46.2 s | 324 → 2,672 MB (8.2×) | 4,648 MB |
-| walk | 36.0 → 66.7 s | 578 → 3,667 MB (6.3×) | 6,487 MB |
-| window | 6.7 → 10.3 s | 96 → 706 MB (7.3×) | 1,127 MB |
-| mixed | 75.4 → 134.0 s | 660 → 7,996 MB (12×) | 14,192 MB |
-| flood | 59.0 → 64.4 s | 2,598 → 3,143 MB (1.2×) | 5,364 MB |
-| all but flood | 160 → 280 s (1.75×) | 1,786 → 15,082 MB (8.4×) | 26,673 MB |
+| browser | 12.1 → 12.5 s | 89 → 30 MB (0.34×) | 152 MB |
+| drag | 4.3 → 4.1 s | 6.6 → 1.0 MB (0.15×) | 9.1 MB |
+| terminal | 0.7 → 0.7 s | 9.9 → 3.3 MB (0.33×) | 28 MB |
+| uncover | 2.2 → 2.5 s | 24 → 6.4 MB (0.27×) | 30 MB |
+| video | 22.8 → 29.4 s | 324 → 2,672 MB (8.2×) | 4,648 MB |
+| walk | 36.0 → 44.7 s | 578 → 3,667 MB (6.3×) | 6,487 MB |
+| window | 6.7 → 6.7 s | 96 → 706 MB (7.3×) | 1,127 MB |
+| mixed | 75.4 → 86.9 s | 660 → 7,996 MB (12×) | 14,192 MB |
+| flood | 59.0 → 42.4 s | 2,598 → 3,143 MB (1.2×) | 5,364 MB |
+| all but flood | 160 → 188 s (1.17×) | 1,786 → 15,082 MB (8.4×) | 26,673 MB |
 
 - **The link.** Where the desktop is still, or moves by copies, it is a
   third of the PNG's bytes or less: the planes' runs leave a page's
@@ -819,14 +820,24 @@ every thread:
   4K 723, a video in a 4K window 249, and the mixed session 89 Mbit/s at
   1920×1080 and 196 at 2880×1800 on the mean. On a link short of that the
   walk slows the updates, never what a tile shows.
-- **The processor.** 1.75 times the held picture's, all of it where the
+- **The processor.** 1.17 times the held picture's, all of it where the
   desktop moves: a still or a scroll costs what a PNG did, give or take a
-  fifth, and a video at 1920×1080 17.2 ms a frame against 9.9, its 95th
-  percentile 24, at 4K 72 against 33, the bitmaps and their frames each
-  about half of it. A run is packed on any core, so an update's wait is
-  its largest run's and not their sum; the time is the same. On a host
-  whose GPU codes the held picture's regions, the held picture is the
-  cheaper by more.
+  tenth, and a video at 1920×1080 11.1 ms a frame against 9.9, its 95th
+  percentile 15, at 4K 46 against 33, the frames now most of it. A run is
+  packed on any core, so an update's wait is its largest run's and not
+  their sum; the time is the same. On a host whose GPU codes the held
+  picture's regions, the held picture is the cheaper by more.
+- **The planar coder.** It first walked each row a byte at a time, three
+  planes over, looking for a run at every byte, and cost 1.75 times the
+  held picture in all, a video at 1920×1080 17.2 ms a frame, its 95th
+  percentile 24, at 4K 72. It now finds a run eight bytes at a time, cuts
+  the three planes from a row of pixels in one pass, compiled for AVX2 too
+  and chosen at run time, and takes a row the same colours as the row
+  above as one coding of a row of zeroes: the same bytes, the bitmaps a
+  quarter of their time and less (over 120 frames on one thread, a video
+  at 1920×1080 1.43 s to 0.34 s, the browser 1.02 s to 0.19 s;
+  `planar-bench`), 92 s off the whole, flood's 64 s 42. Without AVX2 the
+  coder takes twice as long: the video 0.73 s.
 - **What the frame was chosen by.** The bitmaps alone cost 1.14 times the
   held picture's processor and were 15 times its bytes, 1.3 to 2.8 times
   where it is still. Framed at zstd's level 1 they were 14,764 MB for

@@ -117,7 +117,28 @@ const RUN_LEAST: usize = 3;
 /// `B, G, R, X` whose rows are `stride` bytes apart from the rectangle's
 /// top-left, top row first. `rows` is working space, kept from one call to
 /// the next.
+///
+/// On x86-64 it is compiled twice, for the target's baseline and for AVX2,
+/// and the processor chooses at run time: the same source, so the same
+/// bytes, the loops that cut the planes from the pixels twice as wide.
 pub fn encode(pixels: &[u8], stride: usize, w: u16, h: u16, rows: &mut Rows, out: &mut Vec<u8>) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the processor has AVX2.
+        return unsafe { encode_avx2(pixels, stride, w, h, rows, out) };
+    }
+    encode_in(pixels, stride, w, h, rows, out);
+}
+
+/// [`encode`] for a processor with AVX2.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+fn encode_avx2(pixels: &[u8], stride: usize, w: u16, h: u16, rows: &mut Rows, out: &mut Vec<u8>) {
+    encode_in(pixels, stride, w, h, rows, out);
+}
+
+#[inline(always)]
+fn encode_in(pixels: &[u8], stride: usize, w: u16, h: u16, rows: &mut Rows, out: &mut Vec<u8>) {
     let (w, h) = (usize::from(w), usize::from(h));
     debug_assert!(w > 0 && h > 0 && pixels.len() >= (h - 1) * stride + w * 4);
     let from = out.len();
@@ -125,29 +146,32 @@ pub fn encode(pixels: &[u8], stride: usize, w: u16, h: u16, rows: &mut Rows, out
     for plane in &mut rows.coded {
         plane.clear();
     }
-    rows.diff.iter_mut().for_each(|row| {
-        row.clear();
-        row.resize(w, 0);
-    });
+    rows.diff.iter_mut().for_each(|row| row.resize(w, 0));
+    // A row the same colours as the row above is every plane's row of
+    // zeroes, coded once.
+    if rows.zero_width != w {
+        rows.diff[0].fill(0);
+        rows.zero.clear();
+        scanline(&rows.diff[0], &mut rows.zero);
+        rows.zero_width = w;
+    }
     for y in 0..h {
         let row = &pixels[y * stride..y * stride + w * 4];
-        let above = (y > 0).then(|| &pixels[(y - 1) * stride..(y - 1) * stride + w * 4]);
-        // Red, green and blue are the pixel's third, second and first bytes.
-        for (plane, byte) in [2usize, 1, 0].into_iter().enumerate() {
-            let diff = &mut rows.diff[plane];
-            match above {
-                None => {
-                    for (d, px) in diff.iter_mut().zip(row.as_chunks::<4>().0) {
-                        *d = px[byte];
-                    }
+        let [red, green, blue] = &mut rows.diff;
+        if y == 0 {
+            split(row, red, green, blue);
+        } else {
+            let above = &pixels[(y - 1) * stride..(y - 1) * stride + w * 4];
+            if same_colours(row, above) {
+                for plane in &mut rows.coded {
+                    plane.extend_from_slice(&rows.zero);
                 }
-                Some(above) => {
-                    for ((d, px), up) in diff.iter_mut().zip(row.as_chunks::<4>().0).zip(above.as_chunks::<4>().0) {
-                        *d = fold(px[byte].wrapping_sub(up[byte]));
-                    }
-                }
+                continue;
             }
-            scanline(diff, &mut rows.coded[plane]);
+            difference(row, above, red, green, blue);
+        }
+        for (diff, coded) in rows.diff.iter().zip(&mut rows.coded) {
+            scanline(diff, coded);
         }
     }
     let coded: usize = rows.coded.iter().map(Vec::len).sum();
@@ -168,36 +192,122 @@ pub fn encode(pixels: &[u8], stride: usize, w: u16, h: u16, rows: &mut Rows, out
     out.push(0);
 }
 
-/// The encoder's working space: each plane's coded rows, and the row of
-/// differences being coded.
+/// The encoder's working space: each plane's coded rows, the row of
+/// differences being coded, and the coding of a row of zeroes
+/// `zero_width` wide.
 #[derive(Default)]
 pub struct Rows {
     coded: [Vec<u8>; 3],
     diff: [Vec<u8>; 3],
+    zero: Vec<u8>,
+    zero_width: usize,
+}
+
+/// Red, green and blue of a row of `B, G, R, X` pixels, each into its plane's row.
+#[inline(always)]
+fn split(row: &[u8], red: &mut [u8], green: &mut [u8], blue: &mut [u8]) {
+    let w = red.len();
+    let (row, green, blue) = (&row.as_chunks::<4>().0[..w], &mut green[..w], &mut blue[..w]);
+    for i in 0..w {
+        red[i] = row[i][2];
+        green[i] = row[i][1];
+        blue[i] = row[i][0];
+    }
+}
+
+/// Each plane's row of the differences of a row of `B, G, R, X` pixels
+/// from the row above, folded.
+#[inline(always)]
+fn difference(row: &[u8], above: &[u8], red: &mut [u8], green: &mut [u8], blue: &mut [u8]) {
+    let w = red.len();
+    let (row, above) = (&row.as_chunks::<4>().0[..w], &above.as_chunks::<4>().0[..w]);
+    let (green, blue) = (&mut green[..w], &mut blue[..w]);
+    for i in 0..w {
+        red[i] = fold(row[i][2].wrapping_sub(above[i][2]));
+        green[i] = fold(row[i][1].wrapping_sub(above[i][1]));
+        blue[i] = fold(row[i][0].wrapping_sub(above[i][0]));
+    }
+}
+
+/// Whether two rows of `B, G, R, X` pixels are the same colours, whatever their `X`.
+#[inline(always)]
+fn same_colours(row: &[u8], above: &[u8]) -> bool {
+    let colour = |px: &[u8; 4]| u32::from_le_bytes(*px) & 0x00FF_FFFF;
+    // A word of pixels at a time, so the loop stops at a block that differs.
+    let (row, above) = (row.as_chunks::<4>().0, above.as_chunks::<4>().0);
+    row.chunks(8).zip(above.chunks(8)).all(|(a, b)| a.iter().zip(b).fold(0, |differ, (a, b)| differ | (colour(a) ^ colour(b))) == 0)
 }
 
 /// A row's difference from the row above, folded: the sign the bottom bit.
+#[inline(always)]
 fn fold(d: u8) -> u8 {
-    if d & 0x80 == 0 { d << 1 } else { ((!d) << 1) | 1 }
+    (d << 1) ^ ((d as i8 >> 7) as u8)
+}
+
+/// The eight bytes of `row` from `at`, the first the word's lowest.
+#[inline(always)]
+fn word(row: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(*row[at..].first_chunk().expect("eight bytes"))
+}
+
+/// Of a word, 0x80 in each byte that is zero and nothing in the others.
+#[inline(always)]
+fn zero_bytes(x: u64) -> u64 {
+    const LOW: u64 = 0x7F7F_7F7F_7F7F_7F7F;
+    !(((x & LOW) + LOW) | x | LOW)
+}
+
+/// How many bytes of `row` from `at` are `value`.
+#[inline(always)]
+fn run_of(row: &[u8], at: usize, value: u8) -> usize {
+    let every = u64::from(value) * 0x0101_0101_0101_0101;
+    let mut i = at;
+    while i + 8 <= row.len() {
+        let differ = word(row, i) ^ every;
+        if differ != 0 {
+            return i + differ.trailing_zeros() as usize / 8 - at;
+        }
+        i += 8;
+    }
+    i + row[i..].iter().take_while(|&&b| b == value).count() - at
+}
+
+/// The first place in `row` from `from` that begins four bytes alike: the
+/// last byte of a segment's literals and a run of it after.
+#[inline(always)]
+fn four_alike(row: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    // Eight places a word, which reads the three bytes after them too.
+    while i + 11 <= row.len() {
+        let [a, b, c, d] = [0, 1, 2, 3].map(|k| word(row, i + k));
+        let alike = zero_bytes((a ^ b) | (b ^ c) | (c ^ d));
+        if alike != 0 {
+            return Some(i + alike.trailing_zeros() as usize / 8);
+        }
+        i += 8;
+    }
+    (i..row.len().saturating_sub(3)).find(|&i| row[i] == row[i + 1] && row[i] == row[i + 2] && row[i] == row[i + 3])
 }
 
 /// One row as segments: bytes as they are, then a run of the last of them —
-/// or, where none came before in the row, of zero.
+/// or, where none came before in the row, of zero. A run is taken at the
+/// first place it can be, three bytes or more.
+#[inline(always)]
 fn scanline(row: &[u8], out: &mut Vec<u8>) {
-    // What a run repeats here: the last byte sent as it is, zero at the row's start.
-    let mut last = 0u8;
-    let (mut literal_from, mut at) = (0, 0);
-    while at < row.len() {
-        let value = if at > literal_from { row[at - 1] } else { last };
-        let run = row[at..].iter().take_while(|&&b| b == value).count();
-        if run >= RUN_LEAST {
-            segments(&row[literal_from..at], run, value, out);
-            last = value;
-            at += run;
-            literal_from = at;
-        } else {
-            at += 1;
+    out.reserve(row.len() + row.len() / NIBBLE + 2);
+    // A run of zero at the row's start, where what a run repeats is zero.
+    let mut literal_from = match run_of(row, 0, 0) {
+        run if run >= RUN_LEAST => {
+            segments(&[], run, 0, out);
+            run
         }
+        _ => 0,
+    };
+    while let Some(i) = four_alike(row, literal_from) {
+        let (value, at) = (row[i], i + 1);
+        let run = run_of(row, at, value);
+        segments(&row[literal_from..at], run, value, out);
+        literal_from = at + run;
     }
     if literal_from < row.len() {
         segments(&row[literal_from..], 0, 0, out);
@@ -353,6 +463,46 @@ mod tests {
         // A first row of one byte and a run of 63, then every row a run of
         // 64 zeroes: four bytes and two, in each plane.
         assert_eq!(out.len(), 1 + 3 * (4 + 63 * 2));
+    }
+
+    /// A row the same colours as the row above is every plane's row of
+    /// zeroes, whatever the pixels' fourth bytes, at every width.
+    #[test]
+    fn a_row_like_the_one_above_is_zeroes_whatever_its_fourth_bytes() {
+        for w in [1, 2, 3, 7, 8, 9, 64, 65, 200] {
+            let (mut pixels, stride) = picture(w, 4, |x, _| [x as u8, (x * 7) as u8, 200]);
+            let mut plain = Vec::new();
+            encode(&pixels, stride, w as u16, 4, &mut Rows::default(), &mut plain);
+            for (i, px) in pixels.chunks_mut(4).enumerate() {
+                px[3] = i as u8;
+            }
+            let mut rows = Rows::default();
+            for _ in 0..2 {
+                let mut out = Vec::new();
+                encode(&pixels, stride, w as u16, 4, &mut rows, &mut out);
+                assert_eq!(out, plain, "{w} wide");
+                assert_eq!(decoder::decode(&out, w, 4).unwrap().0, rgb(&pixels, stride, w, 4));
+            }
+        }
+    }
+
+    /// The AVX2 copy codes what the baseline's does, every shape of picture.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_avx2_copy_codes_the_same() {
+        if !std::arch::is_x86_feature_detected!("avx2") {
+            eprintln!("no AVX2 here: the copy is not run");
+            return;
+        }
+        for (w, h) in [(1, 1), (17, 5), (64, 64), (63, 17), (200, 64), (1920, 8)] {
+            for (pixels, stride) in [picture(w, h, noise(w as u32 ^ 5)), picture(w, h, |x, y| [(x / 5 * 9) as u8, (y / 3) as u8, (x % 7 == 0) as u8 * 200])] {
+                let (mut narrow, mut wide) = (Vec::new(), Vec::new());
+                encode_in(&pixels, stride, w as u16, h as u16, &mut Rows::default(), &mut narrow);
+                // SAFETY: the processor has AVX2.
+                unsafe { encode_avx2(&pixels, stride, w as u16, h as u16, &mut Rows::default(), &mut wide) };
+                assert_eq!(narrow, wide, "{w}x{h}");
+            }
+        }
     }
 
     #[test]
