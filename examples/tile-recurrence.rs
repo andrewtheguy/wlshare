@@ -35,7 +35,7 @@
 //! and `stopped`, one a stream carried that stopped. `warming` and `small`
 //! are motion the stills carry, what a codec that sends a tile's difference
 //! from what the client holds, as RemoteFX Progressive's sub-band diffing
-//! does, would code instead. For every still the client holds exact pixels
+//! does, would code instead. For every still the client holds lossless pixels
 //! under — not one a stream drew — `delta` counts the tile's pixels, those
 //! that changed, and the change as a PNG of the per-channel difference modulo
 //! 256 beside the still's own PNG: what a held list's lossless difference
@@ -329,7 +329,7 @@ enum Why {
 
 const WHY: [&str; 4] = ["fresh", "warming", "small", "stopped"];
 
-/// Stills against the exact pixels the client held under them.
+/// Stills against the lossless pixels the client held under them.
 #[derive(Default, Clone, Copy)]
 struct Delta {
     tiles: u64,
@@ -358,7 +358,7 @@ struct Stats {
     /// Every tile of those pictures as a fast PNG, with `--keep`.
     restart_png: u64,
     stills: Count,
-    /// The stills by [`Why`], and of each those against exact pixels.
+    /// The stills by [`Why`], and of each those against lossless pixels.
     why: [(Count, Delta); 4],
     /// Per cache size, then unbounded last: hits on screen, hits off screen.
     hits: Vec<(Count, Count)>,
@@ -388,9 +388,9 @@ fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
     let mut reader = open(path)?;
     let mut stats = Stats { hits: vec![(Count::default(), Count::default()); slots.len() + 1], restart_hits: vec![(0, 0); slots.len() + 1], ..Stats::default() };
     let mut caches: Vec<Lru> = slots.iter().map(|&n| Lru::new(n)).chain(std::iter::once(Lru::new(usize::MAX))).collect();
-    // What the client holds in each tile, exact: `None` under a stream.
+    // What the client holds in each tile, losslessly: `None` under a stream.
     let mut held: HashMap<(u16, u16), Option<u64>> = HashMap::new();
-    // Its pixels, where they are exact.
+    // Its pixels, where they are lossless.
     let mut held_rgb: HashMap<(u16, u16), Vec<u8>> = HashMap::new();
     let mut refcount: HashMap<u64, u32> = HashMap::new();
     let mut streamed: HashSet<(u16, u16)> = HashSet::new();

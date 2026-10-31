@@ -250,7 +250,7 @@ pub enum RectBody {
 /// What a rectangle of the tiles encoding is, by its kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TileBody {
-    /// A PNG of the rectangle's pixels, exact.
+    /// A PNG of the rectangle's pixels, lossless.
     Png(Vec<u8>),
     /// The first frame of a region's stream on `stream`, a keyframe.
     Start { stream: u8, frame: Vec<u8> },

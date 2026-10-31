@@ -23,7 +23,7 @@
 //!   as its first standard pixel encoding. **The video encoding** is a private
 //!   one for the gateway: the whole framebuffer as one H.264 stream, at a
 //!   quality its owner sets ([`video`]), for a desktop that moves; **the tiles
-//!   encoding**, another for the gateway, the desktop as exact PNG tiles where
+//!   encoding**, another for the gateway, the desktop as lossless PNG tiles where
 //!   it is still and a video stream for each region that moves, for a link
 //!   with room to spare ([`tiles`]), or every tile RemoteFX Progressive, still
 //!   or moving ([`progressive`]). Raw is produced for a client whose list

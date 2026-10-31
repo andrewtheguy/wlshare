@@ -13,7 +13,7 @@ A VNC server for wlroots-based Wayland compositors, built for the
 [zDesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
 a client that asks, as zDesk does for its browsers, as one H.264 stream whose
-quality and frame rate follow the link, or for a link with room to spare as exact PNG
+quality and frame rate follow the link, or for a link with room to spare as lossless PNG
 tiles with a video stream for each region that moves, each H.264 by the host's hardware or libx264,
 or, following the link, as RemoteFX Progressive tiles, still or moving (alpha) — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
@@ -231,7 +231,7 @@ loads it at build time.
 `scripts/capture-frames.sh` builds and runs the capture container
 (`docker/capture/`), with docker or with podman: a headless sway and the daemon started with
 `--capture-frames`, playing a scripted desktop at each size, so that what the
-video encoder was handed — every frame's pixels and damage, exact — lands in
+video encoder was handed — every frame's pixels and damage — lands losslessly in
 `dist/captures/`; the video scenarios play full screen the file `--video`
 names. `examples/wlcap.rs` says what a capture holds and plays it out or
 cuts it.

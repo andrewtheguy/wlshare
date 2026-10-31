@@ -1,8 +1,8 @@
-//! The tiles encoding: the desktop as exact PNG tiles where it is still, and a
-//! video stream of its own for each region that moves, for a client on a link
-//! with room to spare — or, on a list that lets the dial walk, every tile a
-//! RemoteFX Progressive tile, still or moving, and no stream, for a client
-//! that wants the walk more than a picture that ends exact.
+//! The tiles encoding: the desktop as lossless PNG tiles where it is still,
+//! and a video stream of its own for each region that moves, for a client on
+//! a link with room to spare — or, on a list that lets the dial walk, every
+//! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
+//! client that wants the walk more than a picture that ends lossless.
 //!
 //! A private encoding, [`crate::ENCODING_TILES`], beside the video encoding
 //! ([`crate::video`]) rather than in place of it: a client lists one or the
@@ -24,7 +24,7 @@
 //! 7 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
 //! ```
 //!
-//! - A **PNG** is the desktop's pixels in the rectangle exactly, 8-bit RGB or
+//! - A **PNG** is the desktop's pixels in the rectangle, lossless, 8-bit RGB or
 //!   a palette of it, and the picture there until a later rectangle draws
 //!   over it. It depends on nothing before it. It is every still of a list
 //!   that holds the dial, and nothing else's.
@@ -38,7 +38,7 @@
 //!   it. It is every rectangle of a list whose dial walks but a COPY, a CACHED
 //!   and a STORE: no PNG or stream. A first pass below the full stage is
 //!   owed its upgrades once the link has room, and the full stage is the
-//!   settled picture, lossy still: nothing is owed exact.
+//!   settled picture, lossy still: nothing is owed a lossless picture.
 //! - A **START** begins a stream on `stream`, over its rectangle: an H.264
 //!   keyframe, one access unit in Annex B with its parameter sets, 8-bit
 //!   4:2:0, BT.601 at studio swing, of the rectangle's size rounded up to even
@@ -52,7 +52,7 @@
 //!   rectangles before it left it, at the same size from `(x, y)`, which is
 //!   inside the desktop: a scroll, or a window moved, as RFB's CopyRect draws
 //!   one. The two may overlap, and the picture is then as if the source were
-//!   copied out before any of it was drawn. Whatever the source held — exact,
+//!   copied out before any of it was drawn. Whatever the source held — lossless,
 //!   a progressive tile's, a stream's picture — the rectangle holds the same, and is owed
 //!   what the source was owed. It has no body past its header.
 //! - A **STORE** keeps what the client holds at the rectangle, as the
@@ -61,7 +61,7 @@
 //!   and on the tile grid from the desktop's top-left, and the slot one of
 //!   [`CACHE_SLOTS`]. A **CACHED** draws the tile slot `slot` keeps at the
 //!   rectangle, the same size, and the rectangle is owed what that tile was
-//!   owed when it was stored: a tile stored exact, or at the full stage, is
+//!   owed when it was stored: a tile stored lossless, or at the full stage, is
 //!   settled, and one stored below it is owed the full stage, as a copy's is.
 //!   A slot nothing was stored in is fatal to draw from. Neither has a body
 //!   past its header. What is stored, and when, is the server's to decide:
@@ -148,9 +148,9 @@ pub fn parse_cache_empty(buf: &[u8]) -> usize {
 /// [`crate::ENCODING_TILES`]: whether it walks — progressive, every tile a
 /// RemoteFX Progressive tile, the server's dial the ceiling its first passes
 /// are coded toward while the link keeps up, walked down while it does not,
-/// nothing owed exact — or is held, `WLSD` ([`ENCODING_HELD`]) beside it,
-/// every still exact and the streams at the server's dial whatever the link
-/// does. The dial is the server's alone.
+/// nothing owed a lossless picture — or is held, `WLSD` ([`ENCODING_HELD`])
+/// beside it, every still lossless and the streams at the server's dial
+/// whatever the link does. The dial is the server's alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TilesPicture {
     pub progressive: bool,

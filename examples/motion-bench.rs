@@ -23,7 +23,7 @@
 //! being a picture the client asks for whole ([`TilesEncoder::forget`]), and
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
-//! changing. Its dial is wlshare's, held there, the picture exact as a list that holds the dial asks: a walked
+//! changing. Its dial is wlshare's, held there, the picture lossless as a list that holds the dial asks: a walked
 //! list's is progressive tiles, which `tiles-walk-sim` walks over a link. Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
@@ -55,8 +55,8 @@
 //! `video` (the regions' H.264, or `WLSV`'s), the tiles' `copies`, which
 //! carry no payload, `streams` started and
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
-//! squared error over B, G and R averaged over every frame, and `exact_frames`,
-//! the frames it held exactly; where it ended, `end_off` pixels off and
+//! squared error over B, G and R averaged over every frame, and `lossless_frames`,
+//! the frames it held losslessly; where it ended, `end_off` pixels off and
 //! `end_mse`; and the tiles' tail, `settled`, `tail_s`, `tail_cpu_ms`, and its longest
 //! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
@@ -70,7 +70,7 @@
 //! is coded and the tick run on until nothing is owed; then 5 s more, nothing
 //! changing, and 10 redraws of the whole picture with the pixels it already
 //! has, as a compositor repaints what it shows, must send nothing, and the
-//! page must hold the picture exactly. Each capture is a JSON object:
+//! page must hold the picture losslessly. Each capture is a JSON object:
 //! `capture`, `settled`, `settled_s`, `quiet_bytes`, `redraw_bytes`, `end_off`,
 //! `end_mse` and `pass`; a capture that fails makes the exit 1.
 
@@ -579,9 +579,9 @@ struct Tally {
     tail_tick_bytes: u64,
     settled: bool,
     /// The page against the source after each frame: the squared error
-    /// summed, and the frames it held exactly.
+    /// summed, and the frames it held losslessly.
     mse: f64,
-    exact: u64,
+    lossless: u64,
 }
 
 impl Tally {
@@ -589,7 +589,7 @@ impl Tally {
     fn held(&mut self, page: &[u8], source: &[u8]) {
         let (off, mse) = compare(page, source);
         self.mse += mse;
-        self.exact += u64::from(off == 0);
+        self.lossless += u64::from(off == 0);
     }
 }
 
@@ -796,7 +796,7 @@ fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_o
     let mean = if tally.frames == 0 { 0.0 } else { ms(per_frame.iter().sum()) / tally.frames as f64 };
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"exact_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         quality,
@@ -810,7 +810,7 @@ fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_o
         tally.sent.cached,
         tally.sent.starts,
         tally.keyframes,
-        tally.exact,
+        tally.lossless,
         tally.settled,
         tally.tail.as_secs_f64(),
         ms(tally.tail_cpu),

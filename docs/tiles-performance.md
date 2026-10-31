@@ -29,7 +29,7 @@ swap, the regions by libx264 and `WLSV` on four threads, over the samples from
 
 - **Held**, every still a PNG: 22% of `WLSV` 4:4:4's CPU for 3.2 times its
   bytes, from 1.9 times on a terminal to 21 on a drag, every capture ending
-  exact where `WLSV` ends at 42–50 dB.
+  lossless where `WLSV` ends at 42–50 dB.
 - **Walked, standing at the ceiling**: 1.4 times held's CPU — 1.2 to 1.3 times
   where most of the desktop moves (video, a scroll, the mixed session), 2.4 to
   4.5 where most of it is stills, since a whole still costs a WebP about four
@@ -50,14 +50,14 @@ Over the mixed session at 1920×1080, 3,515 frames:
 |---|---:|---:|---|
 | `WLSV`, 4:4:4 | 99.0 s | 114 MB | 49 dB |
 | `WLSV`, 4:2:0 | 78.4 s | 98 MB | 43 dB |
-| Tiles, held | 21.7 s | 262 MB | exact |
+| Tiles, held | 21.7 s | 262 MB | lossless |
 | Tiles, walked, at the ceiling | 26.2 s | 217 MB | 44 dB |
 | Tiles, walked to 50 | 22.4 s | 93 MB | 44 dB |
 | Tiles, walked to 20 | 20.9 s | 51 MB | 44 dB |
 
 A lower ceiling takes most off `WLSV`: over both mixed sessions its bytes are
 356 MB at 90, 93 at 50 and 31 at 20, where the held tiles' are 794, 431 and
-313, their stills exact whatever the dial, and the walked tiles' at the
+313, their stills lossless whatever the dial, and the walked tiles' at the
 ceiling 654, 279 and 151. Every capture settles within 13 s of its last frame,
 and `check` passes on all 92.
 
@@ -72,7 +72,7 @@ scenarios, flood left out:
 
 | Picture | CPU | Bytes | Ends at |
 |---|---:|---:|---|
-| Tiles, held | −8% | −15% | exact |
+| Tiles, held | −8% | −15% | lossless |
 | Tiles, walked, at the ceiling | −2% | −25% | 46.35 dB, as before |
 | Tiles, walked to 20 | −3% | −35% | 46.35 dB, as before |
 
@@ -92,7 +92,7 @@ Over the mixed session at 1920×1080:
 
 | Picture | CPU | Bytes | Ends at |
 |---|---:|---:|---|
-| Tiles, held | 20.0 s | 237 MB | exact |
+| Tiles, held | 20.0 s | 237 MB | lossless |
 | Tiles, walked, at the ceiling | 25.6 s | 184 MB | 44 dB |
 | Tiles, walked to 20 | 19.7 s | 36 MB | 44 dB |
 
@@ -353,7 +353,7 @@ Built, it was run on every sample on lab1 on 2026-10-27 at `69d2d3e`
 
 | Pass | Bytes | CPU | Tiles drawn from the cache | At the end |
 |---|---|---|---:|---|
-| held at 90 | 2,174 MB → 2,085, −4% | 161 s → 156, −3% | 60,870 | exact, 82 of 82, as before |
+| held at 90 | 2,174 MB → 2,085, −4% | 161 s → 156, −3% | 60,870 | lossless, 82 of 82, as before |
 | walked at 90 to 90 | 1,327 → 1,265, −5% | 237 → 218, −8% | 66,941 | 46.35 dB, as before |
 | walked to 20 | 361 → 323, −11% | 189 → 174, −8% | 65,407 | 46.35 dB, as before |
 
@@ -363,7 +363,7 @@ By scenario, held: uncover −20% of the bytes, browser −15%, drag −9%, mixe
 more than held and the CPU falls further: a tile drawn from a slot is coded
 neither coarse nor again at the ceiling. The held CPU is within the 4% two
 runs of one build differ by on lab1. `check` passes 82 of 82: the held tiles
-settle exact and send nothing after.
+settle lossless and send nothing after.
 
 Kept through a picture that starts over, as it is since protocol 7, it was
 counted by `tile-recurrence --keep` on 2026-10-28 (a count, run on the
@@ -407,7 +407,7 @@ sub-band diffing does, would code instead — was counted by
 sent: *fresh*, a tile that had not changed in the 0.8 s before; *warming*,
 one that had, but in fewer than the 4 of 8 tenths that make it moving;
 *small*, a moving tile in a group too small for a stream; and *stopped*, a
-stream's tile owed its still. For every still sent over exact pixels it also
+stream's tile owed its still. For every still sent over lossless pixels it also
 coded the change from them, as a PNG of the per-channel difference modulo
 256: what a held list's lossless difference would cost. It sends no copies,
 so a scroll is stills here that the encoder sends as a copy. The run is
@@ -643,7 +643,7 @@ the copies the search no longer misses.
 
 **In the browser.** zDesk's end-to-end test reads a progressive session's
 tiles from wlshare in a container, through the gateway, with the page's
-decoder, against the exact picture of the tiles with motion; headless
+decoder, against the lossless picture of the tiles with motion; headless
 Chromium drew a test card of bars, gradients and noise from 505
 progressive tiles without asking for the picture again.
 

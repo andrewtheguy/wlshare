@@ -1,5 +1,5 @@
 //! The capture file: what a session handed its video encoder, frame by frame
-//! and exact, so that an encoder can be run again on the pictures a desktop
+//! and lossless, so that an encoder can be run again on the pictures a desktop
 //! was actually shown as and the rectangles they came with.
 //!
 //! Not the wire: no client is ever sent this. It is here because the daemon

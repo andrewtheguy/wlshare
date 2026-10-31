@@ -1,15 +1,15 @@
-//! The tiles encoding's server side: the desktop as exact PNG tiles where it
+//! The tiles encoding's server side: the desktop as lossless PNG tiles where it
 //! is still, and a video stream of its own for each region that moves, for a
 //! client on a link with room to spare — or, on a list whose dial walks, every
 //! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
-//! client that wants the walk more than a picture that ends exact.
+//! client that wants the walk more than a picture that ends lossless.
 //!
 //! The encoding — the rectangles and their kinds — is
 //! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::video`]'s rather than in
 //! place of it: the video encoding, one H.264 stream over the whole desktop
 //! paced to the link, is the picture for a desktop that moves, and this one
 //! spends bytes the link has for less of the encoder's time and a picture that
-//! ends exact. Its rules are the zDesk gateway's Motion's, brought here because
+//! ends lossless. Its rules are the zDesk gateway's Motion's, brought here because
 //! only here are the compositor's pixels and damage coded once. A region's
 //! stream is H.264, by the host's hardware encoder or by libx264.
 //!
@@ -21,12 +21,12 @@
 //! pass is at 75 while the walk stands at the ceiling and is not coarse, at
 //! 50 below it, and at a stage coarser still once the dial is under
 //! [`PROGRESSIVE_COARSE_BELOW`]; or whole, where that costs little more.
-//! Nothing is owed exact: a first pass below the full stage is owed its
-//! upgrades, and the debts are paid while the walk is not slowed: a link that
+//! Nothing is owed a lossless picture: a first pass below the full stage is
+//! owed its upgrades, and the debts are paid while the walk is not slowed: a link that
 //! is behind is not handed finer pictures of what it has already seen. An
 //! update of the tick alone, what the desktop stopping owes, is no verdict
 //! for the walk ([`Update`]). A list that holds the dial never walks: every
-//! still is an exact PNG, and every region that moves a stream at the dial.
+//! still is a lossless PNG, and every region that moves a stream at the dial.
 //!
 //! **Which tiles move.** The desktop is in 64×64 tiles from its top-left. The
 //! damage a read is told of is compared, tile by tile, with what the client
@@ -60,7 +60,7 @@
 //! ([`TilesEncoder::forget`]) keeps the cache, as the client does, so a
 //! whole picture of tiles it was shown is a draw of a slot for each: an
 //! output switched back to, a new size, another dial. A tile a walked list
-//! stored is not exact, so a held list draws none of them until it is stored
+//! stored is not lossless, so a held list draws none of them until it is stored
 //! again ([`TilesEncoder::set_picture`]). The client says when its cache is
 //! gone ([`TilesEncoder::forget_cache`]), and a new size hands the record to
 //! the encoder made for it ([`TilesEncoder::keep_cache`]).
@@ -85,7 +85,7 @@
 //! found to take once it is still, a look cut short owed again at the next
 //! update's turn ([`TilesEncoder::delivered`]) — and sent after the stream's
 //! END, so a
-//! desktop that stops is exact on a held list and at the full stage on a
+//! desktop that stops is lossless on a held list and at the full stage on a
 //! walked one. A picture that
 //! starts over — an encoder's first, or one a client asks for whole
 //! ([`TilesEncoder::forget`]) — goes whole at once, in bands of 64 rows; from
@@ -724,7 +724,7 @@ fn run_hash(pixels: &[u8], stride: usize, x: u16, y: u16) -> u64 {
 #[derive(Clone, Copy)]
 struct Kept {
     hash: u64,
-    /// Stored exact, or at the full stage: a tile drawn from it is owed nothing.
+    /// Stored lossless, or at the full stage: a tile drawn from it is owed nothing.
     settled: bool,
     /// When it was last stored or drawn from; the least recent is evicted first.
     used: u64,
@@ -1016,7 +1016,7 @@ impl TilesEncoder {
     /// holds was coded against the old one, and nothing of it is owed what the
     /// new one would owe, so the picture starts over as [`Self::forget`]
     /// starts it, every live stream's END owed first. The cache is kept, but a held list is owed
-    /// exact pixels, which no tile a walked list stored is.
+    /// lossless pixels, which no tile a walked list stored is.
     pub fn set_picture(&mut self, picture: TilesPicture) {
         if self.progressive.is_some() && !picture.progressive {
             self.cache.unsettle();
@@ -1673,9 +1673,9 @@ impl TilesEncoder {
     }
 
     /// Send `area` of the picture, a run of tiles along one row, as a still:
-    /// on a held list a PNG, exact; on a walked one each tile a progressive
+    /// on a held list a PNG, lossless; on a walked one each tile a progressive
     /// tile ([`Self::progressive_still`]). A whole tile of it the client's
-    /// cache keeps exact goes as a draw of its slot instead, and the run is
+    /// cache keeps lossless goes as a draw of its slot instead, and the run is
     /// coded around it ([`Self::coded`]). A PNG pays the debt of every tile it
     /// covers whole, and so does a draw.
     fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
@@ -2286,7 +2286,7 @@ mod tests {
 
     /// A region coder standing in for the daemon's H.264 one: its frames are
     /// the region's pixels, each sample's lowest bit dropped, so a stream's
-    /// picture is not exact, behind a byte that says keyframe or not. It can
+    /// picture is not lossless, behind a byte that says keyframe or not. It can
     /// be told to refuse every stream, or to fail one after so many frames, at
     /// its read or at its encode.
     struct Fake {
@@ -2387,10 +2387,10 @@ mod tests {
         now
     }
 
-    /// A first picture goes whole as PNG, a band at a time, exact; a palette
+    /// A first picture goes whole as PNG, a band at a time, lossless; a palette
     /// where a band has few colours and RGB where it has many, both read back.
     #[test]
-    fn a_first_picture_is_sent_exact_in_bands() {
+    fn a_first_picture_is_sent_lossless_in_bands() {
         let (w, h) = (200u16, 150u16);
         let mut pixels = noise(w, h, 1);
         // The last band, rows 128–149, one flat colour, which a palette holds;
@@ -2404,7 +2404,7 @@ mod tests {
         assert_eq!((first.rects, page.pngs, page.stored), (9, 3, 6), "the whole picture in three bands, whatever the read was told, and its six whole tiles stored");
         assert!(first.keyframe, "a picture sent whole crosses the link as a keyframe");
         assert_eq!(page.off(&pixels), 0);
-        assert!(encoder.tick_at().is_none(), "a picture sent exact owes nothing");
+        assert!(encoder.tick_at().is_none(), "a picture sent lossless owes nothing");
         paint(&mut pixels, w, Rect { x: 70, y: 70, width: 10, height: 10 }, 9);
         let next = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 70, y: 70, width: 10, height: 10 }]), ms(100));
         assert!(next.rects == 1 && !next.keyframe, "a tile that changed is no keyframe: {next:?}");
@@ -2674,10 +2674,10 @@ mod tests {
     }
 
     /// What moves becomes a stream of its own, told only its damage, which
-    /// ends once the motion stops, and every tile it carried is sent exact
-    /// after its end: the picture ends exact, and owes nothing.
+    /// ends once the motion stops, and every tile it carried is sent lossless
+    /// after its end: the picture ends lossless, and owes nothing.
     #[test]
-    fn what_moves_streams_and_settles_exact() {
+    fn what_moves_streams_and_settles_lossless() {
         let (w, h) = (640u16, 384u16);
         let mut pixels = noise(w, h, 3);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
@@ -2694,10 +2694,10 @@ mod tests {
         assert!(page.frames > 20, "{} frames of it", page.frames);
         assert!(page.pngs - pngs <= 16, "{} PNGs while it moved", page.pngs - pngs);
         assert!(encoder.owed() && encoder.tick_at().is_some(), "a live stream owes its end");
-        assert!(page.off(&pixels) > 0, "a stream's picture is not exact");
+        assert!(page.off(&pixels) > 0, "a stream's picture is not lossless");
         settle(&mut encoder, &mut page, ms(2000));
         assert_eq!(page.ends, 1, "the stream ended");
-        assert_eq!(page.off(&pixels), 0, "the picture settled exact");
+        assert_eq!(page.off(&pixels), 0, "the picture settled lossless");
         assert!(page.streams.is_empty());
     }
 
@@ -2734,7 +2734,7 @@ mod tests {
         assert_eq!(page.ends, 1, "the stream ended");
         let row = |y: usize| (y * usize::from(w) + usize::from(change.x)) * 4..(y * usize::from(w) + usize::from(change.x + change.width)) * 4;
         let held = (usize::from(change.y)..usize::from(change.y + change.height)).all(|y| page.canvas[row(y)].as_chunks::<4>().0.iter().zip(pixels[row(y)].as_chunks::<4>().0).all(|(a, b)| a[..3] == b[..3]));
-        assert!(held, "the change is held exact, not the stream's last frame");
+        assert!(held, "the change is held lossless, not the stream's last frame");
     }
 
     /// A stream's START is no keyframe: a region's IDR is the load a desktop
@@ -2901,7 +2901,7 @@ mod tests {
     /// A whole tile the client was shown, shown again elsewhere, is a draw
     /// of the slot it was stored in and no still: text moved to another
     /// window, a page scrolled back by a whole tile. Shown a third time it
-    /// is the same slot again, and the page holds it exactly.
+    /// is the same slot again, and the page holds it losslessly.
     #[test]
     fn a_tile_shown_again_is_drawn_from_the_cache() {
         let (w, h) = (256u16, 128u16);
@@ -2922,7 +2922,7 @@ mod tests {
         let shown = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 192, y: 64, width: 64, height: 64 }]), ms(200));
         assert_eq!((shown.rects, page.pngs - pngs, page.stored - stored, page.cached), (1, 0, 0, 1), "the same text elsewhere: drawn from the cache, no still, nothing stored");
         assert_eq!(page.off(&pixels), 0);
-        assert!(!encoder.owed(), "a tile stored exact is owed nothing");
+        assert!(!encoder.owed(), "a tile stored lossless is owed nothing");
 
         // Painted over and shown again: the slot still has it.
         paint(&mut pixels, w, text, 32);
@@ -3025,7 +3025,7 @@ mod tests {
         step(&mut encoder, &mut page, &pixels, None, ms(200));
         assert_eq!((page.pngs, page.stored, page.cached), (2, 3, 2), "the picture again, whole, every tile from its slot");
         assert_eq!(page.off(&pixels), 0);
-        assert!(!encoder.owed(), "drawn from slots stored exact, owed nothing");
+        assert!(!encoder.owed(), "drawn from slots stored lossless, owed nothing");
 
         encoder.forget_cache();
         encoder.forget();
@@ -3071,7 +3071,7 @@ mod tests {
 
     /// A walked list's tiles are stored as a progressive tile left them,
     /// which a held list is not owed: switched to one, the picture again is
-    /// stills, exact, stored again in the slots they were in, and a tile
+    /// stills, lossless, stored again in the slots they were in, and a tile
     /// shown after that is drawn from its slot.
     #[test]
     fn a_held_list_draws_no_tile_a_walked_one_stored() {
@@ -3087,13 +3087,13 @@ mod tests {
         encoder.set_picture(held());
         step(&mut encoder, &mut page, &pixels, None, ms(5000));
         assert_eq!(page.cached, 0, "nothing a walked list stored is drawn on a held one");
-        assert_eq!(page.off(&pixels), 0, "the picture exact");
-        assert_eq!(page.stored - stored, 2, "and stored again, exact");
+        assert_eq!(page.off(&pixels), 0, "the picture lossless");
+        assert_eq!(page.stored - stored, 2, "and stored again, lossless");
         assert_eq!(page.slots.len(), 2, "in the slots they were in");
 
         same_tile(&mut pixels, w, (0, 0), (64, 0));
         step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(5100));
-        assert_eq!(page.cached, 1, "an exact slot is drawn on a held list");
+        assert_eq!(page.cached, 1, "a lossless slot is drawn on a held list");
         assert_eq!(page.off(&pixels), 0);
     }
 
@@ -3113,7 +3113,7 @@ mod tests {
 
     /// A tile drawn from a slot that the stores of the run ahead of it would
     /// take as the least recently used: the draw names the slot first, so
-    /// the stores take others, and the page holds the picture exactly. The
+    /// the stores take others, and the page holds the picture losslessly. The
     /// picture has 64 tiles more than the cache has slots, so its first 64
     /// tiles' slots were taken again by its last 64, and the slot of the
     /// first tile of the second row is the least recently used.
@@ -3221,7 +3221,7 @@ mod tests {
     }
 
     /// A page scrolled is a copy of what the client holds, and only the rows
-    /// it uncovered go as stills, a band of tiles: the page exact after it,
+    /// it uncovered go as stills, a band of tiles: the page lossless after it,
     /// for a fraction of the picture's bytes.
     #[test]
     fn a_scroll_is_a_copy() {
@@ -3235,9 +3235,9 @@ mod tests {
         let scroll = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
         assert_eq!((page.copies, page.pngs), (1, 4 + 1), "a copy, and the band the rows uncovered are in, a still");
         assert!(!scroll.keyframe);
-        assert_eq!(page.off(&pixels), 0, "the page exact");
+        assert_eq!(page.off(&pixels), 0, "the page lossless");
         assert!(page.bytes - whole < whole / 3, "{} bytes for a scroll, {whole} for the picture", page.bytes - whole);
-        assert!(!encoder.owed(), "a copy of exact pixels owes nothing");
+        assert!(!encoder.owed(), "a copy of lossless pixels owes nothing");
     }
 
     /// A scroll that goes on stays copies, the tiles it moves no churn, so it
@@ -3256,7 +3256,7 @@ mod tests {
             step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(50 * (n as u64 + 1)));
             assert_eq!(page.copies, copies + 1, "a copy at row {top}");
             let bad: Vec<usize> = (0..usize::from(h)).filter(|y| page.canvas[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4].as_chunks::<4>().0.iter().zip(pixels[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4].as_chunks::<4>().0).any(|(a, b)| a[..3] != b[..3])).collect();
-            assert_eq!(page.off(&pixels), 0, "the page exact at row {top}: rows {bad:?} pngs {}", page.pngs);
+            assert_eq!(page.off(&pixels), 0, "the page lossless at row {top}: rows {bad:?} pngs {}", page.pngs);
         }
         assert_eq!(page.starts, 0, "no stream");
     }
@@ -3323,7 +3323,7 @@ mod tests {
 
     /// Two reads before an encode, a scroll each: the second's copy reads
     /// none of the rows the first uncovered, whose still is not sent yet, so
-    /// the page is exact after the one update that carries both.
+    /// the page is lossless after the one update that carries both.
     #[test]
     fn a_copy_reads_only_what_the_client_holds() {
         let (w, h) = (256u16, 256u16);
@@ -3340,7 +3340,7 @@ mod tests {
         let update = encoder.encode(ms(110), &mut out).unwrap();
         page.draw(update.rects, &out);
         assert_eq!(page.copies, 2, "both scrolls");
-        assert_eq!(page.off(&pixels), 0, "the page exact");
+        assert_eq!(page.off(&pixels), 0, "the page lossless");
     }
 
     /// A picture with no edge that repeats, which a scroll's copy finds at
@@ -3432,7 +3432,7 @@ mod tests {
     }
 
     /// Beside a region's stream, a scroll's copy neither draws on the tiles
-    /// the stream carries nor reads them, and the page is exact outside it.
+    /// the stream carries nor reads them, and the page is lossless outside it.
     #[test]
     fn a_copy_keeps_off_a_stream() {
         let (w, h) = (512u16, 256u16);
@@ -3460,7 +3460,7 @@ mod tests {
                 damage.push(Rect { x: 256, y: 0, width: 256, height: h });
             }
             step(&mut encoder, &mut page, &pixels, Some(&damage), ms(u64::from(n) * 50));
-            assert_eq!(outside(&page, &pixels), 0, "the page exact outside the stream at frame {n}");
+            assert_eq!(outside(&page, &pixels), 0, "the page lossless outside the stream at frame {n}");
         }
         assert_eq!(page.starts, 1, "the video streams");
         assert!(page.copies >= 8, "the page beside it scrolls by copies: {}", page.copies);
@@ -3469,7 +3469,7 @@ mod tests {
     /// A copy draws what the client holds of its source, so where that is lossy
     /// — the tiles a stream carried, owed their still — every tile the copy
     /// draws on is owed it too, one that did not change included, and the
-    /// settle leaves the page exact.
+    /// settle leaves the page lossless.
     #[test]
     fn a_copy_from_a_lossy_source_owes_every_tile_it_draws() {
         let (w, h) = (256u16, 320u16);
@@ -3498,7 +3498,7 @@ mod tests {
         assert_eq!(page.copies, 1);
         assert!((0..4).all(|col| encoder.debts.contains_key(&(col, 1))), "the tiles the copy drew that did not change are owed");
         settle(&mut encoder, &mut page, ms(100));
-        assert_eq!(page.off(&pixels), 0, "the page exact once settled");
+        assert_eq!(page.off(&pixels), 0, "the page lossless once settled");
     }
 
     /// A picture that changed without anything in it moving finds no copy.

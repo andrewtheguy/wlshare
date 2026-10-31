@@ -371,7 +371,7 @@ not version the extensions is not one it can speak them to.
 
 A private encoding, `WLSV` (`0x574c5356`), for the zDesk gateway: the whole
 desktop as one H.264 stream, for a client that would rather have a picture
-that moves than one that is exact. While the framebuffer is within its video
+that moves than one that is lossless. While the framebuffer is within its video
 ceiling, zDesk lists it for every browser on a target with
 `subtype = "wlshare"` whose picture is the video, and passes each frame to the
 browser as it came. A client that does not list it is unchanged.
@@ -493,7 +493,7 @@ change brings.
 ### Capturing what the encoder is handed
 
 A daemon started with `--capture-frames DIR` writes, for every session, what
-its video encoder is handed, exact: each frame's time, its size, the dial,
+its video encoder is handed, losslessly: each frame's time, its size, the dial,
 whether a keyframe was asked, the damage rectangles or that there were none,
 and the rows the rectangles span as the framebuffer holds them,
 `B, G, R, X`. The file is the capture file of `src/wlcap.rs`, whose layout is
@@ -552,8 +552,8 @@ is to code, and a large desktop gets a few of them a second. A scenario that
 fails, or whose sink does, leaves no capture and fails the run, so a file
 named for a scenario is never something else. `scripts/capture-frames.sh` builds and runs it, against the workspace's own
 encoder and nothing else. The zDesk gateway is not instrumented for
-this: its Mac in Standard mode and its Windows over RDP hand it exact pixels
-of the same kind of desktop, so a wlshare capture at their sizes stands for
+this: its Mac in Standard mode and its Windows over RDP hand it the pixels
+of the same kind of desktop to code, so a wlshare capture at their sizes stands for
 them.
 
 To watch one, `scripts/capture-mp4.sh` makes an MP4 of it: `wlcap frames`
@@ -604,17 +604,17 @@ is held past 500 ms — zDesk's `FENCE_HOLD_LIMIT`, its paint window's grace.
 ## The tiles encoding
 
 A second private picture encoding beside `WLSV`, `WLST` (`0x574c5354`), for
-the zDesk gateway on a link with room to spare: the desktop as exact PNG
+the zDesk gateway on a link with room to spare: the desktop as lossless PNG
 tiles where it is still, and a video stream of its own for each region that
 moves, H.264 — the host's hardware, or libx264. It is a choice the gateway makes per target, not a replacement:
 `WLSV`, one stream over the whole desktop walked on the link, stays the
 picture for a slow link, where a lossy stream in fewer bytes is what the link
 bears. This one spends bytes the link has, for less of the encoder's time and
-a picture that ends exact, on a list that holds its dial; and on a list
+a picture that ends lossless, on a list that holds its dial; and on a list
 that lets its dial walk, it follows the link as `WLSV` does, every tile a
-RemoteFX Progressive tile, still or moving, with no stream and nothing owed
-exact, so a client that wants the walk more than a picture that ends exact
-gets that too. It is zDesk's Motion, which that gateway dropped
+RemoteFX Progressive tile, still or moving, with no stream and nothing owed a
+lossless picture, so a client that wants the walk more than a picture that
+ends lossless gets that too. It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
@@ -643,7 +643,7 @@ u8 kind
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
 ```
 
-A PNG is the desktop's pixels there exactly, 8-bit RGB or a palette of it,
+A PNG is the desktop's pixels there, lossless, 8-bit RGB or a palette of it,
 depending on nothing before it; it is every still of a list that holds its
 dial, and sent on no other. A START begins a stream on its id over its
 rectangle, an H.264 keyframe of that size rounded up to even sides, a picture
@@ -741,7 +741,7 @@ the picture.
   still's run is coded around it: a window switched back to, a menu opened
   again, a page scrolled back a whole tile, text moved between windows. What
   it draws is what the slot was stored as, so it is owed what that still was
-  owed: a tile stored exact, or at the full stage, is settled, and a
+  owed: a tile stored lossless, or at the full stage, is settled, and a
   progressive tile stored below the full stage is owed it, as a copy of one
   is; once its upgrades settle it, it is stored again in its slot, settled.
   A flat tile is never stored:
@@ -752,8 +752,8 @@ the picture.
   draw of a slot for every tile of it a slot still keeps: an output switched
   back to, a new size — the record handed to the encoder made for it — or
   another dial. A tile a walked list stored is the full stage's at best,
-  short of the exact pixels a held list is owed, so a held list draws none
-  of them until each is stored again, exact. The record is forgotten only where the client says its cache is gone
+  short of the lossless pixels a held list is owed, so a held list draws none
+  of them until each is stored again, lossless. The record is forgotten only where the client says its cache is gone
   (`CacheEmpty`), as the gateway does at every repaint it asks, a page
   attached anew holding nothing, or where the list stops naming the encoding.
   Over a session at the desk it serves about a seventh of the stills
@@ -798,16 +798,17 @@ the picture.
   of a video in a window
   ([measured](tiles-performance.md#the-walks-verdicts)). A slowed walk paces
   the updates as it paces `WLSV`'s frames, and the dial is what a
-  progressive tile's first pass follows, below. Nothing is owed exact: a
-  client that lists the walk wants it more than a picture that ends exact.
+  progressive tile's first pass follows, below. Nothing is owed a lossless
+  picture: a client that lists the walk wants it more than a picture that
+  ends lossless.
   A first pass below the full stage is owed its upgrades, and the debts
   wait while the walk is slowed: a link that is behind is not handed finer
   pictures of what it already has. They wait until the desktop has been
   still for two seconds, and no longer: a still desktop sends no update
   whose verdict could lift the walk. With `WLSD` beside the list the dial
-  is held, every still is exact, the streams stay at the dial, and a walk moved by
+  is held, every still is lossless, the streams stay at the dial, and a walk moved by
   blocked writes only paces the updates: for a link with room, where a walk
-  would only ever stand at the ceiling, and a picture that ends exact. The
+  would only ever stand at the ceiling, and a picture that ends lossless. The
   walk is `WLSV`'s rather than one of its own because the verdict is the same
   — an update's queueing on the link — and a second set of thresholds would
   be a second thing to measure.
@@ -917,7 +918,7 @@ the picture.
   stopped on a 10 Mbit/s link took 21 s where it now takes about one
   ([measured](tiles-performance.md#adapting-to-the-link)). None is sent
   while the walk is slowed until the desktop has been still for two
-  seconds. So a desktop that stops is exact on the page on a held list and
+  seconds. So a desktop that stops is lossless on the page on a held list and
   at the full stage on a walked one, at 4K within 4.3 s held where it took
   13 ([measured](tiles-performance.md#the-settle)), and once it is
   nothing more is sent.
@@ -931,7 +932,7 @@ the picture.
 through this encoder and through `WLSV`, both decoded as a page would, the
 tiles' updates through the client's parser, a copy from the page's own
 picture, and `WLSV` and each region by libavcodec's software H.264 decoder,
-the dial held and every still exact. It writes JSON lines as `walk-sim` does,
+the dial held and every still lossless. It writes JSON lines as `walk-sim` does,
 and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
 regions and `WLSV` are the daemon's own H.264 — `h264/`, found as the
 daemon finds it, or libx264 with `--libx264` — so it runs where the daemon
@@ -940,7 +941,7 @@ can stand at, for the encoder's cost there.
 `--tiles-only` codes no `WLSV`, so a change to the tiles is measured
 against the `WLSV` of a run before. Its `check` holds the encoder to sending nothing once settled,
 through 5 s of quiet and 10 redraws of the pixels the page already has, and
-to ending exact; the `still` captures are for it and no measurement. What
+to ending lossless; the `still` captures are for it and no measurement. What
 it measured, and what the rules beyond Motion's were chosen by, is in
 [Tiles performance](tiles-performance.md).
 

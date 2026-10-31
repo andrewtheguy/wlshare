@@ -59,7 +59,7 @@
 //! the client has is a lossy one.
 //!
 //! A client that lists the tiles encoding instead gets each pixel update as
-//! exact PNG tiles where the desktop changed and a frame of a stream of its own
+//! lossless PNG tiles where the desktop changed and a frame of a stream of its own
 //! for each region that moves ([`crate::rfb::tiles`]): H.264 by the encoder
 //! the daemon found at startup ([`crate::h264`]), the host's hardware or
 //! libx264, on a coder the session opens for each tiles picture it makes; a
@@ -74,7 +74,7 @@
 //! desktop has stopped, and every
 //! tile a RemoteFX Progressive tile whose first pass follows the dial,
 //! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), with
-//! no stream; a list that holds the dial is sent every still exact. A
+//! no stream; a list that holds the dial is sent every still lossless. A
 //! slowed walk paces the updates as it paces the video's frames. What the
 //! encoder still owes once the desktop stops — a stream to end, a tile a
 //! stream carried to send as a PNG, a progressive tile's upgrade — is
@@ -230,7 +230,7 @@ pub struct SessionConfig {
     /// desktop waits for it before its ServerInit.
     pub output: Option<String>,
     pub output_wait: Duration,
-    /// Where each session writes what its video stream is handed, exact
+    /// Where each session writes what its video stream is handed, losslessly
     /// ([`crate::wlcap`]), or `None` for no capture: a flag of a daemon run by
     /// hand, for an encoder to be run again on the pictures a desktop is shown
     /// as.
@@ -1755,7 +1755,7 @@ impl Session {
     }
 
     /// When the tiles picture's tick is owed an update — a stream to end, a
-    /// tile to send exact — or `None` while it owes nothing, or no update may
+    /// tile to send losslessly — or `None` while it owes nothing, or no update may
     /// go: nothing is wanted, or a fence is outstanding. Not before a held
     /// frame's turn ([`Self::frame_at`]), which holds the tick's update as any
     /// other: a tick due in the meantime woke the loop to find the update held,
@@ -1791,7 +1791,7 @@ impl Session {
 
     /// The dial and the coarseness the tiles picture is coded at: the walk's
     /// where it walks; where the client holds it, the ceiling and never
-    /// coarse, every still exact and the streams at the dial whatever the
+    /// coarse, every still lossless and the streams at the dial whatever the
     /// link does ([`TilesPicture`]), the walk slowing the frames alone.
     fn tiles_pace(&self) -> (u8, bool) {
         match self.tiles_picture.progressive {

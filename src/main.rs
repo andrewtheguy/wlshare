@@ -73,7 +73,7 @@ struct Args {
     /// Listen on this address instead of the configured one.
     #[arg(long)]
     listen: Option<std::net::SocketAddr>,
-    /// Write what every video stream is handed into this directory, exact:
+    /// Write what every video stream is handed into this directory, losslessly:
     /// each session's frames as a capture file (`wlcap`), one
     /// `<unix millis>-client<id>.wlcap` per session, for an encoder to be
     /// run again on. Uncompressed and large: run `zstd` on them afterwards.
