@@ -45,7 +45,10 @@
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
 //! by the client's parser, a PNG by the `png` crate and a planar bitmap by
-//! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by ruzstd)
+//! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by
+//! ruzstd's streaming decoder and the still stream by ruzstd's
+//! `FrameDecoder` a block at a time, the fork's `peek` handing out its newest
+//! bytes)
 //! — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
@@ -55,7 +58,8 @@
 //! (`wlsv`, `tiles` or `lossless`), `quality` (the dial it was coded at),
 //! `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
-//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `planar` and
+//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `planar`
+//! (framed alone), `still` (the still stream's) and
 //! `video` (the regions' H.264, or `WLSV`'s), the tiles' `copies`, which
 //! carry no payload, `streams` started and
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
@@ -65,7 +69,7 @@
 //! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
-//! `tiles_bytes`, `png`, `planar`, `h264`, `streams` (live), `copies`, `tick_us` and
+//! `tiles_bytes`, `png`, `planar`, `still`, `h264`, `streams` (live), `copies`, `tick_us` and
 //! `tick_bytes`, a tick's what the ticks since the frame before cost.
 //!
 //! **`check`** holds the tiles to what a picture that stops owes, on any
@@ -277,6 +281,8 @@ impl Drop for Source {
 struct Sent {
     png: u64,
     planar: u64,
+    /// The still stream's bytes.
+    still: u64,
     /// The frames of the streams: the tiles' regions' H.264, or `WLSV`'s.
     video: u64,
     starts: u64,
@@ -288,12 +294,13 @@ struct Sent {
 
 impl Sent {
     fn bytes(&self) -> u64 {
-        self.png + self.planar + self.video
+        self.png + self.planar + self.still + self.video
     }
 
     fn add(&mut self, other: &Sent) {
         self.png += other.png;
         self.planar += other.planar;
+        self.still += other.still;
         self.video += other.video;
         self.starts += other.starts;
         self.copies += other.copies;
@@ -312,12 +319,14 @@ struct Page {
     /// copy's source.
     planes: Vec<u8>,
     scratch: Vec<u8>,
+    /// The still stream as the page reads it.
+    stills: planar_decoder::StillReader,
 }
 
 impl Page {
     fn new((w, h): (u16, u16)) -> Self {
         let stride = usize::from(w) * 4;
-        Self { stride, canvas: vec![0; stride * usize::from(h)], decoders: HashMap::new(), slots: HashMap::new(), planes: Vec::new(), scratch: Vec::new() }
+        Self { stride, canvas: vec![0; stride * usize::from(h)], decoders: HashMap::new(), slots: HashMap::new(), planes: Vec::new(), scratch: Vec::new(), stills: Default::default() }
     }
 
     /// One update of `count` rectangles, parsed as a client parses it and drawn.
@@ -400,6 +409,11 @@ impl Page {
                 TileBody::Planar(body) => {
                     sent.planar += body.len() as u64;
                     let rgb = planar_decoder::unpack(&body, w, h)?;
+                    self.paste((x, y, w, h), &rgb);
+                }
+                TileBody::Still(body) => {
+                    sent.still += body.len() as u64;
+                    let rgb = self.stills.unpack(&body, w, h)?;
                     self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Progressive(_) => return Err("a progressive tile, which neither a held list nor a lossless one is sent".into()),
@@ -690,7 +704,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"planar\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
+                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"planar\":{},\"still\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
                 json(&name),
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
@@ -701,6 +715,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 sent.bytes(),
                 sent.png,
                 sent.planar,
+                sent.still,
                 sent.video,
                 run.tiles.page.decoders.len(),
                 sent.copies,
@@ -821,7 +836,7 @@ fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_o
     let mean = if tally.frames == 0 { 0.0 } else { ms(per_frame.iter().sum()) / tally.frames as f64 };
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"planar\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"planar\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         quality,
@@ -831,6 +846,7 @@ fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_o
         tally.sent.bytes(),
         tally.sent.png,
         tally.sent.planar,
+        tally.sent.still,
         tally.sent.video,
         tally.sent.copies,
         tally.sent.cached,

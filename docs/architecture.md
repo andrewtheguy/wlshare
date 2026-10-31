@@ -616,7 +616,7 @@ RemoteFX Progressive tile, still or moving, with no stream and nothing owed a
 lossless picture, so a client that wants the walk more than a picture that
 ends lossless gets that too; and on a list that asks for it lossless, every
 tile that changed, still or moving, is RDP's planar codec of its pixels, with
-no stream, so a client on a LAN that wants every picture it is shown exact,
+no H.264 stream, so a client on a LAN that wants every picture it is shown exact,
 as a Windows host draws its pipeline under the Lossless policy, gets that
 (experimental). It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
@@ -648,6 +648,7 @@ u8 kind
 6 STORE   u16 slot                                         what the client holds here, kept in slot N
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
 8 PLANAR  u32 length | u8[length]                          a zstd frame of a planar bitmap of exactly the rectangle's pixels
+9 STILL   u32 length | u8[length]                          the still stream's next planar bitmap, of exactly the rectangle's pixels
 ```
 
 A PNG is the desktop's pixels there, lossless, 8-bit RGB or a palette of it,
@@ -687,8 +688,15 @@ planar codec: a format header of no alpha plane and no colour loss or
 subsampling, then the red, green and blue planes, top row first, each
 run-length coded over its rows' differences, or plain with the padding byte
 that form ends with; the body is that bitmap as one zstd frame, and nothing
-after it. It depends on nothing before it, and is every
-rectangle of a lossless list but a COPY, a CACHED and a STORE.
+after it. It depends on nothing before it, and is every rectangle of a
+lossless list where the desktop moves but a COPY, a CACHED and a STORE. A
+STILL is the same bitmap in the still stream, one zstd stream across every
+STILL of the session, its body the stream's bytes through a flush after the
+bitmap, which read after the bodies before it is that bitmap exactly; a body
+that begins a zstd frame starts the stream over, and its window is at most
+8 MiB. It is every rectangle of a lossless list where the desktop is still
+but a COPY, a CACHED and a STORE, and the stream starts over where the
+picture does and after a client's `CacheEmpty`.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
@@ -863,9 +871,11 @@ the picture.
   ([measured](tiles-performance.md#progressive-tiles)).
 
 - **On a lossless list, every tile planar (experimental).** A list with
-  `WLSL` gets no PNG, progressive tile or stream: every tile that changed,
-  still or moving, goes as a still, a row's run of them one PLANAR, and
-  copies and the cache as above, as a Windows host whose policy asks for a
+  `WLSL` gets no PNG, progressive tile or H.264 stream: every tile that
+  changed, still or moving, goes as a still, a row's run of them one planar
+  bitmap, a STILL where its tiles are still and a PLANAR where they move,
+  by the churn a held list lays its regions out by, and copies and the
+  cache as above, as a Windows host whose policy asks for a
   lossless picture draws its whole pipeline with the planar codec, H.264 and
   RemoteFX Progressive refused. What the client is shown is exact from the
   first update, so nothing is owed and nothing settles: a desktop that moves
@@ -877,18 +887,30 @@ the picture.
   those as segments of bytes as they are and a run of the last of them; a
   flat 64×64 tile is a few hundred bytes, and a rectangle whose segments would
   come to more than its planes as they are, noise or a photograph's grain,
-  goes plain. Each bitmap is then one zstd frame, as a Windows host's bulk
+  goes plain. A row the same colours as the row above is one coding of a
+  row of zeroes, and the planes are cut from the pixels with AVX2 where the
+  processor has it. Each bitmap is then zstd, as a Windows host's bulk
   compression wraps its pipeline — level 1's fast strategy with a small
   table and long matches, a moving picture's frame being its literals'
-  entropy coding — a frame of its own, so every run of an update is packed
-  at once on every core and read alone, where one stream across the
-  picture would be state both ends start over together. A still or a
-  scroll is then a third of a PNG's bytes or less, and a desktop that moves
-  several times the held tiles' bytes and nearly twice their processor,
-  for a LAN ([measured](tiles-performance.md#lossless-tiles)). Its tests read every
-  body back with a reader of their own, written from the specification, the
-  frame by ruzstd, a zstd decoder that shares nothing with libzstd, and the
-  page decodes it with ruzstd and the planar codec of the compositor that
+  entropy coding. Where the desktop moves, it is a frame of its own, so
+  every moving run of an update is packed at once on every core and read
+  alone. Where it is still, it is the still stream's, a 1 MiB window across
+  the session flushed at each bitmap, coded in order after the bitmaps are
+  cut on every core: a page, a terminal or a menu shown again is matched
+  against what the stream carried, which takes a third to three fifths off
+  what a desktop of pages comes to in frames of their own, and a moving picture,
+  which it would take nothing off, stays framed and on every core. The
+  stream is state both ends keep, so it starts over with the picture, and
+  with a client's `CacheEmpty`, which a page that cannot read a STILL sends
+  as one that missed a rectangle does. A still or a scroll is then a quarter
+  of a PNG's bytes or less, and a desktop that moves several times the held
+  tiles' bytes and a fifth more of their processor, for a LAN
+  ([measured](tiles-performance.md#lossless-tiles)). Its tests read every
+  body back with a reader of their own, written from the specification,
+  the zstd by ruzstd, a decoder that shares nothing with libzstd, from
+  andrewtheguy's fork, which adds `FrameDecoder::peek` for the still
+  stream's newest bytes, held back while its frame goes on; the page
+  decodes it with the same and the planar codec of the compositor that
   draws an RDP host's pipeline.
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every

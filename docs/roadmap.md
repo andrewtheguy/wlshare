@@ -51,34 +51,3 @@ performance](tiles-performance.md#progressive-tiles).
   host's does, or a moving region carried by prediction, as the walked
   tiles' H.264 regions did before progressive tiles took their place (a 4K
   window at 5 Mbit/s at 17 frames a second where these have 7).
-
-## Lossless tiles
-
-What is left of the lossless picture, every tile of a lossless list a
-planar bitmap in a zstd frame ([On a lossless list, every tile
-planar](architecture.md#the-tiles-encoding)), each measured as it was:
-the tiles-only passes of motion-bench, `--lossless`, against [the runs in
-Tiles performance](tiles-performance.md#lossless-tiles).
-
-- **A faster planar coder.** Where the desktop moves, the bitmaps are about
-  half of what the picture costs the processor, 1.75 times the held
-  tiles' in all: a video at 1920×1080 17.2 ms a frame against 9.9. The
-  coder walks each row a byte at a time, three planes over, looking for a
-  run at every byte. A row that is no change from the row above, all zero
-  after the difference, is most of a still and much of a window that
-  plays; found a word at a time it is a run with nothing to look for, and
-  the planes cut from the pixels a row at a time with the processor's wide
-  instructions where it says it has them, as the progressive tiles' coder
-  is.
-- **One zstd stream across a picture.** Every body is a zstd frame of its
-  own, so the page reads each alone and nothing is kept between them.
-  Offline, one stream across a picture's bodies, flushed at each, took a
-  desktop of pages nine times more off than frames of their own do (the
-  browser capture at 1920×1080: 1.7 MB framed, 0.2 MB as one stream), and
-  a moving picture nothing. It needs a page decoder that hands out every
-  byte as its block ends, which ruzstd, the one the page reads the frames
-  with, does not: libzstd itself built into the page's module, whose
-  threads ask every object of it to be built for shared memory. And the
-  stream's history is state both ends keep, so a body would say where the
-  stream starts over — where the picture does — and the page would ask for
-  the picture whole wherever it lost one.

@@ -94,8 +94,9 @@ pub const ENCODING_HELD: i32 = 0x574c_5344;
 
 /// Listed beside [`ENCODING_TILES`], asks for the tiles picture lossless:
 /// every tile that changed, still or moving, RDP's planar codec of its pixels,
-/// and no stream, the link pacing how often and nothing else
-/// ([`tiles::TilesPicture`]). The ASCII bytes `WLSL`.
+/// what moves each in a zstd frame of its own and what is still in one zstd
+/// stream across the session, and no H.264 stream, the link pacing how often
+/// and nothing else ([`tiles::TilesPicture`]). The ASCII bytes `WLSL`.
 pub const ENCODING_LOSSLESS: i32 = 0x574c_534c;
 
 /// The most bytes one video frame, and one tiles rectangle's PNG, planar
@@ -135,43 +136,4 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_encodings_are_their_ascii_names() {
-        assert_eq!(ENCODING_VIDEO, i32::from_be_bytes(*b"WLSV"));
-        assert_eq!(ENCODING_HELD, i32::from_be_bytes(*b"WLSD"));
-        assert_eq!(ENCODING_LOSSLESS, i32::from_be_bytes(*b"WLSL"));
-        assert_eq!(ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
-        assert_eq!(ENCODING_DENSITY, i32::from_be_bytes(*b"WLSH"));
-        assert_eq!(ENCODING_OUTPUTS, i32::from_be_bytes(*b"WLSO"));
-        assert_eq!(ENCODING_CAMERA, i32::from_be_bytes(*b"WLSC"));
-        assert_eq!(ENCODING_MICROPHONE, i32::from_be_bytes(*b"WLSM"));
-        assert_eq!(ENCODING_AUDIO, i32::from_be_bytes(*b"WLSF"));
-        assert_eq!(ENCODING_AUDIO_OPUS, i32::from_be_bytes(*b"WLOP"));
-    }
-
-    #[test]
-    fn every_encoding_here_is_private() {
-        for e in [
-            ENCODING_VIDEO,
-            ENCODING_TILES,
-            ENCODING_DENSITY,
-            ENCODING_OUTPUTS,
-            ENCODING_CAMERA,
-            ENCODING_MICROPHONE,
-            ENCODING_AUDIO,
-            ENCODING_AUDIO_OPUS,
-            ENCODING_HELD,
-            ENCODING_LOSSLESS,
-            version::encoding(1),
-        ] {
-            assert!(private(e), "{e:#x}");
-        }
-        // RFB's own: ZRLE, Cursor, and the QEMU Audio pseudo-encoding.
-        for e in [16, -239, -259] {
-            assert!(!private(e), "{e}");
-        }
-    }
-}
+mod tests;
