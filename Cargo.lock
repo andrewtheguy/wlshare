@@ -1286,9 +1286,8 @@ dependencies = [
 
 [[package]]
 name = "ruzstd"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+version = "0.9.1"
+source = "git+https://github.com/andrewtheguy/zstd-rs?tag=v0.9.1-peek.2#9ccf1fa036da6953df0c213480fd8d6e246d0645"
 dependencies = [
  "twox-hash",
 ]
@@ -1940,7 +1939,7 @@ dependencies = [
 
 [[package]]
 name = "wlshare-proto"
-version = "9.0.0"
+version = "10.0.0"
 dependencies = [
  "thiserror 2.0.20",
 ]

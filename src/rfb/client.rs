@@ -268,8 +268,12 @@ pub enum TileBody {
     /// A RemoteFX Progressive tile block of the rectangle's tile, on a
     /// progressive list.
     Progressive(Vec<u8>),
-    /// A planar bitmap of the rectangle's pixels, on a lossless list.
+    /// A planar bitmap of the rectangle's pixels in a zstd frame, on a
+    /// lossless list where the desktop moves.
     Planar(Vec<u8>),
+    /// The still stream's bytes of a planar bitmap of the rectangle's
+    /// pixels, on a lossless list where the desktop is still.
+    Still(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,6 +471,10 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                 TileHeader::Planar { len } => {
                     let Some(bitmap) = body(len)? else { return Ok(None) };
                     (RectBody::Tiles(TileBody::Planar(bitmap)), at + len)
+                }
+                TileHeader::Still { len } => {
+                    let Some(bytes) = body(len)? else { return Ok(None) };
+                    (RectBody::Tiles(TileBody::Still(bytes)), at + len)
                 }
             }
         }
@@ -708,8 +716,8 @@ mod tests {
         assert_eq!(parse(&wire), Err(ParseError::RectTooLong(u32::MAX as usize)));
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
-        wire.push(9);
-        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(9))));
+        wire.push(10);
+        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(10))));
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_CACHED, 0x10, 0]);

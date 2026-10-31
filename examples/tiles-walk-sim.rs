@@ -115,7 +115,7 @@ const FRAMING: usize = 4 + 13;
 /// An RFB rectangle's header, ahead of each tiles body.
 const RECT_HEADER: usize = 12;
 
-/// The bodies of an update's stills, PNG, progressive and planar, and of its streams' frames.
+/// The bodies of an update's stills, PNG, progressive, planar and the still stream's, and of its streams' frames.
 fn split(out: &[u8]) -> Result<(usize, usize), Error> {
     let (mut stills, mut streams, mut at) = (0, 0, 0);
     while at < out.len() {
@@ -123,7 +123,7 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len } | TileHeader::Progressive { len } | TileHeader::Planar { len } => {
+            TileHeader::Png { len } | TileHeader::Progressive { len } | TileHeader::Planar { len } | TileHeader::Still { len } => {
                 stills += len;
                 len
             }
@@ -150,7 +150,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Progressive { len } | TileHeader::Planar { len } => len,
+            TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Progressive { len } | TileHeader::Planar { len } | TileHeader::Still { len } => len,
             TileHeader::End { .. } | TileHeader::Copy { .. } | TileHeader::Cached { .. } | TileHeader::Store { .. } => 0,
         };
         let bytes = RECT_HEADER + used + body;
@@ -173,6 +173,8 @@ struct Page {
     streams: HashMap<u8, (Bounds, decode::Decoder)>,
     slots: HashMap<u16, Vec<u8>>,
     planes: Vec<u8>,
+    /// The still stream as the page reads it.
+    stills: planar_decoder::StillReader,
 }
 
 /// The progressive tiles sent, count and bytes, by pass: first passes at each
@@ -204,7 +206,7 @@ impl Passes {
 
 impl Page {
     fn new(w: u16, h: u16) -> Self {
-        Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), planes: Vec::new() }
+        Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), planes: Vec::new(), stills: Default::default() }
     }
 
     /// `B, G, R, X` rows `line` pixels apart drawn at the rectangle.
@@ -242,6 +244,10 @@ impl Page {
                 }
                 TileBody::Planar(body) => {
                     let rgb = planar_decoder::unpack(&body, w, h)?;
+                    self.paste(place, &Self::rgb(&rgb), w);
+                }
+                TileBody::Still(body) => {
+                    let rgb = self.stills.unpack(&body, w, h)?;
                     self.paste(place, &Self::rgb(&rgb), w);
                 }
                 TileBody::Progressive(block) => {

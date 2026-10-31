@@ -1,9 +1,11 @@
 //! The lossless tiles' coding: RDP 6.0 bitmap compression, the planar codec
 //! of RDP's graphics pipeline ([MS-RDPEGDI] 2.2.2.5.1, [MS-RDPEGFX]
 //! `RDPGFX_CODECID_PLANAR`), which a Windows host whose policy asks for a
-//! lossless picture draws everything with, each bitmap then one zstd frame
-//! ([`pack`]), as the host's own bulk compression wraps its pipeline. What a
-//! [`wlshare_proto::tiles::KIND_PLANAR`] rectangle's body is.
+//! lossless picture draws everything with, each bitmap then zstd, as the
+//! host's own bulk compression wraps its pipeline: one frame of its own
+//! ([`pack`]), a [`wlshare_proto::tiles::KIND_PLANAR`] rectangle's body, or
+//! the still stream's next bytes ([`StillStream`]), a
+//! [`wlshare_proto::tiles::KIND_STILL`]'s.
 //!
 //! A rectangle's pixels are cut into a red, a green and a blue plane, and
 //! each plane is coded row by row: the top row as it is, every row below as
@@ -20,28 +22,31 @@
 //! instead, with no `RLE` flag and the padding byte the format ends that
 //! form with.
 //!
-//! **zstd.** Each bitmap is one zstd frame, depending on no frame before it,
-//! so a rectangle is packed on any thread and read on its own:
-//! the planes' runs leave a text's or a window's repeats and a photograph's
-//! skewed bytes, which the frame takes a further 1.5 to 10 times off, and
-//! more where a rectangle repeats itself. One stream across a picture's
-//! rectangles took a desktop of pages several times more again, measured;
-//! but a stream's history is state both ends would have to keep and start
-//! over together, and a page's zstd decoder would have to hand out every
-//! byte as its block ends, which the one in Rust the page decodes with does
-//! not. Its parameters are level 1's fast strategy with a smaller table and
-//! longer matches ([`zstd_parameters`]): a moving picture's frames are the
-//! literals' entropy coding more than its matches, and these coded a video's
-//! nearly twice as fast as level 1 for 1.67 times off the planes against
-//! 1.69, a page of text 4.9 times against 5.2. Levels below 1, which code no
-//! literal, gave a moving picture back almost nothing over the planes, and
-//! above it cost twice the time for a percent.
+//! **zstd.** Where the desktop moves, each bitmap is one zstd frame,
+//! depending on no frame before it, so a rectangle is packed on any thread
+//! and read on its own: the planes' runs leave a text's or a window's
+//! repeats and a photograph's skewed bytes, which the frame takes a further
+//! 1.5 to 10 times off, and more where a rectangle repeats itself. Where it
+//! is still, each is the still stream's, one zstd stream across the
+//! session flushed at each bitmap, with a 1 MiB window: a page, a terminal
+//! or a menu shown again is matched against what it already carried, a
+//! third to three fifths more off. It is state both ends keep, coded in
+//! order and started over together. Its parameters are level 1's fast
+//! strategy with a smaller table and longer matches ([`zstd_parameters`]):
+//! a moving picture's frames are the literals' entropy coding more than its
+//! matches, and these coded a video's nearly twice as fast as level 1 for
+//! 1.67 times off the planes against 1.69, a page of text 4.9 times against
+//! 5.2. Levels below 1, which code no literal, gave a moving picture back
+//! almost nothing over the planes, and above it cost twice the time for a
+//! percent.
 //!
 //! Its tests decode with a reader written here from the specifications,
-//! which shares nothing with the encoder, the frames by ruzstd, a zstd
-//! decoder in Rust that shares nothing with libzstd; zDesk's page decodes
-//! the frames with ruzstd too, and the bitmaps with its RDP compositor's
-//! planar codec, the one that draws a Windows host's lossless pipeline.
+//! which shares nothing with the encoder, the zstd by ruzstd, a decoder in
+//! Rust that shares nothing with libzstd, the still stream by its fork's
+//! `FrameDecoder::peek`, which hands out an open frame's newest bytes;
+//! zDesk's page decodes the zstd with the same, and the bitmaps with its RDP
+//! compositor's planar codec, the one that draws a Windows host's lossless
+//! pipeline.
 
 use std::cell::RefCell;
 use std::io;
@@ -99,6 +104,72 @@ pub fn pack(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8>>
         encode(pixels, stride, w, h, &mut packer.rows, &mut packer.bitmap);
         packer.zstd.compress(&packer.bitmap)
     })
+}
+
+/// The planar bitmap ([`encode`]) of the `w`×`h` rectangle of `pixels`,
+/// `B, G, R, X` whose rows are `stride` bytes apart from its top-left, for
+/// the still stream ([`StillStream`]). On whichever thread calls it, with
+/// that thread's working space.
+pub fn bitmap(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8>> {
+    PACKER.with_borrow_mut(|packer| {
+        let packer = match packer {
+            Some(packer) => packer,
+            None => packer.insert(Packer { rows: Rows::default(), bitmap: Vec::new(), zstd: compressor()? }),
+        };
+        let mut bitmap = Vec::new();
+        encode(pixels, stride, w, h, &mut packer.rows, &mut bitmap);
+        Ok(bitmap)
+    })
+}
+
+/// The still stream's window: 1 MiB, which a desktop of pages, a terminal
+/// or a menu shown again is found in. 8 MiB took no more off.
+const STILL_WINDOW_LOG: u32 = 20;
+
+/// The still stream: one zstd stream across every
+/// [`wlshare_proto::tiles::KIND_STILL`] rectangle of a session, each body its
+/// bytes through a flush after the rectangle's bitmap, so that a page, a
+/// terminal or a menu shown again is matched against what the stream already
+/// carried. The parameters are a body's own ([`zstd_parameters`]) but the
+/// window, a mebibyte. Coded in order, on the encoder's thread; made anew
+/// where it starts over, its first body a new frame.
+pub struct StillStream {
+    zstd: zstd::zstd_safe::CCtx<'static>,
+}
+
+impl StillStream {
+    pub fn new() -> io::Result<Self> {
+        let mut zstd = zstd::zstd_safe::CCtx::create();
+        let set = |zstd: &mut zstd::zstd_safe::CCtx, parameter| zstd.set_parameter(parameter).map(drop).map_err(zstd_error);
+        set(&mut zstd, zstd::zstd_safe::CParameter::CompressionLevel(1))?;
+        for parameter in zstd_parameters() {
+            set(&mut zstd, parameter)?;
+        }
+        set(&mut zstd, zstd::zstd_safe::CParameter::WindowLog(STILL_WINDOW_LOG))?;
+        Ok(Self { zstd })
+    }
+
+    /// Append to `out` the stream's bytes of `bitmap`, through a flush: the
+    /// body of a STILL rectangle. An error is zstd's, which a flush of a
+    /// bitmap this size has none of.
+    pub fn push(&mut self, bitmap: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
+        use zstd::zstd_safe::{InBuffer, OutBuffer, zstd_sys::ZSTD_EndDirective};
+        let mut input = InBuffer::around(bitmap);
+        loop {
+            out.reserve(zstd::zstd_safe::compress_bound(bitmap.len() - input.pos()) + 64);
+            let at = out.len();
+            let mut output = OutBuffer::around_pos(out, at);
+            let left = self.zstd.compress_stream2(&mut output, &mut input, ZSTD_EndDirective::ZSTD_e_flush).map_err(zstd_error)?;
+            if left == 0 && input.pos() == bitmap.len() {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// A zstd error code as an [`io::Error`].
+fn zstd_error(code: usize) -> io::Error {
+    io::Error::other(zstd::zstd_safe::get_error_name(code))
 }
 
 /// The format header's `RLE`: the planes are differences of rows, run-length coded.
@@ -409,6 +480,43 @@ mod tests {
         let mut bitmap = Vec::new();
         encode(&pixels, stride, 64, 64, &mut Rows::default(), &mut bitmap);
         assert!(packed(64, 64, noise(3)).len() <= bitmap.len() + 32, "noise framed is the bitmap and a frame's few bytes");
+    }
+
+    /// Every STILL's body is the stream's bytes of its bitmap, read after the
+    /// ones before it: the first a new frame and none after it, each read
+    /// exact by the client's reader, ruzstd a block at a time, a picture shown
+    /// again a few bytes, and a stream made anew a new frame.
+    #[test]
+    fn a_still_is_the_streams_bytes_of_its_bitmap() {
+        let text = |x: usize, y: usize| if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 { [0, 0, 0] } else { [255, 255, 255] };
+        let pictures = [
+            (1920, 64, picture(1920, 64, text)),
+            (64, 64, picture(64, 64, noise(9))),
+            (200, 30, picture(200, 30, |x, y| [x as u8, y as u8, 7])),
+            (1920, 64, picture(1920, 64, text)),
+            (1, 1, picture(1, 1, |_, _| [1, 2, 3])),
+        ];
+        let mut stream = StillStream::new().unwrap();
+        let mut reader = decoder::StillReader::default();
+        let mut bodies = Vec::new();
+        for (i, (w, h, (pixels, stride))) in pictures.iter().enumerate() {
+            let (pixels, stride) = (pixels, *stride);
+            let bitmap = bitmap(pixels, stride, *w as u16, *h as u16).unwrap();
+            let mut body = vec![0xAB];
+            stream.push(&bitmap, &mut body).unwrap();
+            let body = body.split_off(1);
+            assert_eq!(body.starts_with(&decoder::ZSTD_MAGIC), i == 0, "body {i} begins a frame");
+            assert_eq!(reader.unpack(&body, *w, *h).unwrap(), rgb(pixels, stride, *w, *h), "body {i} by the reader");
+            bodies.push(body);
+        }
+        assert!(bodies[3].len() * 4 < bodies[0].len(), "a line of text again is {} bytes, against {}", bodies[3].len(), bodies[0].len());
+        // Made anew, the stream starts over, and the reader with it.
+        let (pixels, stride) = picture(64, 64, noise(4));
+        let mut body = Vec::new();
+        StillStream::new().unwrap().push(&bitmap(&pixels, stride, 64, 64).unwrap(), &mut body).unwrap();
+        assert!(body.starts_with(&decoder::ZSTD_MAGIC));
+        assert_eq!(reader.unpack(&body, 64, 64).unwrap(), rgb(&pixels, stride, 64, 64));
+        assert!(decoder::StillReader::default().unpack(&bodies[1], 64, 64).is_err(), "a body that continues no stream");
     }
 
     /// Code and decode, asserting the round trip exact, and return the bitmap.

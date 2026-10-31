@@ -146,8 +146,9 @@ symphonia-bundle-flac = "0.6"
 symphonia-core = "0.6"
 # The lossless tiles' tests, and the examples that draw them, read the
 # compression stream back with ruzstd, a zstd decoder in Rust that shares
-# nothing with libzstd; zDesk's page decodes with it too.
-ruzstd = "0.8"
+# nothing with libzstd; zDesk's page decodes with it too. Its fork, which adds
+# `FrameDecoder::peek`: the still stream's newest bytes, before its frame ends.
+ruzstd = { git = "https://github.com/andrewtheguy/zstd-rs", tag = "v0.9.1-peek.2" }
 # `io-std` for `examples/video-sink.rs`, the client the capture container runs
 # against the daemon, which types what it reads.
 tokio = { version = "1", features = ["io-std"] }

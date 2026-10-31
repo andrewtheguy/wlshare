@@ -44,7 +44,7 @@ def bench_section(name, rows):
         if r["coder"] == "wlsv":
             detail = f"{r['keyframes']} keyframes"
         elif r["coder"] == "lossless":
-            detail = f"planar {mb(r['planar']):.2f} MB"
+            detail = f"framed {mb(r['planar']):.2f} MB, stream {mb(r.get('still', 0)):.2f} MB"
         else:
             detail = f"PNG {mb(r['png']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
         out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {lossless:.0f}% | {ends} | {detail} |")

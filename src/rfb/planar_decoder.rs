@@ -1,7 +1,8 @@
 //! A planar bitmap read back as the specification lays it out
 //! ([MS-RDPEGDI] 2.2.2.5.1 and its RLE planes, 2.2.2.5.1.1–3), written
 //! for the tests from the text and not from the encoder, and the zstd frame
-//! around it read by ruzstd; the examples' pages draw with it too.
+//! around it read by ruzstd; the examples' pages draw with it too, and the
+//! still stream ([`StillReader`]) by ruzstd as well.
 
 /// The `w`×`h` pixels of `bitmap`, `R, G, B` a pixel, top row first, and
 /// the bytes it took; `Err` where it is not a whole lossless bitmap of
@@ -93,4 +94,65 @@ pub fn unpack(body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
         return Err(format!("a planar bitmap of {} bytes, {used} of them its {w}x{h} pixels", bitmap.len()));
     }
     Ok(rgb)
+}
+
+/// The still stream as a client reads it: each STILL body decompressed,
+/// after the ones before it, to one bitmap of its rectangle, by ruzstd a
+/// block at a time, the bitmap read from what it holds back of the frame
+/// while it goes on ([`ruzstd::decoding::FrameDecoder::peek`]).
+#[derive(Default)]
+pub struct StillReader {
+    frame: Option<ruzstd::decoding::FrameDecoder>,
+    bitmap: Vec<u8>,
+}
+
+/// What a zstd frame begins with.
+pub const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
+impl StillReader {
+    /// The `w`×`h` pixels of a STILL's `body`, `R, G, B` a pixel, top row
+    /// first: a body that begins a zstd frame starts the stream over, and
+    /// any other continues it. `Err` where it is not whole blocks of the
+    /// frame, or decompresses to anything but one whole bitmap of that size.
+    pub fn unpack(&mut self, body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
+        let mut source = body;
+        if body.starts_with(&ZSTD_MAGIC) {
+            let mut frame = ruzstd::decoding::FrameDecoder::new();
+            frame.init(&mut source).map_err(|e| format!("the still stream's frame: {e}"))?;
+            self.frame = Some(frame);
+        }
+        let frame = self.frame.as_mut().ok_or("a STILL that continues no stream")?;
+        // What the bodies before left held back is theirs.
+        frame.collect_to_writer(std::io::sink()).map_err(|e| e.to_string())?;
+        let before = held(frame);
+        while !source.is_empty() {
+            let header = source.get(..3).ok_or("a block header cut short")?;
+            let header = u32::from_le_bytes([header[0], header[1], header[2], 0]);
+            if header & 1 != 0 {
+                return Err("a last block, which ends the stream's frame".into());
+            }
+            // An RLE block's content is its one byte.
+            let content = if (header >> 1) & 3 == 1 { 1 } else { (header >> 3) as usize };
+            let block = source.get(..3 + content).ok_or("a block cut short")?;
+            let (read, _) = frame.decode_from_to(block, &mut []).map_err(|e| format!("the still stream: {e}"))?;
+            if read != block.len() {
+                return Err("a block that does not decode".into());
+            }
+            source = &source[block.len()..];
+        }
+        let (a, b) = frame.peek();
+        self.bitmap.clear();
+        self.bitmap.extend([a, b].concat().get(before..).ok_or("the stream went back")?);
+        let (rgb, used) = decode(&self.bitmap, w, h)?;
+        if used != self.bitmap.len() {
+            return Err(format!("a still of {} bytes, {used} of them its {w}x{h} pixels", self.bitmap.len()));
+        }
+        Ok(rgb)
+    }
+}
+
+/// How many bytes `frame` holds back.
+fn held(frame: &ruzstd::decoding::FrameDecoder) -> usize {
+    let (a, b) = frame.peek();
+    a.len() + b.len()
 }
