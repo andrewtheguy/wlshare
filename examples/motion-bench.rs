@@ -45,8 +45,10 @@
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
 //! by the client's parser, a PNG by the `png` crate and a planar bitmap by
-//! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by ruzstd
-//! and the still stream by libzstd's streaming decoder)
+//! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by
+//! ruzstd's streaming decoder and the still stream by ruzstd's
+//! `FrameDecoder` a block at a time, the fork's `peek` handing out its newest
+//! bytes)
 //! — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
