@@ -62,14 +62,17 @@ def check_section(name, rows):
 
 def walk_section(rows):
     # walk-sim's video is at wlshare's dial throughout, its walk the frames'
-    # alone and never held; tiles-walk-sim's walks the dial from its ceiling.
+    # alone and never held; tiles-walk-sim's walks the dial from its ceiling,
+    # holds it, or, lossless, has none and walks the frames alone.
     out = ["## walk-sim", "", "| capture | picture | link Mbit/s | rtt | ceiling | walk | frames/s | motion q mean | p10 | shown mean ms | p50 | p95 | max | delivery p50 ms | p95 | Mbit/s | moves | down |", "|---|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for r in rows:
         link = ", ".join(f"{s['mbps']:g}" + (f" from {s['from_s']:g} s" if s["from_s"] else "") for s in r["link"])
         video = r["picture"] == "video"
         ceiling = r["quality"] if video else r["ceiling"]
         mean, p10 = (ceiling, ceiling) if video else (r["motion_q_mean"], r["motion_q_p10"])
-        out.append(f"| {r['capture']} | {'WLSV' if video else 'tiles'} | {link} | {r['rtt_ms']:g} | {ceiling} | {'held' if r.get('held') else 'walked'} | {r['fps']:.1f} | {mean:.1f} | {p10:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
+        picture = "WLSV" if video else r["picture"]
+        walk = "lossless" if r["picture"] == "lossless" else "held" if r.get("held") else "walked"
+        out.append(f"| {r['capture']} | {picture} | {link} | {r['rtt_ms']:g} | {ceiling} | {walk} | {r['fps']:.1f} | {mean:.1f} | {p10:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
     return out
 
 
