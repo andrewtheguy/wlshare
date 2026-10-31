@@ -293,7 +293,7 @@ rmdir "$RAW" 2>/dev/null || true
 {
 	echo "# Frame captures"
 	echo
-	echo "What a wlshare session handed its video encoder, exact, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`src/wlcap.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. $LENGTH seconds each; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
+	echo "What a wlshare session handed its video encoder, lossless, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`src/wlcap.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. $LENGTH seconds each; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
 	echo
 	echo "Quiet:"
 	echo "- terminal: a resize into the size from the size before, then a terminal typed into one key at a time and scrolled"

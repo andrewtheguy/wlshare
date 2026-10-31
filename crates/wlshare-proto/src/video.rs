@@ -1,5 +1,5 @@
 //! The video encoding: the whole framebuffer as one H.264 stream, for a client
-//! that would rather have a picture that moves than one that is exact.
+//! that would rather have a picture that moves than one that is lossless.
 //!
 //! A private encoding, [`crate::ENCODING_VIDEO`], which only a client that
 //! lists it is ever sent, and nothing beside it in the list says what the

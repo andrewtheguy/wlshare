@@ -23,7 +23,7 @@
 //! over every tile progressive, as a client that lists the tiles with no
 //! `WLSD` is sent them, and the passes are counted by kind on stderr;
 //! `--held` holds the dial there instead, as a client that lists `WLSD`
-//! beside the tiles, every still exact and the regions streamed.
+//! beside the tiles, every still lossless and the regions streamed.
 //! `--timeline` writes every update as a JSON object a line: `t_ms`,
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,

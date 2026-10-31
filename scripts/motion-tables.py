@@ -27,7 +27,7 @@ def read(path):
 
 
 def db(mse):
-    return "exact" if mse == 0 else f"{10 * math.log10(255 * 255 / mse):.1f} dB"
+    return "lossless" if mse == 0 else f"{10 * math.log10(255 * 255 / mse):.1f} dB"
 
 
 def mb(n):
@@ -35,17 +35,17 @@ def mb(n):
 
 
 def bench_section(name, rows):
-    out = [f"## {name}", "", "| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames exact | ends at | detail |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
+    out = [f"## {name}", "", "| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames lossless | ends at | detail |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for r in rows:
         coder = "WLSV" if r["coder"] == "wlsv" else "tiles"
         rate = f"{r['bytes'] * 8 / r['seconds'] / 1e6:.1f}" if r["seconds"] > 0 else "–"
-        exact = 100 * r["exact_frames"] / r["frames"] if r["frames"] else 0
-        ends = "exact" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
+        lossless = 100 * r["lossless_frames"] / r["frames"] if r["frames"] else 0
+        ends = "lossless" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
         if r["coder"] == "wlsv":
             detail = f"{r['keyframes']} keyframes"
         else:
             detail = f"PNG {mb(r['png']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
-        out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {exact:.0f}% | {ends} | {detail} |")
+        out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {lossless:.0f}% | {ends} | {detail} |")
     return out
 
 
@@ -53,7 +53,7 @@ def check_section(name, rows):
     out = [f"## {name}", "", "| capture | settled in | 5 s quiet | 10 redraws | ends at | |", "|---|---:|---:|---:|---|---|"]
     for r in rows:
         settled = f"{r['settled_s']:.2f} s" if r["settled"] else "never"
-        ends = "exact" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
+        ends = "lossless" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
         out.append(f"| {r['capture']} | {settled} | {r['quiet_bytes']} B | {r['redraw_bytes']} B | {ends} | {'pass' if r['pass'] else '**FAIL**'} |")
     return out
 
@@ -72,7 +72,7 @@ def walk_section(rows):
 
 
 def cell(r):
-    return f"{r['cpu_ms']:.0f} ms · {mb(r['bytes']):.2f} MB · {'exact' if r['end_off'] == 0 else db(r['end_mse'])}"
+    return f"{r['cpu_ms']:.0f} ms · {mb(r['bytes']):.2f} MB · {'lossless' if r['end_off'] == 0 else db(r['end_mse'])}"
 
 
 def across(title, columns):

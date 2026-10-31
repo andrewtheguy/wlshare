@@ -7,8 +7,9 @@ name: Release wlshare
 #
 # It also tags the release proto-v<N>, N being wlshare-proto's major version, the
 # protocol version, when that tag does not yet exist: the tag is what the zDesk
-# gateway pins. A tag that exists must hold this commit's wlshare-proto exactly,
-# so a change to the crate without a new version stops the release here.
+# gateway pins. A tag that exists must hold this commit's wlshare-proto but for
+# lines that are comments alone, so a change to what the crate does without a new
+# version stops the release here.
 on:
   workflow_dispatch:
 
@@ -74,7 +75,10 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
             git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}"
-            if [ "$(git rev-parse "${TAG}^{commit}:crates/wlshare-proto")" != "$(git rev-parse HEAD:crates/wlshare-proto)" ]; then
+            # A line that is a comment alone changes nothing the crate does, and needs
+            # no new version; any other line that differs does.
+            DIFF=$(git diff -I'^[[:space:]]*//' "${TAG}" HEAD -- crates/wlshare-proto)
+            if grep -q '^@@' <<< "${DIFF}"; then
               echo "::error::crates/wlshare-proto differs from ${TAG}. Bump PROTOCOL_VERSION and the crate's version to the next protocol version."
               exit 1
             fi

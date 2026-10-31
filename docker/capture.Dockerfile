@@ -2,7 +2,7 @@
 # The capture container: a headless sway, the daemon started with
 # `--capture-frames`, and the scripted desktop `docker/capture/run.sh` plays on
 # it, so that what the video encoder is handed by a real session — every frame's
-# pixels and rectangles, exact — is written for an encoder to be run again
+# pixels and rectangles — is written losslessly for an encoder to be run again
 # on. `scripts/capture-frames.sh` builds and runs it.
 ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE} AS build
