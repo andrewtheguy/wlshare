@@ -3,8 +3,8 @@
 //! coded both ways, and what each cost the encoder and the link.
 //!
 //! ```text
-//! motion-bench [--libx264] [--tiles-only] [--quality Q] [--frames FILE] CAPTURE...
-//! motion-bench check [--libx264] CAPTURE...
+//! motion-bench [--libx264] [--tiles-only] [--lossless] [--quality Q] [--frames FILE] CAPTURE...
+//! motion-bench check [--libx264] [--lossless] CAPTURE...
 //! ```
 //!
 //! An example of the daemon's crate, since both pictures are the daemon's
@@ -24,7 +24,9 @@
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
 //! changing. Its dial is wlshare's, held there, the picture lossless as a list that holds the dial asks: a walked
-//! list's is progressive tiles, which `tiles-walk-sim` walks over a link. Its
+//! list's is progressive tiles, which `tiles-walk-sim` walks over a link.
+//! `--lossless` codes the picture a lossless list asks for instead, every
+//! tile planar, still or moving, and no region: its coder is `lossless`. Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
@@ -42,16 +44,17 @@
 //! **Checked**: both pictures are decoded as a page would — `WLSV` and each
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
-//! by the client's parser and a PNG by the `png` crate — and compared with the
+//! by the client's parser, a PNG by the `png` crate and a planar bitmap by
+//! the tests' reader ([`crate::rfb::planar::decoder`]) — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
 //!
 //! The output is JSON lines, a JSON object a line, one per capture per coder,
 //! which `scripts/motion-tables.py` makes tables of: `capture`, `coder`
-//! (`wlsv` or `tiles`), `quality` (the dial it was coded at),
+//! (`wlsv`, `tiles` or `lossless`), `quality` (the dial it was coded at),
 //! `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
-//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png` and
+//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `planar` and
 //! `video` (the regions' H.264, or `WLSV`'s), the tiles' `copies`, which
 //! carry no payload, `streams` started and
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
@@ -61,7 +64,7 @@
 //! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
-//! `tiles_bytes`, `png`, `h264`, `streams` (live), `copies`, `tick_us` and
+//! `tiles_bytes`, `png`, `planar`, `h264`, `streams` (live), `copies`, `tick_us` and
 //! `tick_bytes`, a tick's what the ticks since the frame before cost.
 //!
 //! **`check`** holds the tiles to what a picture that stops owes, on any
@@ -109,8 +112,8 @@ mod wlcap;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--quality Q] [--frames FILE] CAPTURE...
-       motion-bench check [--libx264] CAPTURE...";
+const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--lossless] [--quality Q] [--frames FILE] CAPTURE...
+       motion-bench check [--libx264] [--lossless] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
 const TAIL: Duration = Duration::from_secs(60);
@@ -121,6 +124,8 @@ struct Args {
     libx264: bool,
     /// The tiles alone, no `WLSV` coded.
     tiles_only: bool,
+    /// The tiles a lossless list asks for, planar, not a held one's.
+    lossless: bool,
     /// The dial `WLSV` is coded at.
     quality: u8,
     frames: Option<PathBuf>,
@@ -130,12 +135,13 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, quality: crate::rfb::QUALITY, frames: None, check: false };
+    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, lossless: false, quality: crate::rfb::QUALITY, frames: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
             "--libx264" => parsed.libx264 = true,
             "--tiles-only" => parsed.tiles_only = true,
+            "--lossless" => parsed.lossless = true,
             "--quality" => {
                 parsed.quality = value()?.parse().ok().filter(|q| (crate::rfb::QUALITY_MIN..=crate::rfb::QUALITY_MAX).contains(q)).ok_or("--quality takes a dial, 1 to 100")?;
             }
@@ -152,6 +158,13 @@ fn parse_args() -> Result<Args, String> {
         return Err("check codes no WLSV and writes no frames".into());
     }
     Ok(parsed)
+}
+
+impl Args {
+    /// The tiles picture coded.
+    fn picture(&self) -> TilesPicture {
+        if self.lossless { TilesPicture::Lossless } else { TilesPicture::Held }
+    }
 }
 
 fn main() {
@@ -177,7 +190,7 @@ fn main() {
     if args.check {
         let mut failed = false;
         for capture in &args.captures {
-            match check(capture, &encoder) {
+            match check(capture, &args, &encoder) {
                 Ok(passed) => failed |= !passed,
                 Err(e) => {
                     eprintln!("motion-bench: {}: {e}", capture.display());
@@ -259,6 +272,7 @@ impl Drop for Source {
 #[derive(Default)]
 struct Sent {
     png: u64,
+    planar: u64,
     /// The frames of the streams: the tiles' regions' H.264, or `WLSV`'s.
     video: u64,
     starts: u64,
@@ -270,11 +284,12 @@ struct Sent {
 
 impl Sent {
     fn bytes(&self) -> u64 {
-        self.png + self.video
+        self.png + self.planar + self.video
     }
 
     fn add(&mut self, other: &Sent) {
         self.png += other.png;
+        self.planar += other.planar;
         self.video += other.video;
         self.starts += other.starts;
         self.copies += other.copies;
@@ -378,7 +393,15 @@ impl Page {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
                     }
                 }
-                TileBody::Progressive(_) => return Err("a progressive tile, which a held list is never sent".into()),
+                TileBody::Planar(bitmap) => {
+                    sent.planar += bitmap.len() as u64;
+                    let (rgb, used) = crate::rfb::planar::decoder::decode(&bitmap, w, h)?;
+                    if used != bitmap.len() {
+                        return Err(format!("a planar bitmap of {} bytes past its {used}", bitmap.len()).into());
+                    }
+                    self.paste((x, y, w, h), &rgb);
+                }
+                TileBody::Progressive(_) => return Err("a progressive tile, which neither a held list nor a lossless one is sent".into()),
             }
         }
         Ok(sent)
@@ -622,7 +645,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 setup = cost;
                 Some(coder)
             };
-            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, TilesPicture { progressive: false }, encoder)? });
+            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, args.picture(), encoder)? });
         }
         let run = run.as_mut().expect("just made");
 
@@ -666,7 +689,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
+                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"planar\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
                 json(&name),
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
@@ -676,6 +699,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 tiles_cpu.as_micros(),
                 sent.bytes(),
                 sent.png,
+                sent.planar,
                 sent.video,
                 run.tiles.page.decoders.len(),
                 sent.copies,
@@ -707,7 +731,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
     if let Some(w) = &run.wlsv {
         row(&name, "wlsv", args.quality, &wlsv, seconds, compare(&w.picture, &picture));
     }
-    row(&name, "tiles", crate::rfb::QUALITY, &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
+    row(&name, if args.lossless { "lossless" } else { "tiles" }, crate::rfb::QUALITY, &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
     Ok(())
 }
 
@@ -726,7 +750,7 @@ const REDRAW_EVERY: Duration = Duration::from_millis(100);
 
 /// Whether the tiles leave a capture's picture be once it is settled: see
 /// the module's `check`.
-fn check(path: &Path, encoder: &h264::Encoder) -> Result<bool, Error> {
+fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Error> {
     let name = capture_name(path);
     let mut source = Source::open(path)?;
     let mut run: Option<((u16, u16), Tiles)> = None;
@@ -737,7 +761,7 @@ fn check(path: &Path, encoder: &h264::Encoder) -> Result<bool, Error> {
         last_at = now;
         let fresh = run.as_ref().is_none_or(|(size, _)| *size != frame.size);
         if fresh {
-            run = Some((frame.size, Tiles::new(frame.size, TilesPicture { progressive: false }, encoder)?));
+            run = Some((frame.size, Tiles::new(frame.size, args.picture(), encoder)?));
         }
         let (_, tiles) = run.as_mut().expect("just made");
         tiles.ticks(now)?;
@@ -796,7 +820,7 @@ fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_o
     let mean = if tally.frames == 0 { 0.0 } else { ms(per_frame.iter().sum()) / tally.frames as f64 };
     let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"planar\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         quality,
@@ -805,6 +829,7 @@ fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_o
         ms(p95),
         tally.sent.bytes(),
         tally.sent.png,
+        tally.sent.planar,
         tally.sent.video,
         tally.sent.copies,
         tally.sent.cached,

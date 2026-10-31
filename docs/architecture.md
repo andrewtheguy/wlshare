@@ -614,7 +614,11 @@ a picture that ends lossless, on a list that holds its dial; and on a list
 that lets its dial walk, it follows the link as `WLSV` does, every tile a
 RemoteFX Progressive tile, still or moving, with no stream and nothing owed a
 lossless picture, so a client that wants the walk more than a picture that
-ends lossless gets that too. It is zDesk's Motion, which that gateway dropped
+ends lossless gets that too; and on a list that asks for it lossless, every
+tile that changed, still or moving, is RDP's planar codec of its pixels, with
+no stream, so a client on a LAN that wants every picture it is shown exact,
+as a Windows host draws its pipeline under the Lossless policy, gets that
+(experimental). It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
@@ -622,12 +626,14 @@ coded once. `src/rfb/tiles.rs` is the encoder, and
 `wlshare-proto`'s `tiles` module its framing.
 
 A client that lists it, with `WLSD` (`0x574c5344`) beside it where it wants
-the dial held rather than walked, gets it instead of a standard pixel
-encoding, wherever in the list it is; a walked list gets every tile
-progressive, below. The dial is wlshare's, as the video's is
+the dial held rather than walked, or `WLSL` (`0x574c534c`) where it wants
+every tile lossless, gets it instead of a standard pixel
+encoding, wherever in the list it is; a walked list, which names neither,
+gets every tile progressive, and a lossless one every tile planar, below.
+The dial is wlshare's, as the video's is
 ([above](#the-video-encoding)): nothing in the list names one. A list that
 names both it and `WLSV` is fatal: they are two pictures, of which a client
-wants one. A
+wants one; and so is one that names both `WLSD` and `WLSL`. A
 pixel update is then any number of rectangles of the encoding, drawn in
 order, each a rectangle of the desktop whose body begins with a kind:
 
@@ -641,6 +647,7 @@ u8 kind
 5 CACHED  u16 slot                                         the tile kept in slot N, drawn here
 6 STORE   u16 slot                                         what the client holds here, kept in slot N
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
+8 PLANAR  u32 length | u8[length]                          a planar bitmap of exactly the rectangle's pixels
 ```
 
 A PNG is the desktop's pixels there, lossless, 8-bit RGB or a palette of it,
@@ -674,6 +681,13 @@ sent — `wlshare-proto`'s `progressive` module holds them, and the stream a
 standard decoder reads a block from — and the client decodes every block in
 order, keeping each tile's coefficients from one to the next. It is every
 rectangle of a walked list but a COPY, a CACHED and a STORE.
+A PLANAR is the desktop's pixels there, lossless, as RDP 6.0 bitmap
+compression codes them ([MS-RDPEGDI] 2.2.2.5.1), the graphics pipeline's
+planar codec: a format header of no alpha plane and no colour loss or
+subsampling, then the red, green and blue planes, top row first, each
+run-length coded over its rows' differences, or plain with the padding byte
+that form ends with. It depends on nothing before it, and is every
+rectangle of a lossless list but a COPY, a CACHED and a STORE.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
@@ -683,7 +697,8 @@ the picture.
   lock into a picture the encoder keeps, and compared there tile by tile with
   what the client holds, so a compositor redrawing what it shows sends
   nothing. A tile that changed and that no stream carries goes as a still —
-  on a held list a PNG, on a walked one each tile progressive, below — a row's
+  on a held list a PNG, on a lossless one a planar bitmap, on a walked one
+  each tile progressive, below — a row's
   run of them, cut where the tile rows meet into bands of at most 64 rows,
   one image, so that a tile the damage covers is in one still whole. A picture that
   starts over — the encoding newly listed, a new size, a non-incremental
@@ -752,8 +767,8 @@ the picture.
   draw of a slot for every tile of it a slot still keeps: an output switched
   back to, a new size — the record handed to the encoder made for it — or
   another dial. A tile a walked list stored is the full stage's at best,
-  short of the lossless pixels a held list is owed, so a held list draws none
-  of them until each is stored again, lossless. The record is forgotten only where the client says its cache is gone
+  short of the lossless pixels a held or a lossless list is owed, so neither
+  draws any of them until each is stored again, lossless. The record is forgotten only where the client says its cache is gone
   (`CacheEmpty`), as the gateway does at every repaint it asks, a page
   attached anew holding nothing, or where the list stops naming the encoding.
   Over a session at the desk it serves about a seventh of the stills
@@ -811,7 +826,10 @@ the picture.
   would only ever stand at the ceiling, and a picture that ends lossless. The
   walk is `WLSV`'s rather than one of its own because the verdict is the same
   — an update's queueing on the link — and a second set of thresholds would
-  be a second thing to measure.
+  be a second thing to measure. With `WLSL` beside the list there is no dial
+  to walk: the walk's ceiling is its floor, so the lag its fences show slows
+  the updates and nothing else, as the frames of a walk on its floor are
+  slowed.
 
 - **On a walked list, every tile progressive (alpha).** A list whose dial walks
   gets no PNG or stream: every tile that changed, still or moving, is a
@@ -842,6 +860,27 @@ the picture.
   full, and nothing is owed after. Its tests read every pass back with a
   decoder of their own, and `examples/tiles-walk-sim.rs` walks it
   ([measured](tiles-performance.md#progressive-tiles)).
+
+- **On a lossless list, every tile planar (experimental).** A list with
+  `WLSL` gets no PNG, progressive tile or stream: every tile that changed,
+  still or moving, goes as a still, a row's run of them one PLANAR, and
+  copies and the cache as above, as a Windows host whose policy asks for a
+  lossless picture draws its whole pipeline with the planar codec, H.264 and
+  RemoteFX Progressive refused. What the client is shown is exact from the
+  first update, so nothing is owed and nothing settles: a desktop that moves
+  is sent as often as the link takes it, each update the pixels, and a link
+  short of the bytes gets fewer updates, never coarser ones.
+  `src/rfb/planar.rs` is the coder: a rectangle's pixels cut into red, green
+  and blue planes, each row below the first as its difference from the row
+  above, folded so a small step either way is a small byte, and each row of
+  those as segments of bytes as they are and a run of the last of them; a
+  flat 64×64 tile is a few hundred bytes, and a rectangle whose segments would
+  come to more than its planes as they are, noise or a photograph's grain,
+  goes plain. It spends a little of the processor and many of the link's
+  bytes, for a LAN ([measured](tiles-performance.md#lossless-tiles)). Its
+  tests read every bitmap back with a reader of their own, written from the
+  specification, and the page decodes it with the planar codec of the
+  compositor that draws an RDP host's pipeline.
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
   region of a held list is H.264, by an encoder found once at startup; the client has no
@@ -932,7 +971,8 @@ the picture.
 through this encoder and through `WLSV`, both decoded as a page would, the
 tiles' updates through the client's parser, a copy from the page's own
 picture, and `WLSV` and each region by libavcodec's software H.264 decoder,
-the dial held and every still lossless. It writes JSON lines as `walk-sim` does,
+the dial held and every still lossless, or with `--lossless` every tile
+planar. It writes JSON lines as `walk-sim` does,
 and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
 regions and `WLSV` are the daemon's own H.264 — `h264/`, found as the
 daemon finds it, or libx264 with `--libx264` — so it runs where the daemon
@@ -948,8 +988,8 @@ it measured, and what the rules beyond Motion's were chosen by, is in
 `examples/tiles-walk-sim.rs`, beside it, plays the captures through this
 encoder and the walk over `walk-sim`'s model of the gateway and the
 browser's link (`examples/sim`), one update in flight,
-as a session does on a walked list, every tile progressive, or one that
-holds its dial, and says of a run what `walk-sim` says; what it found is in [Tiles
+as a session does on a walked list, every tile progressive, one that
+holds its dial, or a lossless one, and says of a run what `walk-sim` says; what it found is in [Tiles
 performance](tiles-performance.md#the-walks-verdicts).
 
 ## The density extension

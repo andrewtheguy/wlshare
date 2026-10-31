@@ -12,8 +12,9 @@
 //!   H.264 stream, and what the client lists beside it ([`video`]).
 //! - **The tiles encoding** ([`ENCODING_TILES`]), the desktop as lossless PNG
 //!   tiles where it is still and an H.264 stream for each region that moves
-//!   ([`tiles`]), or, where the dial walks, every tile RemoteFX Progressive,
-//!   whose tables and stream are [`progressive`]'s.
+//!   ([`tiles`]); or, where the dial walks, every tile RemoteFX Progressive,
+//!   whose tables and stream are [`progressive`]'s; or every tile lossless,
+//!   RDP's planar codec, still or moving.
 //! - **The density extension** ([`ENCODING_DENSITY`]), the scale the
 //!   framebuffer is drawn at ([`density`]).
 //! - **The outputs extension** ([`ENCODING_OUTPUTS`]), which outputs the
@@ -56,9 +57,10 @@ pub use version::PROTOCOL_VERSION;
 /// it.
 pub const ENCODING_VIDEO: i32 = 0x574c_5356;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it is sent
-/// the desktop as RemoteFX Progressive tiles, or with [`ENCODING_HELD`] beside
+/// the desktop as RemoteFX Progressive tiles; with [`ENCODING_HELD`] beside
 /// it as lossless PNG tiles where it is still and a video stream for each
-/// region that moves ([`tiles`]). It wins over ZRLE wherever it is listed; listed
+/// region that moves; with [`ENCODING_LOSSLESS`] beside it as lossless planar
+/// tiles, still or moving ([`tiles`]). It wins over ZRLE wherever it is listed; listed
 /// beside [`ENCODING_VIDEO`] it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
@@ -90,8 +92,14 @@ pub const fn private(encoding: i32) -> bool {
 /// ([`tiles::TilesPicture`]). The ASCII bytes `WLSD`.
 pub const ENCODING_HELD: i32 = 0x574c_5344;
 
-/// The most bytes one video frame, and one tiles rectangle's PNG or region
-/// frame, may be. An IDR of the largest desktop at the finest quantizer is a
+/// Listed beside [`ENCODING_TILES`], asks for the tiles picture lossless:
+/// every tile that changed, still or moving, RDP's planar codec of its pixels,
+/// and no stream, the link pacing how often and nothing else
+/// ([`tiles::TilesPicture`]). The ASCII bytes `WLSL`.
+pub const ENCODING_LOSSLESS: i32 = 0x574c_534c;
+
+/// The most bytes one video frame, and one tiles rectangle's PNG, planar
+/// bitmap or region frame, may be. An IDR of the largest desktop at the finest quantizer is a
 /// few megabytes; a length past this is a server that has lost its framing,
 /// and the server sends none.
 pub const MAX_BODY: usize = 64 << 20;
@@ -134,6 +142,7 @@ mod tests {
     fn the_encodings_are_their_ascii_names() {
         assert_eq!(ENCODING_VIDEO, i32::from_be_bytes(*b"WLSV"));
         assert_eq!(ENCODING_HELD, i32::from_be_bytes(*b"WLSD"));
+        assert_eq!(ENCODING_LOSSLESS, i32::from_be_bytes(*b"WLSL"));
         assert_eq!(ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
         assert_eq!(ENCODING_DENSITY, i32::from_be_bytes(*b"WLSH"));
         assert_eq!(ENCODING_OUTPUTS, i32::from_be_bytes(*b"WLSO"));
@@ -155,6 +164,7 @@ mod tests {
             ENCODING_AUDIO,
             ENCODING_AUDIO_OPUS,
             ENCODING_HELD,
+            ENCODING_LOSSLESS,
             version::encoding(1),
         ] {
             assert!(private(e), "{e:#x}");

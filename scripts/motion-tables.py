@@ -37,12 +37,14 @@ def mb(n):
 def bench_section(name, rows):
     out = [f"## {name}", "", "| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames lossless | ends at | detail |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for r in rows:
-        coder = "WLSV" if r["coder"] == "wlsv" else "tiles"
+        coder = {"wlsv": "WLSV", "tiles": "tiles", "lossless": "lossless tiles"}[r["coder"]]
         rate = f"{r['bytes'] * 8 / r['seconds'] / 1e6:.1f}" if r["seconds"] > 0 else "–"
         lossless = 100 * r["lossless_frames"] / r["frames"] if r["frames"] else 0
         ends = "lossless" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
         if r["coder"] == "wlsv":
             detail = f"{r['keyframes']} keyframes"
+        elif r["coder"] == "lossless":
+            detail = f"planar {mb(r['planar']):.2f} MB"
         else:
             detail = f"PNG {mb(r['png']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
         out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {lossless:.0f}% | {ends} | {detail} |")

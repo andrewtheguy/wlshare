@@ -131,7 +131,7 @@ pub enum TilesError {
 /// A tile's side, ZRLE's, from the desktop's top-left: the encoding's.
 const TILE: u16 = wlshare_proto::tiles::TILE;
 
-use super::progressive;
+use super::{planar, progressive};
 
 /// A progressive first pass whole costs at most this many times the one at
 /// its stage.
@@ -938,9 +938,14 @@ pub struct TilesEncoder {
     /// The cache's key of each whole tile [`Self::precode`] looked up, for
     /// the still it goes in to take rather than hash it again.
     keys: HashMap<(u16, u16), (u64, bool)>,
+    /// The picture the client's list asks for.
+    picture: TilesPicture,
     /// The progressive encoder, where the list walks and every tile is a
-    /// progressive tile; where it holds, every still is a PNG.
+    /// progressive tile; where it holds every still is a PNG, and where it
+    /// is lossless every tile a planar bitmap.
     progressive: Option<progressive::Encoder>,
+    /// The planar coder's working space.
+    planar: planar::Rows,
 }
 
 impl TilesEncoder {
@@ -981,7 +986,9 @@ impl TilesEncoder {
             coder,
             scratch: Vec::new(),
             keys: HashMap::new(),
-            progressive: picture.progressive.then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
+            picture,
+            progressive: (picture == TilesPicture::Progressive).then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
+            planar: planar::Rows::default(),
         };
         encoder.forget();
         Ok(encoder)
@@ -1015,15 +1022,16 @@ impl TilesEncoder {
     /// A new picture, a walk the list did not name before: what the client
     /// holds was coded against the old one, and nothing of it is owed what the
     /// new one would owe, so the picture starts over as [`Self::forget`]
-    /// starts it, every live stream's END owed first. The cache is kept, but a held list is owed
-    /// lossless pixels, which no tile a walked list stored is.
+    /// starts it, every live stream's END owed first. The cache is kept, but a held or a
+    /// lossless list is owed lossless pixels, which no tile a walked list stored is.
     pub fn set_picture(&mut self, picture: TilesPicture) {
-        if self.progressive.is_some() && !picture.progressive {
+        if self.picture == TilesPicture::Progressive && picture != TilesPicture::Progressive {
             self.cache.unsettle();
         }
-        if picture.progressive != self.progressive.is_some() {
-            self.progressive = picture.progressive.then(|| progressive::Encoder::new(self.size.0, progressive::Tables::protocol()));
+        if (picture == TilesPicture::Progressive) != self.progressive.is_some() {
+            self.progressive = (picture == TilesPicture::Progressive).then(|| progressive::Encoder::new(self.size.0, progressive::Tables::protocol()));
         }
+        self.picture = picture;
         self.forget();
     }
 
@@ -1673,7 +1681,8 @@ impl TilesEncoder {
     }
 
     /// Send `area` of the picture, a run of tiles along one row, as a still:
-    /// on a held list a PNG, lossless; on a walked one each tile a progressive
+    /// on a held list a PNG, on a lossless one a planar bitmap, lossless
+    /// either way; on a walked one each tile a progressive
     /// tile ([`Self::progressive_still`]). A whole tile of it the client's
     /// cache keeps lossless goes as a draw of its slot instead, and the run is
     /// coded around it ([`Self::coded`]). A PNG pays the debt of every tile it
@@ -1740,21 +1749,30 @@ impl TilesEncoder {
     }
 
     /// Code `tiles`, a run of parts of tiles along one row with each whole
-    /// tile's key, as one PNG, and store every whole tile of it that is not
-    /// one colour in the client's cache, after it.
+    /// tile's key, as one PNG, or on a lossless list one planar bitmap, and
+    /// store every whole tile of it that is not one colour in the client's
+    /// cache, after it.
     fn coded(&mut self, tiles: &[StillTile], out: &mut Out) -> Result<(), TilesError> {
         let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else { return Ok(()) };
         let area = Area { right: last.1.right, ..first.1 };
-        crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let from = out.out.len();
-        let header = TileHeader::Png { len: 0 };
-        let at = out.header(area, header);
-        if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, palette(&self.scratch), out.out) {
-            out.out.truncate(from);
-            out.count -= 1;
-            return Err(e.into());
+        if self.picture == TilesPicture::Lossless {
+            let header = TileHeader::Planar { len: 0 };
+            let at = out.header(area, header);
+            let origin = usize::from(area.top) * self.stride + usize::from(area.left) * 4;
+            planar::encode(&self.mirror[origin..], self.stride, area.w(), area.h(), &mut self.planar, out.out);
+            out.length(from, at, header)?;
+        } else {
+            crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
+            let header = TileHeader::Png { len: 0 };
+            let at = out.header(area, header);
+            if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, palette(&self.scratch), out.out) {
+                out.out.truncate(from);
+                out.count -= 1;
+                return Err(e.into());
+            }
+            out.length(from, at, header)?;
         }
-        out.length(from, at, header)?;
         for (cell, part, key) in tiles {
             if area.contains(self.cell_area(*cell)) {
                 self.debts.remove(cell);
@@ -1831,7 +1849,7 @@ impl TilesEncoder {
             return Ok(());
         }
         self.retuned_at = Some(now);
-        if self.progressive.is_some() {
+        if self.picture != TilesPicture::Held {
             return Ok(());
         }
         let worthy = components(moving);
@@ -2092,6 +2110,7 @@ mod tests {
         /// The progressive tiles' decoder, the tests' own.
         decoder: super::progressive::decoder::Decoder,
         progressives: usize,
+        planars: usize,
         pngs: usize,
         starts: usize,
         frames: usize,
@@ -2104,7 +2123,7 @@ mod tests {
 
     impl Page {
         fn new(w: u16, h: u16) -> Self {
-            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), decoder: Default::default(), progressives: 0, pngs: 0, starts: 0, frames: 0, ends: 0, copies: 0, cached: 0, stored: 0, bytes: 0 }
+            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), decoder: Default::default(), progressives: 0, planars: 0, pngs: 0, starts: 0, frames: 0, ends: 0, copies: 0, cached: 0, stored: 0, bytes: 0 }
         }
 
         /// Packed RGB drawn at the rectangle.
@@ -2182,6 +2201,12 @@ mod tests {
                             let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
                             self.canvas[at..at + line].copy_from_slice(pixels);
                         }
+                    }
+                    TileBody::Planar(bitmap) => {
+                        self.planars += 1;
+                        let (rgb, used) = super::planar::decoder::decode(&bitmap, usize::from(w), usize::from(h)).expect("a planar bitmap");
+                        assert_eq!(used, bitmap.len(), "a planar bitmap of the rectangle");
+                        self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Progressive(block) => {
                         self.progressives += 1;
@@ -2268,12 +2293,17 @@ mod tests {
 
     /// A list that holds the dial.
     fn held() -> TilesPicture {
-        TilesPicture { progressive: false }
+        TilesPicture::Held
     }
 
     /// A list that lets the dial walk: every tile progressive.
     fn progressive() -> TilesPicture {
-        TilesPicture { progressive: true }
+        TilesPicture::Progressive
+    }
+
+    /// A list that asks for every tile lossless: planar, still or moving.
+    fn lossless() -> TilesPicture {
+        TilesPicture::Lossless
     }
 
     /// A desktop a progressive tile settles close to: a soft gradient with
@@ -2485,6 +2515,71 @@ mod tests {
         settle(&mut encoder, &mut page, ms(1000));
         assert!(!encoder.owed());
         assert!(page.psnr(&pixels) > 40.0, "settled close again: {:.1} dB", page.psnr(&pixels));
+    }
+
+    /// A lossless list is sent planar bitmaps alone, still or moving: every
+    /// update exact, no stream however long a region moves, and nothing owed.
+    #[test]
+    fn a_lossless_list_is_sent_exact_planar_tiles_alone() {
+        let (w, h) = (256u16, 150u16);
+        let mut pixels = soft(w, h, 0);
+        let mut encoder = TilesEncoder::new(w, h, lossless(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert!(first.keyframe, "the first picture is one");
+        assert_eq!((page.planars, page.pngs, page.progressives), (3, 0, 0), "the whole picture in three bands of planar runs");
+        assert_eq!(page.off(&pixels), 0, "exact");
+        assert!(!encoder.owed() && encoder.tick_at().is_none(), "a lossless picture owes nothing");
+
+        let busy = Rect { x: 64, y: 0, width: 128, height: 64 };
+        for n in 0..20 {
+            paint(&mut pixels, w, busy, n);
+            step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100 + 50 * u64::from(n)));
+            assert_eq!(page.off(&pixels), 0, "every frame exact");
+        }
+        assert_eq!((page.starts, page.pngs, page.progressives), (0, 0, 0), "no stream: what moves is planar too");
+        assert!(!encoder.owed(), "nothing owed while it moves either");
+        let (planars, cached) = (page.planars, page.cached);
+        // Painted with the colours it held before: drawn from the cache.
+        paint(&mut pixels, w, busy, 0);
+        step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(2000));
+        assert_eq!(page.off(&pixels), 0);
+        assert!(page.cached > cached && page.planars == planars, "a tile shown before is a slot drawn");
+    }
+
+    /// A walked list's tiles are not lossless: a lossless list draws none
+    /// that it stored, and one stored lossless again is drawn.
+    #[test]
+    fn a_lossless_list_draws_no_tile_a_walked_one_stored() {
+        let (w, h) = (128u16, 64u16);
+        let mut pixels = soft(w, h, 0);
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        encoder.set_picture(lossless());
+        step(&mut encoder, &mut page, &pixels, None, ms(5000));
+        assert_eq!((page.cached, page.planars), (0, 1), "nothing a walked list stored is drawn on a lossless one");
+        assert_eq!(page.off(&pixels), 0, "the picture exact");
+        same_tile(&mut pixels, w, (0, 0), (64, 0));
+        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(5100));
+        assert_eq!(page.cached, 1, "a slot stored lossless is drawn");
+        assert_eq!(page.off(&pixels), 0);
+    }
+
+    /// A lossless page scrolled is a copy and the strip it uncovered.
+    #[test]
+    fn a_lossless_scroll_is_a_copy() {
+        let (w, h) = (256u16, 256u16);
+        let document = noise(w, 3 * h, 21);
+        let mut encoder = TilesEncoder::new(w, h, lossless(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        let pixels = scrolled(&document, w, 40, h);
+        update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        assert_eq!(page.copies, 1);
+        assert_eq!(page.off(&pixels), 0, "the page exact");
+        assert!(!encoder.owed(), "a copy of lossless pixels owes nothing");
     }
 
     /// A settled page scrolled is copies of settled tiles, which are settled
