@@ -1639,14 +1639,16 @@ arrive in framebuffer pixels and are injected as absolute positions against the
 framebuffer's extent, which the virtual pointer maps onto the shared output — a
 pointer per connection, each on its own output, moving the seat's one cursor.
 That binding is made with the pointer and labwc does not keep it: whenever the
-outputs are laid out anew it maps every pointer back to the output its device
-names, none for a virtual one, and absolute positions then span the whole
-layout — off by the output's place in it once there are two. The wlroots the
-APT repository builds carries a patch that gives a virtual pointer its output's
-name, which labwc maps it back to; any other wlroots does not, so on every
-wlroots each wlr-output-management `done`, which follows every change to the layout, remakes
-every desk's pointer against its output, the new one before the old one goes,
-letting go of the buttons held and none of the keys.
+outputs are laid out anew, and whenever it reloads its configuration, it maps
+every pointer back to the output its device names, none for a virtual one, and
+absolute positions then span the whole layout — stretched across it, on every
+output, once there are two. On every wlroots each wlr-output-management `done`,
+which follows every change to the layout, remakes every desk's pointer against
+its output, the new one before the old one goes, letting go of the buttons held
+and none of the keys. A reload changes no output and is followed by no `done`:
+the wlroots the APT repository builds carries a patch that gives a virtual
+pointer its output's name, which labwc maps it back to; on any other wlroots a
+labwc reload leaves the pointers stretched until the layout next changes.
 Wheel "buttons" become discrete axis events, a notch apiece.
 
 A notch is all RFB can say, so a touchpad glide or two fingers on a phone would
