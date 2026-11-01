@@ -42,6 +42,10 @@ gpg --import keys/apt-signing-key.private.asc
 ./scripts/apt-repo-smoke.sh site
 ```
 
+## Ubuntu 26.04
+
+Ubuntu 26.04（resolute）內建以 wlroots 0.19.2 為基礎的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上執行，因此 APT 套件庫沒有為它提供套件組。它的 wlroots 不帶套件庫的修補：在共享兩個輸出的 labwc 上，labwc 重新載入設定（`labwc --reconfigure`）之後，指標的位置會被拉伸到整個版面配置上，兩個輸出都受影響，直到下一次重新排列輸出為止，例如用戶端調整某個輸出的大小時。Sway 以及只有一個輸出的 labwc 不受影響（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
+
 ## 執行
 
 wlshare 在它擷取的 Wayland 工作階段中執行，以擁有該工作階段的使用者身分：
@@ -76,8 +80,8 @@ wlshare hash-password
 
 ## 建置
 
-工作區有兩個 crate：常駐程式 `wlshare`，它所使用的 RFB 協定就在其中；以及 `wlshare-proto`，即 wlshare 私有擴充的位元組，zDesk 閘道也相依於它，依它的 `proto-v<N>` 標籤固定版本，即帶來該協定版本的那次發行所加上的標籤。後者不使用任何作業系統 API，可在任何平台上建置和測試。常駐程式需要 libxkbcommon、libpam、libpipewire、libavcodec、libx264 和 libva（Wayland 協定以 Rust 實作，不需要 libwayland），並且只能在以 wlroots 為基礎的 Wayland 合成器下執行；它的音訊測試還需要 `ffmpeg`，即把 Opus 封包讀回來的獨立解碼器。FLAC 編碼是 [sound-flac](https://github.com/andrewtheguy/sound-flac)，Opus 編碼是 [sound-opus](https://github.com/andrewtheguy/sound-opus)，兩者都與 zDesk 閘道共用，各自由其發行標籤固定版本。對處理器的要求不超過其目標的基準。常駐程式是儲存庫根目錄下的套件，協定 crate 位於 `crates/` 之下。直接執行 `cargo test` 涵蓋兩者；在其他平台上，`cargo test -p wlshare-proto` 涵蓋後者。常駐程式的 H.264 測試以 libavcodec 解碼：每台機器上都測試 libx264 的影格，具備 VA-API 編碼器的機器上還測試硬體的影格。常駐程式在裝有 `libxkbcommon-dev`、`libpam0g-dev`、`libpipewire-0.3-dev`、`libspa-0.2-dev`、`libavcodec-dev`、`libx264-dev`、`libva-dev`、`libclang-dev` 和 `pkg-config` 的 Linux 主機上用 `cargo build --release` 建置。libclang 不參與連結：PipeWire、FFmpeg 和 x264 的 `-sys` crate 以及 libva 的繫結 cros-libva 用 bindgen 產生繫結，bindgen 在建置時載入它。
+工作區有兩個 crate：常駐程式 `wlshare`，它所使用的 RFB 協定就在其中；以及 `wlshare-proto`，即 wlshare 私有擴充的位元組，zDesk 閘道也相依於它，依它的 `proto-v<N>` 標籤固定版本，即帶來該協定版本的那次發行所加上的標籤。後者不使用任何作業系統 API，可在任何平台上建置和測試。常駐程式需要 libxkbcommon、libpam、libpipewire、libavcodec、libx264 和 libva（Wayland 協定以 Rust 實作，不需要 libwayland），並且只能在以 wlroots 為基礎的 Wayland 合成器下執行；它的音訊測試還需要 `ffmpeg`，即把 Opus 封包讀回來的獨立解碼器。FLAC 編碼是 [sound-flac](https://github.com/andrewtheguy/sound-flac)，Opus 編碼是 [sound-opus](https://github.com/andrewtheguy/sound-opus)，兩者都與 zDesk 閘道共用，各自由其發行標籤固定版本。對處理器的要求不超過其目標的基準。常駐程式是儲存庫根目錄下的套件，協定 crate 位於 `crates/` 之下。直接執行 `cargo test` 涵蓋兩者；在其他平台上，`cargo test -p wlshare-proto` 涵蓋後者。常駐程式的 H.264 測試以 libavcodec 解碼：每台機器上都測試 libx264 的影格，具備 VA-API 編碼器的機器上還測試硬體的影格。常駐程式在裝有 `libxkbcommon-dev`、`libpam0g-dev`、`libpipewire-0.3-dev`、`libspa-0.2-dev`、`libavcodec-dev`、`libx264-dev`、`libva-dev`、`libclang-dev` 和 `pkg-config` 的 Linux 主機上用 `cargo build --release` 建置。libclang 不參與連結：PipeWire、FFmpeg 和 x264 的 `-sys` crate 以及常駐程式為 libva 準備的 `build.rs` 用 bindgen 產生繫結，bindgen 在建置時載入它。
 
 `scripts/capture-frames.sh` 用 docker 或 podman 建置並執行擷取容器（`docker/capture/`）：一個無頭 sway 和以 `--capture-frames` 啟動的常駐程式，在每種尺寸下播放一個指令碼化的桌面，讓交給視訊編碼器的內容（每一個影格的像素和變更區域（damage））以無損方式落在 `dist/captures/` 中；視訊情境以全螢幕播放 `--video` 指定的檔案。`examples/wlcap.rs` 說明一個擷取包含什麼，並能把它播放出來或截取其中一段。`scripts/capture-samples.sh` 把每個擷取截取為 120 個影格，以各自的名稱放入 `dist/capture-samples/`，用於在每個擷取的一部分上測量編碼器。`--capture-frames` 用於手動執行的常駐程式，由 systemd 啟動的常駐程式會拒絕它（[`docs/architecture.md`](docs/architecture.md#capturing-what-the-encoder-is-handed)，英文）。
 
-適用於 amd64 和 arm64 上 Debian trixie 的套件由 `scripts/build-debs.sh` 在 Docker 中建置，輸出到 `dist/<arch>/wlshare-trixie-<arch>.deb`。**Release wlshare** 工作流程建置同樣的套件，並將它們發行為 GitHub 發行版本 `v<version>`，版本號為工作區 `Cargo.toml` 中的版本；執行工作流程前請先調升它。套件版本即 crate 的版本，發行版只反映在檔案名稱中。套件相依於 `libwlroots-0.19 (>= 0.19.0)`，即第一個把游標排除在無頭擷取之外的 wlroots，以及 `pipewire`、`wireplumber` 和 `pipewire-pulse`：喇叭、攝影機和麥克風所在的 PipeWire 伺服器，把喇叭設為預設並把串流連接到它的工作階段管理員，以及大多數應用程式透過它播放聲音的 PulseAudio 伺服器。少了它們，桌面的聲音永遠到不了喇叭，用戶端什麼也聽不到。
+適用於 Debian trixie 和 Ubuntu 26.04（resolute）的套件，各有 amd64 和 arm64 兩種架構，由 `scripts/build-debs.sh` 在 Docker 中建置，輸出到 `dist/<suite>/<arch>/wlshare-<suite>-<arch>.deb`。**Release wlshare** 工作流程建置同樣的套件，並將它們發行為 GitHub 發行版本 `v<version>`，版本號為工作區 `Cargo.toml` 中的版本；執行工作流程前請先調升它。套件版本即 crate 的版本，發行版只反映在檔案名稱中：每個套件相依的是它自己那個套件組的函式庫，因此只能安裝在該套件組上。套件相依於 `libwlroots-0.19 (>= 0.19.0)`，即第一個把游標排除在無頭擷取之外的 wlroots，以及 `pipewire`、`wireplumber` 和 `pipewire-pulse`：喇叭、攝影機和麥克風所在的 PipeWire 伺服器，把喇叭設為預設並把串流連接到它的工作階段管理員，以及大多數應用程式透過它播放聲音的 PulseAudio 伺服器。少了它們，桌面的聲音永遠到不了喇叭，用戶端什麼也聽不到。

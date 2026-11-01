@@ -1647,8 +1647,9 @@ which follows every change to the layout, remakes every desk's pointer against
 its output, the new one before the old one goes, letting go of the buttons held
 and none of the keys. A reload changes no output and is followed by no `done`:
 the wlroots the APT repository builds carries a patch that gives a virtual
-pointer its output's name, which labwc maps it back to; on any other wlroots a
-labwc reload leaves the pointers stretched until the layout next changes.
+pointer its output's name, which labwc maps it back to; on any other wlroots,
+Ubuntu 26.04's among them, a labwc reload leaves the pointers stretched until
+the layout next changes.
 Wheel "buttons" become discrete axis events, a notch apiece.
 
 A notch is all RFB can say, so a touchpad glide or two fingers on a phone would

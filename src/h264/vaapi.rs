@@ -28,9 +28,9 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::Arc;
 
-use cros_libva as va;
 use log::{debug, info, warn};
 
+use super::libva as va;
 use super::syntax::{self, Sequence, Slice};
 use super::{Backend, Encoder, Planes};
 
@@ -139,15 +139,6 @@ fn status(code: va::VAStatus, what: &str) -> anyhow::Result<()> {
     // SAFETY: libva's error strings are static and NUL-terminated.
     let message = unsafe { CStr::from_ptr(va::vaErrorStr(code)) }.to_string_lossy();
     anyhow::bail!("{what}: {message} ({code:#x})")
-}
-
-/// `VAEncPackedHeaderParameterBuffer`, which cros-libva's bindings leave out.
-#[repr(C)]
-struct PackedHeader {
-    kind: u32,
-    bit_length: u32,
-    has_emulation_bytes: u8,
-    va_reserved: [u32; 4],
 }
 
 /// How a picture reaches the input surface: the surface mapped itself, or,
@@ -339,7 +330,7 @@ impl Buffers {
 
     /// A packed header, the daemon's bytes with their emulation prevention.
     fn packed(&mut self, kind: u32, header: &[u8], what: &str) -> anyhow::Result<()> {
-        let parameters = PackedHeader { kind, bit_length: (header.len() * 8) as u32, has_emulation_bytes: 1, va_reserved: [0; 4] };
+        let parameters = va::VAEncPackedHeaderParameterBuffer { type_: kind, bit_length: (header.len() * 8) as u32, has_emulation_bytes: 1, ..Default::default() };
         self.add(va::VABufferType::VAEncPackedHeaderParameterBufferType, &parameters, what)?;
         self.bytes(va::VABufferType::VAEncPackedHeaderDataBufferType, header.as_ptr().cast(), header.len(), what)
     }

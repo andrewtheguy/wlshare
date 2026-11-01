@@ -31,13 +31,13 @@
   `src/rfb/progressive.rs`) and the lossless tiles' (`encode` in
   `src/rfb/planar.rs`), each compiled a second time for AVX2 on x86-64 and
   chosen at run time, the same source, which a test holds to the baseline's
-  bytes; and the release builds each architecture in Docker on its own native
-  runner.
+  bytes; and the release builds each suite (Debian trixie, Ubuntu 26.04) and
+  architecture in Docker on its architecture's native runner.
   Linking the daemon and its tests needs `libpam0g-dev` and
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
-  `-sys` crates and cros-libva run — `libavcodec-dev` for the camera's H.264
+  `-sys` crates and the daemon's own `build.rs`, libva's, run — `libavcodec-dev` for the camera's H.264
   decoder, and `libx264-dev` and `libva-dev` for the H.264 encoder of the
   video and the tiles' regions (`h264/`), libx264 through its own API and the
   GPU through libva itself, each linked dynamically from the system.
