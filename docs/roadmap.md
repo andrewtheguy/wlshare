@@ -18,6 +18,29 @@ text's colour, which 4:2:0 halves.
   does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
   rest.
 
+## The pointer in the layout's coordinates
+
+A desk's virtual pointer is made against its output, and labwc does not keep
+that binding: it maps every pointer back to the output its device names,
+which a virtual one has none of, whenever the outputs are laid out anew and
+whenever it reloads its configuration ([Input and
+clipboard](architecture.md#input-and-clipboard)). The daemon remakes the
+pointer on every layout change, but a reload changes no output, so the APT
+repository's wlroots carries a patch that names the pointer's output.
+
+- **A pointer bound to no output.** Made with none, a virtual pointer's
+  absolute positions span the whole layout on every wlroots compositor, and
+  there is no binding for a reload to lose. The daemon already holds every output's place
+  and logical size from wlr-output-management, so it can send each position
+  as the shared output's place plus the client's position in logical pixels,
+  against the layout's extent. The patch, the rebuilt wlroots for every
+  distribution, and the remaking on a layout change then go, leaving the
+  layout to be followed: what costs is a layout the daemon reckons otherwise
+  than the compositor does (scaled and transformed outputs, a disabled one, a
+  `done` not yet arrived), and a compositor configured to map pointers to an
+  output, which binds this one as well. Tried on Sway and labwc with two
+  outputs, a labwc reload among them, before the patch is dropped.
+
 ## The tiles' cache
 
 What is left of what RDP's graphics pipeline does without AVC, once the
