@@ -1671,7 +1671,10 @@ where wlroots clamps it; the extent spread over the output as it is, which a
 resize makes another size until the framebuffer follows, at its effective
 resolution, the pixels over the scale truncated to whole layout units, then
 times the scale again, which a fractional scale lands short of its pixel; and
-turned by the output's transform. The framebuffer is the output's buffer as screencopy
+turned by the output's transform. That scale is wlr-output-management's;
+where the compositor has only `wl_output`'s, which wlroots rounds up from a
+fractional one, the motion's place is not known, any report on the output
+bears it out, and only the cursor on another output is held against it. The framebuffer is the output's buffer as screencopy
 gives it, so a client's positions are in its untransformed orientation, which
 is how wlroots reads a bound pointer's and turns them before it places the
 cursor, while the session reports the place upright. A position

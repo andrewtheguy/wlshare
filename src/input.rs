@@ -191,7 +191,10 @@ impl Pointer {
 pub struct Placement {
     pub size: (u16, u16),
     pub transform: Transform,
-    pub scale: f64,
+    /// The exact scale, as wlr-output-management gives it, or `None` where the
+    /// compositor has only `wl_output`'s, which wlroots rounds up from a
+    /// fractional one: a motion's place is then not known to the pixel.
+    pub scale: Option<f64>,
 }
 
 /// Where the compositor puts the cursor for a motion to (x, y) of `extent`, in
@@ -210,8 +213,10 @@ pub struct Placement {
 /// over its scale truncated to whole layout units
 /// (`wlr_output_effective_resolution`), places the cursor there, and multiplies
 /// the place by the scale again, so a fractional scale lands a motion short of
-/// its pixel, the same way here.
-fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> (i32, i32) {
+/// its pixel, the same way here. With no exact scale there is no place to
+/// predict.
+fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> Option<(i32, i32)> {
+    let scale = placement.scale?;
     let (w, h) = (u64::from(extent.0.max(1)), u64::from(extent.1.max(1)));
     let (x, y) = (u64::from(x).min(w), u64::from(y).min(h));
     // Each upright axis as a fraction of the motion's: numerator, denominator.
@@ -225,13 +230,13 @@ fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> (i32, i3
         Transform::Flipped270 => ((h - y, h), (w - x, w)),
         _ => ((x, w), (y, h)),
     };
-    let scale = if placement.scale > 0.0 { placement.scale } else { 1.0 };
+    let scale = if scale > 0.0 { scale } else { 1.0 };
     // Rounded, as wlroots rounds the output cursor's place.
     let place = |(at, of): (u64, u64), size: u16| {
         let laid_out = (f64::from(size.max(1)) / scale).trunc();
         (at as f64 / of as f64 * laid_out * scale).round() as i32
     };
-    (place(across, placement.size.0), place(down, placement.size.1))
+    Some((place(across, placement.size.0), place(down, placement.size.1)))
 }
 
 /// Where a pointer's motions put the cursor, held against where its desk's
@@ -252,9 +257,11 @@ fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> (i32, i3
 /// once and not on every motion.
 #[derive(Default)]
 struct Witness {
-    /// The positions sent, oldest first, back to the oldest one a report may
-    /// still be of.
-    sent: VecDeque<(i32, i32)>,
+    /// Where the motions sent put the cursor, oldest first, back to the oldest
+    /// one a report may still be of; `None` where that is not known
+    /// ([`Placement::scale`]), which a report anywhere on the output bears
+    /// out, so that only the cursor on another output is held against it.
+    sent: VecDeque<Option<(i32, i32)>>,
     /// How many motions have been sent.
     motions: u64,
     /// The count of motions at the report that bore none out, until one does.
@@ -264,11 +271,11 @@ struct Witness {
 }
 
 impl Witness {
-    fn sent(&mut self, x: i32, y: i32) {
+    fn sent(&mut self, at: Option<(i32, i32)>) {
         if self.sent.len() == RECENT {
             self.sent.pop_front();
         }
-        self.sent.push_back((x, y));
+        self.sent.push_back(at);
         self.motions += 1;
     }
 
@@ -281,7 +288,7 @@ impl Witness {
 
     /// Whether (x, y) is where one of the motions sent put the cursor.
     fn borne_out(&mut self, x: i32, y: i32) -> bool {
-        let Some(i) = self.sent.iter().rposition(|&(sx, sy)| (sx - x).abs() <= SLACK && (sy - y).abs() <= SLACK) else { return false };
+        let Some(i) = self.sent.iter().rposition(|at| at.is_none_or(|(sx, sy)| (sx - x).abs() <= SLACK && (sy - y).abs() <= SLACK)) else { return false };
         // What came before it the compositor has done with.
         self.sent.drain(..i);
         self.doubt = None;
@@ -575,9 +582,9 @@ impl Input {
         let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return None };
         pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
         *motion = Some((x, y, extent));
-        let (landed_x, landed_y) = landing(x, y, extent, output);
-        trace!("desk {desk}: motion to {x},{y} of {}x{}, landing at {landed_x},{landed_y}", extent.0, extent.1);
-        witness.sent(landed_x, landed_y);
+        let landed = landing(x, y, extent, output);
+        trace!("desk {desk}: motion to {x},{y} of {}x{}, landing at {landed:?}", extent.0, extent.1);
+        witness.sent(landed);
         let took_over = self.moved_last.is_some_and(|last| last != desk);
         self.moved_last = Some(desk);
         let previous = std::mem::replace(held, buttons);
@@ -794,31 +801,48 @@ mod tests {
     }
 
     fn upright(size: (u16, u16)) -> Placement {
-        Placement { size, transform: Transform::Normal, scale: 1.0 }
+        Placement { size, transform: Transform::Normal, scale: Some(1.0) }
     }
 
     #[test]
     fn a_motion_lands_where_the_compositor_spreads_its_extent_over_the_output() {
-        assert_eq!(landing(349, 16, (1920, 928), upright((1920, 928))), (349, 16));
+        assert_eq!(landing(349, 16, (1920, 928), upright((1920, 928))), Some((349, 16)));
         // The output resized to 1789x903, the framebuffer still the old size.
-        assert_eq!(landing(349, 16, (1920, 928), upright((1789, 903))), (325, 16));
-        assert_eq!(landing(321, 39, (1920, 928), upright((1789, 903))), (299, 38));
+        assert_eq!(landing(349, 16, (1920, 928), upright((1789, 903))), Some((325, 16)));
+        assert_eq!(landing(321, 39, (1920, 928), upright((1789, 903))), Some((299, 38)));
         // Past the edge, held at the far edge, where wlroots clamps it, and
         // spread over an output grown to twice the size.
-        assert_eq!(landing(4000, 5000, (3456, 1802), upright((3456, 1802))), (3456, 1802));
-        assert_eq!(landing(1280, 10, (1280, 720), upright((2560, 1440))), (2560, 20));
+        assert_eq!(landing(4000, 5000, (3456, 1802), upright((3456, 1802))), Some((3456, 1802)));
+        assert_eq!(landing(1280, 10, (1280, 720), upright((2560, 1440))), Some((2560, 20)));
     }
 
     #[test]
     fn a_fractional_scale_lands_a_motion_on_the_layout_units_it_truncates_to() {
         // 3456 pixels at 2.75 are 1256 layout units, which are 3454 pixels, and
         // 1802 are 655, which are 1801.
-        let fractional = Placement { size: (3456, 1802), transform: Transform::Normal, scale: 2.75 };
-        assert_eq!(landing(2593, 0, (3456, 1802), fractional), (2591, 0));
-        assert_eq!(landing(3456, 1802, (3456, 1802), fractional), (3454, 1801));
+        let fractional = Placement { size: (3456, 1802), transform: Transform::Normal, scale: Some(2.75) };
+        assert_eq!(landing(2593, 0, (3456, 1802), fractional), Some((2591, 0)));
+        assert_eq!(landing(3456, 1802, (3456, 1802), fractional), Some((3454, 1801)));
         // A whole scale divides the pixels exactly, so nothing is lost.
-        let whole = Placement { size: (3456, 1802), transform: Transform::Normal, scale: 2.0 };
-        assert_eq!(landing(2593, 901, (3456, 1802), whole), (2593, 901));
+        let whole = Placement { size: (3456, 1802), transform: Transform::Normal, scale: Some(2.0) };
+        assert_eq!(landing(2593, 901, (3456, 1802), whole), Some((2593, 901)));
+    }
+
+    #[test]
+    fn with_no_exact_scale_only_the_cursor_on_another_output_loses_the_binding() {
+        // wl_output's 3 for a 2.75 would put the far edge at 3456, not 3454.
+        let unknown = Placement { size: (3456, 1802), transform: Transform::Normal, scale: None };
+        assert_eq!(landing(3456, 1802, (3456, 1802), unknown), None);
+        let mut witness = Witness::default();
+        for x in [100, 2000, 3456] {
+            witness.sent(None);
+            assert!(!report(&mut witness, x - 2, 1801), "anywhere on the output bears it out");
+        }
+        assert_eq!(witness.doubt, None);
+        witness.sent(None);
+        assert!(!witness.against(), "once is a doubt");
+        witness.sent(None);
+        assert!(witness.against(), "on another output after a motion since");
     }
 
     #[test]
@@ -826,9 +850,9 @@ mod tests {
         // Measured on Sway with `transform 90`, which is wl_output's 270: the
         // 1280x720 framebuffer's motions, and where the cursor session put
         // them on the upright 720x1280 output.
-        let turned = Placement { size: (720, 1280), transform: Transform::_270, scale: 1.0 };
+        let turned = Placement { size: (720, 1280), transform: Transform::_270, scale: Some(1.0) };
         for (sent, reported) in [((100, 100), (100, 1180)), ((600, 1000), (720, 680)), ((50, 1200), (720, 1230)), ((700, 20), (20, 580)), ((360, 640), (640, 920))] {
-            assert_eq!(landing(sent.0, sent.1, (1280, 720), turned), reported, "{sent:?}");
+            assert_eq!(landing(sent.0, sent.1, (1280, 720), turned), Some(reported), "{sent:?}");
         }
         // Every transform puts the extent's corners on the output's corners.
         let all = [
@@ -844,9 +868,9 @@ mod tests {
         for transform in all {
             let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
             let size = if quarter { (720, 1280) } else { (1280, 720) };
-            let placement = Placement { size, transform, scale: 1.0 };
+            let placement = Placement { size, transform, scale: Some(1.0) };
             for corner in [(0, 0), (1280, 0), (0, 720), (1280, 720)] {
-                let (x, y) = landing(corner.0, corner.1, (1280, 720), placement);
+                let (x, y) = landing(corner.0, corner.1, (1280, 720), placement).unwrap();
                 assert!([0, i32::from(size.0)].contains(&x) && [0, i32::from(size.1)].contains(&y), "{transform:?} {corner:?}");
             }
         }
@@ -862,14 +886,14 @@ mod tests {
         // Every motion the stretched pointer sends lands on the other output,
         // so this desk's session says nothing after its leave.
         let mut witness = Witness::default();
-        witness.sent(100, 100);
+        witness.sent(Some((100, 100)));
         witness.left();
-        witness.sent(200, 100);
+        witness.sent(Some((200, 100)));
         assert!(witness.against(), "the cursor turned up on the other output");
         let mut witness = Witness::default();
-        witness.sent(100, 100);
+        witness.sent(Some((100, 100)));
         assert!(!witness.against(), "once is a doubt");
-        witness.sent(200, 100);
+        witness.sent(Some((200, 100)));
         assert!(witness.against());
     }
 
@@ -878,7 +902,7 @@ mod tests {
         // A leave, and then nothing anywhere, however many motions follow.
         let mut witness = Witness::default();
         for x in 0..10 {
-            witness.sent(x * 10, 0);
+            witness.sent(Some((x * 10, 0)));
             witness.left();
         }
         assert!(witness.doubt.is_some());
@@ -890,23 +914,23 @@ mod tests {
     fn a_report_of_any_motion_still_in_flight_bears_the_pointer_out() {
         let mut witness = Witness::default();
         for x in [10, 20, 30] {
-            witness.sent(x, 5);
+            witness.sent(Some((x, 5)));
         }
         // The compositor reports at its commits, so of an older motion first.
         assert!(!report(&mut witness, 10, 5));
         assert!(!report(&mut witness, 31, 4), "within a pixel of the newest");
         // Done with what came before the newest, and still with the newest.
-        assert_eq!(witness.sent, [(30, 5)]);
+        assert_eq!(witness.sent, [Some((30, 5))]);
         assert!(!report(&mut witness, 30, 5));
     }
 
     #[test]
     fn the_binding_is_lost_at_the_second_report_that_bears_nothing_out_after_a_motion_between() {
         let mut witness = Witness::default();
-        witness.sent(100, 100);
+        witness.sent(Some((100, 100)));
         assert!(!report(&mut witness, 200, 100), "one report is a doubt");
         assert!(!report(&mut witness, 201, 100), "the same doubt, with no motion since");
-        witness.sent(960, 540);
+        witness.sent(Some((960, 540)));
         assert!(report(&mut witness, 640, 540));
     }
 
@@ -914,15 +938,15 @@ mod tests {
     fn a_leave_is_a_doubt_and_never_the_binding_lost() {
         // The stretched pointer puts the cursor on the other output first.
         let mut witness = Witness::default();
-        witness.sent(100, 100);
+        witness.sent(Some((100, 100)));
         witness.left();
-        witness.sent(960, 540);
+        witness.sent(Some((960, 540)));
         assert!(report(&mut witness, 640, 540));
         // An application hides the cursor, and shows it where it was sent.
         let mut witness = Witness::default();
-        witness.sent(100, 100);
+        witness.sent(Some((100, 100)));
         witness.left();
-        witness.sent(110, 100);
+        witness.sent(Some((110, 100)));
         witness.left();
         assert!(!report(&mut witness, 110, 100));
         assert_eq!(witness.doubt, None);
@@ -933,11 +957,11 @@ mod tests {
         // A mouse at the desk moves the cursor once; the client's next motion
         // puts it back where it was sent.
         let mut witness = Witness::default();
-        witness.sent(100, 100);
+        witness.sent(Some((100, 100)));
         assert!(!report(&mut witness, 700, 300));
-        witness.sent(110, 100);
+        witness.sent(Some((110, 100)));
         assert!(!report(&mut witness, 110, 100));
-        witness.sent(120, 100);
+        witness.sent(Some((120, 100)));
         assert!(!report(&mut witness, 800, 300), "a doubt anew, not the second");
     }
 
@@ -956,15 +980,15 @@ mod tests {
         // made again once, and not on every motion.
         let mut witness = Witness { remade: true, ..Witness::default() };
         for x in 0..5 {
-            witness.sent(x * 10, 0);
+            witness.sent(Some((x * 10, 0)));
             assert!(!report(&mut witness, x * 10 + 500, 0));
         }
-        witness.sent(70, 0);
+        witness.sent(Some((70, 0)));
         assert!(!report(&mut witness, 70, 0));
         assert!(!witness.remade);
-        witness.sent(80, 0);
+        witness.sent(Some((80, 0)));
         assert!(!report(&mut witness, 500, 0));
-        witness.sent(90, 0);
+        witness.sent(Some((90, 0)));
         assert!(report(&mut witness, 500, 0));
     }
 
@@ -972,10 +996,10 @@ mod tests {
     fn a_pointer_remembers_its_recent_motions_alone() {
         let mut witness = Witness::default();
         for x in 0..RECENT as i32 + 10 {
-            witness.sent(x * 3, 0);
+            witness.sent(Some((x * 3, 0)));
         }
         assert_eq!(witness.sent.len(), RECENT);
-        assert_eq!(witness.sent.front(), Some(&(30, 0)));
+        assert_eq!(witness.sent.front(), Some(&Some((30, 0))));
     }
 
     #[test]

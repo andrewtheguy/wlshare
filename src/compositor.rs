@@ -401,7 +401,7 @@ impl Compositor {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                let placement = self.outputs.selected(desk).map_or(Placement { size: extent, transform: Transform::Normal, scale: 1.0 }, |o| self.outputs.placement_of(o));
+                let placement = self.outputs.selected(desk).map_or(Placement { size: extent, transform: Transform::Normal, scale: Some(1.0) }, |o| self.outputs.placement_of(o));
                 if let Some(input) = &mut self.input
                     && let Some(mover) = input.pointer(desk, buttons, x, y, extent, placement)
                 {
