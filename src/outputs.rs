@@ -62,6 +62,11 @@ impl OutputInfo {
         (w.clamp(0, i32::from(u16::MAX)) as u16, h.clamp(0, i32::from(u16::MAX)) as u16)
     }
 
+    /// The output as a pointer's motion meets it ([`crate::input::Placement`]).
+    pub fn placement(&self) -> crate::input::Placement {
+        crate::input::Placement { size: self.size(), transform: self.transform }
+    }
+
     pub fn is_headless(&self) -> bool {
         self.name.as_deref().is_some_and(|n| n.starts_with("HEADLESS-"))
     }

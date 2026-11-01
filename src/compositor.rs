@@ -15,7 +15,7 @@ use log::{debug, info, trace, warn};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::protocol::wl_display::WlDisplay;
-use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::protocol::wl_output::{Transform, WlOutput};
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::protocol::wl_shm::WlShm;
@@ -33,7 +33,7 @@ use crate::clipboard::Clipboard;
 use crate::config::{Config, Xkb};
 use crate::cursor::CursorCapture;
 use crate::framebuffer::Framebuffer;
-use crate::input::Input;
+use crate::input::{Input, Placement};
 use crate::framebuffer::ResizeOrigin;
 use crate::outputs::{ConfigKind, OutputInfo, Outputs};
 use crate::sway::{self, Step, Sway, VirtualDisplays};
@@ -401,9 +401,9 @@ impl Compositor {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                let size = self.outputs.selected(desk).map_or(extent, |o| o.size());
+                let placement = self.outputs.selected(desk).map_or(Placement { size: extent, transform: Transform::Normal }, OutputInfo::placement);
                 if let Some(input) = &mut self.input
-                    && let Some(mover) = input.pointer(desk, buttons, x, y, extent, size)
+                    && let Some(mover) = input.pointer(desk, buttons, x, y, extent, placement)
                 {
                     self.display.sync(&self.qh, MoverSettle { mover });
                 }
@@ -712,6 +712,7 @@ impl Compositor {
     pub fn cursor_moved(&mut self, desk: usize, x: i32, y: i32) {
         let Some(own) = self.outputs.selected(desk) else { return };
         let (width, height) = own.size();
+        let placement = own.placement();
         let output = (own.output.clone(), own.name.clone());
         trace!("desk {desk}: its cursor session reports {x},{y}");
         // Only its image overlaps this output, from beside its edge: the
@@ -728,7 +729,7 @@ impl Compositor {
             "the cursor is at {x},{y} on output {}, where the pointer was not sent: the compositor unbound it from the output; making it again",
             output.1.as_deref().unwrap_or_default()
         );
-        input.rebind(desk, &self.qh, pointers, seat, &output.0, (width, height));
+        input.rebind(desk, &self.qh, pointers, seat, &output.0, placement);
     }
 
     /// The cursor is on the output of `global`, by the session that watches
@@ -742,7 +743,7 @@ impl Compositor {
         if own.global == global || self.desks[desk].cursor.holds(own.size().0, own.size().1) {
             return;
         }
-        let (output, name, size) = (own.output.clone(), own.name.clone(), own.size());
+        let (output, name, placement) = (own.output.clone(), own.name.clone(), own.placement());
         let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
         if !input.elsewhere(desk) {
             return;
@@ -751,7 +752,7 @@ impl Compositor {
             "the cursor is on another output than {}, where the pointer was sent: the compositor unbound it from the output; making it again",
             name.as_deref().unwrap_or_default()
         );
-        input.rebind(desk, &self.qh, pointers, seat, &output, size);
+        input.rebind(desk, &self.qh, pointers, seat, &output, placement);
     }
 
     /// A desk's cursor session says the cursor left its output, which the

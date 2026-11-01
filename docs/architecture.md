@@ -1666,9 +1666,13 @@ is rounded one past it and onto the neighbour's first: the cursor is on the
 desk's own output within a pixel of its bounds, on another only a pixel in
 from its edges, and another output is not heard while the desk's own has the
 cursor there too, as one that overlaps or mirrors it does. A motion is held
-to where the compositor puts it: a position past the extent at the last
-pixel, and the extent spread over the output as it is, which a resize makes
-another size until the framebuffer follows. A position
+to where the compositor puts it: a position past the extent at the far edge,
+where wlroots clamps it; the extent spread over the output as it is, which a
+resize makes another size until the framebuffer follows; and turned by the
+output's transform. The framebuffer is the output's buffer as screencopy
+gives it, so a client's positions are in its untransformed orientation, which
+is how wlroots reads a bound pointer's and turns them before it places the
+cursor, while the session reports the place upright. A position
 is reported only when it changes, so a cursor that comes back where it was
 brings an `enter` alone, which each session takes for its last position
 again. A report of none of the motions, or the cursor on another output, is a

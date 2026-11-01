@@ -44,7 +44,7 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use log::{debug, trace, warn};
-use wayland_client::protocol::wl_output::WlOutput;
+use wayland_client::protocol::wl_output::{Transform, WlOutput};
 use wayland_client::protocol::wl_pointer;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::QueueHandle;
@@ -184,20 +184,44 @@ impl Pointer {
     }
 }
 
+/// An output as a motion meets it: its size in its pixels, upright, which a
+/// resize gives before the framebuffer follows, and its transform.
+#[derive(Clone, Copy)]
+pub struct Placement {
+    pub size: (u16, u16),
+    pub transform: Transform,
+}
+
 /// Where the compositor puts the cursor for a motion to (x, y) of `extent`, in
-/// the pixels of an output of size `output`, which its cursor session reports
-/// in. A position past the extent, which the page sends for a drag past the
-/// tab's edge, is held at the last pixel; and the extent is spread over the
+/// the pixels of the output as `placement` has it, upright, which its cursor
+/// session reports in.
+///
+/// The framebuffer is the output's buffer, as screencopy gives it, so a
+/// motion is in the output's untransformed orientation; wlroots reads a mapped
+/// pointer's absolute motion that way and turns it by the output's transform
+/// (`apply_output_transform` in `wlr_cursor.c`) before it places the cursor,
+/// so the place is the motion turned. A position past the extent, which the
+/// page sends for a drag past the tab's edge, is held at the far edge, where
+/// wlroots clamps it once it is mapped; and the extent is spread over the
 /// output as it is, which a resize makes another size until the framebuffer
 /// follows.
-fn landing(x: u16, y: u16, extent: (u16, u16), output: (u16, u16)) -> (i32, i32) {
-    let along = |at: u16, extent: u16, output: u16| {
-        let (extent, output) = (u32::from(extent.max(1)), u32::from(output.max(1)));
-        let at = u32::from(at).min(extent - 1);
-        // Rounded, as wlroots rounds the output cursor's place.
-        ((2 * at * output + extent) / (2 * extent)) as i32
+fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> (i32, i32) {
+    let (w, h) = (u64::from(extent.0.max(1)), u64::from(extent.1.max(1)));
+    let (x, y) = (u64::from(x).min(w), u64::from(y).min(h));
+    // Each upright axis as a fraction of the motion's: numerator, denominator.
+    let (across, down) = match placement.transform {
+        Transform::_90 => ((h - y, h), (x, w)),
+        Transform::_180 => ((w - x, w), (h - y, h)),
+        Transform::_270 => ((y, h), (w - x, w)),
+        Transform::Flipped => ((w - x, w), (y, h)),
+        Transform::Flipped90 => ((y, h), (x, w)),
+        Transform::Flipped180 => ((x, w), (h - y, h)),
+        Transform::Flipped270 => ((h - y, h), (w - x, w)),
+        _ => ((x, w), (y, h)),
     };
-    (along(x, extent.0, output.0), along(y, extent.1, output.1))
+    // Rounded, as wlroots rounds the output cursor's place.
+    let place = |(at, of): (u64, u64), size: u16| ((2 * at * u64::from(size.max(1)) + of) / (2 * of)) as i32;
+    (place(across, placement.size.0), place(down, placement.size.1))
 }
 
 /// Where a pointer's motions put the cursor, held against where its desk's
@@ -531,13 +555,12 @@ impl Input {
         }
     }
 
-    /// A PointerEvent: position in framebuffer pixels and the RFB button mask,
-    /// and the size the output is now, in its pixels, which a resize gives
-    /// before the framebuffer follows. Where this desk takes to moving the
-    /// cursor from another, the round trip to send, by its count
+    /// A PointerEvent: position in framebuffer pixels, upright, and the RFB
+    /// button mask, onto the output as it is now. Where this desk takes to
+    /// moving the cursor from another, the round trip to send, by its count
     /// ([`Self::settle`]).
     #[must_use]
-    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16), output: (u16, u16)) -> Option<u64> {
+    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16), output: Placement) -> Option<u64> {
         let time = self.time();
         let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return None };
         pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
@@ -686,13 +709,13 @@ impl Input {
     /// last motion again so the cursor goes where the client put it. The
     /// buttons are let go with the old pointer, as there, and pressed again by
     /// the client's next event that holds them.
-    pub fn rebind(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput, size: (u16, u16)) {
+    pub fn rebind(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput, placement: Placement) {
         self.repoint(desk, qh, pointers, seat, output);
         let Some(pointer) = &mut self.pointers[desk] else { return };
         pointer.witness.remade = true;
         if let Some((x, y, extent)) = pointer.motion {
             // The desk's own motion again: nobody else took to moving it.
-            let _ = self.pointer(desk, 0, x, y, extent, size);
+            let _ = self.pointer(desk, 0, x, y, extent, placement);
         }
     }
 
@@ -728,7 +751,9 @@ wayland_client::delegate_noop!(Compositor: ignore ZwlrVirtualPointerV1);
 mod tests {
     use xkbcommon::xkb;
 
-    use super::{EVDEV_OFFSET, Keys, Modifiers, RECENT, Sent, Witness, is_character, landing};
+    use wayland_client::protocol::wl_output::Transform;
+
+    use super::{EVDEV_OFFSET, Keys, Modifiers, Placement, RECENT, Sent, Witness, is_character, landing};
     use crate::shared::{BESIDE, FIRST};
 
     /// The evdev codes of Left Shift, Left Control, Left Alt and Left Meta.
@@ -758,14 +783,51 @@ mod tests {
         sent.into_iter().map(|key| (key.code, key.down, key.depressed)).collect()
     }
 
+    fn upright(size: (u16, u16)) -> Placement {
+        Placement { size, transform: Transform::Normal }
+    }
+
     #[test]
     fn a_motion_lands_where_the_compositor_spreads_its_extent_over_the_output() {
-        assert_eq!(landing(349, 16, (1920, 928), (1920, 928)), (349, 16));
+        assert_eq!(landing(349, 16, (1920, 928), upright((1920, 928))), (349, 16));
         // The output resized to 1789x903, the framebuffer still the old size.
-        assert_eq!(landing(349, 16, (1920, 928), (1789, 903)), (325, 16));
-        assert_eq!(landing(321, 39, (1920, 928), (1789, 903)), (299, 38));
-        // Past the edge, held at the last pixel.
-        assert_eq!(landing(4000, 5000, (3456, 1802), (3456, 1802)), (3455, 1801));
+        assert_eq!(landing(349, 16, (1920, 928), upright((1789, 903))), (325, 16));
+        assert_eq!(landing(321, 39, (1920, 928), upright((1789, 903))), (299, 38));
+        // Past the edge, held at the far edge, where wlroots clamps it, and
+        // spread over an output grown to twice the size.
+        assert_eq!(landing(4000, 5000, (3456, 1802), upright((3456, 1802))), (3456, 1802));
+        assert_eq!(landing(1280, 10, (1280, 720), upright((2560, 1440))), (2560, 20));
+    }
+
+    #[test]
+    fn a_motion_on_a_turned_output_lands_turned() {
+        // Measured on Sway with `transform 90`, which is wl_output's 270: the
+        // 1280x720 framebuffer's motions, and where the cursor session put
+        // them on the upright 720x1280 output.
+        let turned = Placement { size: (720, 1280), transform: Transform::_270 };
+        for (sent, reported) in [((100, 100), (100, 1180)), ((600, 1000), (720, 680)), ((50, 1200), (720, 1230)), ((700, 20), (20, 580)), ((360, 640), (640, 920))] {
+            assert_eq!(landing(sent.0, sent.1, (1280, 720), turned), reported, "{sent:?}");
+        }
+        // Every transform puts the extent's corners on the output's corners.
+        let all = [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ];
+        for transform in all {
+            let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
+            let size = if quarter { (720, 1280) } else { (1280, 720) };
+            let placement = Placement { size, transform };
+            for corner in [(0, 0), (1280, 0), (0, 720), (1280, 720)] {
+                let (x, y) = landing(corner.0, corner.1, (1280, 720), placement);
+                assert!([0, i32::from(size.0)].contains(&x) && [0, i32::from(size.1)].contains(&y), "{transform:?} {corner:?}");
+            }
+        }
     }
 
     /// The session reports the cursor at (x, y): whether the binding is lost.
