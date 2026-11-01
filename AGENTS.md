@@ -68,6 +68,13 @@
   characters: their technical terms differ (网关/閘道, 配置/設定,
   软件包/套件, 会话/工作階段, 文件/檔案), so each keeps its own vocabulary.
   Everything under `docs/` is English alone, untranslated.
+- wlshare's page (its demo) and its user guide, Setting up wlshare, live on
+  [zdesk.dev](https://zdesk.dev), in
+  [zdesk-website](https://github.com/andrewtheguy/zdesk-website), not in this
+  repo. After a change to what a user sees, chooses or configures (a config
+  key, a command or flag, a feature, a package or its install, a supported
+  compositor), check whether the site needs updating too, and update it there
+  in all three locales following that repository's own instructions.
 - Design and wire details live in `docs/architecture.md`, not here.
   Measurements live in their own documents (`docs/tiles-performance.md`,
   `docs/video-performance.md`),
