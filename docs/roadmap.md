@@ -35,6 +35,36 @@ software, which reports no position.
   was measured on headless outputs alone, whose cursor is always on a plane of
   its own, and a GPU without a cursor plane is the case it does not reach.
 
+## A drag from one display onto the other
+
+On *All Displays* each display is a connection of its own, with a pointer bound
+to its output ([A display beside](architecture.md#a-display-beside)), so a
+window dragged in the first display's tab stops at its output's edge. The zDesk
+page already lets a drag past the edge through while a second display's tab is
+listed, as a position past the tab's own (negative, or beyond its width), and
+an RDP host or a Mac, one desktop spanning both displays, takes it onto the
+second. For wlshare the gateway clamps it to RFB's unsigned 16 bits, and the
+daemon's bound pointer holds whatever is left at the edge.
+
+- **A position past the edge, routed to the output it falls on.** A private
+  message carries the pointer's position signed, so a drag left or up is
+  carried as well as one right or down: a new message in `wlshare-proto`, and
+  the protocol's version with it. The daemon holds every output's place,
+  logical size and scale from wlr-output-management, so a position past a
+  desk's output turns into the layout's coordinates and from there into the
+  output that holds it. On the other desk's output, the motion goes out on
+  that desk's pointer, in that output's pixels; on no output either desk
+  shares, it stays at the edge, as now. Every pointer stays bound to its own
+  output, so a reload is found as it is now. The press stays with the pointer
+  that made it, and the compositor's move or drag follows the seat's one
+  cursor whichever pointer moves it. The gateway sends the message, for a
+  wlshare target with a second display's tab, in place of the clamped
+  PointerEvent; released in order, the protocol's tag first. What it costs is
+  a layout the daemon reckons otherwise than the compositor does (scaled and
+  transformed outputs, a `done` not yet arrived), held to the one motion past
+  an edge; tried on labwc and Sway with two outputs side by side, a drag each
+  way, before it is released.
+
 ## The tiles' cache
 
 What is left of what RDP's graphics pipeline does without AVC, once the
