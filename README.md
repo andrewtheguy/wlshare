@@ -131,7 +131,8 @@ gpg --import keys/apt-signing-key.private.asc
 
 Ubuntu 26.04 (resolute) ships Sway 1.11 and labwc 0.9.3 on wlroots 0.19.2,
 which wlshare runs on as they are, so the APT repository has no suite for it.
-Its wlroots does not carry the repository's patch: with two outputs shared, a
+
+On trixie and Ubuntu 26.04 alike, with two outputs shared, a
 reload of the compositor's configuration (`swaymsg reload`,
 `labwc --reconfigure`) unbinds the pointer from its output and stretches its
 positions across the whole layout. wlshare sees it from where the cursor lands

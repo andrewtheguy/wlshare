@@ -12,11 +12,9 @@
 #
 # Run on a Linux host with the compositor and wlr-randr installed, inside no
 # particular session: the compositor gets a socket of its own under
-# XDG_RUNTIME_DIR, and nothing is handed to the user's systemd manager. A
-# reload unbinds a virtual pointer only on a wlroots without the APT
-# repository's patch; with the patch, or where the reload also changes the
-# layout and the daemon remakes its pointers for that, the reload scenarios
-# see nothing to repair, and say so.
+# XDG_RUNTIME_DIR, and nothing is handed to the user's systemd manager. Where
+# the reload also changes the layout, the daemon remakes its pointers for that,
+# and the reload scenarios see nothing to repair, and say so.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -44,7 +44,9 @@ gpg --import keys/apt-signing-key.private.asc
 
 ## Ubuntu 26.04
 
-Ubuntu 26.04（resolute）自带基于 wlroots 0.19.2 的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上运行，因此 APT 仓库没有为它提供套件。它的 wlroots 不带仓库的补丁：共享两个输出时，合成器重新加载配置（`swaymsg reload`、`labwc --reconfigure`）会解除指针与其输出的绑定，把指针的位置拉伸到整个布局上。wlshare 会从光标落下的位置察觉到这一点并重新创建指针，因此一次重新加载只会让发现它的那一两次移动落错位置。用软件绘制光标的输出不报告光标位置，在这样的输出上，指针会一直被拉伸，直到下一次重新排列输出为止，例如客户端调整某个输出的大小时。只有一个输出的会话不受影响（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
+Ubuntu 26.04（resolute）自带基于 wlroots 0.19.2 的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上运行，因此 APT 仓库没有为它提供套件。
+
+无论在 trixie 还是 Ubuntu 26.04 上，共享两个输出时，合成器重新加载配置（`swaymsg reload`、`labwc --reconfigure`）会解除指针与其输出的绑定，把指针的位置拉伸到整个布局上。wlshare 会从光标落下的位置察觉到这一点并重新创建指针，因此一次重新加载只会让发现它的那一两次移动落错位置。用软件绘制光标的输出不报告光标位置，在这样的输出上，指针会一直被拉伸，直到下一次重新排列输出为止，例如客户端调整某个输出的大小时。只有一个输出的会话不受影响（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
 
 ## 运行
 

@@ -1646,10 +1646,8 @@ absolute positions then span the whole layout — stretched across it, on every
 output, once there are two. On every wlroots each wlr-output-management `done`,
 which follows every change to the layout, remakes every desk's pointer against
 its output, the new one before the old one goes, letting go of the buttons held
-and none of the keys. A reload changes no output and is followed by no `done`.
-The wlroots the APT repository builds carries a patch that gives a virtual
-pointer its output's name, which either compositor maps it back to; on any
-other, Ubuntu 26.04's among them, the binding is lost.
+and none of the keys. A reload changes no output and is followed by no `done`, so on any wlroots, the
+APT repository's as Ubuntu 26.04's, the binding is lost.
 
 So the pointer is held to where it puts the cursor. The desk's cursor session
 ([The cursor](#the-cursor)) reports where the cursor is on its output, wlroots'

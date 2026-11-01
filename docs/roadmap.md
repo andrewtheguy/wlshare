@@ -18,23 +18,6 @@ text's colour, which 4:2:0 halves.
   does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
   rest.
 
-## The wlroots patch
-
-The APT repository's wlroots carries a patch that gives a virtual pointer its
-output's name, so that labwc and Sway, which map every pointer back to the
-output its device names when they reload their configuration, keep a desk's
-pointer on its output. The daemon now finds a pointer that lost its binding
-through the desk's cursor session and remakes it ([Input and
-clipboard](architecture.md#input-and-clipboard)), so the patch spares only the
-motion or two that find the loss, and an output that draws its cursor in
-software, which reports no position.
-
-- **Dropping it.** The patch and the rebuilt wlroots go, and every
-  distribution runs on its own. Tried first on labwc with two monitors, a
-  reload among them, on *All Displays* and on one of them picked: the check
-  was measured on headless outputs alone, whose cursor is always on a plane of
-  its own, and a GPU without a cursor plane is the case it does not reach.
-
 ## A drag from one display onto the other
 
 On *All Displays* each display is a connection of its own, with a pointer bound
