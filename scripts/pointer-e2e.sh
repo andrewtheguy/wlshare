@@ -65,7 +65,14 @@ start() {
 			labwc -C "${dir}/cfg" > "${dir}/compositor.log" 2>&1 &
 		;;
 	sway)
-		{ echo "exec echo \$WAYLAND_DISPLAY > ${dir}/display"; } > "${dir}/cfg/sway"
+		# The outputs where the scenarios lay them out, as a configuration that
+		# names its outputs has them: a reload then changes no layout and
+		# brings no done, which would remake the pointers by itself.
+		{
+			echo "exec echo \$WAYLAND_DISPLAY > ${dir}/display"
+			echo "output HEADLESS-1 pos 0 0"
+			echo "output HEADLESS-2 pos 1280 0"
+		} > "${dir}/cfg/sway"
 		env -u WAYLAND_DISPLAY -u DISPLAY -u SWAYSOCK XDG_RUNTIME_DIR="${runtime}" \
 			WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=2 WLR_LIBINPUT_NO_DEVICES=1 \
 			sway -c "${dir}/cfg/sway" > "${dir}/compositor.log" 2>&1 &
