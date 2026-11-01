@@ -29,8 +29,8 @@ under it chose, at the output's pixel density — and sends it through the RFB
 Cursor pseudo-encodings, with its alpha to a client that lists Cursor With
 Alpha. The client moves it without waiting for a framebuffer update.
 
-See it in zDesk's demo:
-[Mac -> Linux (wlshare on Sway) at Retina/HiDPI density with audio](https://zdesk.dev/demo#mac-to-linux).
+See it in action on [its page](https://zdesk.dev/wlshare#demo), and set it up with
+[Setting up wlshare](https://zdesk.dev/guides/wlshare).
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
@@ -88,7 +88,7 @@ deliberately leaves out.
 Trixie ships Sway 1.10 and labwc 0.8.3 on wlroots 0.18, whose headless backend
 paints the cursor into captures. GitHub Pages serves a signed APT repository with
 Sway 1.11, labwc 0.9.7 and wlroots 0.19 rebuilt for trixie against its own
-libraries. wlshare itself is not in it.
+libraries. The repository does not carry wlshare itself.
 
 ```sh
 sudo mkdir -p /etc/apt/keyrings
@@ -129,7 +129,7 @@ gpg --import keys/apt-signing-key.private.asc
 
 ## Running
 
-wlshare runs inside the Wayland session it captures, as the user who owns it:
+The daemon runs inside the Wayland session it captures, as the user who owns it:
 
 ```sh
 WAYLAND_DISPLAY=wayland-1 wlshare --config ~/.config/wlshare/config.toml
