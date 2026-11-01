@@ -709,7 +709,15 @@ impl Compositor {
     /// output and so brings no `done` — the pointer is made again against it
     /// ([`Input::rebind`]).
     pub fn cursor_moved(&mut self, desk: usize, x: i32, y: i32) {
-        let Some(output) = self.outputs.selected(desk).map(|o| (o.output.clone(), o.name.clone())) else { return };
+        let Some(own) = self.outputs.selected(desk) else { return };
+        let (width, height) = own.size();
+        let output = (own.output.clone(), own.name.clone());
+        // Only its image overlaps this output, from beside its edge: the
+        // cursor is not on it, which says no more than its leaving.
+        if !crate::cursor::within(x, y, width, height) {
+            self.cursor_left(desk);
+            return;
+        }
         let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
         if !input.contradicted(desk, x, y) {
             return;
@@ -728,7 +736,8 @@ impl Compositor {
     pub fn cursor_on(&mut self, global: u32) {
         let Some(desk) = self.input.as_ref().and_then(Input::moved_last) else { return };
         let Some(own) = self.outputs.selected(desk) else { return };
-        if own.global == global {
+        // Its own output, or one that overlaps it where the cursor is.
+        if own.global == global || self.desks[desk].cursor.holds(own.size().0, own.size().1) {
             return;
         }
         let (output, name) = (own.output.clone(), own.name.clone());

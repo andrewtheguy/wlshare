@@ -1659,7 +1659,14 @@ last 64 motions, and a report within a pixel of any of them bears it out. A
 stretched pointer puts the cursor on another output as often as on its own,
 where its desk's session says only that it left, so every output has a cursor
 session of its own besides, with no capture, that says only that the cursor is
-there. A report of none of the motions, or the cursor on another output, is a
+there. wlroots counts the cursor as on every output its image overlaps and
+reports a position on each, so beside an edge two outputs share the neighbour
+reports one past its own bounds: the cursor is on an output only where that
+position is inside it, and another output is not heard while the desk's own
+has the cursor there too, as one that overlaps or mirrors it does. A position
+is reported only when it changes, so a cursor that comes back where it was
+brings an `enter` alone, which each session takes for its last position
+again. A report of none of the motions, or the cursor on another output, is a
 doubt, since a mouse at the desk does the same once; so is the cursor leaving
 the output, but nothing more, since an application hiding it does too and it
 turns up nowhere. Either after a doubt and a motion since is the binding lost,

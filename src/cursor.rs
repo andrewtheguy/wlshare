@@ -87,6 +87,10 @@ struct Session {
     constraints: Option<(u32, u32, wl_shm::Format)>,
     /// The cursor is on the output and showing.
     entered: bool,
+    /// The last position the session reported: wlroots reports one only when
+    /// it changes, so a cursor that comes back where it was brings an `enter`
+    /// alone, which is a report of this.
+    position: Option<(i32, i32)>,
     /// The hotspot the next frame takes effect with.
     hotspot: (i32, i32),
     /// The transform the compositor applied to the frame in flight.
@@ -118,6 +122,8 @@ pub struct Watch {
     pointer: WlPointer,
     source: ExtImageCaptureSourceV1,
     cursor: ExtImageCopyCaptureCursorSessionV1,
+    /// The last position it reported, as a desk's session keeps it.
+    position: Option<(i32, i32)>,
 }
 
 impl Drop for Watch {
@@ -128,6 +134,14 @@ impl Drop for Watch {
             self.pointer.release();
         }
     }
+}
+
+/// Whether the cursor's hotspot at (x, y) is on an output of that size. wlroots
+/// counts the cursor as on every output its image overlaps, and reports its
+/// position on each, so beside an output's edge the neighbour reports a
+/// position past its own.
+pub fn within(x: i32, y: i32, width: u16, height: u16) -> bool {
+    (0..i32::from(width)).contains(&x) && (0..i32::from(height)).contains(&y)
 }
 
 /// Which output a [`Watch`] is on, by its global.
@@ -195,6 +209,14 @@ fn upright(rgba: Vec<u8>, width: u32, height: u32, transform: Transform) -> (Vec
     (out, uw as u32, uh as u32)
 }
 
+impl CursorCapture {
+    /// The desk's own session has the cursor on its output, of that size:
+    /// another output that has it too overlaps this one, or mirrors it.
+    pub fn holds(&self, width: u16, height: u16) -> bool {
+        self.session.as_ref().is_some_and(|s| s.entered && s.position.is_some_and(|(x, y)| within(x, y, width, height)))
+    }
+}
+
 impl Compositor {
     /// Open a cursor session on the shared output, if a client is on the desktop,
     /// none is open, and the seat can hand over a pointer to open it with.
@@ -220,6 +242,7 @@ impl Compositor {
             formats: Vec::new(),
             constraints: None,
             entered: false,
+            position: None,
             hotspot: (0, 0),
             transform: Transform::Normal,
             image: None,
@@ -237,7 +260,7 @@ impl Compositor {
             let pointer = seat.get_pointer(&self.qh, ());
             let source = sources.create_source(&output.output, &self.qh, ());
             let cursor = manager.create_pointer_cursor_session(&source, &pointer, &self.qh, Watched(output.global));
-            output.watch = Some(Watch { pointer, source, cursor });
+            output.watch = Some(Watch { pointer, source, cursor, position: None });
         }
     }
 
@@ -395,7 +418,11 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
         match event {
             ext_image_copy_capture_cursor_session_v1::Event::Enter => {
                 session.entered = true;
+                let position = session.position;
                 state.show_cursor(desk);
+                if let Some((x, y)) = position {
+                    state.cursor_moved(desk, x, y);
+                }
             }
             ext_image_copy_capture_cursor_session_v1::Event::Leave => {
                 session.entered = false;
@@ -405,7 +432,10 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
             ext_image_copy_capture_cursor_session_v1::Event::Hotspot { x, y } => session.hotspot = (x, y),
             // The client places the pointer where it sent it; where the
             // compositor put it is held to that ([`Compositor::cursor_moved`]).
-            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => state.cursor_moved(desk, x, y),
+            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => {
+                session.position = Some((x, y));
+                state.cursor_moved(desk, x, y);
+            }
             _ => {}
         }
     }
@@ -413,9 +443,21 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
 
 impl Dispatch<ExtImageCopyCaptureCursorSessionV1, Watched> for Compositor {
     fn event(state: &mut Self, _: &ExtImageCopyCaptureCursorSessionV1, event: ext_image_copy_capture_cursor_session_v1::Event, watched: &Watched, _: &Connection, _: &QueueHandle<Self>) {
-        match event {
-            ext_image_copy_capture_cursor_session_v1::Event::Enter | ext_image_copy_capture_cursor_session_v1::Event::Position { .. } => state.cursor_on(watched.0),
-            _ => {}
+        let Some(output) = state.outputs.outputs.iter_mut().find(|o| o.global == watched.0) else { return };
+        let (width, height) = output.size();
+        let Some(watch) = &mut output.watch else { return };
+        let position = match event {
+            ext_image_copy_capture_cursor_session_v1::Event::Enter => watch.position,
+            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => {
+                watch.position = Some((x, y));
+                watch.position
+            }
+            _ => None,
+        };
+        // An output counts the cursor as on it while any of its image is: the
+        // cursor itself is on it only where its hotspot is.
+        if position.is_some_and(|(x, y)| within(x, y, width, height)) {
+            state.cursor_on(watched.0);
         }
     }
 }
@@ -428,6 +470,16 @@ wayland_client::delegate_noop!(Compositor: ExtImageCopyCaptureManagerV1);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cursor_is_on_an_output_only_where_its_hotspot_is() {
+        assert!(within(0, 0, 3456, 1802));
+        assert!(within(3455, 1801, 3456, 1802));
+        // The neighbour's side of a shared edge, where only the image reaches.
+        assert!(!within(3456, 428, 3456, 1802));
+        assert!(!within(-2, 10, 1280, 720));
+        assert!(!within(10, 720, 1280, 720));
+    }
 
     #[test]
     fn every_alpha_format_is_read_as_rgba_and_the_row_padding_is_skipped() {
