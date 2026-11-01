@@ -45,7 +45,7 @@ stop() {
 		wait "${pid}" 2>/dev/null || true
 	done
 	pids=()
-	exec 7>&- 8>&- 2>/dev/null || true
+	exec 7>&- 8>&-
 }
 trap stop EXIT
 
@@ -129,7 +129,7 @@ check() {
 	local name=$1 out=$2 want=$3 last=$4
 	local remakes got
 	remakes=$(grep "making it again" "${scenario_dir}/wlshare.log" | grep -c "${out}," || true)
-	got=$(grep "^${out} position " "${scenario_dir}/watch.log" | tail -n 1 | cut -d' ' -f3)
+	got=$(grep "^${out} position " "${scenario_dir}/watch.log" | tail -n 1 | cut -d' ' -f3 || true)
 	local low=${want%-*} high=${want#*-}
 	if (( remakes < low || remakes > high )) || [[ ${got} != "${last}" ]]; then
 		echo "FAIL ${name}: ${out} remade ${remakes} times (want ${want}), last at ${got:-nowhere} (want ${last})"
