@@ -401,7 +401,7 @@ impl Compositor {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                let placement = self.outputs.selected(desk).map_or(Placement { size: extent, transform: Transform::Normal }, OutputInfo::placement);
+                let placement = self.outputs.selected(desk).map_or(Placement { size: extent, transform: Transform::Normal, scale: 1.0 }, |o| self.outputs.placement_of(o));
                 if let Some(input) = &mut self.input
                     && let Some(mover) = input.pointer(desk, buttons, x, y, extent, placement)
                 {
@@ -712,7 +712,7 @@ impl Compositor {
     pub fn cursor_moved(&mut self, desk: usize, x: i32, y: i32) {
         let Some(own) = self.outputs.selected(desk) else { return };
         let (width, height) = own.size();
-        let placement = own.placement();
+        let placement = self.outputs.placement_of(own);
         let output = (own.output.clone(), own.name.clone());
         trace!("desk {desk}: its cursor session reports {x},{y}");
         // Only its image overlaps this output, from beside its edge: the
@@ -743,7 +743,7 @@ impl Compositor {
         if own.global == global || self.desks[desk].cursor.holds(own.size().0, own.size().1) {
             return;
         }
-        let (output, name, placement) = (own.output.clone(), own.name.clone(), own.placement());
+        let (output, name, placement) = (own.output.clone(), own.name.clone(), self.outputs.placement_of(own));
         let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
         if !input.elsewhere(desk) {
             return;

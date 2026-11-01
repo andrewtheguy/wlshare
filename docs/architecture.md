@@ -1668,8 +1668,10 @@ from its edges, and another output is not heard while the desk's own has the
 cursor there too, as one that overlaps or mirrors it does. A motion is held
 to where the compositor puts it: a position past the extent at the far edge,
 where wlroots clamps it; the extent spread over the output as it is, which a
-resize makes another size until the framebuffer follows; and turned by the
-output's transform. The framebuffer is the output's buffer as screencopy
+resize makes another size until the framebuffer follows, at its effective
+resolution, the pixels over the scale truncated to whole layout units, then
+times the scale again, which a fractional scale lands short of its pixel; and
+turned by the output's transform. The framebuffer is the output's buffer as screencopy
 gives it, so a client's positions are in its untransformed orientation, which
 is how wlroots reads a bound pointer's and turns them before it places the
 cursor, while the session reports the place upright. A position
@@ -1694,7 +1696,11 @@ reload in the half that the stretched pointer puts on the other output, it was
 remade at the second. wlroots reads the position off the
 output's hardware cursor, so an output that draws its cursor in software
 reports none, and there a reload leaves the pointer stretched until the layout
-next changes.
+next changes. `scripts/pointer-e2e.sh` runs all of it against a throwaway
+headless labwc or Sway with two outputs, the client on the desktop and the
+display beside it as two `video-sink`s and `examples/cursor-watch` the
+witness: edges, a drag past one, resizes, a whole and a fractional scale, a
+turned output, and reloads.
 Wheel "buttons" become discrete axis events, a notch apiece.
 
 A notch is all RFB can say, so a touchpad glide or two fingers on a phone would

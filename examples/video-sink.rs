@@ -7,7 +7,7 @@
 //! ```text
 //! video-sink ADDR --size WxH [--seconds N]
 //!            [--frames N] [--resize SECS:WxH] [--slow SECS:SECS:MILLIS]
-//!            [--keyframe SECS] [--keys] [--h264 FILE]
+//!            [--keyframe SECS] [--keys] [--h264 FILE] [--beside]
 //!            [--login USER --fingerprint FINGERPRINT]
 //! ```
 //!
@@ -37,6 +37,10 @@
 //! let go as a KeyEvent each, or `@X,Y,BUTTONS`, a PointerEvent at that pixel
 //! with that button mask, so that what plays the desktop types through
 //! the daemon as a person at a client does, on the daemon's own keyboard.
+//! With `--beside` the sink is the display beside the client on the desktop,
+//! as a zDesk second display's tab is: its ClientInit byte is
+//! `wlshare_proto::CLIENT_INIT_BESIDE` where RFB has the shared flag, and it is
+//! shown the output that client is not on, with a pointer of its own there.
 //! With `--h264` the frames are not thrown away but written to that file as
 //! an Annex B elementary stream, in the order they came, for a decoder that
 //! is not this repository's to be run on what a session was sent. A stream is
@@ -71,6 +75,7 @@ struct Args {
     slow: Option<(f64, (f64, u64))>,
     keyframe: Option<f64>,
     keys: bool,
+    beside: bool,
     h264: Option<String>,
     login: Option<String>,
     fingerprint: Option<String>,
@@ -139,7 +144,7 @@ fn at<T>(s: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<(f64, T),
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let addr = args.next().ok_or("an address to connect to")?;
-    let mut parsed = Args { addr, size: (0, 0), seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, h264: None, login: None, fingerprint: None };
+    let mut parsed = Args { addr, size: (0, 0), seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, beside: false, h264: None, login: None, fingerprint: None };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -149,6 +154,7 @@ fn parse_args() -> Result<Args, String> {
             "--resize" => parsed.resize = Some(at(&value()?, size)?),
             "--slow" => parsed.slow = Some(at(&value()?, |s| at(s, |ms| ms.parse().map_err(|_| format!("{ms}: not milliseconds"))))?),
             "--keys" => parsed.keys = true,
+            "--beside" => parsed.beside = true,
             "--h264" => parsed.h264 = Some(value()?),
             "--login" => parsed.login = Some(value()?),
             "--fingerprint" => parsed.fingerprint = Some(value()?),
@@ -221,7 +227,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     client::read_security_result(&mut socket).await?;
-    out.send(&[1]).await?;
+    out.send(&[if args.beside { wlshare_proto::CLIENT_INIT_BESIDE } else { 1 }]).await?;
     let init = client::read_server_init(&mut socket).await?;
     eprintln!("video-sink: {} is {}x{}", init.name, init.width, init.height);
 

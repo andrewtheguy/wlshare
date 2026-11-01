@@ -185,11 +185,13 @@ impl Pointer {
 }
 
 /// An output as a motion meets it: its size in its pixels, upright, which a
-/// resize gives before the framebuffer follows, and its transform.
+/// resize gives before the framebuffer follows, its transform, and its scale,
+/// exactly, as the compositor has it.
 #[derive(Clone, Copy)]
 pub struct Placement {
     pub size: (u16, u16),
     pub transform: Transform,
+    pub scale: f64,
 }
 
 /// Where the compositor puts the cursor for a motion to (x, y) of `extent`, in
@@ -204,7 +206,11 @@ pub struct Placement {
 /// page sends for a drag past the tab's edge, is held at the far edge, where
 /// wlroots clamps it once it is mapped; and the extent is spread over the
 /// output as it is, which a resize makes another size until the framebuffer
-/// follows.
+/// follows. wlroots lays the output out at its effective resolution, its pixels
+/// over its scale truncated to whole layout units
+/// (`wlr_output_effective_resolution`), places the cursor there, and multiplies
+/// the place by the scale again, so a fractional scale lands a motion short of
+/// its pixel, the same way here.
 fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> (i32, i32) {
     let (w, h) = (u64::from(extent.0.max(1)), u64::from(extent.1.max(1)));
     let (x, y) = (u64::from(x).min(w), u64::from(y).min(h));
@@ -219,8 +225,12 @@ fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> (i32, i3
         Transform::Flipped270 => ((h - y, h), (w - x, w)),
         _ => ((x, w), (y, h)),
     };
+    let scale = if placement.scale > 0.0 { placement.scale } else { 1.0 };
     // Rounded, as wlroots rounds the output cursor's place.
-    let place = |(at, of): (u64, u64), size: u16| ((2 * at * u64::from(size.max(1)) + of) / (2 * of)) as i32;
+    let place = |(at, of): (u64, u64), size: u16| {
+        let laid_out = (f64::from(size.max(1)) / scale).trunc();
+        (at as f64 / of as f64 * laid_out * scale).round() as i32
+    };
     (place(across, placement.size.0), place(down, placement.size.1))
 }
 
@@ -784,7 +794,7 @@ mod tests {
     }
 
     fn upright(size: (u16, u16)) -> Placement {
-        Placement { size, transform: Transform::Normal }
+        Placement { size, transform: Transform::Normal, scale: 1.0 }
     }
 
     #[test]
@@ -800,11 +810,23 @@ mod tests {
     }
 
     #[test]
+    fn a_fractional_scale_lands_a_motion_on_the_layout_units_it_truncates_to() {
+        // 3456 pixels at 2.75 are 1256 layout units, which are 3454 pixels, and
+        // 1802 are 655, which are 1801.
+        let fractional = Placement { size: (3456, 1802), transform: Transform::Normal, scale: 2.75 };
+        assert_eq!(landing(2593, 0, (3456, 1802), fractional), (2591, 0));
+        assert_eq!(landing(3456, 1802, (3456, 1802), fractional), (3454, 1801));
+        // A whole scale divides the pixels exactly, so nothing is lost.
+        let whole = Placement { size: (3456, 1802), transform: Transform::Normal, scale: 2.0 };
+        assert_eq!(landing(2593, 901, (3456, 1802), whole), (2593, 901));
+    }
+
+    #[test]
     fn a_motion_on_a_turned_output_lands_turned() {
         // Measured on Sway with `transform 90`, which is wl_output's 270: the
         // 1280x720 framebuffer's motions, and where the cursor session put
         // them on the upright 720x1280 output.
-        let turned = Placement { size: (720, 1280), transform: Transform::_270 };
+        let turned = Placement { size: (720, 1280), transform: Transform::_270, scale: 1.0 };
         for (sent, reported) in [((100, 100), (100, 1180)), ((600, 1000), (720, 680)), ((50, 1200), (720, 1230)), ((700, 20), (20, 580)), ((360, 640), (640, 920))] {
             assert_eq!(landing(sent.0, sent.1, (1280, 720), turned), reported, "{sent:?}");
         }
@@ -822,7 +844,7 @@ mod tests {
         for transform in all {
             let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
             let size = if quarter { (720, 1280) } else { (1280, 720) };
-            let placement = Placement { size, transform };
+            let placement = Placement { size, transform, scale: 1.0 };
             for corner in [(0, 0), (1280, 0), (0, 720), (1280, 720)] {
                 let (x, y) = landing(corner.0, corner.1, (1280, 720), placement);
                 assert!([0, i32::from(size.0)].contains(&x) && [0, i32::from(size.1)].contains(&y), "{transform:?} {corner:?}");

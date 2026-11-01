@@ -62,11 +62,6 @@ impl OutputInfo {
         (w.clamp(0, i32::from(u16::MAX)) as u16, h.clamp(0, i32::from(u16::MAX)) as u16)
     }
 
-    /// The output as a pointer's motion meets it ([`crate::input::Placement`]).
-    pub fn placement(&self) -> crate::input::Placement {
-        crate::input::Placement { size: self.size(), transform: self.transform }
-    }
-
     pub fn is_headless(&self) -> bool {
         self.name.as_deref().is_some_and(|n| n.starts_with("HEADLESS-"))
     }
@@ -169,6 +164,11 @@ impl Outputs {
     }
 
     /// The exact scale `output` is drawn at: its head's, or `wl_output`'s.
+    /// An output as a pointer's motion meets it ([`crate::input::Placement`]).
+    pub fn placement_of(&self, output: &OutputInfo) -> crate::input::Placement {
+        crate::input::Placement { size: output.size(), transform: output.transform, scale: self.scale_of(output) }
+    }
+
     pub fn scale_of(&self, output: &OutputInfo) -> f64 {
         if let Some(name) = output.name.as_deref()
             && let Some(scale) = self.head(name).and_then(|h| h.scale)
