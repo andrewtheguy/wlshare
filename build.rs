@@ -23,6 +23,8 @@ fn main() -> anyhow::Result<()> {
     let bindings = bindgen::builder()
         .header_contents("libva.h", "#include <va/va.h>\n#include <va/va_drm.h>\n")
         .clang_args(includes.iter().map(|path| format!("-I{}", path.display())))
+        // Every header the two include, so a changed libva reruns this.
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .rust_edition(bindgen::RustEdition::Edition2024)
         .derive_default(true)
         .layout_tests(false)
