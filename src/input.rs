@@ -26,8 +26,16 @@
 //! absolute positions against the framebuffer's extent, which the virtual
 //! pointer maps onto the output it was made for. So each desk has a pointer of
 //! its own, on its own output, while a client is on it.
+//!
+//! A compositor can drop that binding without a word: labwc and Sway map every
+//! pointer back to the output its device names, none for a virtual one, when
+//! they reload their configuration, and the positions then span the whole
+//! layout. The desk's cursor session says where the cursor is on its output, in
+//! the framebuffer's pixels, so what follows the pointer's own motions is held
+//! to where they put it ([`Witness`]), and a pointer the cursor is found away
+//! from after a doubt is made again against its output.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::fd::AsFd;
 use std::time::Instant;
 
@@ -53,6 +61,13 @@ const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 /// One wheel notch, in the units `wl_pointer.axis` uses.
 const WHEEL_STEP: f64 = 15.0;
+/// The most motions a pointer remembers while the compositor has yet to say
+/// where they put the cursor: a session reports at the output's next commit,
+/// a frame behind at most, and a client sends far fewer in a frame than this.
+const RECENT: usize = 64;
+/// How far a reported position may be from the one sent, in framebuffer
+/// pixels: the compositor rounds the cursor's place on the output.
+const SLACK: i32 = 1;
 /// XKB keycodes are evdev codes plus eight.
 const EVDEV_OFFSET: u32 = 8;
 const XK_SHIFT_L: u32 = 0xffe1;
@@ -136,6 +151,9 @@ pub struct Input {
     keyboard: ZwpVirtualKeyboardV1,
     /// Each desk's pointer, while it has an output to point at.
     pointers: [Option<Pointer>; 2],
+    /// The desk whose pointer moved the seat's cursor last. The cursor is the
+    /// seat's one, so only that desk's session reports what its pointer did.
+    moved_last: Option<usize>,
     keys: Keys,
     started: Instant,
 }
@@ -145,6 +163,88 @@ struct Pointer {
     pointer: ZwlrVirtualPointerV1,
     /// The client's RFB button mask.
     buttons: u8,
+    /// The last motion: the position and the extent it was against.
+    motion: Option<(u16, u16, (u16, u16))>,
+    witness: Witness,
+}
+
+impl Pointer {
+    fn new(pointer: ZwlrVirtualPointerV1) -> Self {
+        Self { pointer, buttons: 0, motion: None, witness: Witness::default() }
+    }
+}
+
+/// Where a pointer's motions put the cursor, held against where its desk's
+/// cursor session says the cursor is.
+///
+/// A session reports a position at the output's next commit, and only when it
+/// changed, so a report is of one of the motions sent lately or of something
+/// else: a mouse at the desk, the cursor moved by the layout, or the pointer's
+/// binding lost. One report that bears out none of them is a doubt, and so is
+/// the cursor leaving the output, which a binding lost does when it puts the
+/// cursor on another — or an application hiding it, which is why a leave is
+/// never more than a doubt. A report that bears nothing out after a doubt and a
+/// motion sent since is the binding lost, since each of the others leaves the
+/// next motion where it was put. A pointer made again for it waits
+/// for a report to bear it out before it is doubted again, so a pointer the
+/// compositor keeps elsewhere, by a configuration of its own, is made again
+/// once and not on every motion.
+#[derive(Default)]
+struct Witness {
+    /// The positions sent, oldest first, back to the oldest one a report may
+    /// still be of.
+    sent: VecDeque<(i32, i32)>,
+    /// How many motions have been sent.
+    motions: u64,
+    /// The count of motions at the report that bore none out, until one does.
+    doubt: Option<u64>,
+    /// Made again for its reports, and not borne out since.
+    remade: bool,
+}
+
+impl Witness {
+    fn sent(&mut self, x: i32, y: i32) {
+        if self.sent.len() == RECENT {
+            self.sent.pop_front();
+        }
+        self.sent.push_back((x, y));
+        self.motions += 1;
+    }
+
+    /// The session says the cursor left the output.
+    fn left(&mut self) {
+        if !self.sent.is_empty() && !self.remade && self.doubt.is_none() {
+            self.doubt = Some(self.motions);
+        }
+    }
+
+    /// The session reports the cursor at (x, y): whether the binding is lost.
+    fn reported(&mut self, x: i32, y: i32) -> bool {
+        if self.sent.is_empty() {
+            return false;
+        }
+        if let Some(i) = self.sent.iter().rposition(|&(sx, sy)| (sx - x).abs() <= SLACK && (sy - y).abs() <= SLACK) {
+            // What came before it the compositor has done with.
+            self.sent.drain(..i);
+            self.doubt = None;
+            self.remade = false;
+            return false;
+        }
+        if self.remade {
+            return false;
+        }
+        match self.doubt {
+            Some(at) if self.motions > at => {
+                self.doubt = None;
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.doubt = Some(self.motions);
+                false
+            }
+        }
+    }
 }
 
 impl Keys {
@@ -368,6 +468,7 @@ impl Input {
         Ok(Self {
             keyboard,
             pointers: [None, None],
+            moved_last: None,
             keys: Keys::new(&keymap),
             started: Instant::now(),
         })
@@ -403,8 +504,11 @@ impl Input {
     /// A PointerEvent: position in framebuffer pixels and the RFB button mask.
     pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16)) {
         let time = self.time();
-        let Some(Pointer { pointer, buttons: held }) = &mut self.pointers[desk] else { return };
+        let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return };
         pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
+        *motion = Some((x, y, extent));
+        witness.sent(i32::from(x), i32::from(y));
+        self.moved_last = Some(desk);
         let previous = std::mem::replace(held, buttons);
         Self::set_buttons(pointer, time, previous & 7, buttons & 7);
         // Wheel "buttons" scroll on the press; the release carries nothing.
@@ -451,7 +555,7 @@ impl Input {
     pub fn point(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
         self.unpoint(desk);
         let pointer = pointers.create_virtual_pointer_with_output(Some(seat), Some(output), qh, ());
-        self.pointers[desk] = Some(Pointer { pointer, buttons: 0 });
+        self.pointers[desk] = Some(Pointer::new(pointer));
     }
 
     /// Make a desk's pointer again against the output it is already on: the
@@ -471,7 +575,48 @@ impl Input {
         }
         let pointer = pointers.create_virtual_pointer_with_output(Some(seat), Some(output), qh, ());
         old.pointer.destroy();
-        self.pointers[desk] = Some(Pointer { pointer, buttons: 0 });
+        self.pointers[desk] = Some(Pointer { motion: old.motion, ..Pointer::new(pointer) });
+    }
+
+    /// A desk's cursor session reports the cursor at (x, y) on its output, in
+    /// framebuffer pixels: whether that says the desk's pointer is no longer
+    /// bound to it ([`Witness`]). What follows another desk's motion is that
+    /// desk's pointer's doing, not this one's.
+    pub fn contradicted(&mut self, desk: usize, x: i32, y: i32) -> bool {
+        if self.moved_last != Some(desk) {
+            return false;
+        }
+        let Some(pointer) = &mut self.pointers[desk] else { return false };
+        let doubted = pointer.witness.doubt.is_some();
+        let lost = pointer.witness.reported(x, y);
+        if !doubted && pointer.witness.doubt.is_some() {
+            debug!("the cursor is at {x},{y}, where no recent motion put it: doubting the pointer");
+        }
+        lost
+    }
+
+    /// A desk's cursor session says the cursor left its output: a doubt of
+    /// its pointer, where its motion was the last ([`Witness`]).
+    pub fn cursor_left(&mut self, desk: usize) {
+        if self.moved_last == Some(desk)
+            && let Some(pointer) = &mut self.pointers[desk]
+        {
+            pointer.witness.left();
+        }
+    }
+
+    /// Make a desk's pointer again against its output, as [`Self::repoint`]
+    /// does, because its cursor session says the binding is gone, and send the
+    /// last motion again so the cursor goes where the client put it. The
+    /// buttons are let go with the old pointer, as there, and pressed again by
+    /// the client's next event that holds them.
+    pub fn rebind(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
+        self.repoint(desk, qh, pointers, seat, output);
+        let Some(pointer) = &mut self.pointers[desk] else { return };
+        pointer.witness.remade = true;
+        if let Some((x, y, extent)) = pointer.motion {
+            self.pointer(desk, 0, x, y, extent);
+        }
     }
 
     /// Take a desk's pointer away, with everything its client held.
@@ -487,7 +632,7 @@ impl Input {
         let time = self.time();
         let sent = self.keys.desk_left(desk);
         self.send_keys(&sent);
-        if let Some(Pointer { pointer, buttons }) = &mut self.pointers[desk] {
+        if let Some(Pointer { pointer, buttons, .. }) = &mut self.pointers[desk] {
             let before = std::mem::take(buttons) & 7;
             if before != 0 {
                 Self::set_buttons(pointer, time, before, 0);
@@ -506,7 +651,7 @@ wayland_client::delegate_noop!(Compositor: ignore ZwlrVirtualPointerV1);
 mod tests {
     use xkbcommon::xkb;
 
-    use super::{EVDEV_OFFSET, Keys, Modifiers, Sent, is_character};
+    use super::{EVDEV_OFFSET, Keys, Modifiers, RECENT, Sent, Witness, is_character};
     use crate::shared::{BESIDE, FIRST};
 
     /// The evdev codes of Left Shift, Left Control, Left Alt and Left Meta.
@@ -534,6 +679,98 @@ mod tests {
     /// depressed modifiers reported after it.
     fn wire(sent: Vec<Sent>) -> Vec<(u32, bool, u32)> {
         sent.into_iter().map(|key| (key.code, key.down, key.depressed)).collect()
+    }
+
+    #[test]
+    fn a_report_of_any_motion_still_in_flight_bears_the_pointer_out() {
+        let mut witness = Witness::default();
+        for x in [10, 20, 30] {
+            witness.sent(x, 5);
+        }
+        // The compositor reports at its commits, so of an older motion first.
+        assert!(!witness.reported(10, 5));
+        assert!(!witness.reported(31, 4), "within a pixel of the newest");
+        // Done with what came before the newest, and still with the newest.
+        assert_eq!(witness.sent, [(30, 5)]);
+        assert!(!witness.reported(30, 5));
+    }
+
+    #[test]
+    fn the_binding_is_lost_at_the_second_report_that_bears_nothing_out_after_a_motion_between() {
+        let mut witness = Witness::default();
+        witness.sent(100, 100);
+        assert!(!witness.reported(200, 100), "one report is a doubt");
+        assert!(!witness.reported(201, 100), "the same doubt, with no motion since");
+        witness.sent(960, 540);
+        assert!(witness.reported(640, 540));
+    }
+
+    #[test]
+    fn a_leave_is_a_doubt_and_never_the_binding_lost() {
+        // The stretched pointer puts the cursor on the other output first.
+        let mut witness = Witness::default();
+        witness.sent(100, 100);
+        witness.left();
+        witness.sent(960, 540);
+        assert!(witness.reported(640, 540));
+        // An application hides the cursor, and shows it where it was sent.
+        let mut witness = Witness::default();
+        witness.sent(100, 100);
+        witness.left();
+        witness.sent(110, 100);
+        witness.left();
+        assert!(!witness.reported(110, 100));
+        assert_eq!(witness.doubt, None);
+    }
+
+    #[test]
+    fn a_report_that_bears_a_motion_out_ends_the_doubt() {
+        // A mouse at the desk moves the cursor once; the client's next motion
+        // puts it back where it was sent.
+        let mut witness = Witness::default();
+        witness.sent(100, 100);
+        assert!(!witness.reported(700, 300));
+        witness.sent(110, 100);
+        assert!(!witness.reported(110, 100));
+        witness.sent(120, 100);
+        assert!(!witness.reported(800, 300), "a doubt anew, not the second");
+    }
+
+    #[test]
+    fn nothing_is_held_against_a_pointer_that_has_sent_nothing() {
+        let mut witness = Witness::default();
+        for _ in 0..3 {
+            assert!(!witness.reported(5, 5));
+        }
+        assert_eq!(witness.doubt, None);
+    }
+
+    #[test]
+    fn a_pointer_made_again_is_not_doubted_until_a_report_bears_it_out() {
+        // The compositor keeps it elsewhere by a configuration of its own:
+        // made again once, and not on every motion.
+        let mut witness = Witness { remade: true, ..Witness::default() };
+        for x in 0..5 {
+            witness.sent(x * 10, 0);
+            assert!(!witness.reported(x * 10 + 500, 0));
+        }
+        witness.sent(70, 0);
+        assert!(!witness.reported(70, 0));
+        assert!(!witness.remade);
+        witness.sent(80, 0);
+        assert!(!witness.reported(500, 0));
+        witness.sent(90, 0);
+        assert!(witness.reported(500, 0));
+    }
+
+    #[test]
+    fn a_pointer_remembers_its_recent_motions_alone() {
+        let mut witness = Witness::default();
+        for x in 0..RECENT as i32 + 10 {
+            witness.sent(x * 3, 0);
+        }
+        assert_eq!(witness.sent.len(), RECENT);
+        assert_eq!(witness.sent.front(), Some(&(30, 0)));
     }
 
     #[test]

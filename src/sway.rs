@@ -61,7 +61,8 @@ struct Outcome {
 impl Sway {
     /// The compositor's IPC, if `SWAYSOCK` names a socket that answers as sway.
     pub fn from_env() -> Option<Self> {
-        let Some(path) = std::env::var_os("SWAYSOCK") else {
+        // Set and empty, as a session that cleared it leaves it, is unset.
+        let Some(path) = std::env::var_os("SWAYSOCK").filter(|path| !path.is_empty()) else {
             info!("no SWAYSOCK in the environment: a client's virtual displays are the outputs the compositor has");
             return None;
         };

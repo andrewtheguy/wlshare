@@ -18,65 +18,22 @@ text's colour, which 4:2:0 halves.
   does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
   rest.
 
-## The pointer's lost binding
+## The wlroots patch
 
-A desk's virtual pointer is made against its output, and labwc does not keep
-that binding: it maps every pointer back to the output its device names,
-which a virtual one has none of, whenever the outputs are laid out anew and
-whenever it reloads its configuration ([Input and
-clipboard](architecture.md#input-and-clipboard)). Sway maps a pointer only
-when it has an output to map it to, and leaves it be otherwise. The daemon
-remakes the pointer on every layout change, but a reload changes no output,
-so the APT repository's wlroots carries a patch that names the pointer's
-output.
+The APT repository's wlroots carries a patch that gives a virtual pointer its
+output's name, so that labwc and Sway, which map every pointer back to the
+output its device names when they reload their configuration, keep a desk's
+pointer on its output. The daemon now finds a pointer that lost its binding
+through the desk's cursor session and remakes it ([Input and
+clipboard](architecture.md#input-and-clipboard)), so the patch spares only the
+motion or two that find the loss, and an output that draws its cursor in
+software, which reports no position.
 
-What it reaches, with the zDesk gateway as the client
-([zDesk's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/zdesk/blob/main/docs/wlshare-outputs.md)),
-is labwc on a wlroots without the patch, Ubuntu 26.04's among them, with two
-outputs, after a reload. The two are labwc's own, two monitors or
-`WLR_HEADLESS_OUTPUTS=2`: the daemon makes outputs on Sway alone, so a
-target's `virtual_displays = 2` adds none on labwc and brings none of it
-about. A desk of two starts on the gateway's *All Displays*, the first output
-on the page and the second in a tab of its own, a connection and a pointer
-each, and a reload stretches both; with one of the two picked, it stretches
-that one. Sway keeps the binding through a reload, and one output is the
-whole layout, so a desk on Sway or with one output is untouched whatever the
-target asks.
-
-- **The cursor session as the witness.** Each desk already holds a cursor
-  session on its output (`src/cursor.rs`), which says where the cursor is on
-  it: `enter`, `leave`, and `position` in the output's buffer pixels. After
-  the daemon's own motion, a `leave` for a point inside the output, or a
-  position other than the one sent, is the binding lost; the pointer is then
-  remade against its output, as on a `done`, and the motion sent again. The
-  pointer stays bound everywhere, with no layout for the daemon to reckon,
-  and the repair comes only where a binding is lost, on whatever compositor
-  loses it. The patch and the rebuilt wlroots then go. What it costs is the
-  one motion that finds the loss, sent where the stretched pointer puts it.
-
-  Tried on 2026-11-01 with a probe against headless labwc with two outputs
-  of 1280×720, HEADLESS-2 at 0,0 and HEADLESS-1 at 1280,0, the pointer on
-  HEADLESS-1. On Ubuntu 26.04's wlroots 0.19.2 and labwc 0.9.3, after a
-  SIGHUP, a motion to 100,100 brought HEADLESS-1 a `leave` and HEADLESS-2 a
-  `position 200,100`, and one to 960,540 a `position 640,540`, each before
-  the probe's next roundtrip; the pointer remade, the same motions came back
-  at 100,100 and 960,540. On this repository's wlroots the binding held
-  through the reload. What the daemon has to mind:
-
-  - wlroots sends a position only when it changes from the last it sent that
-    session, so an `enter` with none is the position it last had, which the
-    daemon keeps for each output;
-  - the position is the output's hardware cursor's (wlroots'
-    `types/ext_image_capture_source_v1/output.c`), and an output that draws
-    its cursor in software sends none: there the loss goes unseen, as it does
-    now;
-  - the seat has one cursor, which a mouse at the desk and the other desk's
-    pointer move too, so only what follows the daemon's own motion counts;
-  - the position is rounded, and a scaled or transformed output was not
-    tried, so it is compared within a pixel.
-
-  Tried again on labwc with two monitors, on *All Displays* and on one of
-  them picked, a reload among them, before the patch is dropped.
+- **Dropping it.** The patch and the rebuilt wlroots go, and every
+  distribution runs on its own. Tried first on labwc with two monitors, a
+  reload among them, on *All Displays* and on one of them picked: the check
+  was measured on headless outputs alone, whose cursor is always on a plane of
+  its own, and a GPU without a cursor plane is the case it does not reach.
 
 ## The tiles' cache
 

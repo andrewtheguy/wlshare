@@ -44,7 +44,7 @@ gpg --import keys/apt-signing-key.private.asc
 
 ## Ubuntu 26.04
 
-Ubuntu 26.04（resolute）內建以 wlroots 0.19.2 為基礎的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上執行，因此 APT 套件庫沒有為它提供套件組。它的 wlroots 不帶套件庫的修補：在共享兩個輸出的 labwc 上，labwc 重新載入設定（`labwc --reconfigure`）之後，指標的位置會被拉伸到整個版面配置上，兩個輸出都受影響，直到下一次重新排列輸出為止，例如用戶端調整某個輸出的大小時。Sway 以及只有一個輸出的 labwc 不受影響（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
+Ubuntu 26.04（resolute）內建以 wlroots 0.19.2 為基礎的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上執行，因此 APT 套件庫沒有為它提供套件組。它的 wlroots 不帶套件庫的修補：共享兩個輸出時，合成器重新載入設定（`swaymsg reload`、`labwc --reconfigure`）會解除指標與其輸出的綁定，把指標的位置拉伸到整個版面配置上。wlshare 會從游標落下的位置察覺這件事並重新建立指標，因此一次重新載入只會讓察覺到它的那一兩次移動落在錯誤的位置。以軟體繪製游標的輸出不會回報游標位置，在這樣的輸出上，指標會一直維持拉伸，直到下一次重新排列輸出為止，例如用戶端調整某個輸出的大小時。只有一個輸出的工作階段不受影響（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
 
 ## 執行
 

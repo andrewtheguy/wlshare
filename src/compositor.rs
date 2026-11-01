@@ -694,6 +694,32 @@ impl Compositor {
         }
     }
 
+    /// A desk's cursor session put the cursor at (x, y) on its output. Where
+    /// that says the desk's pointer has lost its binding to the output — labwc
+    /// and Sway drop it when they reload their configuration, which changes no
+    /// output and so brings no `done` — the pointer is made again against it
+    /// ([`Input::rebind`]).
+    pub fn cursor_moved(&mut self, desk: usize, x: i32, y: i32) {
+        let Some(output) = self.outputs.selected(desk).map(|o| (o.output.clone(), o.name.clone())) else { return };
+        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
+        if !input.contradicted(desk, x, y) {
+            return;
+        }
+        info!(
+            "the cursor is at {x},{y} on output {}, where the pointer was not sent: the compositor unbound it from the output; making it again",
+            output.1.as_deref().unwrap_or_default()
+        );
+        input.rebind(desk, &self.qh, pointers, seat, &output.0);
+    }
+
+    /// A desk's cursor session says the cursor left its output, which the
+    /// pointer is held to with its positions ([`Input::cursor_left`]).
+    pub fn cursor_left(&mut self, desk: usize) {
+        if let Some(input) = &mut self.input {
+            input.cursor_left(desk);
+        }
+    }
+
     /// Follow a client's density: its desk's output's mode and scale in one
     /// configuration, so every application on it redraws once. Only what differs
     /// is asked for, and a declaration that changes nothing, or cannot change

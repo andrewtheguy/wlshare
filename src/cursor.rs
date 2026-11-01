@@ -18,7 +18,11 @@
 //! image is published only in between, and an image captured while it was away
 //! is kept for when it comes back unchanged, which wlroots does not announce with
 //! a frame. A hotspot takes effect with the frame after it, as the protocol has
-//! it.
+//! it. Its `position` is where the cursor is on the output: in wlroots the
+//! output cursor's, scaled and upright, the framebuffer's pixels, which the
+//! desk's pointer is held to ([`crate::input`]). wlroots takes it from the
+//! output's hardware cursor, so an output that draws the cursor in software
+//! reports none.
 //!
 //! The session needs a `wl_pointer`, which is the seat's to hand out: asking
 //! before the seat has ever had a pointer is a protocol error, so the session
@@ -357,9 +361,12 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
             ext_image_copy_capture_cursor_session_v1::Event::Leave => {
                 session.entered = false;
                 state.show_cursor(desk);
+                state.cursor_left(desk);
             }
             ext_image_copy_capture_cursor_session_v1::Event::Hotspot { x, y } => session.hotspot = (x, y),
-            // The client places the pointer where it sent it.
+            // The client places the pointer where it sent it; where the
+            // compositor put it is held to that ([`Compositor::cursor_moved`]).
+            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => state.cursor_moved(desk, x, y),
             _ => {}
         }
     }

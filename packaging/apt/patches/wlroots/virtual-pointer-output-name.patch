@@ -1,16 +1,15 @@
 Description: Remember a virtual pointer's output as its output_name
  A virtual pointer made with an output is mapped to it once, on creation,
  through the new_virtual_pointer event's suggested_output. labwc maps every
- pointer again on each layout change and reconfigure, to the output its
- output_name names, and a virtual pointer has none, so it is unmapped and its
- absolute motion spans the whole layout from then on: once there are two
- outputs, every position on either lands somewhere else. Giving it the
- suggested output's name, as the Wayland backend does for its pointers, keeps it
- on that output; Sway, which leaves a pointer with no output_name as it was,
- maps it there by the name all the same.
+ pointer again on each layout change and reconfigure, and Sway on each reload,
+ to the output its output_name names, and a virtual pointer has none, so it is
+ unmapped and its absolute motion spans the whole layout from then on: once
+ there are two outputs, every position on either lands somewhere else. Giving
+ it the suggested output's name, as the Wayland backend does for its pointers,
+ keeps it on that output.
 Author: wlshare
 Forwarded: no
-Last-Update: 2026-10-17
+Last-Update: 2026-11-01
 
 --- a/types/wlr_virtual_pointer_v1.c
 +++ b/types/wlr_virtual_pointer_v1.c
