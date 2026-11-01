@@ -18,65 +18,35 @@ text's colour, which 4:2:0 halves.
   does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
   rest.
 
-## The pointer's lost binding
+## A drag from one display onto the other
 
-A desk's virtual pointer is made against its output, and labwc does not keep
-that binding: it maps every pointer back to the output its device names,
-which a virtual one has none of, whenever the outputs are laid out anew and
-whenever it reloads its configuration ([Input and
-clipboard](architecture.md#input-and-clipboard)). Sway maps a pointer only
-when it has an output to map it to, and leaves it be otherwise. The daemon
-remakes the pointer on every layout change, but a reload changes no output,
-so the APT repository's wlroots carries a patch that names the pointer's
-output.
+On *All Displays* each display is a connection of its own, with a pointer bound
+to its output ([A display beside](architecture.md#a-display-beside)), so a
+window dragged in the first display's tab stops at its output's edge. The zDesk
+page already lets a drag past the edge through while a second display's tab is
+listed, as a position past the tab's own (negative, or beyond its width), and
+an RDP host or a Mac, one desktop spanning both displays, takes it onto the
+second. For wlshare the gateway clamps it to RFB's unsigned 16 bits, and the
+daemon's bound pointer holds whatever is left at the edge.
 
-What it reaches, with the zDesk gateway as the client
-([zDesk's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/zdesk/blob/main/docs/wlshare-outputs.md)),
-is labwc on a wlroots without the patch, Ubuntu 26.04's among them, with two
-outputs, after a reload. The two are labwc's own, two monitors or
-`WLR_HEADLESS_OUTPUTS=2`: the daemon makes outputs on Sway alone, so a
-target's `virtual_displays = 2` adds none on labwc and brings none of it
-about. A desk of two starts on the gateway's *All Displays*, the first output
-on the page and the second in a tab of its own, a connection and a pointer
-each, and a reload stretches both; with one of the two picked, it stretches
-that one. Sway keeps the binding through a reload, and one output is the
-whole layout, so a desk on Sway or with one output is untouched whatever the
-target asks.
-
-- **The cursor session as the witness.** Each desk already holds a cursor
-  session on its output (`src/cursor.rs`), which says where the cursor is on
-  it: `enter`, `leave`, and `position` in the output's buffer pixels. After
-  the daemon's own motion, a `leave` for a point inside the output, or a
-  position other than the one sent, is the binding lost; the pointer is then
-  remade against its output, as on a `done`, and the motion sent again. The
-  pointer stays bound everywhere, with no layout for the daemon to reckon,
-  and the repair comes only where a binding is lost, on whatever compositor
-  loses it. The patch and the rebuilt wlroots then go. What it costs is the
-  one motion that finds the loss, sent where the stretched pointer puts it.
-
-  Tried on 2026-11-01 with a probe against headless labwc with two outputs
-  of 1280×720, HEADLESS-2 at 0,0 and HEADLESS-1 at 1280,0, the pointer on
-  HEADLESS-1. On Ubuntu 26.04's wlroots 0.19.2 and labwc 0.9.3, after a
-  SIGHUP, a motion to 100,100 brought HEADLESS-1 a `leave` and HEADLESS-2 a
-  `position 200,100`, and one to 960,540 a `position 640,540`, each before
-  the probe's next roundtrip; the pointer remade, the same motions came back
-  at 100,100 and 960,540. On this repository's wlroots the binding held
-  through the reload. What the daemon has to mind:
-
-  - wlroots sends a position only when it changes from the last it sent that
-    session, so an `enter` with none is the position it last had, which the
-    daemon keeps for each output;
-  - the position is the output's hardware cursor's (wlroots'
-    `types/ext_image_capture_source_v1/output.c`), and an output that draws
-    its cursor in software sends none: there the loss goes unseen, as it does
-    now;
-  - the seat has one cursor, which a mouse at the desk and the other desk's
-    pointer move too, so only what follows the daemon's own motion counts;
-  - the position is rounded, and a scaled or transformed output was not
-    tried, so it is compared within a pixel.
-
-  Tried again on labwc with two monitors, on *All Displays* and on one of
-  them picked, a reload among them, before the patch is dropped.
+- **A position past the edge, routed to the output it falls on.** A private
+  message carries the pointer's position signed, so a drag left or up is
+  carried as well as one right or down: a new message in `wlshare-proto`, and
+  the protocol's version with it. The daemon holds every output's place,
+  logical size and scale from wlr-output-management, so a position past a
+  desk's output turns into the layout's coordinates and from there into the
+  output that holds it. On the other desk's output, the motion goes out on
+  that desk's pointer, in that output's pixels; on no output either desk
+  shares, it stays at the edge, as now. Every pointer stays bound to its own
+  output, so a reload is found as it is now. The press stays with the pointer
+  that made it, and the compositor's move or drag follows the seat's one
+  cursor whichever pointer moves it. The gateway sends the message, for a
+  wlshare target with a second display's tab, in place of the clamped
+  PointerEvent; released in order, the protocol's tag first. What it costs is
+  a layout the daemon reckons otherwise than the compositor does (scaled and
+  transformed outputs, a `done` not yet arrived), held to the one motion past
+  an edge; tried on labwc and Sway with two outputs side by side, a drag each
+  way, before it is released.
 
 ## The tiles' cache
 

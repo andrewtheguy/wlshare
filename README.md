@@ -131,12 +131,16 @@ gpg --import keys/apt-signing-key.private.asc
 
 Ubuntu 26.04 (resolute) ships Sway 1.11 and labwc 0.9.3 on wlroots 0.19.2,
 which wlshare runs on as they are, so the APT repository has no suite for it.
-Its wlroots does not carry the repository's patch: on labwc with two outputs
-shared, a labwc reload (`labwc --reconfigure`) leaves the pointer's positions
-stretched across the whole layout, on both outputs, until the outputs are next
-laid out anew, as when a client resizes one. Sway, and labwc with one output,
-are unaffected ([`docs/architecture.md`](docs/architecture.md), "Input and
-clipboard").
+
+On trixie and Ubuntu 26.04 alike, with two outputs shared, a
+reload of the compositor's configuration (`swaymsg reload`,
+`labwc --reconfigure`) unbinds the pointer from its output and stretches its
+positions across the whole layout. wlshare sees it from where the cursor lands
+and makes the pointer again, so a reload costs the motion or two that find it.
+An output that draws its cursor in software reports no position, and there the
+pointer stays stretched until the outputs are next laid out anew, as when a
+client resizes one. A session with one output is unaffected
+([`docs/architecture.md`](docs/architecture.md), "Input and clipboard").
 
 ## Running
 

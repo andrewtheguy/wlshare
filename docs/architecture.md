@@ -1638,18 +1638,70 @@ connection that never finished the handshake releases nothing. Pointer events
 arrive in framebuffer pixels and are injected as absolute positions against the
 framebuffer's extent, which the virtual pointer maps onto the shared output — a
 pointer per connection, each on its own output, moving the seat's one cursor.
-That binding is made with the pointer and labwc does not keep it: whenever the
-outputs are laid out anew, and whenever it reloads its configuration, it maps
-every pointer back to the output its device names, none for a virtual one, and
+That binding is made with the pointer and the compositor need not keep it: labwc,
+whenever the outputs are laid out anew and whenever it reloads its
+configuration, and Sway, whenever it reloads its configuration, map every
+pointer back to the output its device names, none for a virtual one, and
 absolute positions then span the whole layout — stretched across it, on every
 output, once there are two. On every wlroots each wlr-output-management `done`,
 which follows every change to the layout, remakes every desk's pointer against
 its output, the new one before the old one goes, letting go of the buttons held
-and none of the keys. A reload changes no output and is followed by no `done`:
-the wlroots the APT repository builds carries a patch that gives a virtual
-pointer its output's name, which labwc maps it back to; on any other wlroots,
-Ubuntu 26.04's among them, a labwc reload leaves the pointers stretched until
-the layout next changes.
+and none of the keys. A reload changes no output and is followed by no `done`, so on any wlroots, the
+APT repository's as Ubuntu 26.04's, the binding is lost.
+
+So the pointer is held to where it puts the cursor. The desk's cursor session
+([The cursor](#the-cursor)) reports where the cursor is on its output, wlroots'
+output cursor's place, scaled and upright, which is the framebuffer's pixels:
+at the output's next commit, and only when it moved. Each pointer remembers its
+last 64 motions, and a report within a pixel of any of them bears it out. A
+stretched pointer puts the cursor on another output as often as on its own,
+where its desk's session says only that it left, so every output has a cursor
+session of its own besides, with no capture, that says only that the cursor is
+there. wlroots counts the cursor as on every output its image overlaps and
+reports a position on each, so beside an edge two outputs share the neighbour
+reports one past its own bounds, and a cursor held on an output's last pixel
+is rounded one past it and onto the neighbour's first: the cursor is on the
+desk's own output within a pixel of its bounds, on another only a pixel in
+from its edges, and another output is not heard while the desk's own has the
+cursor there too, as one that overlaps or mirrors it does. A motion is held
+to where the compositor puts it: a position past the extent at the far edge,
+where wlroots clamps it; the extent spread over the output as it is, which a
+resize makes another size until the framebuffer follows, at its effective
+resolution, the pixels over the scale truncated to whole layout units, then
+times the scale again, which a fractional scale lands short of its pixel; and
+turned by the output's transform. That scale is wlr-output-management's;
+where the compositor has only `wl_output`'s, which wlroots rounds up from a
+fractional one, the motion's place is not known, any report on the output
+bears it out, and only the cursor on another output is held against it. The framebuffer is the output's buffer as screencopy
+gives it, so a client's positions are in its untransformed orientation, which
+is how wlroots reads a bound pointer's and turns them before it places the
+cursor, while the session reports the place upright. A position
+is reported only when it changes, so a cursor that comes back where it was
+brings an `enter` alone, which each session takes for its last position
+again. A report of none of the motions, or the cursor on another output, is a
+doubt, since a mouse at the desk does the same once; so is the cursor leaving
+the output, but nothing more, since an application hiding it does too and it
+turns up nowhere. Either after a doubt and a motion since is the binding lost,
+and the pointer is remade against its output, as on a `done`, and sent its
+last motion again. What follows another desk's motion is not held against this
+one, the cursor being the seat's, and when a desk takes to moving it, a round
+trip goes out and what comes before its answer bears motions out and doubts
+nothing: it is of the cursor as the other desk left it. A remade pointer is not doubted again until a report
+bears it out, so one the compositor keeps elsewhere by a configuration of its
+own is remade once and not on every motion. A reload then costs the motion or
+two that find it, put where the stretched pointer puts them; measured with
+Ubuntu 26.04's wlroots, labwc and Sway, two headless outputs side by side and a
+reload between bursts of 300 motions, the pointer was remade once and the
+cursor ended where the last motion put it, and with every motion after the
+reload in the half that the stretched pointer puts on the other output, it was
+remade at the second. wlroots reads the position off the
+output's hardware cursor, so an output that draws its cursor in software
+reports none, and there a reload leaves the pointer stretched until the layout
+next changes. `scripts/pointer-e2e.sh` runs all of it against a throwaway
+headless labwc or Sway with two outputs, the client on the desktop and the
+display beside it as two `video-sink`s and `examples/cursor-watch` the
+witness: edges, a drag past one, resizes, a whole and a fractional scale, a
+turned output, and reloads.
 Wheel "buttons" become discrete axis events, a notch apiece.
 
 A notch is all RFB can say, so a touchpad glide or two fingers on a phone would
