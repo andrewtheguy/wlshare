@@ -29,8 +29,8 @@ under it chose, at the output's pixel density — and sends it through the RFB
 Cursor pseudo-encodings, with its alpha to a client that lists Cursor With
 Alpha. The client moves it without waiting for a framebuffer update.
 
-See it in zDesk's demo:
-[Mac -> Linux (wlshare on Sway) at Retina/HiDPI density with audio](https://zdesk.dev/demo#mac-to-linux).
+See it in action on [its page](https://zdesk.dev/wlshare#demo), and set it up with
+[Setting up wlshare](https://zdesk.dev/guides/wlshare).
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
