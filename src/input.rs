@@ -33,7 +33,10 @@
 //! layout. The desk's cursor session says where the cursor is on its output, in
 //! the framebuffer's pixels, so what follows the pointer's own motions is held
 //! to where they put it ([`Witness`]), and a pointer the cursor is found away
-//! from after a doubt is made again against its output.
+//! from after a doubt is made again against its output. Every output has a
+//! session of its own for that alone ([`crate::cursor::Watch`]), so the cursor
+//! turning up on another output counts as much as a position that bears
+//! nothing out.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::fd::AsFd;
@@ -154,6 +157,13 @@ pub struct Input {
     /// The desk whose pointer moved the seat's cursor last. The cursor is the
     /// seat's one, so only that desk's session reports what its pointer did.
     moved_last: Option<usize>,
+    /// Counts the times another desk took to moving the cursor: each sends a
+    /// round trip, and what the sessions report before it comes back is of the
+    /// cursor as the other desk left it, which bears out a motion and doubts
+    /// nothing.
+    movers: u64,
+    /// The round trip of the latest of them has come back.
+    settled: bool,
     keys: Keys,
     started: Instant,
 }
@@ -181,11 +191,12 @@ impl Pointer {
 /// changed, so a report is of one of the motions sent lately or of something
 /// else: a mouse at the desk, the cursor moved by the layout, or the pointer's
 /// binding lost. One report that bears out none of them is a doubt, and so is
-/// the cursor leaving the output, which a binding lost does when it puts the
-/// cursor on another — or an application hiding it, which is why a leave is
-/// never more than a doubt. A report that bears nothing out after a doubt and a
-/// motion sent since is the binding lost, since each of the others leaves the
-/// next motion where it was put. A pointer made again for it waits
+/// the cursor turning up on another output, which a binding lost does when it
+/// puts it there. The cursor leaving the output is a doubt too, but only that:
+/// an application hiding it does the same, and nothing turns up anywhere. A
+/// report that bears nothing out, or the cursor on another output, after a
+/// doubt and a motion sent since is the binding lost, since each of the others
+/// leaves the next motion where it was put. A pointer made again for it waits
 /// for a report to bear it out before it is doubted again, so a pointer the
 /// compositor keeps elsewhere, by a configuration of its own, is made again
 /// once and not on every motion.
@@ -218,19 +229,20 @@ impl Witness {
         }
     }
 
-    /// The session reports the cursor at (x, y): whether the binding is lost.
-    fn reported(&mut self, x: i32, y: i32) -> bool {
-        if self.sent.is_empty() {
-            return false;
-        }
-        if let Some(i) = self.sent.iter().rposition(|&(sx, sy)| (sx - x).abs() <= SLACK && (sy - y).abs() <= SLACK) {
-            // What came before it the compositor has done with.
-            self.sent.drain(..i);
-            self.doubt = None;
-            self.remade = false;
-            return false;
-        }
-        if self.remade {
+    /// Whether (x, y) is where one of the motions sent put the cursor.
+    fn borne_out(&mut self, x: i32, y: i32) -> bool {
+        let Some(i) = self.sent.iter().rposition(|&(sx, sy)| (sx - x).abs() <= SLACK && (sy - y).abs() <= SLACK) else { return false };
+        // What came before it the compositor has done with.
+        self.sent.drain(..i);
+        self.doubt = None;
+        self.remade = false;
+        true
+    }
+
+    /// The cursor is where none of the motions sent put it: on this output
+    /// elsewhere, or on another output altogether. Whether the binding is lost.
+    fn against(&mut self) -> bool {
+        if self.sent.is_empty() || self.remade {
             return false;
         }
         match self.doubt {
@@ -469,6 +481,8 @@ impl Input {
             keyboard,
             pointers: [None, None],
             moved_last: None,
+            movers: 0,
+            settled: true,
             keys: Keys::new(&keymap),
             started: Instant::now(),
         })
@@ -502,12 +516,16 @@ impl Input {
     }
 
     /// A PointerEvent: position in framebuffer pixels and the RFB button mask.
-    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16)) {
+    /// Where this desk takes to moving the cursor from another, the round trip
+    /// to send, by its count ([`Self::settle`]).
+    #[must_use]
+    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16)) -> Option<u64> {
         let time = self.time();
-        let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return };
+        let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return None };
         pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
         *motion = Some((x, y, extent));
         witness.sent(i32::from(x), i32::from(y));
+        let took_over = self.moved_last.is_some_and(|last| last != desk);
         self.moved_last = Some(desk);
         let previous = std::mem::replace(held, buttons);
         Self::set_buttons(pointer, time, previous & 7, buttons & 7);
@@ -524,6 +542,23 @@ impl Input {
             }
         }
         pointer.frame();
+        took_over.then(|| {
+            self.movers += 1;
+            self.settled = false;
+            self.movers
+        })
+    }
+
+    /// The round trip sent when a desk took to moving the cursor came back.
+    pub fn settle(&mut self, mover: u64) {
+        if mover == self.movers {
+            self.settled = true;
+        }
+    }
+
+    /// The desk whose motion moved the cursor last.
+    pub fn moved_last(&self) -> Option<usize> {
+        self.moved_last
     }
 
     /// A Scroll: a distance in the output's logical pixels, the units an axis
@@ -586,11 +621,31 @@ impl Input {
         if self.moved_last != Some(desk) {
             return false;
         }
+        let settled = self.settled;
         let Some(pointer) = &mut self.pointers[desk] else { return false };
+        if pointer.witness.borne_out(x, y) || !settled {
+            return false;
+        }
+        Self::doubt(pointer, || format!("the cursor is at {x},{y}, where no recent motion put it"))
+    }
+
+    /// The cursor turned up on another output than a desk's, after that desk's
+    /// motion: whether its pointer is no longer bound to its output.
+    pub fn elsewhere(&mut self, desk: usize) -> bool {
+        if self.moved_last != Some(desk) || !self.settled {
+            return false;
+        }
+        let Some(pointer) = &mut self.pointers[desk] else { return false };
+        Self::doubt(pointer, || "the cursor is on another output".to_owned())
+    }
+
+    /// Hold the cursor being where no motion put it against a pointer, and
+    /// say so when that is the first doubt.
+    fn doubt(pointer: &mut Pointer, why: impl FnOnce() -> String) -> bool {
         let doubted = pointer.witness.doubt.is_some();
-        let lost = pointer.witness.reported(x, y);
+        let lost = pointer.witness.against();
         if !doubted && pointer.witness.doubt.is_some() {
-            debug!("the cursor is at {x},{y}, where no recent motion put it: doubting the pointer");
+            debug!("{}: doubting the pointer", why());
         }
         lost
     }
@@ -599,6 +654,7 @@ impl Input {
     /// its pointer, where its motion was the last ([`Witness`]).
     pub fn cursor_left(&mut self, desk: usize) {
         if self.moved_last == Some(desk)
+            && self.settled
             && let Some(pointer) = &mut self.pointers[desk]
         {
             pointer.witness.left();
@@ -615,7 +671,8 @@ impl Input {
         let Some(pointer) = &mut self.pointers[desk] else { return };
         pointer.witness.remade = true;
         if let Some((x, y, extent)) = pointer.motion {
-            self.pointer(desk, 0, x, y, extent);
+            // The desk's own motion again: nobody else took to moving it.
+            let _ = self.pointer(desk, 0, x, y, extent);
         }
     }
 
@@ -681,6 +738,40 @@ mod tests {
         sent.into_iter().map(|key| (key.code, key.down, key.depressed)).collect()
     }
 
+    /// The session reports the cursor at (x, y): whether the binding is lost.
+    fn report(witness: &mut Witness, x: i32, y: i32) -> bool {
+        !witness.borne_out(x, y) && witness.against()
+    }
+
+    #[test]
+    fn the_cursor_kept_on_another_output_is_the_binding_lost() {
+        // Every motion the stretched pointer sends lands on the other output,
+        // so this desk's session says nothing after its leave.
+        let mut witness = Witness::default();
+        witness.sent(100, 100);
+        witness.left();
+        witness.sent(200, 100);
+        assert!(witness.against(), "the cursor turned up on the other output");
+        let mut witness = Witness::default();
+        witness.sent(100, 100);
+        assert!(!witness.against(), "once is a doubt");
+        witness.sent(200, 100);
+        assert!(witness.against());
+    }
+
+    #[test]
+    fn a_hidden_cursor_never_loses_the_binding() {
+        // A leave, and then nothing anywhere, however many motions follow.
+        let mut witness = Witness::default();
+        for x in 0..10 {
+            witness.sent(x * 10, 0);
+            witness.left();
+        }
+        assert!(witness.doubt.is_some());
+        assert!(!report(&mut witness, 90, 0));
+        assert_eq!(witness.doubt, None);
+    }
+
     #[test]
     fn a_report_of_any_motion_still_in_flight_bears_the_pointer_out() {
         let mut witness = Witness::default();
@@ -688,21 +779,21 @@ mod tests {
             witness.sent(x, 5);
         }
         // The compositor reports at its commits, so of an older motion first.
-        assert!(!witness.reported(10, 5));
-        assert!(!witness.reported(31, 4), "within a pixel of the newest");
+        assert!(!report(&mut witness, 10, 5));
+        assert!(!report(&mut witness, 31, 4), "within a pixel of the newest");
         // Done with what came before the newest, and still with the newest.
         assert_eq!(witness.sent, [(30, 5)]);
-        assert!(!witness.reported(30, 5));
+        assert!(!report(&mut witness, 30, 5));
     }
 
     #[test]
     fn the_binding_is_lost_at_the_second_report_that_bears_nothing_out_after_a_motion_between() {
         let mut witness = Witness::default();
         witness.sent(100, 100);
-        assert!(!witness.reported(200, 100), "one report is a doubt");
-        assert!(!witness.reported(201, 100), "the same doubt, with no motion since");
+        assert!(!report(&mut witness, 200, 100), "one report is a doubt");
+        assert!(!report(&mut witness, 201, 100), "the same doubt, with no motion since");
         witness.sent(960, 540);
-        assert!(witness.reported(640, 540));
+        assert!(report(&mut witness, 640, 540));
     }
 
     #[test]
@@ -712,14 +803,14 @@ mod tests {
         witness.sent(100, 100);
         witness.left();
         witness.sent(960, 540);
-        assert!(witness.reported(640, 540));
+        assert!(report(&mut witness, 640, 540));
         // An application hides the cursor, and shows it where it was sent.
         let mut witness = Witness::default();
         witness.sent(100, 100);
         witness.left();
         witness.sent(110, 100);
         witness.left();
-        assert!(!witness.reported(110, 100));
+        assert!(!report(&mut witness, 110, 100));
         assert_eq!(witness.doubt, None);
     }
 
@@ -729,18 +820,18 @@ mod tests {
         // puts it back where it was sent.
         let mut witness = Witness::default();
         witness.sent(100, 100);
-        assert!(!witness.reported(700, 300));
+        assert!(!report(&mut witness, 700, 300));
         witness.sent(110, 100);
-        assert!(!witness.reported(110, 100));
+        assert!(!report(&mut witness, 110, 100));
         witness.sent(120, 100);
-        assert!(!witness.reported(800, 300), "a doubt anew, not the second");
+        assert!(!report(&mut witness, 800, 300), "a doubt anew, not the second");
     }
 
     #[test]
     fn nothing_is_held_against_a_pointer_that_has_sent_nothing() {
         let mut witness = Witness::default();
         for _ in 0..3 {
-            assert!(!witness.reported(5, 5));
+            assert!(!report(&mut witness, 5, 5));
         }
         assert_eq!(witness.doubt, None);
     }
@@ -752,15 +843,15 @@ mod tests {
         let mut witness = Witness { remade: true, ..Witness::default() };
         for x in 0..5 {
             witness.sent(x * 10, 0);
-            assert!(!witness.reported(x * 10 + 500, 0));
+            assert!(!report(&mut witness, x * 10 + 500, 0));
         }
         witness.sent(70, 0);
-        assert!(!witness.reported(70, 0));
+        assert!(!report(&mut witness, 70, 0));
         assert!(!witness.remade);
         witness.sent(80, 0);
-        assert!(!witness.reported(500, 0));
+        assert!(!report(&mut witness, 500, 0));
         witness.sent(90, 0);
-        assert!(witness.reported(500, 0));
+        assert!(report(&mut witness, 500, 0));
     }
 
     #[test]

@@ -109,6 +109,30 @@ impl Drop for Session {
     }
 }
 
+/// A cursor session on an output kept only to hear the cursor arrive and move
+/// on it, with no capture: whatever desk's pointer put it there, after a motion
+/// sent to a desk on another output, has lost its binding to that one
+/// ([`crate::input`]). Every output has one, the shared ones included, since a
+/// desk's own session is opened and closed with its client.
+pub struct Watch {
+    pointer: WlPointer,
+    source: ExtImageCaptureSourceV1,
+    cursor: ExtImageCopyCaptureCursorSessionV1,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.cursor.destroy();
+        self.source.destroy();
+        if self.pointer.version() >= 3 {
+            self.pointer.release();
+        }
+    }
+}
+
+/// Which output a [`Watch`] is on, by its global.
+pub struct Watched(u32);
+
 /// Where red, green, blue and alpha sit in a pixel of `format`, or `None` for a
 /// format without alpha or not at eight bits a channel. A cursor needs its alpha,
 /// so XRGB8888 and its kin are as useless here as a 10-bit format.
@@ -200,6 +224,21 @@ impl Compositor {
             transform: Transform::Normal,
             image: None,
         });
+    }
+
+    /// Open a [`Watch`] on every output that has none, once the seat can hand
+    /// over a pointer to open it with.
+    pub fn watch_outputs(&mut self) {
+        if !self.seat_had_pointer {
+            return;
+        }
+        let (Some(sources), Some(manager), Some(seat)) = (&self.capture_sources, &self.image_copy, &self.seat) else { return };
+        for output in self.outputs.outputs.iter_mut().filter(|o| o.watch.is_none()) {
+            let pointer = seat.get_pointer(&self.qh, ());
+            let source = sources.create_source(&output.output, &self.qh, ());
+            let cursor = manager.create_pointer_cursor_session(&source, &pointer, &self.qh, Watched(output.global));
+            output.watch = Some(Watch { pointer, source, cursor });
+        }
     }
 
     /// Close the cursor session, if one is open: nobody is watching, or the
@@ -367,6 +406,15 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
             // The client places the pointer where it sent it; where the
             // compositor put it is held to that ([`Compositor::cursor_moved`]).
             ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => state.cursor_moved(desk, x, y),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ExtImageCopyCaptureCursorSessionV1, Watched> for Compositor {
+    fn event(state: &mut Self, _: &ExtImageCopyCaptureCursorSessionV1, event: ext_image_copy_capture_cursor_session_v1::Event, watched: &Watched, _: &Connection, _: &QueueHandle<Self>) {
+        match event {
+            ext_image_copy_capture_cursor_session_v1::Event::Enter | ext_image_copy_capture_cursor_session_v1::Event::Position { .. } => state.cursor_on(watched.0),
             _ => {}
         }
     }

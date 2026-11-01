@@ -46,6 +46,9 @@ pub struct OutputInfo {
     pub transform: wl_output::Transform,
     pub wl_scale: i32,
     pub done: bool,
+    /// The cursor session that says whether the cursor is on this output, for
+    /// the pointers of the desks on the others.
+    pub watch: Option<crate::cursor::Watch>,
 }
 
 impl OutputInfo {

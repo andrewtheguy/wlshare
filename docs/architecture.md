@@ -1656,18 +1656,26 @@ So the pointer is held to where it puts the cursor. The desk's cursor session
 output cursor's place, scaled and upright, which is the framebuffer's pixels:
 at the output's next commit, and only when it moved. Each pointer remembers its
 last 64 motions, and a report within a pixel of any of them bears it out. A
-report of none of them, or the cursor leaving the output, is a doubt, since a
-mouse at the desk or an application hiding the cursor does the same once; a
-report of none after a doubt and a motion since is the binding lost, and the
-pointer is remade against its output, as on a `done`, and sent its last motion
-again. What follows another desk's motion is not held against this one, the
-cursor being the seat's. A remade pointer is not doubted again until a report
+stretched pointer puts the cursor on another output as often as on its own,
+where its desk's session says only that it left, so every output has a cursor
+session of its own besides, with no capture, that says only that the cursor is
+there. A report of none of the motions, or the cursor on another output, is a
+doubt, since a mouse at the desk does the same once; so is the cursor leaving
+the output, but nothing more, since an application hiding it does too and it
+turns up nowhere. Either after a doubt and a motion since is the binding lost,
+and the pointer is remade against its output, as on a `done`, and sent its
+last motion again. What follows another desk's motion is not held against this
+one, the cursor being the seat's, and when a desk takes to moving it, a round
+trip goes out and what comes before its answer bears motions out and doubts
+nothing: it is of the cursor as the other desk left it. A remade pointer is not doubted again until a report
 bears it out, so one the compositor keeps elsewhere by a configuration of its
 own is remade once and not on every motion. A reload then costs the motion or
 two that find it, put where the stretched pointer puts them; measured with
 Ubuntu 26.04's wlroots, labwc and Sway, two headless outputs side by side and a
 reload between bursts of 300 motions, the pointer was remade once and the
-cursor ended where the last motion put it. wlroots reads the position off the
+cursor ended where the last motion put it, and with every motion after the
+reload in the half that the stretched pointer puts on the other output, it was
+remade at the second. wlroots reads the position off the
 output's hardware cursor, so an output that draws its cursor in software
 reports none, and there a reload leaves the pointer stretched until the layout
 next changes.

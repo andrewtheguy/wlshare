@@ -13,6 +13,8 @@ use calloop::{EventLoop, LoopHandle};
 use calloop_wayland_source::WaylandSource;
 use log::{debug, info, warn};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_callback::{self, WlCallback};
+use wayland_client::protocol::wl_display::WlDisplay;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
@@ -80,6 +82,8 @@ pub struct Compositor {
     pub clipboard: Clipboard,
     pub max_fps: u32,
     xkb: Xkb,
+    /// The round trips a desk taking to moving the cursor sends ([`Input::settle`]).
+    display: WlDisplay,
     /// The connection and queue, held between `connect` and `discover`.
     pending_queue: Option<(Connection, wayland_client::EventQueue<Compositor>)>,
     exit: Option<anyhow::Result<()>>,
@@ -205,6 +209,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
         qh: qh.clone(),
         handle,
         registry: globals.registry().clone(),
+        display: conn.display(),
         shm,
         seat,
         keyboards,
@@ -253,7 +258,9 @@ impl Compositor {
             transform: wayland_client::protocol::wl_output::Transform::Normal,
             wl_scale: 1,
             done: false,
+            watch: None,
         });
+        self.watch_outputs();
     }
 
     /// Learn the outputs, pick one, and build the shared state.
@@ -394,8 +401,10 @@ impl Compositor {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                if let Some(input) = &mut self.input {
-                    input.pointer(desk, buttons, x, y, extent);
+                if let Some(input) = &mut self.input
+                    && let Some(mover) = input.pointer(desk, buttons, x, y, extent)
+                {
+                    self.display.sync(&self.qh, MoverSettle { mover });
                 }
             }
             Command::Scroll { client, dx, dy } => {
@@ -712,6 +721,28 @@ impl Compositor {
         input.rebind(desk, &self.qh, pointers, seat, &output.0);
     }
 
+    /// The cursor is on the output of `global`, by the session that watches
+    /// every output ([`crate::cursor::Watch`]). After the motion of a desk on
+    /// another output, that is the desk's pointer away from its own
+    /// ([`Input::elsewhere`]).
+    pub fn cursor_on(&mut self, global: u32) {
+        let Some(desk) = self.input.as_ref().and_then(Input::moved_last) else { return };
+        let Some(own) = self.outputs.selected(desk) else { return };
+        if own.global == global {
+            return;
+        }
+        let (output, name) = (own.output.clone(), own.name.clone());
+        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
+        if !input.elsewhere(desk) {
+            return;
+        }
+        info!(
+            "the cursor is on another output than {}, where the pointer was sent: the compositor unbound it from the output; making it again",
+            name.as_deref().unwrap_or_default()
+        );
+        input.rebind(desk, &self.qh, pointers, seat, &output);
+    }
+
     /// A desk's cursor session says the cursor left its output, which the
     /// pointer is held to with its positions ([`Input::cursor_left`]).
     pub fn cursor_left(&mut self, desk: usize) {
@@ -819,6 +850,22 @@ impl Dispatch<WlSeat, ()> for Compositor {
             state.seat_had_pointer = true;
             state.start_cursor(FIRST);
             state.start_cursor(BESIDE);
+            state.watch_outputs();
+        }
+    }
+}
+
+/// The round trip a desk taking to moving the cursor sent, by its count.
+pub struct MoverSettle {
+    mover: u64,
+}
+
+impl Dispatch<WlCallback, MoverSettle> for Compositor {
+    fn event(state: &mut Self, _: &WlCallback, event: wl_callback::Event, settle: &MoverSettle, _: &Connection, _: &QueueHandle<Self>) {
+        if let wl_callback::Event::Done { .. } = event
+            && let Some(input) = &mut state.input
+        {
+            input.settle(settle.mover);
         }
     }
 }
