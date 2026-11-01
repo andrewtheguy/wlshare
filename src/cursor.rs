@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use calloop::RegistrationToken;
 use calloop::timer::{TimeoutAction, Timer};
-use log::{debug, error};
+use log::{debug, error, trace};
 use wayland_client::protocol::wl_output::Transform;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_shm;
@@ -56,6 +56,7 @@ use crate::rfb::cursor::CursorImage;
 
 use crate::capture::ShmBuffer;
 use crate::compositor::Compositor;
+use crate::input::SLACK;
 
 /// How long a frame that failed for no reason the session can fix waits before
 /// the next one is asked for.
@@ -136,12 +137,14 @@ impl Drop for Watch {
     }
 }
 
-/// Whether the cursor's hotspot at (x, y) is on an output of that size. wlroots
-/// counts the cursor as on every output its image overlaps, and reports its
-/// position on each, so beside an output's edge the neighbour reports a
-/// position past its own.
-pub fn within(x: i32, y: i32, width: u16, height: u16) -> bool {
-    (0..i32::from(width)).contains(&x) && (0..i32::from(height)).contains(&y)
+/// Whether the cursor's hotspot at (x, y) is on an output of that size, the
+/// output widened by `margin` pixels on every side, or narrowed by a negative
+/// one. wlroots counts the cursor as on every output its image overlaps, and
+/// reports its position on each, rounded: beside an edge two outputs share,
+/// the neighbour reports a position past its own, and a cursor held on an
+/// output's last pixel is reported one past it, and on the neighbour's first.
+pub fn within(x: i32, y: i32, width: u16, height: u16, margin: i32) -> bool {
+    (-margin..i32::from(width) + margin).contains(&x) && (-margin..i32::from(height) + margin).contains(&y)
 }
 
 /// Which output a [`Watch`] is on, by its global.
@@ -213,7 +216,7 @@ impl CursorCapture {
     /// The desk's own session has the cursor on its output, of that size:
     /// another output that has it too overlaps this one, or mirrors it.
     pub fn holds(&self, width: u16, height: u16) -> bool {
-        self.session.as_ref().is_some_and(|s| s.entered && s.position.is_some_and(|(x, y)| within(x, y, width, height)))
+        self.session.as_ref().is_some_and(|s| s.entered && s.position.is_some_and(|(x, y)| within(x, y, width, height, SLACK)))
     }
 }
 
@@ -455,9 +458,13 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, Watched> for Compositor {
             _ => None,
         };
         // An output counts the cursor as on it while any of its image is: the
-        // cursor itself is on it only where its hotspot is.
-        if position.is_some_and(|(x, y)| within(x, y, width, height)) {
-            state.cursor_on(watched.0);
+        // cursor itself is on it only where its hotspot is, and a pixel in from
+        // the edge, past what rounding puts on it from the neighbour's.
+        if let Some((x, y)) = position {
+            trace!("output {}: the cursor at {x},{y}", watched.0);
+            if within(x, y, width, height, -SLACK) {
+                state.cursor_on(watched.0);
+            }
         }
     }
 }
@@ -473,12 +480,19 @@ mod tests {
 
     #[test]
     fn the_cursor_is_on_an_output_only_where_its_hotspot_is() {
-        assert!(within(0, 0, 3456, 1802));
-        assert!(within(3455, 1801, 3456, 1802));
+        assert!(within(0, 0, 3456, 1802, 0));
+        assert!(within(3455, 1801, 3456, 1802, 0));
         // The neighbour's side of a shared edge, where only the image reaches.
-        assert!(!within(3456, 428, 3456, 1802));
-        assert!(!within(-2, 10, 1280, 720));
-        assert!(!within(10, 720, 1280, 720));
+        assert!(!within(3500, 428, 3456, 1802, 0));
+        assert!(!within(-2, 10, 1280, 720, 0));
+        assert!(!within(10, 720, 1280, 720, 0));
+        // Held on the last pixel and rounded: one past it, on its own output
+        // by a pixel's margin, and on the neighbour's first, which a pixel in
+        // from the edge leaves out.
+        assert!(within(3456, 428, 3456, 1802, 1));
+        assert!(!within(3457, 428, 3456, 1802, 1));
+        assert!(!within(0, 428, 1728, 901, -1));
+        assert!(within(1, 428, 1728, 901, -1));
     }
 
     #[test]

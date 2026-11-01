@@ -1661,9 +1661,14 @@ where its desk's session says only that it left, so every output has a cursor
 session of its own besides, with no capture, that says only that the cursor is
 there. wlroots counts the cursor as on every output its image overlaps and
 reports a position on each, so beside an edge two outputs share the neighbour
-reports one past its own bounds: the cursor is on an output only where that
-position is inside it, and another output is not heard while the desk's own
-has the cursor there too, as one that overlaps or mirrors it does. A position
+reports one past its own bounds, and a cursor held on an output's last pixel
+is rounded one past it and onto the neighbour's first: the cursor is on the
+desk's own output within a pixel of its bounds, on another only a pixel in
+from its edges, and another output is not heard while the desk's own has the
+cursor there too, as one that overlaps or mirrors it does. A motion is held
+to where the compositor puts it: a position past the extent at the last
+pixel, and the extent spread over the output as it is, which a resize makes
+another size until the framebuffer follows. A position
 is reported only when it changes, so a cursor that comes back where it was
 brings an `enter` alone, which each session takes for its last position
 again. A report of none of the motions, or the cursor on another output, is a

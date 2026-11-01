@@ -43,7 +43,7 @@ use std::os::fd::AsFd;
 use std::time::Instant;
 
 use anyhow::Context as _;
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_pointer;
 use wayland_client::protocol::wl_seat::WlSeat;
@@ -70,7 +70,7 @@ const WHEEL_STEP: f64 = 15.0;
 const RECENT: usize = 64;
 /// How far a reported position may be from the one sent, in framebuffer
 /// pixels: the compositor rounds the cursor's place on the output.
-const SLACK: i32 = 1;
+pub const SLACK: i32 = 1;
 /// XKB keycodes are evdev codes plus eight.
 const EVDEV_OFFSET: u32 = 8;
 const XK_SHIFT_L: u32 = 0xffe1;
@@ -182,6 +182,22 @@ impl Pointer {
     fn new(pointer: ZwlrVirtualPointerV1) -> Self {
         Self { pointer, buttons: 0, motion: None, witness: Witness::default() }
     }
+}
+
+/// Where the compositor puts the cursor for a motion to (x, y) of `extent`, in
+/// the pixels of an output of size `output`, which its cursor session reports
+/// in. A position past the extent, which the page sends for a drag past the
+/// tab's edge, is held at the last pixel; and the extent is spread over the
+/// output as it is, which a resize makes another size until the framebuffer
+/// follows.
+fn landing(x: u16, y: u16, extent: (u16, u16), output: (u16, u16)) -> (i32, i32) {
+    let along = |at: u16, extent: u16, output: u16| {
+        let (extent, output) = (u32::from(extent.max(1)), u32::from(output.max(1)));
+        let at = u32::from(at).min(extent - 1);
+        // Rounded, as wlroots rounds the output cursor's place.
+        ((2 * at * output + extent) / (2 * extent)) as i32
+    };
+    (along(x, extent.0, output.0), along(y, extent.1, output.1))
 }
 
 /// Where a pointer's motions put the cursor, held against where its desk's
@@ -515,16 +531,20 @@ impl Input {
         }
     }
 
-    /// A PointerEvent: position in framebuffer pixels and the RFB button mask.
-    /// Where this desk takes to moving the cursor from another, the round trip
-    /// to send, by its count ([`Self::settle`]).
+    /// A PointerEvent: position in framebuffer pixels and the RFB button mask,
+    /// and the size the output is now, in its pixels, which a resize gives
+    /// before the framebuffer follows. Where this desk takes to moving the
+    /// cursor from another, the round trip to send, by its count
+    /// ([`Self::settle`]).
     #[must_use]
-    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16)) -> Option<u64> {
+    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16), output: (u16, u16)) -> Option<u64> {
         let time = self.time();
         let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return None };
         pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
         *motion = Some((x, y, extent));
-        witness.sent(i32::from(x), i32::from(y));
+        let (landed_x, landed_y) = landing(x, y, extent, output);
+        trace!("desk {desk}: motion to {x},{y} of {}x{}, landing at {landed_x},{landed_y}", extent.0, extent.1);
+        witness.sent(landed_x, landed_y);
         let took_over = self.moved_last.is_some_and(|last| last != desk);
         self.moved_last = Some(desk);
         let previous = std::mem::replace(held, buttons);
@@ -666,13 +686,13 @@ impl Input {
     /// last motion again so the cursor goes where the client put it. The
     /// buttons are let go with the old pointer, as there, and pressed again by
     /// the client's next event that holds them.
-    pub fn rebind(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
+    pub fn rebind(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput, size: (u16, u16)) {
         self.repoint(desk, qh, pointers, seat, output);
         let Some(pointer) = &mut self.pointers[desk] else { return };
         pointer.witness.remade = true;
         if let Some((x, y, extent)) = pointer.motion {
             // The desk's own motion again: nobody else took to moving it.
-            let _ = self.pointer(desk, 0, x, y, extent);
+            let _ = self.pointer(desk, 0, x, y, extent, size);
         }
     }
 
@@ -708,7 +728,7 @@ wayland_client::delegate_noop!(Compositor: ignore ZwlrVirtualPointerV1);
 mod tests {
     use xkbcommon::xkb;
 
-    use super::{EVDEV_OFFSET, Keys, Modifiers, RECENT, Sent, Witness, is_character};
+    use super::{EVDEV_OFFSET, Keys, Modifiers, RECENT, Sent, Witness, is_character, landing};
     use crate::shared::{BESIDE, FIRST};
 
     /// The evdev codes of Left Shift, Left Control, Left Alt and Left Meta.
@@ -736,6 +756,16 @@ mod tests {
     /// depressed modifiers reported after it.
     fn wire(sent: Vec<Sent>) -> Vec<(u32, bool, u32)> {
         sent.into_iter().map(|key| (key.code, key.down, key.depressed)).collect()
+    }
+
+    #[test]
+    fn a_motion_lands_where_the_compositor_spreads_its_extent_over_the_output() {
+        assert_eq!(landing(349, 16, (1920, 928), (1920, 928)), (349, 16));
+        // The output resized to 1789x903, the framebuffer still the old size.
+        assert_eq!(landing(349, 16, (1920, 928), (1789, 903)), (325, 16));
+        assert_eq!(landing(321, 39, (1920, 928), (1789, 903)), (299, 38));
+        // Past the edge, held at the last pixel.
+        assert_eq!(landing(4000, 5000, (3456, 1802), (3456, 1802)), (3455, 1801));
     }
 
     /// The session reports the cursor at (x, y): whether the binding is lost.
