@@ -28,18 +28,36 @@ clipboard](architecture.md#input-and-clipboard)). The daemon remakes the
 pointer on every layout change, but a reload changes no output, so the APT
 repository's wlroots carries a patch that names the pointer's output.
 
-- **A pointer bound to no output.** Made with none, a virtual pointer's
-  absolute positions span the whole layout on every wlroots compositor, and
-  there is no binding for a reload to lose. The daemon already holds every output's place
-  and logical size from wlr-output-management, so it can send each position
-  as the shared output's place plus the client's position in logical pixels,
-  against the layout's extent. The patch, the rebuilt wlroots for every
-  distribution, and the remaking on a layout change then go, leaving the
-  layout to be followed: what costs is a layout the daemon reckons otherwise
-  than the compositor does (scaled and transformed outputs, a disabled one, a
-  `done` not yet arrived), and a compositor configured to map pointers to an
-  output, which binds this one as well. Tried on Sway and labwc with two
-  outputs, a labwc reload among them, before the patch is dropped.
+What it reaches, with the zDesk gateway as the client
+([zDesk's `docs/wlshare-outputs.md`](https://github.com/andrewtheguy/zdesk/blob/main/docs/wlshare-outputs.md)),
+is labwc on a wlroots without the patch, Ubuntu 26.04's among them, with two
+outputs, after a reload. The two are labwc's own, two monitors or
+`WLR_HEADLESS_OUTPUTS=2`: the daemon makes outputs on Sway alone, so a
+target's `virtual_displays = 2` adds none on labwc and brings none of it
+about. A desk of two starts on the gateway's *All Displays*, the first output
+on the page and the second in a tab of its own, a connection and a pointer
+each, and a reload stretches both; with one of the two picked, it stretches
+that one. Sway keeps the binding through a reload, and one output is the
+whole layout, so a desk on Sway or with one output is untouched whatever the
+target asks.
+
+- **A pointer bound to no output, off Sway with two outputs.** Made with
+  none, a virtual pointer's absolute positions span the whole layout, and
+  there is no binding for a reload to lose. The daemon already holds every
+  output's place and logical size from wlr-output-management, so it can send
+  each position as the shared output's place plus the client's position in
+  logical pixels, against the layout's extent. It is made so only where the
+  binding can be lost to some effect: a compositor that is not Sway, whose
+  `SWAYSOCK` the daemon already checks at startup, with two outputs or more.
+  The choice is made at each `done`, which remakes the pointer already, so a
+  desk going from one output to two, or back, changes its pointer with
+  nothing more; everywhere else it stays bound to its output, as now. The
+  patch and the rebuilt wlroots then go. What costs is held to that one
+  case: a layout the daemon reckons otherwise than the compositor does
+  (scaled and transformed outputs, a disabled one, a `done` not yet arrived),
+  and a compositor configured to map pointers to an output, which binds this
+  one as well. Tried on labwc with two outputs, on *All Displays* and on one
+  of them picked, a reload among them, before the patch is dropped.
 
 ## The tiles' cache
 
