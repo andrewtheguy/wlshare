@@ -697,6 +697,7 @@ impl Compositor {
     /// every desk's pointer from its output ([`Input::repoint`]). Each is made
     /// again against the output its desk shares.
     pub fn outputs_laid_out(&mut self) {
+        debug!("the compositor laid its outputs out anew: making every desk's pointer again");
         for desk in [FIRST, BESIDE] {
             let Some(output) = self.outputs.selected(desk).map(|o| o.output.clone()) else { continue };
             let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };

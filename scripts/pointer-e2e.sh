@@ -5,9 +5,10 @@
 # on the desktop and another as the display beside it (HEADLESS-2), and
 # cursor-watch saying where every motion landed. Each scenario starts all of it
 # afresh and passes when each output's pointer was remade as often as the
-# scenario expects and its last motion landed where it was sent.
+# scenario expects and its last motion landed where it was sent. The logs are
+# kept when a scenario fails, or with KEEP_LOGS=1 when none does.
 #
-#   [COMPOSITOR=labwc|sway] [PORT=5999] [SCENARIOS="edge drag ..."] ./scripts/pointer-e2e.sh
+#   [COMPOSITOR=labwc|sway] [PORT=5999] [SCENARIOS="edge drag ..."] [KEEP_LOGS=1] ./scripts/pointer-e2e.sh
 #
 # Run on a Linux host with the compositor and wlr-randr installed, inside no
 # particular session: the compositor gets a socket of its own under
@@ -80,7 +81,7 @@ start() {
 		export SWAYSOCK="$(ls -t "${runtime}"/sway-ipc.*."${comp}".sock | head -n 1)"
 	fi
 	printf 'listen = "127.0.0.1:%s"\noutput = "HEADLESS-1"\n' "${port}" > "${dir}/config.toml"
-	RUST_LOG=info,wlshare::input=trace,wlshare::compositor=trace,wlshare::cursor=trace \
+	RUST_LOG=info,wlshare::input=trace,wlshare::compositor=trace,wlshare::cursor=trace,wlshare::outputs=debug \
 		"${bin}/wlshare" -c "${dir}/config.toml" > "${dir}/wlshare.log" 2>&1 &
 	pids+=($!)
 	for _ in $(seq 100); do grep -q listening "${dir}/wlshare.log" 2>/dev/null && break; sleep 0.1; done
@@ -252,4 +253,8 @@ if (( failed )); then
 	exit 1
 fi
 echo "== all passed"
-rm -rf "${work}"
+if [[ -n ${KEEP_LOGS:-} ]]; then
+	echo "== the logs are in ${work}"
+else
+	rm -rf "${work}"
+fi
