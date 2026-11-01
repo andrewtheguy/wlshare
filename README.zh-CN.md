@@ -42,6 +42,10 @@ gpg --import keys/apt-signing-key.private.asc
 ./scripts/apt-repo-smoke.sh site
 ```
 
+## Ubuntu 26.04
+
+Ubuntu 26.04（resolute）自带基于 wlroots 0.19.2 的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上运行，因此 APT 仓库没有为它提供套件。它的 wlroots 不带仓库的补丁：在共享两个输出的 labwc 上，labwc 重新加载配置（`labwc --reconfigure`）之后，指针的位置会被拉伸到整个布局上，两个输出都受影响，直到下一次重新排列输出为止，例如客户端调整某个输出的大小时。Sway 以及只有一个输出的 labwc 不受影响（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
+
 ## 运行
 
 wlshare 在它捕获的 Wayland 会话中运行，以拥有该会话的用户身份：
@@ -76,8 +80,8 @@ wlshare hash-password
 
 ## 构建
 
-工作区有两个 crate：守护进程 `wlshare`，它所使用的 RFB 协议就在其中；以及 `wlshare-proto`，即 wlshare 私有扩展的字节，zDesk 网关也依赖它，按它的 `proto-v<N>` 标签固定版本，即带来该协议版本的那次发布所打的标签。后者不使用任何操作系统 API，可在任何平台上构建和测试。守护进程需要 libxkbcommon、libpam、libpipewire、libavcodec、libx264 和 libva（Wayland 协议用 Rust 实现，不需要 libwayland），并且只能在基于 wlroots 的 Wayland 合成器下运行；它的音频测试还需要 `ffmpeg`，即把 Opus 数据包读回来的独立解码器。FLAC 编码是 [sound-flac](https://github.com/andrewtheguy/sound-flac)，Opus 编码是 [sound-opus](https://github.com/andrewtheguy/sound-opus)，两者都与 zDesk 网关共享，各自由其发布标签固定版本。对处理器的要求不超过其目标的基线。守护进程是仓库根目录下的包，协议 crate 位于 `crates/` 下。直接运行 `cargo test` 覆盖两者；在其他平台上，`cargo test -p wlshare-proto` 覆盖后者。守护进程的 H.264 测试用 libavcodec 解码：每台机器上都测试 libx264 的帧，有 VA-API 编码器的机器上还测试硬件的帧。守护进程在装有 `libxkbcommon-dev`、`libpam0g-dev`、`libpipewire-0.3-dev`、`libspa-0.2-dev`、`libavcodec-dev`、`libx264-dev`、`libva-dev`、`libclang-dev` 和 `pkg-config` 的 Linux 主机上用 `cargo build --release` 构建。libclang 不参与链接：PipeWire、FFmpeg 和 x264 的 `-sys` crate 以及 libva 的绑定 cros-libva 用 bindgen 生成绑定，bindgen 在构建时加载它。
+工作区有两个 crate：守护进程 `wlshare`，它所使用的 RFB 协议就在其中；以及 `wlshare-proto`，即 wlshare 私有扩展的字节，zDesk 网关也依赖它，按它的 `proto-v<N>` 标签固定版本，即带来该协议版本的那次发布所打的标签。后者不使用任何操作系统 API，可在任何平台上构建和测试。守护进程需要 libxkbcommon、libpam、libpipewire、libavcodec、libx264 和 libva（Wayland 协议用 Rust 实现，不需要 libwayland），并且只能在基于 wlroots 的 Wayland 合成器下运行；它的音频测试还需要 `ffmpeg`，即把 Opus 数据包读回来的独立解码器。FLAC 编码是 [sound-flac](https://github.com/andrewtheguy/sound-flac)，Opus 编码是 [sound-opus](https://github.com/andrewtheguy/sound-opus)，两者都与 zDesk 网关共享，各自由其发布标签固定版本。对处理器的要求不超过其目标的基线。守护进程是仓库根目录下的包，协议 crate 位于 `crates/` 下。直接运行 `cargo test` 覆盖两者；在其他平台上，`cargo test -p wlshare-proto` 覆盖后者。守护进程的 H.264 测试用 libavcodec 解码：每台机器上都测试 libx264 的帧，有 VA-API 编码器的机器上还测试硬件的帧。守护进程在装有 `libxkbcommon-dev`、`libpam0g-dev`、`libpipewire-0.3-dev`、`libspa-0.2-dev`、`libavcodec-dev`、`libx264-dev`、`libva-dev`、`libclang-dev` 和 `pkg-config` 的 Linux 主机上用 `cargo build --release` 构建。libclang 不参与链接：PipeWire、FFmpeg 和 x264 的 `-sys` crate 以及守护进程为 libva 准备的 `build.rs` 用 bindgen 生成绑定，bindgen 在构建时加载它。
 
 `scripts/capture-frames.sh` 用 docker 或 podman 构建并运行捕获容器（`docker/capture/`）：一个无头 sway 和以 `--capture-frames` 启动的守护进程，在每种尺寸下播放一个脚本化的桌面，使交给视频编码器的内容（每一帧的像素和变化区域（damage））无损地落在 `dist/captures/` 中；视频场景全屏播放 `--video` 指定的文件。`examples/wlcap.rs` 说明一个捕获包含什么，并能把它播放出来或截取其中一段。`scripts/capture-samples.sh` 把每个捕获截取为 120 帧，以各自的名称放入 `dist/capture-samples/`，用于在每个捕获的一部分上测量编码器。`--capture-frames` 用于手动运行的守护进程，由 systemd 启动的守护进程会拒绝它（[`docs/architecture.md`](docs/architecture.md#capturing-what-the-encoder-is-handed)，英文）。
 
-适用于 amd64 和 arm64 上 Debian trixie 的软件包由 `scripts/build-debs.sh` 在 Docker 中构建，输出到 `dist/<arch>/wlshare-trixie-<arch>.deb`。**Release wlshare** 工作流构建同样的软件包，并将它们发布为 GitHub 发布 `v<version>`，版本号为工作区 `Cargo.toml` 中的版本；运行工作流前先提升它。软件包版本即 crate 的版本，发行版只体现在文件名中。软件包依赖 `libwlroots-0.19 (>= 0.19.0)`，即第一个把光标排除在无头捕获之外的 wlroots，以及 `pipewire`、`wireplumber` 和 `pipewire-pulse`：扬声器、摄像头和麦克风所在的 PipeWire 服务器，把扬声器设为默认并把流连接到它的会话管理器，以及大多数应用通过它播放声音的 PulseAudio 服务器。缺少它们，桌面的声音永远到不了扬声器，客户端什么也听不到。
+适用于 Debian trixie 和 Ubuntu 26.04（resolute）的软件包，各有 amd64 和 arm64 两种架构，由 `scripts/build-debs.sh` 在 Docker 中构建，输出到 `dist/<suite>/<arch>/wlshare-<suite>-<arch>.deb`。**Release wlshare** 工作流构建同样的软件包，并将它们发布为 GitHub 发布 `v<version>`，版本号为工作区 `Cargo.toml` 中的版本；运行工作流前先提升它。软件包版本即 crate 的版本，发行版只体现在文件名中：每个软件包依赖的是它自己那个套件的库，因此只能安装在该套件上。软件包依赖 `libwlroots-0.19 (>= 0.19.0)`，即第一个把光标排除在无头捕获之外的 wlroots，以及 `pipewire`、`wireplumber` 和 `pipewire-pulse`：扬声器、摄像头和麦克风所在的 PipeWire 服务器，把扬声器设为默认并把流连接到它的会话管理器，以及大多数应用通过它播放声音的 PulseAudio 服务器。缺少它们，桌面的声音永远到不了扬声器，客户端什么也听不到。

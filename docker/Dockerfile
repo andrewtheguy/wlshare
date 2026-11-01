@@ -14,7 +14,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # plain Rust; jemalloc, the
 # allocator, is built from source with build-essential. libclang-dev is a build-time need
 # with nothing to link: pipewire-sys, libspa-sys, ffmpeg-sys-next, x264-sys and
-# cros-libva generate their bindings with bindgen, which loads libclang, and without it a clean
+# the daemon's build.rs, libva's, generate their bindings with bindgen, which loads libclang, and without it a clean
 # build fails with "Unable to find libclang".
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -38,18 +38,22 @@ COPY . /build
 #
 # The package version is the crate's, as cargo-deb writes it (<version>-1, a
 # prerelease's hyphen a tilde, so that 0.0.63~alpha.1 sorts before 0.0.63); the
-# distribution the package was built for is in the file name only, so the
-# release asset is wlshare-trixie-<arch>.deb whatever the version.
+# distribution the package was built for is in the file name only, by its suite
+# (trixie, or Ubuntu 26.04's resolute), so the release asset is
+# wlshare-<suite>-<arch>.deb whatever the version. cargo-deb's $auto names the
+# suite's own sonames (libavcodec61 on trixie, libavcodec62 on resolute), so a
+# package installs only on the suite it was built on.
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
     protocol="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare-proto","version":"\([0-9]*\)\.0\.0".*/\1/p' | head -n 1)"; \
     arch="$(dpkg --print-architecture)"; \
+    suite="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
     if [ "${arch}" = arm64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi; \
     cargo build --release -p wlshare; \
     [ "$(target/release/wlshare --version)" = "wlshare ${version} (wlshare protocol ${protocol})" ]; \
     mkdir -p /out; \
-    cargo deb -p wlshare --no-build -o "/out/wlshare-trixie-${arch}.deb"; \
-    [ "$(dpkg-deb --field "/out/wlshare-trixie-${arch}.deb" Version)" = "${version/-/\~}-1" ]; \
+    cargo deb -p wlshare --no-build -o "/out/wlshare-${suite}-${arch}.deb"; \
+    [ "$(dpkg-deb --field "/out/wlshare-${suite}-${arch}.deb" Version)" = "${version/-/\~}-1" ]; \
     cd /out && sha256sum ./*.deb | sed 's#  \./#  #' > SHA256SUMS && cat SHA256SUMS
 
 FROM scratch

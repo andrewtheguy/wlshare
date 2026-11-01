@@ -127,6 +127,17 @@ gpg --import keys/apt-signing-key.private.asc
 ./scripts/apt-repo-smoke.sh site
 ```
 
+## Ubuntu 26.04
+
+Ubuntu 26.04 (resolute) ships Sway 1.11 and labwc 0.9.3 on wlroots 0.19.2,
+which wlshare runs on as they are, so the APT repository has no suite for it.
+Its wlroots does not carry the repository's patch: on labwc with two outputs
+shared, a labwc reload (`labwc --reconfigure`) leaves the pointer's positions
+stretched across the whole layout, on both outputs, until the outputs are next
+laid out anew, as when a client resizes one. Sway, and labwc with one output,
+are unaffected ([`docs/architecture.md`](docs/architecture.md), "Input and
+clipboard").
+
 ## Running
 
 The daemon runs inside the Wayland session it captures, as the user who owns it:
@@ -226,7 +237,8 @@ Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
 `libavcodec-dev`, `libx264-dev`, `libva-dev`, `libclang-dev` and
 `pkg-config`. libclang links nothing: PipeWire's, FFmpeg's and x264's `-sys`
-crates and cros-libva, libva's, generate their bindings with bindgen, which
+crates and the daemon's `build.rs`, for libva's, generate their bindings with
+bindgen, which
 loads it at build time.
 
 `scripts/capture-frames.sh` builds and runs the capture container
@@ -242,12 +254,14 @@ each. `--capture-frames` is for a daemon run by hand, and one
 systemd started refuses it (`docs/architecture.md`, "Capturing what the
 encoder is handed").
 
-Packages for Debian trixie on amd64 and arm64 are built in Docker by
-`scripts/build-debs.sh`, into `dist/<arch>/wlshare-trixie-<arch>.deb`. The
+Packages for Debian trixie and Ubuntu 26.04 (resolute), each on amd64 and
+arm64, are built in Docker by `scripts/build-debs.sh`, into
+`dist/<suite>/<arch>/wlshare-<suite>-<arch>.deb`. The
 **Release wlshare** workflow builds the same and publishes them as the GitHub
 release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
 before running the workflow. The package version is the crate's, and the
-distribution is in the file name only. The package depends on
+distribution is in the file name only: each package names its own suite's
+libraries, so it installs there alone. The package depends on
 `libwlroots-0.19 (>= 0.19.0)`, the first wlroots that keeps the cursor out of a
 headless capture, and on `pipewire`, `wireplumber` and `pipewire-pulse`: the
 PipeWire server the speaker, the camera and the microphone live in, the session

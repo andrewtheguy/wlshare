@@ -58,6 +58,7 @@
 //! hardware's where there is one, its test saying so and passing where there
 //! is not, since the machines that build this seldom have one.
 
+mod libva;
 mod syntax;
 mod vaapi;
 mod x264;
