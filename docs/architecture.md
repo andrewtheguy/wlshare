@@ -228,8 +228,8 @@ on the shared output and showing; outside them there is no image. A session
 needs a `wl_pointer`, which the seat refuses before it has ever had one and
 turns inert when it loses one, so the session waits for the seat to name a
 pointer (wlshare's own virtual pointer is one) and takes a fresh `wl_pointer`
-each time it opens: on every output switch, where retargeting the virtual
-pointer briefly takes the seat's pointer away.
+each time it opens, which it does on every output switch, the session being
+closed with the old output's capture and opened with the new one's.
 
 The image is cropped to the pixels it paints and its hotspot, and goes to every
 client in an update of its own whenever it changes. Every client must list
@@ -1145,9 +1145,8 @@ and one message type, `0xE1`, in both directions.
 | 4 | U32 | count |
 
 A switch stops the capture, takes the new size into the framebuffer blank,
-points the virtual pointer at the new output — `zwlr_virtual_pointer` takes its
-output when it is made and never again, so what the client holds is let go and
-the pointer is remade — reports the geometry and the list, and starts capturing
+lets go of what the client holds on its pointer, since a press does not carry
+over to the new output, reports the geometry and the list, and starts capturing
 again. The
 client is sent nothing until a frame of the output it asked for has arrived: a
 different size reaches it as an ExtendedDesktopSize rectangle with the server as
@@ -1220,7 +1219,8 @@ client is not on. Every other ClientInit value takes the desktop, RFB's `1`
 included.
 
 It is a whole RFB session over that output: its own framebuffer and capture,
-its own cursor session, a virtual pointer made against its output, its own
+its own cursor session, a virtual pointer of its own, bound to no output and
+aimed over the layout ([Input and clipboard](#input-and-clipboard)), its own
 encoding — the video paced to its own link, where it lists it — and its own
 resize and density, under the rules of the output it is on. Its ServerInit
 names that output's size, so it is sent only once the output is its own. The
@@ -1636,20 +1636,56 @@ letting Shift go to make it produce `Tab` would type a plain Tab.
 Keys and buttons are let go when the client leaves or is superseded, and a
 connection that never finished the handshake releases nothing. Pointer events
 arrive in framebuffer pixels and are injected as absolute positions against the
-framebuffer's extent, which the virtual pointer maps onto the shared output — a
-pointer per connection, each on its own output, moving the seat's one cursor.
-That binding is made with the pointer and labwc does not keep it: whenever the
-outputs are laid out anew, and whenever it reloads its configuration, it maps
-every pointer back to the output its device names, none for a virtual one, and
-absolute positions then span the whole layout — stretched across it, on every
-output, once there are two. On every wlroots each wlr-output-management `done`,
-which follows every change to the layout, remakes every desk's pointer against
-its output, the new one before the old one goes, letting go of the buttons held
-and none of the keys. A reload changes no output and is followed by no `done`:
-the wlroots the APT repository builds carries a patch that gives a virtual
-pointer its output's name, which labwc maps it back to; on any other wlroots,
-Ubuntu 26.04's among them, a labwc reload leaves the pointers stretched until
-the layout next changes.
+whole layout: a virtual pointer per connection, each made with no output, moving
+the seat's one cursor. wlroots spreads a pointer bound to no output over the
+layout's box, the union of every output's, and the daemon sends each position as
+the fraction of that box the pixel's place is, out of 2^32 - 1 parts an axis,
+finer than a millionth of a layout unit. Each output's box is xdg-output's
+logical position and size, version 3 of it, which the daemon does not start
+without, which are the compositor's own
+(`wlr_output_effective_resolution`: the pixels over the scale, truncated), taken
+together at the `wl_output.done` that follows them, so nothing is reckoned here
+that the compositor reckons otherwise, and the layout's
+box is their union, as `wlr_output_layout_get_box` has it. The output's pixels
+are spread over its box, as wlroots spreads a pointer's mapped to the output:
+at a whole scale, 1x or 2x as zDesk declares, each pixel's own place, and at a
+fractional one, whose pixels run past the box they truncate to, a place short
+of the pixel by up to two, as the pointer mapped to the output had it (exact at
+any fractional scale is on the [roadmap](roadmap.md)). The framebuffer is the output's buffer as screencopy gives it, so a
+client's positions are in its untransformed orientation, which wlroots turns by
+the output's transform for a pointer mapped to an output and leaves alone for
+one that is not, so the daemon turns them. A position past the extent, which the
+page sends for a drag past the tab's edge, is held at the far edge, and the
+extent is spread over the output as it is, which a resize makes another size
+until the framebuffer follows. The place is held within the output's box as
+wlroots holds a point it puts on an output, 1/256 of a unit short of the far
+edges (`wlr_box_closest_point`), since a point on the edge two outputs share is
+the next one's; so a fractional scale cannot reach its last pixel or two,
+which are on no output. What is sent is the least numerator whose place, as
+wlroots computes it in the same arithmetic, is not short of the pixel's: a
+client is sent the place to 1/256 of a unit and Chromium floors it, so a place a
+hair under the integer is a pixel back where one a hair over is the pixel itself
+(measured in a kiosk Chromium on Sway: a landing at 108.99999992 read as 108,
+one at 984.0000001 as 984); and it is moved a part back where that put the place
+outside the box.
+
+A pointer bound to nothing has no binding for the compositor to lose. labwc,
+whenever the outputs are laid out anew and whenever it reloads its
+configuration, and Sway, whenever it reloads its configuration, map every
+pointer back to the output its device names, none for a virtual one, which
+stretches a pointer made with an output across the whole layout and leaves one
+made without as it was. So a reload changes nothing, a layout change is taken
+from xdg-output at the next motion, and a pointer is made once: the desktop's
+at the start, the display beside's with its client. A switch to another output
+lets go of what the client holds, since a press does not carry over, and keeps
+the pointer. A pointer event with nothing to aim at, before xdg-output has given
+the output its box, moves nothing and presses nothing, which would land wherever
+the cursor is, and lets go of what the client let go of. `scripts/pointer-e2e.sh` runs all of it against a throwaway
+headless labwc or Sway with two outputs, the client on the desktop and the
+display beside it as two `video-sink`s and `examples/cursor-watch` the witness,
+which says where the compositor put the cursor after every motion: edges, a
+drag past one, resizes, a whole and a fractional scale, a turned output, and
+reloads.
 Wheel "buttons" become discrete axis events, a notch apiece.
 
 A notch is all RFB can say, so a touchpad glide or two fingers on a phone would
@@ -1660,7 +1696,10 @@ positive rightward and downward — after the `PointerEvent` that says where. It
 has no pseudo-encoding, the server having no state to hold for it and nothing
 to answer. Logical pixels are the units an axis is in, so the distance is
 injected as it arrives, as a continuous axis: what a touchpad plugged into the
-machine sends, which an application spends as the distance it is.
+machine sends, which an application spends as the distance it is. Both desks'
+pointers move the seat's one cursor, so a distance from the desk that did not
+move it last first puts it back where its own client last aimed, and is
+dropped where that client has aimed nowhere on its output yet.
 
 The clipboard is shared as UTF-8 text through Extended Clipboard, and only
 that way: latin-1 cut text is dropped in both directions, and a client that

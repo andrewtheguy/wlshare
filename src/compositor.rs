@@ -24,6 +24,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboar
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::ZwlrOutputManagerV1;
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 
 use crate::capture::Capture;
@@ -182,11 +183,13 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
     let data_control: Option<ZwlrDataControlManagerV1> = globals.bind(&qh, 1..=2, ()).ok();
     let capture_sources: Option<ExtOutputImageCaptureSourceManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let image_copy: Option<ExtImageCopyCaptureManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+    let xdg_outputs: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 3..=3, ()).ok();
     anyhow::ensure!(screencopy.is_some(), "the compositor does not offer wlr-screencopy version 2 or later");
     anyhow::ensure!(
         capture_sources.is_some() && image_copy.is_some(),
         "the compositor does not offer ext-image-copy-capture with output capture sources, which the cursor image is taken from (wlroots 0.19 or later)"
     );
+    anyhow::ensure!(xdg_outputs.is_some(), "the compositor does not offer xdg-output version 3, which says where its outputs are laid out, where the pointer is aimed");
     if seat.is_none() {
         warn!("no seat: the cursor image cannot be captured, and clients draw their own");
     }
@@ -225,6 +228,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
         exit: None,
     };
     compositor.outputs.manager = output_manager;
+    compositor.outputs.xdg_manager = xdg_outputs;
     compositor.clipboard.manager = data_control;
     for global in globals.contents().clone_list() {
         if global.interface == "wl_output" {
@@ -245,6 +249,7 @@ impl Compositor {
             warn!("wl_output {name} is version {version}; version 4 is needed to learn its name");
         }
         let output: WlOutput = self.registry.bind(name, version.min(4), &self.qh, ());
+        let xdg = self.outputs.xdg_manager.as_ref().map(|manager| manager.get_xdg_output(&output, &self.qh, name));
         self.outputs.outputs.push(OutputInfo {
             output,
             global: name,
@@ -253,6 +258,11 @@ impl Compositor {
             transform: wayland_client::protocol::wl_output::Transform::Normal,
             wl_scale: 1,
             done: false,
+            xdg,
+            logical_position: None,
+            logical_size: None,
+            pending_position: None,
+            pending_size: None,
         });
     }
 
@@ -273,9 +283,8 @@ impl Compositor {
         self.shared = Some(shared);
 
         if let (Some(seat), Some(keyboards), Some(pointers)) = (&self.seat, &self.keyboards, &self.pointers) {
-            let output = self.outputs.selected(FIRST).expect("selected").output.clone();
             let mut input = Input::new(&self.qh, keyboards, seat, &self.xkb)?;
-            input.point(FIRST, &self.qh, pointers, seat, &output);
+            input.point(FIRST, &self.qh, pointers, seat);
             self.input = Some(input);
         }
         if let Some(seat) = &self.seat {
@@ -394,8 +403,9 @@ impl Compositor {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
+                let placement = self.outputs.selected(desk).and_then(|o| self.outputs.placement_of(o));
                 if let Some(input) = &mut self.input {
-                    input.pointer(desk, buttons, x, y, extent);
+                    input.pointer(desk, buttons, x, y, extent, placement.as_ref());
                 }
             }
             Command::Scroll { client, dx, dy } => {
@@ -529,11 +539,12 @@ impl Compositor {
             info!("client {}: no other output to show beside", id.0);
             return self.shared().end_beside(id);
         };
-        let Some(output) = self.outputs.selectable(entry.id) else { return self.shared().end_beside(id) };
-        let wl_output = output.output.clone();
+        if self.outputs.selectable(entry.id).is_none() {
+            return self.shared().end_beside(id);
+        }
         info!("client {}: showing output {} beside: {}x{} pixels at scale {:.2}", id.0, entry.name, entry.width, entry.height, entry.scale);
         self.desks[BESIDE].client = Some(id);
-        self.share_output(BESIDE, entry.name, entry.width, entry.height, &wl_output);
+        self.share_output(BESIDE, entry.name, entry.width, entry.height);
         // After the framebuffer took the output's size: the session reads it
         // for its ServerInit once it sees itself here.
         self.shared().set_beside(id);
@@ -598,9 +609,8 @@ impl Compositor {
             return self.answer_outputs();
         }
         let (width, height) = self.outputs.size_of(output);
-        let wl_output = output.output.clone();
         info!("client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}", client.0, self.outputs.scale_of(output));
-        self.share_output(FIRST, name, width, height, &wl_output);
+        self.share_output(FIRST, name, width, height);
     }
 
     /// Take an output as a desk's shared one and start the desk again on it.
@@ -610,7 +620,7 @@ impl Compositor {
     ///
     /// An output is on one desk: where the client on the desktop goes, a
     /// display beside that was showing it ends.
-    fn share_output(&mut self, desk: usize, name: String, width: u16, height: u16, output: &WlOutput) {
+    fn share_output(&mut self, desk: usize, name: String, width: u16, height: u16) {
         if desk == FIRST && self.outputs.selected[BESIDE].as_deref() == Some(name.as_str()) {
             self.end_beside();
         }
@@ -624,7 +634,7 @@ impl Compositor {
             let mut fb = self.shared().desks[desk].framebuffer.lock().unwrap();
             fb.resize(width, height, ResizeOrigin::Server);
         }
-        self.retarget_input(desk, output);
+        self.retarget_input(desk);
         self.geometry_changed(desk);
         self.answer_outputs();
         self.start_capture(desk);
@@ -653,10 +663,11 @@ impl Compositor {
             self.stop_capture(FIRST);
             return self.answer_outputs();
         };
-        let Some(output) = self.outputs.selectable(entry.id) else { return };
-        let wl_output = output.output.clone();
+        if self.outputs.selectable(entry.id).is_none() {
+            return;
+        }
         info!("sharing output {}: {}x{} pixels at scale {:.2}", entry.name, entry.width, entry.height, entry.scale);
-        self.share_output(FIRST, entry.name, entry.width, entry.height, &wl_output);
+        self.share_output(FIRST, entry.name, entry.width, entry.height);
     }
 
     /// The output a desk shared went away. The first desk moves to whatever is
@@ -674,24 +685,11 @@ impl Compositor {
         }
     }
 
-    /// Point a desk's virtual pointer at another output. What the client holds
-    /// is let go first: a press cannot outlive the pointer that made it.
-    fn retarget_input(&mut self, desk: usize, output: &WlOutput) {
+    /// A desk's client is on another output: it has a pointer, and what it
+    /// held is let go, since a press does not carry over.
+    fn retarget_input(&mut self, desk: usize) {
         let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
-        input.point(desk, &self.qh, pointers, seat, output);
-    }
-
-    /// The compositor laid its outputs out anew — an output's mode, scale,
-    /// transform or position changed, or one came or went, and with it the
-    /// configuration wlr-output-management reports — which may have unbound
-    /// every desk's pointer from its output ([`Input::repoint`]). Each is made
-    /// again against the output its desk shares.
-    pub fn outputs_laid_out(&mut self) {
-        for desk in [FIRST, BESIDE] {
-            let Some(output) = self.outputs.selected(desk).map(|o| o.output.clone()) else { continue };
-            let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
-            input.repoint(desk, &self.qh, pointers, seat, &output);
-        }
+        input.point(desk, &self.qh, pointers, seat);
     }
 
     /// Follow a client's density: its desk's output's mode and scale in one
@@ -766,6 +764,9 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
                     let desks = state.outputs.desks_on(removed.name.as_deref());
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if desks.is_empty() { "" } else { "; it is a shared one" });
                     removed.output.release();
+                    if let Some(xdg) = &removed.xdg {
+                        xdg.destroy();
+                    }
                     if desks.is_empty() {
                         state.outputs_changed();
                     }

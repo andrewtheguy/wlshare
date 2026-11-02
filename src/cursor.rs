@@ -24,8 +24,7 @@
 //! before the seat has ever had a pointer is a protocol error, so the session
 //! waits for its capabilities to name one — wlshare's own virtual pointer
 //! provides it. And a pointer taken while the seat has one goes inert when the
-//! seat loses it, which retargeting the virtual pointer does for a moment, so
-//! every session takes a fresh one: the session outlives the pointer it was made
+//! seat loses it, so every session takes a fresh one: the session outlives the pointer it was made
 //! with, but not being made with a dead one.
 
 use std::sync::Arc;
