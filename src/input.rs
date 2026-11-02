@@ -23,28 +23,23 @@
 //! is down until the last of them lets go of it.
 //!
 //! Pointer positions arrive in framebuffer pixels and go to the compositor as
-//! absolute positions against the framebuffer's extent, which the virtual
-//! pointer maps onto the output it was made for. So each desk has a pointer of
-//! its own, on its own output, while a client is on it.
-//!
-//! A compositor can drop that binding without a word: labwc and Sway map every
-//! pointer back to the output its device names, none for a virtual one, when
-//! they reload their configuration, and the positions then span the whole
-//! layout. The desk's cursor session says where the cursor is on its output, in
-//! the framebuffer's pixels, so what follows the pointer's own motions is held
-//! to where they put it ([`Witness`]), and a pointer the cursor is found away
-//! from after a doubt is made again against its output. Every output has a
-//! session of its own for that alone ([`crate::cursor::Watch`]), so the cursor
-//! turning up on another output counts as much as a position that bears
-//! nothing out.
+//! absolute positions against the whole layout: each desk's virtual pointer is
+//! made with no output, which wlroots spreads over the layout's box, and is
+//! sent the place of the pixel on the desk's output as a fraction of that box
+//! ([`aim`]). Bound to nothing, the pointer has no binding for the compositor
+//! to lose: labwc and Sway map every pointer back to the output its device
+//! names, none for a virtual one, when they reload their configuration, which
+//! stretches a pointer made with an output over the layout and leaves one made
+//! without as it was. Each desk has a pointer of its own, so what its client
+//! holds is let go apart from the other's.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::os::fd::AsFd;
 use std::time::Instant;
 
 use anyhow::Context as _;
 use log::{debug, trace, warn};
-use wayland_client::protocol::wl_output::{Transform, WlOutput};
+use wayland_client::protocol::wl_output::Transform;
 use wayland_client::protocol::wl_pointer;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_client::QueueHandle;
@@ -64,13 +59,14 @@ const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
 /// One wheel notch, in the units `wl_pointer.axis` uses.
 const WHEEL_STEP: f64 = 15.0;
-/// The most motions a pointer remembers while the compositor has yet to say
-/// where they put the cursor: a session reports at the output's next commit,
-/// a frame behind at most, and a client sends far fewer in a frame than this.
-const RECENT: usize = 64;
-/// How far a reported position may be from the one sent, in framebuffer
-/// pixels: the compositor rounds the cursor's place on the output.
-pub const SLACK: i32 = 1;
+/// The extent every absolute motion is against: the layout's box, in this
+/// many parts an axis, which is finer than a millionth of a layout unit on
+/// any layout there is.
+const EXTENT: u32 = u32::MAX;
+/// How far inside an output's far edges wlroots keeps a point it puts on the
+/// output (`wlr_box_closest_point`): a motion is held that far in, so that it
+/// is on the output and not on the neighbour that starts at its edge.
+const EDGE: f64 = 1.0 / 256.0;
 /// XKB keycodes are evdev codes plus eight.
 const EVDEV_OFFSET: u32 = 8;
 const XK_SHIFT_L: u32 = 0xffe1;
@@ -152,74 +148,76 @@ struct Keys {
 
 pub struct Input {
     keyboard: ZwpVirtualKeyboardV1,
-    /// Each desk's pointer, while it has an output to point at.
+    /// Each desk's pointer, while a client is on an output.
     pointers: [Option<Pointer>; 2],
-    /// The desk whose pointer moved the seat's cursor last. The cursor is the
-    /// seat's one, so only that desk's session reports what its pointer did.
-    moved_last: Option<usize>,
-    /// Counts the times another desk took to moving the cursor: each sends a
-    /// round trip, and what the sessions report before it comes back is of the
-    /// cursor as the other desk left it, which bears out a motion and doubts
-    /// nothing.
-    movers: u64,
-    /// The round trip of the latest of them has come back.
-    settled: bool,
+    /// The desk whose client last put the seat's one cursor where it is, which
+    /// both desks' pointers move.
+    cursor: Option<usize>,
     keys: Keys,
     started: Instant,
 }
 
-/// A virtual pointer on one output.
+/// A desk's virtual pointer.
 struct Pointer {
     pointer: ZwlrVirtualPointerV1,
     /// The client's RFB button mask.
     buttons: u8,
-    /// The last motion: the position and the extent it was against.
-    motion: Option<(u16, u16, (u16, u16))>,
-    witness: Witness,
+    /// What its last motion was aimed at, on the output it is on.
+    aimed: Option<(u32, u32)>,
 }
 
-impl Pointer {
-    fn new(pointer: ZwlrVirtualPointerV1) -> Self {
-        Self { pointer, buttons: 0, motion: None, witness: Witness::default() }
-    }
+/// A box in the layout: its position and size in the layout's units.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
 }
 
-/// An output as a motion meets it: its size in its pixels, upright, which a
-/// resize gives before the framebuffer follows, its transform, and its scale,
-/// exactly, as the compositor has it.
-#[derive(Clone, Copy)]
+/// An output as a motion meets it: its box in the layout, as xdg-output has
+/// it from the compositor, which is the box wlroots lays it out as -- its
+/// pixels over its scale, truncated (`wlr_output_effective_resolution`); its
+/// size in its pixels, upright, which a resize gives before the framebuffer
+/// follows; its transform; and the box of the whole layout, the union of
+/// every output's.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
+    pub logical: Rect,
     pub size: (u16, u16),
     pub transform: Transform,
-    /// The exact scale, as wlr-output-management gives it, or `None` where the
-    /// compositor has only `wl_output`'s, which wlroots rounds up from a
-    /// fractional one: a motion's place is then not known to the pixel.
-    pub scale: Option<f64>,
+    pub layout: Rect,
 }
 
-/// Where the compositor puts the cursor for a motion to (x, y) of `extent`, in
-/// the pixels of the output as `placement` has it, upright, which its cursor
-/// session reports in.
+/// The absolute motion for a position (x, y) of `extent` on the output
+/// `placement` describes: each axis as a numerator over [`EXTENT`] of the
+/// layout's box, which wlroots spreads a pointer made with no output over
+/// (`wlr_cursor_absolute_to_layout_coords`), or `None` for a layout or an
+/// output of no size.
 ///
-/// The framebuffer is the output's buffer, as screencopy gives it, so a
-/// motion is in the output's untransformed orientation; wlroots reads a mapped
-/// pointer's absolute motion that way and turns it by the output's transform
-/// (`apply_output_transform` in `wlr_cursor.c`) before it places the cursor,
-/// so the place is the motion turned. A position past the extent, which the
-/// page sends for a drag past the tab's edge, is held at the far edge, where
-/// wlroots clamps it once it is mapped; and the extent is spread over the
+/// The framebuffer is the output's buffer, as screencopy gives it, so a motion
+/// is in the output's untransformed orientation, and is turned by the output's
+/// transform here the way wlroots turns a pointer's that is mapped to an
+/// output (`apply_output_transform` in `wlr_cursor.c`), and leaves one's that
+/// is not. A position past the extent, which the page sends for a drag past
+/// the tab's edge, is held at the far edge, and the extent is spread over the
 /// output as it is, which a resize makes another size until the framebuffer
-/// follows. wlroots lays the output out at its effective resolution, its pixels
-/// over its scale truncated to whole layout units
-/// (`wlr_output_effective_resolution`), places the cursor there, and multiplies
-/// the place by the scale again, so a fractional scale lands a motion short of
-/// its pixel, the same way here. With no exact scale there is no place to
-/// predict.
-fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> Option<(i32, i32)> {
-    let scale = placement.scale?;
+/// follows. The output's pixels are spread over its box, as wlroots spreads a
+/// pointer's mapped to the output, and held within it as wlroots holds a point
+/// it puts on an output: [`EDGE`] short of the far edges, since a point on the
+/// edge two outputs share is the next one's. At a whole scale that is the
+/// pixel's own place; a fractional one, whose pixels run past the box they
+/// truncate to, lands a motion short of its pixel by up to two, as the
+/// pointer mapped to the output did. The numerator is the least whose place,
+/// as wlroots computes it in the same arithmetic, is not short of the pixel's:
+/// a client is sent the place to 1/256 of a unit and Chromium floors it, so
+/// one a hair under the integer is a pixel back, where one a hair over is the
+/// pixel itself; and it is moved a part back where that put the place outside
+/// the box.
+fn aim(x: u16, y: u16, extent: (u16, u16), placement: &Placement) -> Option<(u32, u32)> {
     let (w, h) = (u64::from(extent.0.max(1)), u64::from(extent.1.max(1)));
     let (x, y) = (u64::from(x).min(w), u64::from(y).min(h));
-    // Each upright axis as a fraction of the motion's: numerator, denominator.
+    // Each upright axis as a fraction of the output: numerator, denominator.
     let (across, down) = match placement.transform {
         Transform::_90 => ((h - y, h), (x, w)),
         Transform::_180 => ((w - x, w), (h - y, h)),
@@ -230,90 +228,30 @@ fn landing(x: u16, y: u16, extent: (u16, u16), placement: Placement) -> Option<(
         Transform::Flipped270 => ((h - y, h), (w - x, w)),
         _ => ((x, w), (y, h)),
     };
-    let scale = if scale > 0.0 { scale } else { 1.0 };
-    // Rounded, as wlroots rounds the output cursor's place.
-    let place = |(at, of): (u64, u64), size: u16| {
-        let laid_out = (f64::from(size.max(1)) / scale).trunc();
-        (at as f64 / of as f64 * laid_out * scale).round() as i32
+    let axis = |(at, of): (u64, u64), pixels: u16, (box_at, units): (i32, i32), (layout_at, layout_size): (i32, i32)| -> Option<u32> {
+        if units <= 0 || layout_size <= 0 {
+            return None;
+        }
+        let pixel = at as f64 * f64::from(pixels) / of as f64;
+        let (box_at, far) = (f64::from(box_at), f64::from(units) - EDGE);
+        let place = box_at + (pixel * f64::from(units) / f64::from(pixels.max(1))).clamp(0.0, far);
+        let (layout_at, layout_size) = (f64::from(layout_at), f64::from(layout_size));
+        // What wlroots makes of a numerator, in its own arithmetic.
+        let lands = |n: u32| layout_size * (f64::from(n) / f64::from(EXTENT)) + layout_at;
+        let mut n = ((place - layout_at) / layout_size * f64::from(EXTENT)).ceil().clamp(0.0, f64::from(EXTENT)) as u32;
+        while n < EXTENT && lands(n) < place {
+            n += 1;
+        }
+        while n > 0 && lands(n) > box_at + far {
+            n -= 1;
+        }
+        Some(n)
     };
-    Some((place(across, placement.size.0), place(down, placement.size.1)))
-}
-
-/// Where a pointer's motions put the cursor, held against where its desk's
-/// cursor session says the cursor is.
-///
-/// A session reports a position at the output's next commit, and only when it
-/// changed, so a report is of one of the motions sent lately or of something
-/// else: a mouse at the desk, the cursor moved by the layout, or the pointer's
-/// binding lost. One report that bears out none of them is a doubt, and so is
-/// the cursor turning up on another output, which a binding lost does when it
-/// puts it there. The cursor leaving the output is a doubt too, but only that:
-/// an application hiding it does the same, and nothing turns up anywhere. A
-/// report that bears nothing out, or the cursor on another output, after a
-/// doubt and a motion sent since is the binding lost, since each of the others
-/// leaves the next motion where it was put. A pointer made again for it waits
-/// for a report to bear it out before it is doubted again, so a pointer the
-/// compositor keeps elsewhere, by a configuration of its own, is made again
-/// once and not on every motion.
-#[derive(Default)]
-struct Witness {
-    /// Where the motions sent put the cursor, oldest first, back to the oldest
-    /// one a report may still be of; `None` where that is not known
-    /// ([`Placement::scale`]), which a report anywhere on the output bears
-    /// out, so that only the cursor on another output is held against it.
-    sent: VecDeque<Option<(i32, i32)>>,
-    /// How many motions have been sent.
-    motions: u64,
-    /// The count of motions at the report that bore none out, until one does.
-    doubt: Option<u64>,
-    /// Made again for its reports, and not borne out since.
-    remade: bool,
-}
-
-impl Witness {
-    fn sent(&mut self, at: Option<(i32, i32)>) {
-        if self.sent.len() == RECENT {
-            self.sent.pop_front();
-        }
-        self.sent.push_back(at);
-        self.motions += 1;
-    }
-
-    /// The session says the cursor left the output.
-    fn left(&mut self) {
-        if !self.sent.is_empty() && !self.remade && self.doubt.is_none() {
-            self.doubt = Some(self.motions);
-        }
-    }
-
-    /// Whether (x, y) is where one of the motions sent put the cursor.
-    fn borne_out(&mut self, x: i32, y: i32) -> bool {
-        let Some(i) = self.sent.iter().rposition(|at| at.is_none_or(|(sx, sy)| (sx - x).abs() <= SLACK && (sy - y).abs() <= SLACK)) else { return false };
-        // What came before it the compositor has done with.
-        self.sent.drain(..i);
-        self.doubt = None;
-        self.remade = false;
-        true
-    }
-
-    /// The cursor is where none of the motions sent put it: on this output
-    /// elsewhere, or on another output altogether. Whether the binding is lost.
-    fn against(&mut self) -> bool {
-        if self.sent.is_empty() || self.remade {
-            return false;
-        }
-        match self.doubt {
-            Some(at) if self.motions > at => {
-                self.doubt = None;
-                true
-            }
-            Some(_) => false,
-            None => {
-                self.doubt = Some(self.motions);
-                false
-            }
-        }
-    }
+    let (logical, layout) = (placement.logical, placement.layout);
+    Some((
+        axis(across, placement.size.0, (logical.x, logical.width), (layout.x, layout.width))?,
+        axis(down, placement.size.1, (logical.y, logical.height), (layout.y, layout.height))?,
+    ))
 }
 
 impl Keys {
@@ -537,9 +475,7 @@ impl Input {
         Ok(Self {
             keyboard,
             pointers: [None, None],
-            moved_last: None,
-            movers: 0,
-            settled: true,
+            cursor: None,
             keys: Keys::new(&keymap),
             started: Instant::now(),
         })
@@ -573,20 +509,25 @@ impl Input {
     }
 
     /// A PointerEvent: position in framebuffer pixels, upright, and the RFB
-    /// button mask, onto the output as it is now. Where this desk takes to
-    /// moving the cursor from another, the round trip to send, by its count
-    /// ([`Self::settle`]).
-    #[must_use]
-    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16), output: Placement) -> Option<u64> {
+    /// button mask, onto the desk's output as it is laid out now ([`aim`]).
+    /// With nothing to aim at, before the layout is known, a press or a notch
+    /// would land wherever the cursor is, so only the buttons let go go.
+    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16), placement: Option<&Placement>) {
         let time = self.time();
-        let Some(Pointer { pointer, buttons: held, motion, witness }) = &mut self.pointers[desk] else { return None };
-        pointer.motion_absolute(time, u32::from(x), u32::from(y), u32::from(extent.0.max(1)), u32::from(extent.1.max(1)));
-        *motion = Some((x, y, extent));
-        let landed = landing(x, y, extent, output);
-        trace!("desk {desk}: motion to {x},{y} of {}x{}, landing at {landed:?}", extent.0, extent.1);
-        witness.sent(landed);
-        let took_over = self.moved_last.is_some_and(|last| last != desk);
-        self.moved_last = Some(desk);
+        let Some(Pointer { pointer, buttons: held, aimed }) = &mut self.pointers[desk] else { return };
+        let Some((ax, ay)) = placement.and_then(|placement| aim(x, y, extent, placement)) else {
+            debug!("desk {desk}: motion to {x},{y} with no layout to aim at: {placement:?}");
+            let kept = *held & buttons;
+            if kept & 7 != *held & 7 {
+                Self::set_buttons(pointer, time, *held & 7, kept & 7);
+                pointer.frame();
+            }
+            *held = kept;
+            return;
+        };
+        trace!("desk {desk}: motion to {x},{y} of {}x{}, aimed at {ax},{ay} of {EXTENT}", extent.0, extent.1);
+        pointer.motion_absolute(time, ax, ay, EXTENT, EXTENT);
+        *aimed = Some((ax, ay));
         let previous = std::mem::replace(held, buttons);
         Self::set_buttons(pointer, time, previous & 7, buttons & 7);
         // Wheel "buttons" scroll on the press; the release carries nothing.
@@ -602,36 +543,29 @@ impl Input {
             }
         }
         pointer.frame();
-        took_over.then(|| {
-            self.movers += 1;
-            self.settled = false;
-            self.movers
-        })
-    }
-
-    /// The round trip sent when a desk took to moving the cursor came back.
-    pub fn settle(&mut self, mover: u64) {
-        if mover == self.movers {
-            self.settled = true;
-        }
-    }
-
-    /// The desk whose motion moved the cursor last.
-    pub fn moved_last(&self) -> Option<usize> {
-        self.moved_last
+        self.cursor = Some(desk);
     }
 
     /// A Scroll: a distance in the output's logical pixels, the units an axis
     /// is in, positive rightward and downward, where the pointer is. It goes to
     /// the compositor as a continuous source: a distance the applications
     /// spend as it is, the way they spend a touchpad's, rather than a count of
-    /// notches.
+    /// notches. The cursor is the seat's, which the other desk may have moved
+    /// since, so it is first put back where this desk's client last put it,
+    /// and the scroll is dropped where it has put it nowhere on its output yet.
     pub fn scroll(&mut self, desk: usize, dx: i16, dy: i16) {
         if dx == 0 && dy == 0 {
             return;
         }
         let time = self.time();
-        let Some(Pointer { pointer, .. }) = &self.pointers[desk] else { return };
+        let Some(Pointer { pointer, aimed, .. }) = &self.pointers[desk] else { return };
+        if self.cursor != Some(desk) {
+            let Some((ax, ay)) = *aimed else {
+                debug!("desk {desk}: a scroll before any motion on its output, dropped");
+                return;
+            };
+            pointer.motion_absolute(time, ax, ay, EXTENT, EXTENT);
+        }
         pointer.axis_source(wl_pointer::AxisSource::Continuous);
         for (axis, pixels) in [(wl_pointer::Axis::VerticalScroll, dy), (wl_pointer::Axis::HorizontalScroll, dx)] {
             if pixels != 0 {
@@ -639,106 +573,37 @@ impl Input {
             }
         }
         pointer.frame();
+        self.cursor = Some(desk);
     }
 
-    /// Point a desk's pointer at an output: the one its client is shown, at
-    /// first or after it asked for another. `zwlr_virtual_pointer` takes an
-    /// output when it is made and never again, so the one bound to the old
-    /// output is destroyed and a new one made against the new one. Whatever the
-    /// client holds is let go first — a press cannot outlive the pointer that
-    /// made it.
-    pub fn point(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
-        self.unpoint(desk);
-        let pointer = pointers.create_virtual_pointer_with_output(Some(seat), Some(output), qh, ());
-        self.pointers[desk] = Some(Pointer::new(pointer));
-    }
-
-    /// Make a desk's pointer again against the output it is already on: the
-    /// compositor has laid its outputs out anew. labwc then maps every pointer
-    /// back to the output its device names, which for a virtual one is none, so
-    /// the binding made with the pointer is gone and absolute positions span the
-    /// whole layout — the right place only while it is this one output. The new
-    /// pointer is made before the old one goes, so the seat never loses its
-    /// pointer and the cursor session keeps working; the buttons held are let go
-    /// with the pointer that pressed them, the keys stay down.
-    pub fn repoint(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput) {
-        let Some(old) = self.pointers[desk].take() else { return };
-        let held = old.buttons & 7;
-        if held != 0 {
-            Self::set_buttons(&old.pointer, self.time(), held, 0);
-            old.pointer.frame();
-        }
-        let pointer = pointers.create_virtual_pointer_with_output(Some(seat), Some(output), qh, ());
-        old.pointer.destroy();
-        self.pointers[desk] = Some(Pointer { motion: old.motion, ..Pointer::new(pointer) });
-    }
-
-    /// A desk's cursor session reports the cursor at (x, y) on its output, in
-    /// framebuffer pixels: whether that says the desk's pointer is no longer
-    /// bound to it ([`Witness`]). What follows another desk's motion is that
-    /// desk's pointer's doing, not this one's.
-    pub fn contradicted(&mut self, desk: usize, x: i32, y: i32) -> bool {
-        if self.moved_last != Some(desk) {
-            return false;
-        }
-        let settled = self.settled;
-        let Some(pointer) = &mut self.pointers[desk] else { return false };
-        if pointer.witness.borne_out(x, y) || !settled {
-            return false;
-        }
-        Self::doubt(pointer, || format!("the cursor is at {x},{y}, where no recent motion put it"))
-    }
-
-    /// The cursor turned up on another output than a desk's, after that desk's
-    /// motion: whether its pointer is no longer bound to its output.
-    pub fn elsewhere(&mut self, desk: usize) -> bool {
-        if self.moved_last != Some(desk) || !self.settled {
-            return false;
-        }
-        let Some(pointer) = &mut self.pointers[desk] else { return false };
-        Self::doubt(pointer, || "the cursor is on another output".to_owned())
-    }
-
-    /// Hold the cursor being where no motion put it against a pointer, and
-    /// say so when that is the first doubt.
-    fn doubt(pointer: &mut Pointer, why: impl FnOnce() -> String) -> bool {
-        let doubted = pointer.witness.doubt.is_some();
-        let lost = pointer.witness.against();
-        if !doubted && pointer.witness.doubt.is_some() {
-            debug!("{}: doubting the pointer", why());
-        }
-        lost
-    }
-
-    /// A desk's cursor session says the cursor left its output: a doubt of
-    /// its pointer, where its motion was the last ([`Witness`]).
-    pub fn cursor_left(&mut self, desk: usize) {
-        if self.moved_last == Some(desk)
-            && self.settled
-            && let Some(pointer) = &mut self.pointers[desk]
-        {
-            pointer.witness.left();
+    /// Give a desk a pointer, if it has none, and let go of whatever its
+    /// client holds: the client is on an output, at first or after it asked
+    /// for another, and a press does not carry over to the new one. The
+    /// pointer is made with no output, so the compositor binds it to none and
+    /// has nothing to lose; its motions say where on the layout ([`aim`]).
+    pub fn point(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat) {
+        self.release_all(desk);
+        self.leave_cursor(desk);
+        match &mut self.pointers[desk] {
+            Some(Pointer { aimed, .. }) => *aimed = None,
+            None => {
+                let pointer = pointers.create_virtual_pointer(Some(seat), qh, ());
+                self.pointers[desk] = Some(Pointer { pointer, buttons: 0, aimed: None });
+            }
         }
     }
 
-    /// Make a desk's pointer again against its output, as [`Self::repoint`]
-    /// does, because its cursor session says the binding is gone, and send the
-    /// last motion again so the cursor goes where the client put it. The
-    /// buttons are let go with the old pointer, as there, and pressed again by
-    /// the client's next event that holds them.
-    pub fn rebind(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat, output: &WlOutput, placement: Placement) {
-        self.repoint(desk, qh, pointers, seat, output);
-        let Some(pointer) = &mut self.pointers[desk] else { return };
-        pointer.witness.remade = true;
-        if let Some((x, y, extent)) = pointer.motion {
-            // The desk's own motion again: nobody else took to moving it.
-            let _ = self.pointer(desk, 0, x, y, extent, placement);
+    /// The desk's client no longer says where the cursor is.
+    fn leave_cursor(&mut self, desk: usize) {
+        if self.cursor == Some(desk) {
+            self.cursor = None;
         }
     }
 
     /// Take a desk's pointer away, with everything its client held.
     pub fn unpoint(&mut self, desk: usize) {
         self.release_all(desk);
+        self.leave_cursor(desk);
         if let Some(Pointer { pointer, .. }) = self.pointers[desk].take() {
             pointer.destroy();
         }
@@ -770,7 +635,7 @@ mod tests {
 
     use wayland_client::protocol::wl_output::Transform;
 
-    use super::{EVDEV_OFFSET, Keys, Modifiers, Placement, RECENT, Sent, Witness, is_character, landing};
+    use super::{EDGE, EVDEV_OFFSET, EXTENT, Keys, Modifiers, Placement, Rect, Sent, aim, is_character};
     use crate::shared::{BESIDE, FIRST};
 
     /// The evdev codes of Left Shift, Left Control, Left Alt and Left Meta.
@@ -800,49 +665,103 @@ mod tests {
         sent.into_iter().map(|key| (key.code, key.down, key.depressed)).collect()
     }
 
-    fn upright(size: (u16, u16)) -> Placement {
-        Placement { size, transform: Transform::Normal, scale: Some(1.0) }
+    /// Where wlroots puts a numerator over [`EXTENT`] of a layout axis at
+    /// `at`, `size` units long: `wlr_cursor_absolute_to_layout_coords`.
+    fn lands(n: u32, at: i32, size: i32) -> f64 {
+        f64::from(size) * (f64::from(n) / f64::from(EXTENT)) + f64::from(at)
     }
 
-    #[test]
-    fn a_motion_lands_where_the_compositor_spreads_its_extent_over_the_output() {
-        assert_eq!(landing(349, 16, (1920, 928), upright((1920, 928))), Some((349, 16)));
-        // The output resized to 1789x903, the framebuffer still the old size.
-        assert_eq!(landing(349, 16, (1920, 928), upright((1789, 903))), Some((325, 16)));
-        assert_eq!(landing(321, 39, (1920, 928), upright((1789, 903))), Some((299, 38)));
-        // Past the edge, held at the far edge, where wlroots clamps it, and
-        // spread over an output grown to twice the size.
-        assert_eq!(landing(4000, 5000, (3456, 1802), upright((3456, 1802))), Some((3456, 1802)));
-        assert_eq!(landing(1280, 10, (1280, 720), upright((2560, 1440))), Some((2560, 20)));
+    /// Where wlroots puts the cursor for the motion `aim` sends, in the
+    /// layout's units.
+    fn placed(x: u16, y: u16, extent: (u16, u16), placement: &Placement) -> (f64, f64) {
+        let (ax, ay) = aim(x, y, extent, placement).expect("a layout to aim at");
+        (lands(ax, placement.layout.x, placement.layout.width), lands(ay, placement.layout.y, placement.layout.height))
     }
 
-    #[test]
-    fn a_fractional_scale_lands_a_motion_on_the_layout_units_it_truncates_to() {
-        // 3456 pixels at 2.75 are 1256 layout units, which are 3454 pixels, and
-        // 1802 are 655, which are 1801.
-        let fractional = Placement { size: (3456, 1802), transform: Transform::Normal, scale: Some(2.75) };
-        assert_eq!(landing(2593, 0, (3456, 1802), fractional), Some((2591, 0)));
-        assert_eq!(landing(3456, 1802, (3456, 1802), fractional), Some((3454, 1801)));
-        // A whole scale divides the pixels exactly, so nothing is lost.
-        let whole = Placement { size: (3456, 1802), transform: Transform::Normal, scale: Some(2.0) };
-        assert_eq!(landing(2593, 901, (3456, 1802), whole), Some((2593, 901)));
+    /// Within a hundred-thousandth of a unit, which a 2^32 extent is well under.
+    fn near(got: (f64, f64), want: (f64, f64)) -> bool {
+        (got.0 - want.0).abs() < 1e-5 && (got.1 - want.1).abs() < 1e-5
     }
 
-    #[test]
-    fn with_no_exact_scale_only_the_cursor_on_another_output_loses_the_binding() {
-        // wl_output's 3 for a 2.75 would put the far edge at 3456, not 3454.
-        let unknown = Placement { size: (3456, 1802), transform: Transform::Normal, scale: None };
-        assert_eq!(landing(3456, 1802, (3456, 1802), unknown), None);
-        let mut witness = Witness::default();
-        for x in [100, 2000, 3456] {
-            witness.sent(None);
-            assert!(!report(&mut witness, x - 2, 1801), "anywhere on the output bears it out");
+    /// The box `size` pixels at `scale` are laid out as.
+    fn laid_out(size: (u16, u16), scale: f64) -> (i32, i32) {
+        ((f64::from(size.0) / scale).trunc() as i32, (f64::from(size.1) / scale).trunc() as i32)
+    }
+
+    /// An output of `size` pixels at `scale`, turned by `transform`, at the
+    /// layout's origin, with a 1280x720 output at scale 1 to its right.
+    fn beside(size: (u16, u16), scale: f64, transform: Transform) -> Placement {
+        let (width, height) = laid_out(size, scale);
+        Placement {
+            logical: Rect { x: 0, y: 0, width, height },
+            size,
+            transform,
+            layout: Rect { x: 0, y: 0, width: width + 1280, height: height.max(720) },
         }
-        assert_eq!(witness.doubt, None);
-        witness.sent(None);
-        assert!(!witness.against(), "once is a doubt");
-        witness.sent(None);
-        assert!(witness.against(), "on another output after a motion since");
+    }
+
+    fn upright(size: (u16, u16)) -> Placement {
+        beside(size, 1.0, Transform::Normal)
+    }
+
+    #[test]
+    fn a_motion_lands_on_its_pixel_with_the_extent_spread_over_the_output() {
+        assert!(near(placed(349, 16, (1920, 928), &upright((1920, 928))), (349.0, 16.0)));
+        assert!(near(placed(0, 0, (1920, 928), &upright((1920, 928))), (0.0, 0.0)));
+        assert!(near(placed(1919, 927, (1920, 928), &upright((1920, 928))), (1919.0, 927.0)));
+        // The output resized to 1789x903, the framebuffer still the old size.
+        assert!(near(placed(349, 16, (1920, 928), &upright((1789, 903))), (349.0 * 1789.0 / 1920.0, 16.0 * 903.0 / 928.0)));
+        // Past the edge, held at the far edge, inside it as wlroots keeps a
+        // point, and spread over an output grown to twice the size.
+        assert!(near(placed(4000, 5000, (3456, 1802), &upright((3456, 1802))), (3456.0 - EDGE, 1802.0 - EDGE)));
+        assert!(near(placed(1280, 10, (1280, 720), &upright((2560, 1440))), (2560.0 - EDGE, 20.0)));
+    }
+
+    #[test]
+    fn the_far_edge_is_the_outputs_own_and_not_the_neighbours() {
+        let placement = upright((1280, 720));
+        let (ax, _) = aim(1280, 360, (1280, 720), &placement).unwrap();
+        let x = lands(ax, 0, 2560);
+        assert!(x <= 1280.0 - EDGE && x > 1280.0 - EDGE - 1e-5, "{x}");
+        // One part more would be past what wlroots keeps on the output.
+        assert!(lands(ax + 1, 0, 2560) > 1280.0 - EDGE);
+    }
+
+    #[test]
+    fn a_motion_on_the_second_output_is_aimed_past_the_first() {
+        // A 1920x1080 output at the origin, the desk's 1280x720 to its right.
+        let placement = Placement {
+            logical: Rect { x: 1920, y: 0, width: 1280, height: 720 },
+            size: (1280, 720),
+            transform: Transform::Normal,
+            layout: Rect { x: 0, y: 0, width: 3200, height: 1080 },
+        };
+        assert!(near(placed(0, 0, (1280, 720), &placement), (1920.0, 0.0)));
+        assert!(near(placed(640, 360, (1280, 720), &placement), (2560.0, 360.0)));
+        assert!(near(placed(1279, 719, (1280, 720), &placement), (3199.0, 719.0)));
+        assert!(near(placed(1280, 720, (1280, 720), &placement), (3200.0 - EDGE, 720.0 - EDGE)));
+        // The layout starting left of the origin, as an output placed there has it.
+        let shifted = Placement { logical: Rect { x: -1280, y: -100, ..placement.logical }, layout: Rect { x: -1280, y: -100, ..placement.layout }, ..placement };
+        assert!(near(placed(0, 0, (1280, 720), &shifted), (-1280.0, -100.0)));
+        assert!(near(placed(640, 360, (1280, 720), &shifted), (-640.0, 260.0)));
+    }
+
+    #[test]
+    fn a_fractional_scale_spreads_the_pixels_over_the_box_it_truncates_to() {
+        // 3456 pixels at 2.75 are 1256 layout units, which are 3454 pixels:
+        // the pixels are spread over the box, as a pointer mapped to the
+        // output spreads them, so a motion lands short of its pixel by up to
+        // two, and the far edge is held inside the box. 1802 are 655.
+        let fractional = beside((3456, 1802), 2.75, Transform::Normal);
+        assert_eq!((fractional.logical.width, fractional.logical.height), (1256, 655));
+        let (x, y) = placed(2593, 901, (3456, 1802), &fractional);
+        assert!(near((x, y), (2593.0 * 1256.0 / 3456.0, 901.0 * 655.0 / 1802.0)));
+        assert_eq!(((x * 2.75).floor(), (y * 2.75).floor()), (2591.0, 900.0));
+        assert!(near(placed(3456, 1802, (3456, 1802), &fractional), (1256.0 - EDGE, 655.0 - EDGE)));
+        // A whole scale divides the pixels exactly, so every one is reached.
+        let whole = beside((3456, 1802), 2.0, Transform::Normal);
+        assert!(near(placed(2593, 901, (3456, 1802), &whole), (1296.5, 450.5)));
+        assert!(near(placed(3455, 1801, (3456, 1802), &whole), (1727.5, 900.5)));
     }
 
     #[test]
@@ -850,9 +769,9 @@ mod tests {
         // Measured on Sway with `transform 90`, which is wl_output's 270: the
         // 1280x720 framebuffer's motions, and where the cursor session put
         // them on the upright 720x1280 output.
-        let turned = Placement { size: (720, 1280), transform: Transform::_270, scale: Some(1.0) };
-        for (sent, reported) in [((100, 100), (100, 1180)), ((600, 1000), (720, 680)), ((50, 1200), (720, 1230)), ((700, 20), (20, 580)), ((360, 640), (640, 920))] {
-            assert_eq!(landing(sent.0, sent.1, (1280, 720), turned), Some(reported), "{sent:?}");
+        let turned = beside((720, 1280), 1.0, Transform::_270);
+        for (sent, want) in [((100, 100), (100.0, 1180.0)), ((600, 1000), (720.0 - EDGE, 680.0)), ((50, 1200), (720.0 - EDGE, 1230.0)), ((700, 20), (20.0, 580.0)), ((360, 640), (640.0, 920.0))] {
+            assert!(near(placed(sent.0, sent.1, (1280, 720), &turned), want), "{sent:?}");
         }
         // Every transform puts the extent's corners on the output's corners.
         let all = [
@@ -868,138 +787,43 @@ mod tests {
         for transform in all {
             let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
             let size = if quarter { (720, 1280) } else { (1280, 720) };
-            let placement = Placement { size, transform, scale: Some(1.0) };
+            let placement = beside(size, 1.0, transform);
             for corner in [(0, 0), (1280, 0), (0, 720), (1280, 720)] {
-                let (x, y) = landing(corner.0, corner.1, (1280, 720), placement).unwrap();
-                assert!([0, i32::from(size.0)].contains(&x) && [0, i32::from(size.1)].contains(&y), "{transform:?} {corner:?}");
+                let (x, y) = placed(corner.0, corner.1, (1280, 720), &placement);
+                let edge = |at: f64, size: u16| at.abs() < 1e-5 || (at - (f64::from(size) - EDGE)).abs() < 1e-5;
+                assert!(edge(x, size.0) && edge(y, size.1), "{transform:?} {corner:?}: {x},{y}");
             }
         }
     }
 
-    /// The session reports the cursor at (x, y): whether the binding is lost.
-    fn report(witness: &mut Witness, x: i32, y: i32) -> bool {
-        !witness.borne_out(x, y) && witness.against()
-    }
-
     #[test]
-    fn the_cursor_kept_on_another_output_is_the_binding_lost() {
-        // Every motion the stretched pointer sends lands on the other output,
-        // so this desk's session says nothing after its leave.
-        let mut witness = Witness::default();
-        witness.sent(Some((100, 100)));
-        witness.left();
-        witness.sent(Some((200, 100)));
-        assert!(witness.against(), "the cursor turned up on the other output");
-        let mut witness = Witness::default();
-        witness.sent(Some((100, 100)));
-        assert!(!witness.against(), "once is a doubt");
-        witness.sent(Some((200, 100)));
-        assert!(witness.against());
-    }
-
-    #[test]
-    fn a_hidden_cursor_never_loses_the_binding() {
-        // A leave, and then nothing anywhere, however many motions follow.
-        let mut witness = Witness::default();
-        for x in 0..10 {
-            witness.sent(Some((x * 10, 0)));
-            witness.left();
+    fn a_motion_is_never_short_of_its_pixel_as_wlroots_computes_it() {
+        // A client is sent the place to 1/256 of a unit and may floor it, so
+        // a hair under the integer would be a pixel back: every pixel of a
+        // 1400x900 output beside a 1280x720 one lands at or over itself, and
+        // under a millionth over.
+        let placement = Placement { logical: Rect { x: 0, y: 0, width: 1400, height: 900 }, size: (1400, 900), transform: Transform::Normal, layout: Rect { x: 0, y: 0, width: 2680, height: 900 } };
+        for x in 0..1400u16 {
+            let (lx, ly) = placed(x, x % 900, (1400, 900), &placement);
+            assert!(lx >= f64::from(x) && lx - f64::from(x) < 1e-6, "{x}: {lx}");
+            assert!(ly >= f64::from(x % 900) && ly - f64::from(x % 900) < 1e-6, "{}: {ly}", x % 900);
         }
-        assert!(witness.doubt.is_some());
-        assert!(!report(&mut witness, 90, 0));
-        assert_eq!(witness.doubt, None);
-    }
-
-    #[test]
-    fn a_report_of_any_motion_still_in_flight_bears_the_pointer_out() {
-        let mut witness = Witness::default();
-        for x in [10, 20, 30] {
-            witness.sent(Some((x, 5)));
+        // So is one on the output to the right, from the layout's origin.
+        let beside = Placement { logical: Rect { x: 1400, y: 0, width: 1280, height: 720 }, size: (1280, 720), ..placement };
+        for x in 0..1280u16 {
+            let (lx, _) = placed(x, 0, (1280, 720), &beside);
+            assert!(lx >= 1400.0 + f64::from(x) && lx - 1400.0 - f64::from(x) < 1e-6, "{x}: {lx}");
         }
-        // The compositor reports at its commits, so of an older motion first.
-        assert!(!report(&mut witness, 10, 5));
-        assert!(!report(&mut witness, 31, 4), "within a pixel of the newest");
-        // Done with what came before the newest, and still with the newest.
-        assert_eq!(witness.sent, [Some((30, 5))]);
-        assert!(!report(&mut witness, 30, 5));
     }
 
     #[test]
-    fn the_binding_is_lost_at_the_second_report_that_bears_nothing_out_after_a_motion_between() {
-        let mut witness = Witness::default();
-        witness.sent(Some((100, 100)));
-        assert!(!report(&mut witness, 200, 100), "one report is a doubt");
-        assert!(!report(&mut witness, 201, 100), "the same doubt, with no motion since");
-        witness.sent(Some((960, 540)));
-        assert!(report(&mut witness, 640, 540));
-    }
-
-    #[test]
-    fn a_leave_is_a_doubt_and_never_the_binding_lost() {
-        // The stretched pointer puts the cursor on the other output first.
-        let mut witness = Witness::default();
-        witness.sent(Some((100, 100)));
-        witness.left();
-        witness.sent(Some((960, 540)));
-        assert!(report(&mut witness, 640, 540));
-        // An application hides the cursor, and shows it where it was sent.
-        let mut witness = Witness::default();
-        witness.sent(Some((100, 100)));
-        witness.left();
-        witness.sent(Some((110, 100)));
-        witness.left();
-        assert!(!report(&mut witness, 110, 100));
-        assert_eq!(witness.doubt, None);
-    }
-
-    #[test]
-    fn a_report_that_bears_a_motion_out_ends_the_doubt() {
-        // A mouse at the desk moves the cursor once; the client's next motion
-        // puts it back where it was sent.
-        let mut witness = Witness::default();
-        witness.sent(Some((100, 100)));
-        assert!(!report(&mut witness, 700, 300));
-        witness.sent(Some((110, 100)));
-        assert!(!report(&mut witness, 110, 100));
-        witness.sent(Some((120, 100)));
-        assert!(!report(&mut witness, 800, 300), "a doubt anew, not the second");
-    }
-
-    #[test]
-    fn nothing_is_held_against_a_pointer_that_has_sent_nothing() {
-        let mut witness = Witness::default();
-        for _ in 0..3 {
-            assert!(!report(&mut witness, 5, 5));
-        }
-        assert_eq!(witness.doubt, None);
-    }
-
-    #[test]
-    fn a_pointer_made_again_is_not_doubted_until_a_report_bears_it_out() {
-        // The compositor keeps it elsewhere by a configuration of its own:
-        // made again once, and not on every motion.
-        let mut witness = Witness { remade: true, ..Witness::default() };
-        for x in 0..5 {
-            witness.sent(Some((x * 10, 0)));
-            assert!(!report(&mut witness, x * 10 + 500, 0));
-        }
-        witness.sent(Some((70, 0)));
-        assert!(!report(&mut witness, 70, 0));
-        assert!(!witness.remade);
-        witness.sent(Some((80, 0)));
-        assert!(!report(&mut witness, 500, 0));
-        witness.sent(Some((90, 0)));
-        assert!(report(&mut witness, 500, 0));
-    }
-
-    #[test]
-    fn a_pointer_remembers_its_recent_motions_alone() {
-        let mut witness = Witness::default();
-        for x in 0..RECENT as i32 + 10 {
-            witness.sent(Some((x * 3, 0)));
-        }
-        assert_eq!(witness.sent.len(), RECENT);
-        assert_eq!(witness.sent.front(), Some(&Some((30, 0))));
+    fn a_layout_or_an_output_of_no_size_gives_nothing_to_aim_at() {
+        let mut placement = upright((1280, 720));
+        placement.layout.width = 0;
+        assert_eq!(aim(640, 360, (1280, 720), &placement), None);
+        let mut placement = upright((1280, 720));
+        placement.logical.height = 0;
+        assert_eq!(aim(640, 360, (1280, 720), &placement), None);
     }
 
     #[test]

@@ -34,8 +34,10 @@ See it in action on [its page](https://zdesk.dev/wlshare#demo), and set it up wi
 
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
-`wlr-screencopy` version 2 or later is required, and so is `ext-image-copy-capture`
-with output capture sources, which the cursor image comes from. Output resizing
+`wlr-screencopy` version 2 or later is required, and so are `ext-image-copy-capture`
+with output capture sources, which the cursor image comes from, and `xdg-output`
+version 3, which says where each output lies in the layout, where the pointer is
+aimed. Output resizing
 and rescaling additionally need `wlr-output-management`; input and clipboard use
 the virtual keyboard, virtual pointer, and `wlr-data-control` protocols when the
 compositor offers them. Keeping the cursor separate on a headless output, and
@@ -132,14 +134,10 @@ gpg --import keys/apt-signing-key.private.asc
 Ubuntu 26.04 (resolute) ships Sway 1.11 and labwc 0.9.3 on wlroots 0.19.2,
 which wlshare runs on as they are, so the APT repository has no suite for it.
 
-On trixie and Ubuntu 26.04 alike, with two outputs shared, a
+wlshare's pointer is bound to no output and aimed over the whole layout, so a
 reload of the compositor's configuration (`swaymsg reload`,
-`labwc --reconfigure`) unbinds the pointer from its output and stretches its
-positions across the whole layout. wlshare sees it from where the cursor lands
-and makes the pointer again, so a reload costs the motion or two that find it.
-An output that draws its cursor in software reports no position, and there the
-pointer stays stretched until the outputs are next laid out anew, as when a
-client resizes one. A session with one output is unaffected
+`labwc --reconfigure`), which unbinds every pointer from its output, changes
+nothing for it, on trixie and Ubuntu 26.04 alike
 ([`docs/architecture.md`](docs/architecture.md), "Input and clipboard").
 
 ## Running

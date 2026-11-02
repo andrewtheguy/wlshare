@@ -4,17 +4,15 @@
 # HEADLESS-1 with no password on a port of its own, one video-sink as the client
 # on the desktop and another as the display beside it (HEADLESS-2), and
 # cursor-watch saying where every motion landed. Each scenario starts all of it
-# afresh and passes when each output's pointer was remade as often as the
-# scenario expects and its last motion landed where it was sent. The logs are
-# kept when a scenario fails, or with KEEP_LOGS=1 when none does.
+# afresh and passes when the last motion on each output landed where it was
+# sent. The logs are kept when a scenario fails, or with KEEP_LOGS=1 when none
+# does.
 #
-#   [COMPOSITOR=labwc|sway] [PORT=5999] [SCENARIOS="edge drag ..."] [KEEP_LOGS=1] ./scripts/pointer-e2e.sh
+#   [COMPOSITOR=labwc|sway] [PORT=5999] [SCENARIOS="edge drag ..."] [KEEP_LOGS=1] [BIN=DIR] ./scripts/pointer-e2e.sh
 #
 # Run on a Linux host with the compositor and wlr-randr installed, inside no
 # particular session: the compositor gets a socket of its own under
-# XDG_RUNTIME_DIR, and nothing is handed to the user's systemd manager. Where
-# the reload also changes the layout, the daemon remakes its pointers for that,
-# and the reload scenarios see nothing to repair, and say so.
+# XDG_RUNTIME_DIR, and nothing is handed to the user's systemd manager.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,8 +27,15 @@ if ss -ltn 2>/dev/null | grep -q "127.0.0.1:${port} "; then
 	exit 2
 fi
 
-cargo build --quiet --manifest-path "${here}/Cargo.toml" --bin wlshare --example video-sink --example cursor-watch
-bin="${CARGO_TARGET_DIR:-${here}/target}/debug"
+# BIN names a directory holding wlshare, examples/video-sink and
+# examples/cursor-watch built elsewhere, for a host with the compositor and no
+# toolchain; without it they are built here.
+if [[ -n ${BIN:-} ]]; then
+	bin="${BIN}"
+else
+	cargo build --quiet --manifest-path "${here}/Cargo.toml" --bin wlshare --example video-sink --example cursor-watch
+	bin="${CARGO_TARGET_DIR:-${here}/target}/debug"
+fi
 work="$(mktemp -d)"
 echo "== logs in ${work}"
 pids=()
@@ -64,8 +69,8 @@ start() {
 		;;
 	sway)
 		# The outputs where the scenarios lay them out, as a configuration that
-		# names its outputs has them: a reload then changes no layout and
-		# brings no done, which would remake the pointers by itself.
+		# names its outputs has them: a reload then changes no layout, and
+		# tests the pointer alone.
 		{
 			echo "exec echo \$WAYLAND_DISPLAY > ${dir}/display"
 			echo "output HEADLESS-1 pos 0 0"
@@ -120,20 +125,16 @@ reload() {
 }
 
 failed=0
-# check NAME OUT REMAKES LAST: the pointer of output OUT was remade REMAKES
-# times (a range, as 0 or 0-1), and the last position the watch heard on it
-# is LAST.
+# check NAME OUT LAST: the last position the watch heard on output OUT is LAST.
 check() {
-	local name=$1 out=$2 want=$3 last=$4
-	local remakes got
-	remakes=$(grep "making it again" "${scenario_dir}/wlshare.log" | grep -c "${out}," || true)
+	local name=$1 out=$2 last=$3
+	local got
 	got=$(grep "^${out} position " "${scenario_dir}/watch.log" | tail -n 1 | cut -d' ' -f3 || true)
-	local low=${want%-*} high=${want#*-}
-	if (( remakes < low || remakes > high )) || [[ ${got} != "${last}" ]]; then
-		echo "FAIL ${name}: ${out} remade ${remakes} times (want ${want}), last at ${got:-nowhere} (want ${last})"
+	if [[ ${got} != "${last}" ]]; then
+		echo "FAIL ${name}: ${out} last at ${got:-nowhere} (want ${last})"
 		failed=1
 	else
-		echo "pass ${name}: ${out} remade ${remakes} times, last at ${got}"
+		echo "pass ${name}: ${out} last at ${got}"
 	fi
 }
 
@@ -155,8 +156,8 @@ for scenario in ${scenarios}; do
 		done
 		a 640 360; b 640 360
 		finish
-		check edge HEADLESS-1 0 640,360
-		check edge HEADLESS-2 0 640,360
+		check edge HEADLESS-1 640,360
+		check edge HEADLESS-2 640,360
 		;;
 	drag)
 		# A button held from the first display past its edge, which the page
@@ -167,7 +168,7 @@ for scenario in ${scenarios}; do
 		a 2500 300 0
 		a 640 360
 		finish
-		check drag HEADLESS-1 0 640,360
+		check drag HEADLESS-1 640,360
 		;;
 	resize)
 		# Both outputs resized under motions that go on throughout, up and
@@ -181,8 +182,8 @@ for scenario in ${scenarios}; do
 		sleep 1
 		a 800 450; b 500 300
 		finish
-		check resize HEADLESS-1 0 800,450
-		check resize HEADLESS-2 0 500,300
+		check resize HEADLESS-1 800,450
+		check resize HEADLESS-2 500,300
 		;;
 	scale)
 		# The first output at scale 2, so its 1280x720 pixels are 640x360 of
@@ -194,8 +195,8 @@ for scenario in ${scenarios}; do
 		done
 		a 640 360; b 640 360
 		finish
-		check scale HEADLESS-1 0 640,360
-		check scale HEADLESS-2 0 640,360
+		check scale HEADLESS-1 640,360
+		check scale HEADLESS-2 640,360
 		;;
 	fractional)
 		# The first output at 3456x1802 and scale 2.75, laid out as 1256x655
@@ -209,7 +210,7 @@ for scenario in ${scenarios}; do
 		done
 		a 2593 901
 		finish
-		check fractional HEADLESS-1 0 2591,901
+		check fractional HEADLESS-1 2591,901
 		;;
 	rotate)
 		# The first output turned a quarter, so its upright place is 720x1280
@@ -221,8 +222,8 @@ for scenario in ${scenarios}; do
 		done
 		b 640 360
 		finish
-		check rotate HEADLESS-1 0 360,640
-		check rotate HEADLESS-2 0 640,360
+		check rotate HEADLESS-1 360,640
+		check rotate HEADLESS-2 640,360
 		;;
 	reload|reload-far)
 		# A reload, and then motions on both displays: across the whole of
@@ -235,15 +236,12 @@ for scenario in ${scenarios}; do
 			for x in 100 400 700 1000 1200; do a "${x}" 360; b "${x}" 360; done
 			a 640 360; b 640 360
 			finish
-			check "${scenario}" HEADLESS-1 0-1 640,360
-			check "${scenario}" HEADLESS-2 0-1 640,360
+			check "${scenario}" HEADLESS-1 640,360
+			check "${scenario}" HEADLESS-2 640,360
 		else
 			for x in 700 800 900 1000 1100 1000; do a "${x}" 360; done
 			finish
-			check "${scenario}" HEADLESS-1 0-1 1000,360
-		fi
-		if ! grep -q "making it again" "${scenario_dir}/wlshare.log"; then
-			echo "     (no pointer was remade: the binding held through the reload, as the APT repository's patched wlroots keeps it, or a layout change the reload brought remade the pointers first)"
+			check "${scenario}" HEADLESS-1 1000,360
 		fi
 		;;
 	*)

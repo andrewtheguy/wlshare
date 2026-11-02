@@ -24,6 +24,10 @@ use wayland_client::backend::ObjectId;
 use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, event_created_child};
+use wayland_protocols::xdg::xdg_output::zv1::client::{
+    zxdg_output_manager_v1::ZxdgOutputManagerV1,
+    zxdg_output_v1::{self, ZxdgOutputV1},
+};
 use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_configuration_head_v1::ZwlrOutputConfigurationHeadV1,
     zwlr_output_configuration_v1::{self, ZwlrOutputConfigurationV1},
@@ -35,6 +39,7 @@ use wayland_protocols_wlr::output_management::v1::client::{
 use wlshare_proto::outputs::OutputEntry;
 
 use crate::compositor::Compositor;
+use crate::input::{Placement, Rect};
 use crate::shared::{ClientId, Event, FIRST};
 
 pub struct OutputInfo {
@@ -46,12 +51,25 @@ pub struct OutputInfo {
     pub transform: wl_output::Transform,
     pub wl_scale: i32,
     pub done: bool,
-    /// The cursor session that says whether the cursor is on this output, for
-    /// the pointers of the desks on the others.
-    pub watch: Option<crate::cursor::Watch>,
+    /// Its xdg-output, which says where the compositor lays it out.
+    pub xdg: Option<ZxdgOutputV1>,
+    /// Where it is in the layout and how big, in the layout's units, as
+    /// xdg-output has it: wlroots' own box for it.
+    pub logical_position: Option<(i32, i32)>,
+    pub logical_size: Option<(i32, i32)>,
+    /// What xdg-output has said since the last `wl_output.done`, which takes
+    /// effect together at the next, as the protocol has it.
+    pub pending_position: Option<(i32, i32)>,
+    pub pending_size: Option<(i32, i32)>,
 }
 
 impl OutputInfo {
+    /// The output's box in the layout, once xdg-output has said.
+    pub fn logical(&self) -> Option<Rect> {
+        let ((x, y), (width, height)) = (self.logical_position?, self.logical_size?);
+        Some(Rect { x, y, width, height })
+    }
+
     /// The framebuffer size a capture of this output has.
     pub fn size(&self) -> (u16, u16) {
         let (w, h) = self.mode;
@@ -123,6 +141,7 @@ pub struct Outputs {
     pub heads: Vec<Head>,
     pub modes: HashMap<ObjectId, ModeInfo>,
     pub manager: Option<ZwlrOutputManagerV1>,
+    pub xdg_manager: Option<ZxdgOutputManagerV1>,
     pub serial: u32,
     /// The name of each desk's shared output, once chosen.
     pub selected: [Option<String>; 2],
@@ -163,11 +182,19 @@ impl Outputs {
         self.selected(desk).map_or(1.0, |o| self.scale_of(o))
     }
 
-    /// An output as a pointer's motion meets it ([`crate::input::Placement`]),
-    /// its scale only its head's: `wl_output`'s is rounded up from a
-    /// fractional one.
-    pub fn placement_of(&self, output: &OutputInfo) -> crate::input::Placement {
-        crate::input::Placement { size: output.size(), transform: output.transform, scale: self.head_scale(output) }
+    /// An output as a pointer's motion meets it ([`Placement`]), once
+    /// xdg-output has said where it is laid out, with the whole layout's box.
+    pub fn placement_of(&self, output: &OutputInfo) -> Option<Placement> {
+        Some(Placement { logical: output.logical()?, size: output.size(), transform: output.transform, layout: self.layout()? })
+    }
+
+    /// The layout's box: the union of every output's, as wlroots has it
+    /// (`wlr_output_layout_get_box`), or `None` before any output has one.
+    pub fn layout(&self) -> Option<Rect> {
+        self.outputs.iter().filter_map(OutputInfo::logical).reduce(|a, b| {
+            let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+            Rect { x, y, width: (a.x + a.width).max(b.x + b.width) - x, height: (a.y + a.height).max(b.y + b.height) - y }
+        })
     }
 
     /// The scale `output` is drawn at: its head's, or `wl_output`'s.
@@ -362,6 +389,8 @@ impl Dispatch<WlOutput, ()> for Compositor {
             wl_output::Event::Scale { factor } => info.wl_scale = factor,
             wl_output::Event::Name { name } => info.name = Some(name),
             wl_output::Event::Done => {
+                info.logical_position = info.pending_position.take().or(info.logical_position);
+                info.logical_size = info.pending_size.take().or(info.logical_size);
                 let appeared = !std::mem::replace(&mut info.done, true);
                 let name = info.name.clone();
                 for desk in state.outputs.desks_on(name.as_deref()) {
@@ -391,6 +420,19 @@ impl Dispatch<WlOutput, ()> for Compositor {
     }
 }
 
+impl Dispatch<ZxdgOutputV1, u32> for Compositor {
+    fn event(state: &mut Self, _: &ZxdgOutputV1, event: zxdg_output_v1::Event, global: &u32, _: &Connection, _: &QueueHandle<Self>) {
+        let Some(info) = state.outputs.outputs.iter_mut().find(|o| o.global == *global) else { return };
+        match event {
+            zxdg_output_v1::Event::LogicalPosition { x, y } => info.pending_position = Some((x, y)),
+            zxdg_output_v1::Event::LogicalSize { width, height } => info.pending_size = Some((width, height)),
+            _ => {}
+        }
+    }
+}
+
+wayland_client::delegate_noop!(Compositor: ignore ZxdgOutputManagerV1);
+
 impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
     fn event(state: &mut Self, _: &ZwlrOutputManagerV1, event: zwlr_output_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
@@ -399,7 +441,6 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
             }
             zwlr_output_manager_v1::Event::Done { serial } => {
                 state.outputs.serial = serial;
-                state.outputs_laid_out();
                 let mut changed = Vec::new();
                 for head in &mut state.outputs.heads {
                     if std::mem::take(&mut head.scale_changed) {

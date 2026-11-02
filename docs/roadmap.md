@@ -20,33 +20,55 @@ text's colour, which 4:2:0 halves.
 
 ## A drag from one display onto the other
 
-On *All Displays* each display is a connection of its own, with a pointer bound
-to its output ([A display beside](architecture.md#a-display-beside)), so a
-window dragged in the first display's tab stops at its output's edge. The zDesk
+On *All Displays* each display is a connection of its own, with a pointer of
+its own aimed at its output ([A display beside](architecture.md#a-display-beside)),
+so a window dragged in the first display's tab stops at its output's edge. The zDesk
 page already lets a drag past the edge through while a second display's tab is
 listed, as a position past the tab's own (negative, or beyond its width), and
 an RDP host or a Mac, one desktop spanning both displays, takes it onto the
 second. For wlshare the gateway clamps it to RFB's unsigned 16 bits, and the
-daemon's bound pointer holds whatever is left at the edge.
+daemon holds whatever is left at the edge.
 
-- **A position past the edge, routed to the output it falls on.** A private
-  message carries the pointer's position signed, so a drag left or up is
-  carried as well as one right or down: a new message in `wlshare-proto`, and
-  the protocol's version with it. The daemon holds every output's place,
-  logical size and scale from wlr-output-management, so a position past a
-  desk's output turns into the layout's coordinates and from there into the
-  output that holds it. On the other desk's output, the motion goes out on
-  that desk's pointer, in that output's pixels; on no output either desk
-  shares, it stays at the edge, as now. Every pointer stays bound to its own
-  output, so a reload is found as it is now. The press stays with the pointer
-  that made it, and the compositor's move or drag follows the seat's one
-  cursor whichever pointer moves it. The gateway sends the message, for a
-  wlshare target with a second display's tab, in place of the clamped
+- **A position past the edge, carried signed.** A private message carries the
+  pointer's position signed, so a drag left or up is carried as well as one
+  right or down: a new message in `wlshare-proto`, and the protocol's version
+  with it. The daemon aims every motion over the whole layout from the outputs'
+  boxes ([Input and clipboard](architecture.md#input-and-clipboard)), so a
+  position past a desk's output is a place in the layout like any other: on
+  the output that holds it, it is aimed there on the same pointer, with the
+  press held, and the compositor's move or drag follows the seat's one cursor;
+  on no output, it is held at the edge, as now. The gateway sends the message,
+  for a wlshare target with a second display's tab, in place of the clamped
   PointerEvent; released in order, the protocol's tag first. What it costs is
-  a layout the daemon reckons otherwise than the compositor does (scaled and
-  transformed outputs, a `done` not yet arrived), held to the one motion past
-  an edge; tried on labwc and Sway with two outputs side by side, a drag each
-  way, before it is released.
+  a layout the daemon has otherwise than the compositor does (a `done` not yet
+  arrived), held to the one motion past an edge; tried on labwc and Sway with
+  two outputs side by side, a drag each way, before it is released.
+
+## The pointer exact at any fractional scale
+
+The pointer is aimed over the layout from the outputs' boxes, each output's
+pixels spread over its box as a pointer mapped to the output had them
+([Input and clipboard](architecture.md#input-and-clipboard)). zDesk declares a
+density of 1x or 2x, which are whole, and lands every motion on its pixel. At
+a fractional scale the box is the pixels over the scale truncated, so a motion
+lands short of its pixel by up to two: 2593 at 2.75 on 3456 pixels is 2591.
+The scale on the wire is no cure by itself: Sway applies what it is set to
+rounded to the 1/120 fractional-scale-v1 carries, so a declared 1.7 is
+1.69921875 on the wire and 1.7 applied, and a scale from the compositor's own
+configuration (a 1.1, a 1.7) reaches the daemon rounded to 1/256.
+
+- **The scale the pixels are laid out at.** A scale the daemon set is the
+  compositor's own where it is whole in both 1/256 and 1/120, every eighth,
+  remembered on the head the configuration set; any other is taken as the
+  middle of what the wire's step and the box's bounds leave, within half the
+  scale in pixels at the far edge. The place is then taken up to the next
+  1/256 of a unit, since a client is sent it truncated to one and floors it
+  (2593 at 2.75 is 942.909… units, whose step below is 2592). With it, the desk that last moved the
+  cursor is aimed again when the layout changes under it, so a press without
+  a motion lands where its client last pointed. Tried on branch
+  `unbound-pointer`, e2e-tested on labwc and Sway with a declared 2.75 and a
+  configured 1.1 and 1.7, and held back as more than 1x and 2x need; it is
+  taken up when zDesk offers a fractional density.
 
 ## The tiles' cache
 

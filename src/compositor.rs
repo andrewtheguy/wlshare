@@ -11,11 +11,9 @@ use anyhow::Context as _;
 use calloop::channel;
 use calloop::{EventLoop, LoopHandle};
 use calloop_wayland_source::WaylandSource;
-use log::{debug, info, trace, warn};
+use log::{debug, info, warn};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::wl_callback::{self, WlCallback};
-use wayland_client::protocol::wl_display::WlDisplay;
-use wayland_client::protocol::wl_output::{Transform, WlOutput};
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_registry::{self, WlRegistry};
 use wayland_client::protocol::wl_seat::{self, WlSeat};
 use wayland_client::protocol::wl_shm::WlShm;
@@ -26,6 +24,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboar
 use wayland_protocols_wlr::data_control::v1::client::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
 use wayland_protocols_wlr::output_management::v1::client::zwlr_output_manager_v1::ZwlrOutputManagerV1;
 use wayland_protocols_wlr::screencopy::v1::client::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use wayland_protocols::xdg::xdg_output::zv1::client::zxdg_output_manager_v1::ZxdgOutputManagerV1;
 use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 
 use crate::capture::Capture;
@@ -33,7 +32,7 @@ use crate::clipboard::Clipboard;
 use crate::config::{Config, Xkb};
 use crate::cursor::CursorCapture;
 use crate::framebuffer::Framebuffer;
-use crate::input::{Input, Placement};
+use crate::input::Input;
 use crate::framebuffer::ResizeOrigin;
 use crate::outputs::{ConfigKind, OutputInfo, Outputs};
 use crate::sway::{self, Step, Sway, VirtualDisplays};
@@ -82,8 +81,6 @@ pub struct Compositor {
     pub clipboard: Clipboard,
     pub max_fps: u32,
     xkb: Xkb,
-    /// The round trips a desk taking to moving the cursor sends ([`Input::settle`]).
-    display: WlDisplay,
     /// The connection and queue, held between `connect` and `discover`.
     pending_queue: Option<(Connection, wayland_client::EventQueue<Compositor>)>,
     exit: Option<anyhow::Result<()>>,
@@ -186,11 +183,13 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
     let data_control: Option<ZwlrDataControlManagerV1> = globals.bind(&qh, 1..=2, ()).ok();
     let capture_sources: Option<ExtOutputImageCaptureSourceManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let image_copy: Option<ExtImageCopyCaptureManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+    let xdg_outputs: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 3..=3, ()).ok();
     anyhow::ensure!(screencopy.is_some(), "the compositor does not offer wlr-screencopy version 2 or later");
     anyhow::ensure!(
         capture_sources.is_some() && image_copy.is_some(),
         "the compositor does not offer ext-image-copy-capture with output capture sources, which the cursor image is taken from (wlroots 0.19 or later)"
     );
+    anyhow::ensure!(xdg_outputs.is_some(), "the compositor does not offer xdg-output version 3, which says where its outputs are laid out, where the pointer is aimed");
     if seat.is_none() {
         warn!("no seat: the cursor image cannot be captured, and clients draw their own");
     }
@@ -209,7 +208,6 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
         qh: qh.clone(),
         handle,
         registry: globals.registry().clone(),
-        display: conn.display(),
         shm,
         seat,
         keyboards,
@@ -230,6 +228,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
         exit: None,
     };
     compositor.outputs.manager = output_manager;
+    compositor.outputs.xdg_manager = xdg_outputs;
     compositor.clipboard.manager = data_control;
     for global in globals.contents().clone_list() {
         if global.interface == "wl_output" {
@@ -250,6 +249,7 @@ impl Compositor {
             warn!("wl_output {name} is version {version}; version 4 is needed to learn its name");
         }
         let output: WlOutput = self.registry.bind(name, version.min(4), &self.qh, ());
+        let xdg = self.outputs.xdg_manager.as_ref().map(|manager| manager.get_xdg_output(&output, &self.qh, name));
         self.outputs.outputs.push(OutputInfo {
             output,
             global: name,
@@ -258,9 +258,12 @@ impl Compositor {
             transform: wayland_client::protocol::wl_output::Transform::Normal,
             wl_scale: 1,
             done: false,
-            watch: None,
+            xdg,
+            logical_position: None,
+            logical_size: None,
+            pending_position: None,
+            pending_size: None,
         });
-        self.watch_outputs();
     }
 
     /// Learn the outputs, pick one, and build the shared state.
@@ -280,9 +283,8 @@ impl Compositor {
         self.shared = Some(shared);
 
         if let (Some(seat), Some(keyboards), Some(pointers)) = (&self.seat, &self.keyboards, &self.pointers) {
-            let output = self.outputs.selected(FIRST).expect("selected").output.clone();
             let mut input = Input::new(&self.qh, keyboards, seat, &self.xkb)?;
-            input.point(FIRST, &self.qh, pointers, seat, &output);
+            input.point(FIRST, &self.qh, pointers, seat);
             self.input = Some(input);
         }
         if let Some(seat) = &self.seat {
@@ -401,11 +403,9 @@ impl Compositor {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                let placement = self.outputs.selected(desk).map_or(Placement { size: extent, transform: Transform::Normal, scale: Some(1.0) }, |o| self.outputs.placement_of(o));
-                if let Some(input) = &mut self.input
-                    && let Some(mover) = input.pointer(desk, buttons, x, y, extent, placement)
-                {
-                    self.display.sync(&self.qh, MoverSettle { mover });
+                let placement = self.outputs.selected(desk).and_then(|o| self.outputs.placement_of(o));
+                if let Some(input) = &mut self.input {
+                    input.pointer(desk, buttons, x, y, extent, placement.as_ref());
                 }
             }
             Command::Scroll { client, dx, dy } => {
@@ -539,11 +539,12 @@ impl Compositor {
             info!("client {}: no other output to show beside", id.0);
             return self.shared().end_beside(id);
         };
-        let Some(output) = self.outputs.selectable(entry.id) else { return self.shared().end_beside(id) };
-        let wl_output = output.output.clone();
+        if self.outputs.selectable(entry.id).is_none() {
+            return self.shared().end_beside(id);
+        }
         info!("client {}: showing output {} beside: {}x{} pixels at scale {:.2}", id.0, entry.name, entry.width, entry.height, entry.scale);
         self.desks[BESIDE].client = Some(id);
-        self.share_output(BESIDE, entry.name, entry.width, entry.height, &wl_output);
+        self.share_output(BESIDE, entry.name, entry.width, entry.height);
         // After the framebuffer took the output's size: the session reads it
         // for its ServerInit once it sees itself here.
         self.shared().set_beside(id);
@@ -608,9 +609,8 @@ impl Compositor {
             return self.answer_outputs();
         }
         let (width, height) = self.outputs.size_of(output);
-        let wl_output = output.output.clone();
         info!("client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}", client.0, self.outputs.scale_of(output));
-        self.share_output(FIRST, name, width, height, &wl_output);
+        self.share_output(FIRST, name, width, height);
     }
 
     /// Take an output as a desk's shared one and start the desk again on it.
@@ -620,7 +620,7 @@ impl Compositor {
     ///
     /// An output is on one desk: where the client on the desktop goes, a
     /// display beside that was showing it ends.
-    fn share_output(&mut self, desk: usize, name: String, width: u16, height: u16, output: &WlOutput) {
+    fn share_output(&mut self, desk: usize, name: String, width: u16, height: u16) {
         if desk == FIRST && self.outputs.selected[BESIDE].as_deref() == Some(name.as_str()) {
             self.end_beside();
         }
@@ -634,7 +634,7 @@ impl Compositor {
             let mut fb = self.shared().desks[desk].framebuffer.lock().unwrap();
             fb.resize(width, height, ResizeOrigin::Server);
         }
-        self.retarget_input(desk, output);
+        self.retarget_input(desk);
         self.geometry_changed(desk);
         self.answer_outputs();
         self.start_capture(desk);
@@ -663,10 +663,11 @@ impl Compositor {
             self.stop_capture(FIRST);
             return self.answer_outputs();
         };
-        let Some(output) = self.outputs.selectable(entry.id) else { return };
-        let wl_output = output.output.clone();
+        if self.outputs.selectable(entry.id).is_none() {
+            return;
+        }
         info!("sharing output {}: {}x{} pixels at scale {:.2}", entry.name, entry.width, entry.height, entry.scale);
-        self.share_output(FIRST, entry.name, entry.width, entry.height, &wl_output);
+        self.share_output(FIRST, entry.name, entry.width, entry.height);
     }
 
     /// The output a desk shared went away. The first desk moves to whatever is
@@ -684,84 +685,11 @@ impl Compositor {
         }
     }
 
-    /// Point a desk's virtual pointer at another output. What the client holds
-    /// is let go first: a press cannot outlive the pointer that made it.
-    fn retarget_input(&mut self, desk: usize, output: &WlOutput) {
+    /// A desk's client is on another output: it has a pointer, and what it
+    /// held is let go, since a press does not carry over.
+    fn retarget_input(&mut self, desk: usize) {
         let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
-        input.point(desk, &self.qh, pointers, seat, output);
-    }
-
-    /// The compositor laid its outputs out anew — an output's mode, scale,
-    /// transform or position changed, or one came or went, and with it the
-    /// configuration wlr-output-management reports — which may have unbound
-    /// every desk's pointer from its output ([`Input::repoint`]). Each is made
-    /// again against the output its desk shares.
-    pub fn outputs_laid_out(&mut self) {
-        debug!("the compositor laid its outputs out anew: making every desk's pointer again");
-        for desk in [FIRST, BESIDE] {
-            let Some(output) = self.outputs.selected(desk).map(|o| o.output.clone()) else { continue };
-            let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
-            input.repoint(desk, &self.qh, pointers, seat, &output);
-        }
-    }
-
-    /// A desk's cursor session put the cursor at (x, y) on its output. Where
-    /// that says the desk's pointer has lost its binding to the output — labwc
-    /// and Sway drop it when they reload their configuration, which changes no
-    /// output and so brings no `done` — the pointer is made again against it
-    /// ([`Input::rebind`]).
-    pub fn cursor_moved(&mut self, desk: usize, x: i32, y: i32) {
-        let Some(own) = self.outputs.selected(desk) else { return };
-        let (width, height) = own.size();
-        let placement = self.outputs.placement_of(own);
-        let output = (own.output.clone(), own.name.clone());
-        trace!("desk {desk}: its cursor session reports {x},{y}");
-        // Only its image overlaps this output, from beside its edge: the
-        // cursor is not on it, which says no more than its leaving.
-        if !crate::cursor::within(x, y, width, height, crate::input::SLACK) {
-            self.cursor_left(desk);
-            return;
-        }
-        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
-        if !input.contradicted(desk, x, y) {
-            return;
-        }
-        info!(
-            "the cursor is at {x},{y} on output {}, where the pointer was not sent: the compositor unbound it from the output; making it again",
-            output.1.as_deref().unwrap_or_default()
-        );
-        input.rebind(desk, &self.qh, pointers, seat, &output.0, placement);
-    }
-
-    /// The cursor is on the output of `global`, by the session that watches
-    /// every output ([`crate::cursor::Watch`]). After the motion of a desk on
-    /// another output, that is the desk's pointer away from its own
-    /// ([`Input::elsewhere`]).
-    pub fn cursor_on(&mut self, global: u32) {
-        let Some(desk) = self.input.as_ref().and_then(Input::moved_last) else { return };
-        let Some(own) = self.outputs.selected(desk) else { return };
-        // Its own output, or one that overlaps it where the cursor is.
-        if own.global == global || self.desks[desk].cursor.holds(own.size().0, own.size().1) {
-            return;
-        }
-        let (output, name, placement) = (own.output.clone(), own.name.clone(), self.outputs.placement_of(own));
-        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
-        if !input.elsewhere(desk) {
-            return;
-        }
-        info!(
-            "the cursor is on another output than {}, where the pointer was sent: the compositor unbound it from the output; making it again",
-            name.as_deref().unwrap_or_default()
-        );
-        input.rebind(desk, &self.qh, pointers, seat, &output, placement);
-    }
-
-    /// A desk's cursor session says the cursor left its output, which the
-    /// pointer is held to with its positions ([`Input::cursor_left`]).
-    pub fn cursor_left(&mut self, desk: usize) {
-        if let Some(input) = &mut self.input {
-            input.cursor_left(desk);
-        }
+        input.point(desk, &self.qh, pointers, seat);
     }
 
     /// Follow a client's density: its desk's output's mode and scale in one
@@ -836,6 +764,9 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
                     let desks = state.outputs.desks_on(removed.name.as_deref());
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if desks.is_empty() { "" } else { "; it is a shared one" });
                     removed.output.release();
+                    if let Some(xdg) = &removed.xdg {
+                        xdg.destroy();
+                    }
                     if desks.is_empty() {
                         state.outputs_changed();
                     }
@@ -863,22 +794,6 @@ impl Dispatch<WlSeat, ()> for Compositor {
             state.seat_had_pointer = true;
             state.start_cursor(FIRST);
             state.start_cursor(BESIDE);
-            state.watch_outputs();
-        }
-    }
-}
-
-/// The round trip a desk taking to moving the cursor sent, by its count.
-pub struct MoverSettle {
-    mover: u64,
-}
-
-impl Dispatch<WlCallback, MoverSettle> for Compositor {
-    fn event(state: &mut Self, _: &WlCallback, event: wl_callback::Event, settle: &MoverSettle, _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_callback::Event::Done { .. } = event
-            && let Some(input) = &mut state.input
-        {
-            input.settle(settle.mover);
         }
     }
 }

@@ -9,7 +9,7 @@
 在[它的頁面](https://zdesk.dev/zh-TW/wlshare#demo)上觀看實際效果，並依照
 [設定 wlshare](https://zdesk.dev/zh-TW/guides/wlshare) 進行設定。
 
-在這組協定範圍內，它與特定合成器無關：任何提供所需協定、以 wlroots 為基礎的合成器都是同一類對等端。需要 `wlr-screencopy` 版本 2 或更新，以及具備輸出擷取來源的 `ext-image-copy-capture`，游標圖像就來自後者。調整輸出尺寸和縮放還需要 `wlr-output-management`；合成器提供虛擬鍵盤、虛擬指標和 `wlr-data-control` 協定時，輸入和剪貼簿會使用它們。在無頭輸出上讓游標保持獨立並擷取它，需要 wlroots 0.19 或更新版本。
+在這組協定範圍內，它與特定合成器無關：任何提供所需協定、以 wlroots 為基礎的合成器都是同一類對等端。需要 `wlr-screencopy` 版本 2 或更新、具備輸出擷取來源的 `ext-image-copy-capture`（游標圖像來自它），以及 `xdg-output` 版本 3（它說明每個輸出在版面配置中的位置，指標就依此定位）。調整輸出尺寸和縮放還需要 `wlr-output-management`；合成器提供虛擬鍵盤、虛擬指標和 `wlr-data-control` 協定時，輸入和剪貼簿會使用它們。在無頭輸出上讓游標保持獨立並擷取它，需要 wlroots 0.19 或更新版本。
 
 在影格緩衝區層面，任何宣告了標準 Cursor 虛擬編碼並能繪製 Raw 矩形的 RFB 3.8 用戶端都可以連線。用戶端列出 ZRLE 時會使用它，除非用戶端還要求了 wlshare 私有的視訊串流或它的圖塊。設定了登入時，還需要 RSA-AES。之所以要求支援游標，是因為 wlshare 從不把指標畫進影格緩衝區的像素。密度和輸出擴充由用戶端要求，否則保持靜默；在設定了 `subtype = "wlshare"` 的 `vnc` 目標上，zDesk 會要求這兩者以及視訊串流（選擇器中選了 *Tiles with motion*、*Progressive tiles (alpha)* 或 *Lossless tiles (experimental)* 時則要求圖塊），在未設定的目標上則以任何 VNC 伺服器的方式讀取 wlshare。音訊是一個私有擴充，zDesk 在這類目標上以聲音啟動的工作階段中會要求它：在用戶端收聽期間，wlshare 自己的輸出裝置（sink）是預設裝置，因此所有跟隨預設裝置的串流都在那裡播放，而不是在主機的喇叭上；該裝置的監聽來源會編碼為無損 FLAC 傳送，或在用戶端改為要求 Opus 時，以用戶端指定的位元率編碼為 Opus 傳送。固定到主機某個輸出裝置的應用程式會留在那裡，在主機上播放。沒有列出該擴充的用戶端聽不到任何聲音。
 聲音、攝影機和麥克風一律開啟，不需要任何設定來開啟：套件相依於它們所經由的 PipeWire、WirePlumber 和 pipewire-pulse。列出攝影機擴充的用戶端（zDesk 在勾選了選擇器中 Camera 後啟動的工作階段中會這樣做）可以把它的攝影機借給桌面：它傳送的 H.264 由系統的 libavcodec 解碼到一個 PipeWire 視訊來源 "wlshare remote camera" 中，透過 PipeWire 存取攝影機的應用程式都可以開啟它，並且只有在有應用程式開啟它時才會向用戶端要求影格。瀏覽器透過 `xdg-desktop-portal` 的 Camera 介面成為這樣的應用程式，而 portal 只有在有實作了 Access 的後端（例如 `xdg-desktop-portal-gtk`）時才提供該介面——只有 `xdg-desktop-portal-wlr` 不行。套件建議安裝（Recommends）這兩者，因此安裝了建議套件的系統就有該介面。Chrome 還需要啟用 `chrome://flags/#enable-webrtc-pipewire-camera`；沒有這個旗標或 portal 時，它只查看 `/dev/video*`，列不出任何攝影機。列出麥克風擴充的用戶端可以用同樣的方式把它的麥克風借給桌面：一個 PipeWire 音訊來源 "wlshare remote microphone"，在有應用程式從它錄音時，由用戶端傳送的 16 位元 PCM 提供資料。
@@ -46,7 +46,7 @@ gpg --import keys/apt-signing-key.private.asc
 
 Ubuntu 26.04（resolute）內建以 wlroots 0.19.2 為基礎的 Sway 1.11 和 labwc 0.9.3，wlshare 可以直接在其上執行，因此 APT 套件庫沒有為它提供套件組。
 
-無論在 trixie 還是 Ubuntu 26.04 上，共享兩個輸出時，合成器重新載入設定（`swaymsg reload`、`labwc --reconfigure`）會解除指標與其輸出的綁定，把指標的位置拉伸到整個版面配置上。wlshare 會從游標落下的位置察覺這件事並重新建立指標，因此一次重新載入只會讓察覺到它的那一兩次移動落在錯誤的位置。以軟體繪製游標的輸出不會回報游標位置，在這樣的輸出上，指標會一直維持拉伸，直到下一次重新排列輸出為止，例如用戶端調整某個輸出的大小時。只有一個輸出的工作階段不受影響（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
+wlshare 的指標不綁定任何輸出，而是對整個版面配置定位，因此合成器重新載入設定（`swaymsg reload`、`labwc --reconfigure`）雖然會解除每個指標與其輸出的綁定，對它卻沒有任何影響，在 trixie 和 Ubuntu 26.04 上都一樣（[`docs/architecture.md`](docs/architecture.md)（英文）中的 “Input and clipboard”）。
 
 ## 執行
 
