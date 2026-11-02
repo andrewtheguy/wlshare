@@ -46,9 +46,6 @@ pub struct OutputInfo {
     pub transform: wl_output::Transform,
     pub wl_scale: i32,
     pub done: bool,
-    /// The cursor session that says whether the cursor is on this output, for
-    /// the pointers of the desks on the others.
-    pub watch: Option<crate::cursor::Watch>,
 }
 
 impl OutputInfo {
@@ -163,22 +160,14 @@ impl Outputs {
         self.selected(desk).map_or(1.0, |o| self.scale_of(o))
     }
 
-    /// An output as a pointer's motion meets it ([`crate::input::Placement`]),
-    /// its scale only its head's: `wl_output`'s is rounded up from a
-    /// fractional one.
-    pub fn placement_of(&self, output: &OutputInfo) -> crate::input::Placement {
-        crate::input::Placement { size: output.size(), transform: output.transform, scale: self.head_scale(output) }
-    }
-
-    /// The scale `output` is drawn at: its head's, or `wl_output`'s.
+    /// The exact scale `output` is drawn at: its head's, or `wl_output`'s.
     pub fn scale_of(&self, output: &OutputInfo) -> f64 {
-        self.head_scale(output).unwrap_or(f64::from(output.wl_scale.max(1)))
-    }
-
-    /// The exact scale wlr-output-management gives `output`'s head, if it has
-    /// one.
-    fn head_scale(&self, output: &OutputInfo) -> Option<f64> {
-        self.head(output.name.as_deref()?)?.scale
+        if let Some(name) = output.name.as_deref()
+            && let Some(scale) = self.head(name).and_then(|h| h.scale)
+        {
+            return scale;
+        }
+        f64::from(output.wl_scale.max(1))
     }
 
     /// A desk's shared output's size in pixels as the head reports it, falling
