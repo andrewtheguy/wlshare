@@ -7,7 +7,7 @@
 //! ```text
 //! video-sink ADDR --size WxH [--seconds N]
 //!            [--frames N] [--resize SECS:WxH] [--slow SECS:SECS:MILLIS]
-//!            [--keyframe SECS] [--keys] [--h264 FILE] [--beside]
+//!            [--keyframe SECS] [--keys] [--h264 FILE] [--beside] [--density SCALE]
 //!            [--login USER --fingerprint FINGERPRINT]
 //! ```
 //!
@@ -37,7 +37,9 @@
 //! let go as a KeyEvent each, or `@X,Y,BUTTONS`, a PointerEvent at that pixel
 //! with that button mask, so that what plays the desktop types through
 //! the daemon as a person at a client does, on the daemon's own keyboard.
-//! With `--beside` the sink is the display beside the client on the desktop,
+//! With `--density` the sink declares that scale for its size, as zDesk declares
+//! a browser's, so the daemon sets the output's mode and scale together and the
+//! scale is the daemon's own. With `--beside` the sink is the display beside the client on the desktop,
 //! as a zDesk second display's tab is: its ClientInit byte is
 //! `wlshare_proto::CLIENT_INIT_BESIDE` where RFB has the shared flag, and it is
 //! shown the output that client is not on, with a pointer of its own there.
@@ -76,6 +78,7 @@ struct Args {
     keyframe: Option<f64>,
     keys: bool,
     beside: bool,
+    density: Option<f64>,
     h264: Option<String>,
     login: Option<String>,
     fingerprint: Option<String>,
@@ -144,7 +147,7 @@ fn at<T>(s: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<(f64, T),
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let addr = args.next().ok_or("an address to connect to")?;
-    let mut parsed = Args { addr, size: (0, 0), seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, beside: false, h264: None, login: None, fingerprint: None };
+    let mut parsed = Args { addr, size: (0, 0), seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, beside: false, density: None, h264: None, login: None, fingerprint: None };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -155,6 +158,7 @@ fn parse_args() -> Result<Args, String> {
             "--slow" => parsed.slow = Some(at(&value()?, |s| at(s, |ms| ms.parse().map_err(|_| format!("{ms}: not milliseconds"))))?),
             "--keys" => parsed.keys = true,
             "--beside" => parsed.beside = true,
+            "--density" => parsed.density = Some(value()?.parse().map_err(|_| "--density takes a scale")?),
             "--h264" => parsed.h264 = Some(value()?),
             "--login" => parsed.login = Some(value()?),
             "--fingerprint" => parsed.fingerprint = Some(value()?),
@@ -236,11 +240,17 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut encodings = vec![wlshare_proto::ENCODING_VIDEO];
     encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
     encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
+    if args.density.is_some() {
+        encodings.push(wlshare_proto::ENCODING_DENSITY);
+    }
     out.send(&client::set_encodings(&encodings)).await?;
     // The daemon answers the version first, before anything is asked of it.
     client::read_protocol_version(&mut socket).await?;
     let (mut width, mut height) = (init.width, init.height);
-    if (width, height) != args.size {
+    if let Some(scale) = args.density {
+        let density = wlshare_proto::density::Density { width: args.size.0, height: args.size.1, fixed: wlshare_proto::density::to_fixed(scale) };
+        out.send(&density.to_bytes()).await?;
+    } else if (width, height) != args.size {
         out.send(&client::set_desktop_size(args.size.0, args.size.1)).await?;
     }
     out.send(&client::enable_continuous_updates(true, 0, 0, width, height)).await?;

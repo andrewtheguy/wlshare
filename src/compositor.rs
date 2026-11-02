@@ -64,6 +64,9 @@ pub struct Compositor {
     pub seat: Option<WlSeat>,
     keyboards: Option<ZwpVirtualKeyboardManagerV1>,
     pointers: Option<ZwlrVirtualPointerManagerV1>,
+    /// xdg-output, which says where each output is laid out: where the
+    /// pointer is aimed ([`crate::input::aim`]).
+    xdg_outputs: ZxdgOutputManagerV1,
     pub outputs: Outputs,
     /// sway's IPC, where the compositor is sway: what makes and unplugs headless
     /// outputs for a client's virtual displays.
@@ -183,13 +186,14 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
     let data_control: Option<ZwlrDataControlManagerV1> = globals.bind(&qh, 1..=2, ()).ok();
     let capture_sources: Option<ExtOutputImageCaptureSourceManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let image_copy: Option<ExtImageCopyCaptureManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
-    let xdg_outputs: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 3..=3, ()).ok();
+    let xdg_outputs: ZxdgOutputManagerV1 = globals
+        .bind(&qh, 3..=3, ())
+        .context("the compositor does not offer xdg-output version 3, which says where its outputs are laid out, where the pointer is aimed")?;
     anyhow::ensure!(screencopy.is_some(), "the compositor does not offer wlr-screencopy version 2 or later");
     anyhow::ensure!(
         capture_sources.is_some() && image_copy.is_some(),
         "the compositor does not offer ext-image-copy-capture with output capture sources, which the cursor image is taken from (wlroots 0.19 or later)"
     );
-    anyhow::ensure!(xdg_outputs.is_some(), "the compositor does not offer xdg-output version 3, which says where its outputs are laid out, where the pointer is aimed");
     if seat.is_none() {
         warn!("no seat: the cursor image cannot be captured, and clients draw their own");
     }
@@ -212,6 +216,7 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
         seat,
         keyboards,
         pointers,
+        xdg_outputs,
         outputs: Outputs::default(),
         sway: Sway::from_env(),
         virtual_displays: VirtualDisplays::default(),
@@ -228,7 +233,6 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
         exit: None,
     };
     compositor.outputs.manager = output_manager;
-    compositor.outputs.xdg_manager = xdg_outputs;
     compositor.clipboard.manager = data_control;
     for global in globals.contents().clone_list() {
         if global.interface == "wl_output" {
@@ -249,7 +253,7 @@ impl Compositor {
             warn!("wl_output {name} is version {version}; version 4 is needed to learn its name");
         }
         let output: WlOutput = self.registry.bind(name, version.min(4), &self.qh, ());
-        let xdg = self.outputs.xdg_manager.as_ref().map(|manager| manager.get_xdg_output(&output, &self.qh, name));
+        let xdg = self.xdg_outputs.get_xdg_output(&output, &self.qh, name);
         self.outputs.outputs.push(OutputInfo {
             output,
             global: name,
@@ -259,8 +263,7 @@ impl Compositor {
             wl_scale: 1,
             done: false,
             xdg,
-            logical_position: None,
-            logical_size: None,
+            logical: None,
             pending_position: None,
             pending_size: None,
         });
@@ -410,8 +413,9 @@ impl Compositor {
             }
             Command::Scroll { client, dx, dy } => {
                 let Some(desk) = self.desk_of(client) else { return };
+                let placement = self.outputs.selected(desk).and_then(|o| self.outputs.placement_of(o));
                 if let Some(input) = &mut self.input {
-                    input.scroll(desk, dx, dy);
+                    input.scroll(desk, dx, dy, placement.as_ref());
                 }
             }
             Command::Resize { client, width, height } => {
@@ -687,6 +691,16 @@ impl Compositor {
 
     /// A desk's client is on another output: it has a pointer, and what it
     /// held is let go, since a press does not carry over.
+    /// An output or the layout may have changed: every desk's pointer whose
+    /// placement did is aimed again over it ([`Input::reaim`]).
+    pub fn reaim(&mut self) {
+        let Some(input) = &mut self.input else { return };
+        for desk in 0..self.desks.len() {
+            let placement = self.outputs.selected(desk).and_then(|o| self.outputs.placement_of(o));
+            input.reaim(desk, placement.as_ref());
+        }
+    }
+
     fn retarget_input(&mut self, desk: usize) {
         let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
         input.point(desk, &self.qh, pointers, seat);
@@ -713,7 +727,12 @@ impl Compositor {
         }
         let current = self.outputs.scale(desk);
         let current_size = self.outputs.size(desk);
-        let new_scale = ((current - scale).abs() >= 0.005).then_some(scale);
+        // A scale the output already has is set again unless it is known to be
+        // the daemon's own: one left by an earlier run, or configured, is the
+        // same to 1/256 and not exactly, and the pointer is placed by it. An
+        // output the daemon cannot configure never has one of its own.
+        let set = self.outputs.selected(desk).is_some_and(|o| self.outputs.set_scale(o).is_some());
+        let new_scale = ((current - scale).abs() >= 0.005 || (!set && self.outputs.configurable(desk))).then_some(scale);
         let new_size = ((width, height) != current_size).then_some((width, height));
         if new_scale.is_none() && new_size.is_none() {
             return self.answer_geometry(desk, Some(client));
@@ -764,9 +783,8 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
                     let desks = state.outputs.desks_on(removed.name.as_deref());
                     warn!("output {} went away{}", removed.name.unwrap_or_default(), if desks.is_empty() { "" } else { "; it is a shared one" });
                     removed.output.release();
-                    if let Some(xdg) = &removed.xdg {
-                        xdg.destroy();
-                    }
+                    removed.xdg.destroy();
+                    state.reaim();
                     if desks.is_empty() {
                         state.outputs_changed();
                     }

@@ -50,24 +50,29 @@ pub struct OutputInfo {
     pub mode: (i32, i32),
     pub transform: wl_output::Transform,
     pub wl_scale: i32,
+    /// Its first `wl_output.done` with a box has come: before it, it is not an
+    /// output a client may share, nor one the pointer can be aimed on.
     pub done: bool,
     /// Its xdg-output, which says where the compositor lays it out.
-    pub xdg: Option<ZxdgOutputV1>,
+    pub xdg: ZxdgOutputV1,
     /// Where it is in the layout and how big, in the layout's units, as
-    /// xdg-output has it: wlroots' own box for it.
-    pub logical_position: Option<(i32, i32)>,
-    pub logical_size: Option<(i32, i32)>,
-    /// What xdg-output has said since the last `wl_output.done`, which takes
-    /// effect together at the next, as the protocol has it.
+    /// xdg-output has it: wlroots' own box for it, as of the last
+    /// `wl_output.done`, which is what makes its events one change.
+    pub logical: Option<Rect>,
+    /// xdg-output's position and size as they arrive, until the `done`.
     pub pending_position: Option<(i32, i32)>,
     pub pending_size: Option<(i32, i32)>,
 }
 
 impl OutputInfo {
-    /// The output's box in the layout, once xdg-output has said.
-    pub fn logical(&self) -> Option<Rect> {
-        let ((x, y), (width, height)) = (self.logical_position?, self.logical_size?);
-        Some(Rect { x, y, width, height })
+    /// The `wl_output.done`: what xdg-output said since the last takes effect,
+    /// together, over the box as it was.
+    fn settle_logical(&mut self) {
+        let (position, size) = (self.pending_position.take(), self.pending_size.take());
+        let was = self.logical;
+        if let (Some((x, y)), Some((width, height))) = (position.or(was.map(|r| (r.x, r.y))), size.or(was.map(|r| (r.width, r.height)))) {
+            self.logical = Some(Rect { x, y, width, height });
+        }
     }
 
     /// The framebuffer size a capture of this output has.
@@ -92,6 +97,21 @@ pub struct Head {
     pub scale: Option<f64>,
     pub current_mode: Option<ObjectId>,
     scale_changed: bool,
+    /// The scale the daemon's last configuration that succeeded set this head
+    /// to. A head whose scale is still within the 1/256 the protocol carries
+    /// of it, and whose box is the one it lays the pixels out as, is at a
+    /// scale that is the daemon's own where the compositor holds what it is
+    /// set ([`held_as_set`], [`Placement::exact`]). Gone with a scale the
+    /// compositor announces for the head while no configuration of the
+    /// daemon's that sets its scale is under way ([`Head::settings`]):
+    /// another client's, or a reload's, which may read the same to 1/256 and
+    /// lay out the same box and not be the same, as a configured 1.7 does
+    /// beside the daemon's 1.69921875 on 1920 pixels.
+    set: Option<f64>,
+    /// How many configurations of the daemon's that set this head's scale are
+    /// under way, their changes possibly yet to arrive: a scale the head
+    /// announces while there is none is somebody else's ([`Head::set`]).
+    settings: u32,
 }
 
 #[derive(Default)]
@@ -118,6 +138,15 @@ pub enum ConfigKind {
     Declare { id: u64, client: ClientId, width: u16, height: u16, scale: f64, retry: bool },
 }
 
+/// A configuration out: what it was for, and the head whose scale it set and
+/// the scale, when it set one. Its success makes that scale the head's own
+/// ([`Head::set`]) whatever its client has done since: chosen another output,
+/// left, or been replaced on its desk.
+pub struct Configuration {
+    kind: ConfigKind,
+    scaled: Option<(ZwlrOutputHeadV1, f64)>,
+}
+
 impl ConfigKind {
     /// Whether this configuration is already the one asked again.
     fn retried(&self) -> bool {
@@ -133,6 +162,9 @@ impl ConfigKind {
 /// declaration still needs its answer.
 pub struct ScaleSettle {
     id: u64,
+    /// The head whose scale the configuration set, counted in its
+    /// [`Head::settings`] until this comes back.
+    scaled: Option<ZwlrOutputHeadV1>,
 }
 
 #[derive(Default)]
@@ -141,7 +173,6 @@ pub struct Outputs {
     pub heads: Vec<Head>,
     pub modes: HashMap<ObjectId, ModeInfo>,
     pub manager: Option<ZwlrOutputManagerV1>,
-    pub xdg_manager: Option<ZxdgOutputManagerV1>,
     pub serial: u32,
     /// The name of each desk's shared output, once chosen.
     pub selected: [Option<String>; 2],
@@ -185,13 +216,22 @@ impl Outputs {
     /// An output as a pointer's motion meets it ([`Placement`]), once
     /// xdg-output has said where it is laid out, with the whole layout's box.
     pub fn placement_of(&self, output: &OutputInfo) -> Option<Placement> {
-        Some(Placement { logical: output.logical()?, size: output.size(), transform: output.transform, layout: self.layout()? })
+        let (logical, size, scale) = (output.logical?, output.size(), self.scale_of(output));
+        let exact = self.set_scale(output).is_some_and(held_as_set) && lays_out(size, scale) == (logical.width, logical.height);
+        Some(Placement { logical, size, transform: output.transform, scale, exact, layout: self.layout()? })
+    }
+
+    /// The scale the daemon set `output` to, while its head's is still within
+    /// the 1/256 the protocol carries of it ([`Head::set`]).
+    pub fn set_scale(&self, output: &OutputInfo) -> Option<f64> {
+        let head = output.name.as_deref().and_then(|name| self.head(name))?;
+        head.scale.zip(head.set).filter(|(scale, set)| (scale - set).abs() < 1.0 / 256.0).map(|(_, set)| set)
     }
 
     /// The layout's box: the union of every output's, as wlroots has it
     /// (`wlr_output_layout_get_box`), or `None` before any output has one.
     pub fn layout(&self) -> Option<Rect> {
-        self.outputs.iter().filter_map(OutputInfo::logical).reduce(|a, b| {
+        self.outputs.iter().filter_map(|o| o.logical).reduce(|a, b| {
             let (x, y) = (a.x.min(b.x), a.y.min(b.y));
             Rect { x, y, width: (a.x + a.width).max(b.x + b.width) - x, height: (a.y + a.height).max(b.y + b.height) - y }
         })
@@ -348,7 +388,9 @@ impl Outputs {
             .and_then(|m| self.modes.get(m))
             .map_or(0, |m| m.refresh);
 
-        let config = manager.create_configuration(self.serial, qh, kind);
+        let scaled = scale.zip(self.selected_head(desk)).map(|(s, h)| (h.head.clone(), s));
+        let scaled_head = scaled.as_ref().map(|(head, _)| head.clone());
+        let config = manager.create_configuration(self.serial, qh, Configuration { kind, scaled });
         if let ConfigKind::Declare { id, .. } = kind {
             self.declaring = Some((id, desk));
         }
@@ -372,7 +414,74 @@ impl Outputs {
             }
         }
         config.apply();
+        if let Some(head) = self.heads.iter_mut().find(|h| Some(&h.head) == scaled_head.as_ref()) {
+            head.settings += 1;
+        }
         true
+    }
+
+    /// Whether `configure` can reconfigure the output `desk` shares: the
+    /// compositor offers wlr-output-management and the output is headless.
+    pub fn configurable(&self, desk: usize) -> bool {
+        self.manager.is_some() && self.selected(desk).is_some_and(OutputInfo::is_headless)
+    }
+
+    /// A configuration of the daemon's that set `head`'s scale succeeded: the
+    /// scale is the daemon's own ([`Head::set`]).
+    fn scale_set(&mut self, head: &ZwlrOutputHeadV1, scale: f64) {
+        if let Some(head) = self.heads.iter_mut().find(|h| h.head == *head) {
+            head.set = Some(scale);
+        }
+    }
+
+    /// A configuration of the daemon's that set `head`'s scale is over, its
+    /// changes arrived.
+    fn scale_setting_over(&mut self, head: &ZwlrOutputHeadV1) {
+        if let Some(head) = self.heads.iter_mut().find(|h| h.head == *head) {
+            head.settings = head.settings.saturating_sub(1);
+        }
+    }
+}
+
+/// The box `pixels` are laid out as at `scale`, as wlroots has it
+/// (`wlr_output_effective_resolution`): the pixels over the scale, truncated.
+fn lays_out(pixels: (u16, u16), scale: f64) -> (i32, i32) {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    ((f64::from(pixels.0) / scale).trunc() as i32, (f64::from(pixels.1) / scale).trunc() as i32)
+}
+
+/// Whether a compositor set to `scale` holds it as it is: a multiple of an
+/// eighth. The protocol carries a scale to 1/256, and Sway rounds what it is
+/// set to the 1/120 fractional-scale-v1 carries (`round(scale * 120) / 120`
+/// in its `output.c`), so 1.7 asked is 1.69921875 on the wire and 1.7 applied,
+/// where labwc applies the 1.69921875; what both hold is what is whole in
+/// both, every eighth, which the densities a browser declares mostly are.
+fn held_as_set(scale: f64) -> bool {
+    (scale * 8.0).fract() == 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{held_as_set, lays_out};
+
+    #[test]
+    fn a_scale_is_held_as_set_where_it_is_whole_in_both_the_wires_and_sways_steps() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 2.75, 3.0] {
+            assert!(held_as_set(scale), "{scale}");
+        }
+        for scale in [1.1, 1.2, 1.3, 1.7, 1.69921875, 1.09765625] {
+            assert!(!held_as_set(scale), "{scale}");
+        }
+    }
+
+    #[test]
+    fn an_output_is_laid_out_as_its_pixels_over_its_scale_truncated() {
+        assert_eq!(lays_out((1920, 1080), 1.7), (1129, 635));
+        assert_eq!(lays_out((1920, 1080), 1.69921875), (1129, 635));
+        assert_eq!(lays_out((1280, 720), 1.1), (1163, 654));
+        assert_eq!(lays_out((1280, 720), 1.09765625), (1166, 655));
+        assert_eq!(lays_out((3456, 1802), 2.75), (1256, 655));
+        assert_eq!(lays_out((1920, 1080), 0.0), (1920, 1080));
     }
 }
 
@@ -389,9 +498,10 @@ impl Dispatch<WlOutput, ()> for Compositor {
             wl_output::Event::Scale { factor } => info.wl_scale = factor,
             wl_output::Event::Name { name } => info.name = Some(name),
             wl_output::Event::Done => {
-                info.logical_position = info.pending_position.take().or(info.logical_position);
-                info.logical_size = info.pending_size.take().or(info.logical_size);
-                let appeared = !std::mem::replace(&mut info.done, true);
+                info.settle_logical();
+                // The first `done` comes before xdg-output's, which follows
+                // `get_xdg_output`: the output is here once it has its box.
+                let appeared = info.logical.is_some() && !std::mem::replace(&mut info.done, true);
                 let name = info.name.clone();
                 for desk in state.outputs.desks_on(name.as_deref()) {
                     state.geometry_changed(desk);
@@ -411,6 +521,9 @@ impl Dispatch<WlOutput, ()> for Compositor {
                     state.adopt_output();
                 }
                 state.outputs_changed();
+                // Its box, mode or transform may have changed, and with its
+                // box the layout's.
+                state.reaim();
                 // A made output is here: the next step towards the client's
                 // virtual displays, if there is one.
                 state.reconcile_virtual_displays();
@@ -437,7 +550,7 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
     fn event(state: &mut Self, _: &ZwlrOutputManagerV1, event: zwlr_output_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
         match event {
             zwlr_output_manager_v1::Event::Head { head } => {
-                state.outputs.heads.push(Head { head, name: None, enabled: false, scale: None, current_mode: None, scale_changed: false });
+                state.outputs.heads.push(Head { head, name: None, enabled: false, scale: None, current_mode: None, scale_changed: false, set: None, settings: 0 });
             }
             zwlr_output_manager_v1::Event::Done { serial } => {
                 state.outputs.serial = serial;
@@ -461,6 +574,8 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
                 // A head's scale or mode is in every entry's label, not only the
                 // shared one's.
                 state.outputs_changed();
+                // And in where a pixel is.
+                state.reaim();
             }
             zwlr_output_manager_v1::Event::Finished => warn!("the compositor withdrew wlr-output-management"),
             _ => {}
@@ -486,6 +601,11 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Compositor {
                     h.scale_changed = true;
                 }
                 h.scale = Some(scale);
+                // Announced with no setting of the daemon's under way: set by
+                // somebody else, whatever it reads ([`Head::set`]).
+                if h.settings == 0 {
+                    h.set = None;
+                }
             }
             zwlr_output_head_v1::Event::CurrentMode { mode } => h.current_mode = Some(mode.id()),
             zwlr_output_head_v1::Event::Finished => {
@@ -525,26 +645,35 @@ impl Dispatch<ZwlrOutputModeV1, ()> for Compositor {
     }
 }
 
-impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
+impl Dispatch<ZwlrOutputConfigurationV1, Configuration> for Compositor {
     fn event(
         state: &mut Self,
         config: &ZwlrOutputConfigurationV1,
         event: zwlr_output_configuration_v1::Event,
-        kind: &ConfigKind,
+        configuration: &Configuration,
         conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
+        let kind = &configuration.kind;
+        let scaled = configuration.scaled.as_ref().map(|(head, _)| head.clone());
         match event {
             zwlr_output_configuration_v1::Event::Succeeded => {
                 debug!("output configuration succeeded ({kind:?})");
+                if let Some((head, scale)) = &configuration.scaled {
+                    state.outputs.scale_set(head, *scale);
+                    // Sway sends the head's changes before `succeeded`, and a
+                    // scale set again as it was sends none: the scale is only
+                    // now known as the daemon's, which makes it exact.
+                    state.reaim();
+                }
                 if let ConfigKind::Declare { id, .. } = *kind {
                     // `succeeded` says nothing about whether a head changed: the
                     // changes and their `done` follow when there are any. Sway, the
                     // measured compositor, sends them first when it commits on the
                     // spot. One round trip later, whatever the compositor was going
-                    // to send has arrived.
-                    if state.outputs.declaring.is_some_and(|(declaring, _)| declaring == id) {
-                        conn.display().sync(qh, ScaleSettle { id });
+                    // to send has arrived, and a scale set is over.
+                    if scaled.is_some() || state.outputs.declaring.is_some_and(|(declaring, _)| declaring == id) {
+                        conn.display().sync(qh, ScaleSettle { id, scaled });
                     }
                 }
             }
@@ -552,6 +681,9 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                 // The layout changed under it: the `done` with the new serial
                 // is already read, so the same request is made again against it.
                 info!("the compositor cancelled an output configuration whose layout changed under it; asking again ({kind:?})");
+                if let Some(head) = &scaled {
+                    state.outputs.scale_setting_over(head);
+                }
                 match *kind {
                     ConfigKind::Resize { client, width, height, .. } => {
                         if let Some(desk) = state.desk_of(client) {
@@ -574,6 +706,9 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
             }
             zwlr_output_configuration_v1::Event::Failed | zwlr_output_configuration_v1::Event::Cancelled => {
                 warn!("the compositor refused an output configuration ({kind:?})");
+                if let Some(head) = &scaled {
+                    state.outputs.scale_setting_over(head);
+                }
                 match *kind {
                     ConfigKind::Resize { client, .. } => {
                         if let Some(desk) = state.desk_of(client) {
@@ -598,9 +733,11 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
 
 impl Dispatch<WlCallback, ScaleSettle> for Compositor {
     fn event(state: &mut Self, _: &WlCallback, event: wl_callback::Event, settle: &ScaleSettle, _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_callback::Event::Done { .. } = event
-            && let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == settle.id)
-        {
+        let wl_callback::Event::Done { .. } = event else { return };
+        if let Some(head) = &settle.scaled {
+            state.outputs.scale_setting_over(head);
+        }
+        if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == settle.id) {
             info!("the compositor applied the declaration's configuration without changing the scale; reporting the output as it is");
             state.answer_geometry(desk, None);
             state.declaration_settled();

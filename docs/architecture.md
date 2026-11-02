@@ -1645,13 +1645,45 @@ logical position and size, version 3 of it, which the daemon does not start
 without, which are the compositor's own
 (`wlr_output_effective_resolution`: the pixels over the scale, truncated), taken
 together at the `wl_output.done` that follows them, so nothing is reckoned here
-that the compositor reckons otherwise, and the layout's
-box is their union, as `wlr_output_layout_get_box` has it. The output's pixels
-are spread over its box, as wlroots spreads a pointer's mapped to the output:
-at a whole scale, 1x or 2x as zDesk declares, each pixel's own place, and at a
-fractional one, whose pixels run past the box they truncate to, a place short
-of the pixel by up to two, as the pointer mapped to the output had it (exact at
-any fractional scale is on the [roadmap](roadmap.md)). The framebuffer is the output's buffer as screencopy gives it, so a
+that the compositor reckons otherwise, and the layout's box is their union, as
+`wlr_output_layout_get_box` has it. An output is listed, and can be shared,
+only from the `done` that gives it its box (the first `done` comes before
+xdg-output has said anything), and a pointer event with no box to aim at sends
+no motion, press or wheel, since a press would land wherever the seat's one
+cursor is, perhaps on the other desk's output; a release of a button held is
+still sent, so none is left down. Both desks' pointers move the seat's one
+cursor, so the daemon keeps which desk last put it where its client wants it.
+A scroll from the other desk first takes the cursor back to where its own
+client last put it, over its output as it now is, and is dropped where there is
+no such place, before its first motion on the output or with nothing to aim at,
+rather than scroll whatever the cursor is over. The pixel's place within the output is its
+pixels over the scale it is laid out at. A scale the daemon set, as a density
+declaration does, and the compositor holds as set is the compositor's own and
+comes back as it went, so a motion lands on its pixel exactly. The protocol
+carries a scale to 1/256, and Sway rounds what it is set to the 1/120 that
+fractional-scale-v1 carries, so 1.7 asked is 1.69921875 on the wire and 1.7
+applied, where labwc applies the 1.69921875: what both hold is what is whole in
+both, every eighth, which a browser's densities mostly are (1.25, 1.5, 1.75, 2,
+2.75), and a declared 1.1 or 1.7 is placed as any other scale is. The head
+the configuration set keeps the scale it set once it succeeds, wherever its
+client has gone since, and the
+scale is the daemon's own until the compositor announces another for the head
+while no setting of that head's scale by the daemon is under way — a reload's or another client's,
+which may read the same to 1/256 and lay out the same box, as a configured 1.7
+does beside the daemon's 1.69921875 on 1920 pixels — or the box is no longer
+the one it lays the pixels out as. A declaration whose scale the output already
+has sets it again unless it is known that way, since one left by an earlier run
+or configured reads the same and is not the same. Any other scale the compositor
+says to 1/256 truncated (wlr-output-management puts its `float` in a `wl_fixed`:
+Sway says 1.09765625 for a configured 1.1), so the scale is from what came to a
+step above it, and the box bounds it besides — above the pixels over one unit
+more than the box's and not above the pixels over the box's, on each axis; the
+middle of what both leave is taken, which is within half the scale in pixels at
+the output's far edge (a configured 1.1 or 1.7 on 1920 pixels lands every pixel
+on itself, 1.3 within 0.65 of one, its last hundred pixels one short), and a
+scale set to 1/256 by another client whose pixels the box divides whole, 1.5 on
+1920, lies at the top of the bounds and is taken exactly. The
+framebuffer is the output's buffer as screencopy gives it, so a
 client's positions are in its untransformed orientation, which wlroots turns by
 the output's transform for a pointer mapped to an output and leaves alone for
 one that is not, so the daemon turns them. A position past the extent, which the
@@ -1660,32 +1692,48 @@ extent is spread over the output as it is, which a resize makes another size
 until the framebuffer follows. The place is held within the output's box as
 wlroots holds a point it puts on an output, 1/256 of a unit short of the far
 edges (`wlr_box_closest_point`), since a point on the edge two outputs share is
-the next one's; so a fractional scale cannot reach its last pixel or two,
-which are on no output. What is sent is the least numerator whose place, as
-wlroots computes it in the same arithmetic, is not short of the pixel's: a
-client is sent the place to 1/256 of a unit and Chromium floors it, so a place a
-hair under the integer is a pixel back where one a hair over is the pixel itself
-(measured in a kiosk Chromium on Sway: a landing at 108.99999992 read as 108,
-one at 984.0000001 as 984); and it is moved a part back where that put the place
-outside the box.
+the next one's; so a fractional scale, whose pixels run past the box they
+truncate to, cannot reach its last pixel or two, which are on no output. What is
+sent is the least numerator whose place, as wlroots computes it in the same
+arithmetic, is not short of the pixel's: a client is sent the place to 1/256 of
+a unit, truncated (`wl_fixed_from_double`), and Chromium floors it, so a place
+a hair under the pixel's edge is a pixel back where one a hair over is the
+pixel itself (measured in a kiosk Chromium on Sway: a landing at 108.99999992
+read as 108, one at 984.0000001 as 984); and it is moved a part back where that
+put the place outside the box. For the same reason the place is first taken up
+to the next 1/256 of a unit: at a fractional scale a pixel's edge falls between
+the steps a client is sent, 2593 at 2.75 at 942.909… units, and the step below
+it, 942.90625, is pixel 2592 to a client that multiplies and floors. A step is
+a fraction of a pixel at any scale under 256, and the compositor rounds the
+cursor's place to the output's pixels, so the cursor stays on the pixel.
 
 A pointer bound to nothing has no binding for the compositor to lose. labwc,
 whenever the outputs are laid out anew and whenever it reloads its
 configuration, and Sway, whenever it reloads its configuration, map every
 pointer back to the output its device names, none for a virtual one, which
 stretches a pointer made with an output across the whole layout and leaves one
-made without as it was. So a reload changes nothing, a layout change is taken
-from xdg-output at the next motion, and a pointer is made once: the desktop's
+made without as it was. So a reload changes nothing, and a pointer is made once: the desktop's
 at the start, the display beside's with its client. A switch to another output
 lets go of what the client holds, since a press does not carry over, and keeps
-the pointer. A pointer event with nothing to aim at, before xdg-output has given
-the output its box, moves nothing and presses nothing, which would land wherever
-the cursor is, and lets go of what the client let go of. `scripts/pointer-e2e.sh` runs all of it against a throwaway
+the pointer. A layout change — an output added, moved, resized, rescaled or
+taken away — takes effect in the compositor before the daemon hears of it, so a
+motion in between is aimed over the layout as it was and lands elsewhere: an
+output added beside doubles the box, and a motion to the middle of the first
+lands on the second. Whatever the daemon hears of an output — each
+`wl_output.done`, each output-management `done`, an output going away, a
+configuration's `succeeded`, after which a scale it set is known as the
+daemon's and exact — puts the cursor, when the desk that last moved it has a
+placement that changed, back where that desk's client last put it, aimed over
+the placement as it now is: its box or the layout's, or its
+size, scale or transform, which a turn by 180 changes with the box as it was, so the cursor is wrong for no longer than the daemon
+takes to hear; a press in that moment lands where the motion did, which a
+pointer bound to its output would not, and which the compositor gives no way to
+close: nothing it sends comes before its layout changes. `scripts/pointer-e2e.sh` runs all of it against a throwaway
 headless labwc or Sway with two outputs, the client on the desktop and the
 display beside it as two `video-sink`s and `examples/cursor-watch` the witness,
 which says where the compositor put the cursor after every motion: edges, a
-drag past one, resizes, a whole and a fractional scale, a turned output, and
-reloads.
+drag past one, resizes, a whole and a fractional scale, a scale the protocol
+rounds, a turned output, and reloads.
 Wheel "buttons" become discrete axis events, a notch apiece.
 
 A notch is all RFB can say, so a touchpad glide or two fingers on a phone would
@@ -1696,10 +1744,7 @@ positive rightward and downward — after the `PointerEvent` that says where. It
 has no pseudo-encoding, the server having no state to hold for it and nothing
 to answer. Logical pixels are the units an axis is in, so the distance is
 injected as it arrives, as a continuous axis: what a touchpad plugged into the
-machine sends, which an application spends as the distance it is. Both desks'
-pointers move the seat's one cursor, so a distance from the desk that did not
-move it last first puts it back where its own client last aimed, and is
-dropped where that client has aimed nowhere on its output yet.
+machine sends, which an application spends as the distance it is.
 
 The clipboard is shared as UTF-8 text through Extended Clipboard, and only
 that way: latin-1 cut text is dropped in both directions, and a client that

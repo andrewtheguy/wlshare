@@ -18,7 +18,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compositor="${COMPOSITOR:-labwc}"
 port="${PORT:-5999}"
-scenarios="${SCENARIOS:-edge drag resize scale fractional rotate reload reload-far}"
+scenarios="${SCENARIOS:-edge drag resize scale fractional fractional-left rotate reload reload-far inexact inexact-reload}"
 runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 command -v "${compositor}" >/dev/null || { echo "no ${compositor} to run" >&2; exit 2; }
 command -v wlr-randr >/dev/null || { echo "no wlr-randr to lay the outputs out with" >&2; exit 2; }
@@ -55,7 +55,9 @@ trap stop EXIT
 # start NAME: the compositor, the daemon, the watch and both sinks, the outputs
 # 1280x720 (HEADLESS-1 at FIRST_SIZE if given) side by side, HEADLESS-1 left.
 # Whatever LAYOUT holds is then passed to wlr-randr, after the sinks' sizes, as
-# the scenario's own arrangement.
+# the scenario's own arrangement; PRELAYOUT is passed before the daemon starts,
+# as what an earlier run or another client left; and EXTRA_CONFIG goes into
+# Sway's configuration as a line of its own.
 start() {
 	local dir="${work}/$1"
 	mkdir -p "${dir}/cfg"
@@ -75,6 +77,7 @@ start() {
 			echo "exec echo \$WAYLAND_DISPLAY > ${dir}/display"
 			echo "output HEADLESS-1 pos 0 0"
 			echo "output HEADLESS-2 pos 1280 0"
+			echo "${EXTRA_CONFIG:-}"
 		} > "${dir}/cfg/sway"
 		env -u WAYLAND_DISPLAY -u DISPLAY -u SWAYSOCK XDG_RUNTIME_DIR="${runtime}" \
 			WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=2 WLR_LIBINPUT_NO_DEVICES=1 \
@@ -89,6 +92,10 @@ start() {
 	export WAYLAND_DISPLAY="$(cat "${dir}/display")" XDG_RUNTIME_DIR="${runtime}"
 	if [[ ${compositor} == sway ]]; then
 		export SWAYSOCK="$(ls -t "${runtime}"/sway-ipc.*."${comp}".sock | head -n 1)"
+	fi
+	if [[ -n ${PRELAYOUT:-} ]]; then
+		wlr-randr ${PRELAYOUT}
+		sleep 0.5
 	fi
 	printf 'listen = "127.0.0.1:%s"\noutput = "HEADLESS-1"\n' "${port}" > "${dir}/config.toml"
 	RUST_LOG=info,wlshare::input=trace,wlshare::compositor=trace,wlshare::cursor=trace,wlshare::outputs=debug \
@@ -145,7 +152,7 @@ finish() {
 
 for scenario in ${scenarios}; do
 	echo "== ${scenario} (${compositor})"
-	LAYOUT="" FIRST_FLAGS="" BESIDE_FLAGS="" FIRST_SIZE=""
+	LAYOUT="" PRELAYOUT="" FIRST_FLAGS="" BESIDE_FLAGS="" FIRST_SIZE="" EXTRA_CONFIG=""
 	case "${scenario}" in
 	edge)
 		# Across the edge the outputs share, back and forth between the
@@ -199,10 +206,13 @@ for scenario in ${scenarios}; do
 		check scale HEADLESS-2 640,360
 		;;
 	fractional)
-		# The first output at 3456x1802 and scale 2.75, laid out as 1256x655
-		# layout units, which wlroots truncates it to: a motion lands short of
-		# its pixel by up to two of them, and the middle at 2591,901.
-		FIRST_SIZE=3456x1802 LAYOUT="--output HEADLESS-1 --scale 2.75 --output HEADLESS-2 --pos 1256,0"
+		# The first output at 3456x1802 and scale 2.75, declared by the client
+		# as zDesk declares a browser's density, so the scale is the daemon's
+		# own, and laid out as 1256x655 layout units, which wlroots truncates
+		# it to: a motion lands on its pixel, the middle at 2593,901, and the
+		# last two pixels across, which are on no output, at the box's far
+		# edge.
+		FIRST_SIZE=3456x1802 FIRST_FLAGS="--density 2.75" LAYOUT="--output HEADLESS-2 --pos 1256,0"
 		start "${scenario}"
 		for y in 100 600 1100 1700; do
 			for x in 2593 3000 3300 3400 3455; do a "${x}" "${y}"; done
@@ -210,7 +220,26 @@ for scenario in ${scenarios}; do
 		done
 		a 2593 901
 		finish
-		check fractional HEADLESS-1 2591,901
+		check fractional HEADLESS-1 2593,901
+		;;
+	fractional-left)
+		# The same, with the output already at 2.75 before the daemon starts,
+		# as an earlier run or another client leaves it: the scale reads the
+		# same but is not known to be the daemon's own, so the declaration
+		# sets it again, and a motion lands on its pixel.
+		FIRST_SIZE=3456x1802 PRELAYOUT="--output HEADLESS-1 --custom-mode 3456x1802 --scale 2.75" FIRST_FLAGS="--density 2.75" LAYOUT="--output HEADLESS-2 --pos 1256,0"
+		start "${scenario}"
+		for y in 100 1100; do
+			for x in 2593 3400; do a "${x}" "${y}"; done
+			b 640 360
+		done
+		a 2593 901
+		finish
+		check fractional-left HEADLESS-1 2593,901
+		if ! grep -q "following client" "${scenario_dir}/wlshare.log"; then
+			echo "FAIL fractional-left: the declaration set nothing"
+			failed=1
+		fi
 		;;
 	rotate)
 		# The first output turned a quarter, so its upright place is 720x1280
@@ -243,6 +272,53 @@ for scenario in ${scenarios}; do
 			finish
 			check "${scenario}" HEADLESS-1 1000,360
 		fi
+		;;
+	inexact)
+		# A scale from the configuration, 1.1 and then 1.7, which wlroots lays
+		# the first output's 1280x720 pixels out by, as 1163x654 and 752x423,
+		# and says over wlr-output-management a 1/256 step short, as
+		# 1.09765625 and 1.69921875: a motion is placed by what the wire's
+		# step and the box leave, not by the scale the wire says. Sway alone
+		# takes a scale from its configuration here.
+		if [[ ${compositor} != sway ]]; then
+			echo "     (skipped: a configured scale is Sway's)"
+			continue
+		fi
+		for pair in 1.1:1163 1.7:752; do
+			EXTRA_CONFIG="output HEADLESS-1 scale ${pair%:*}" LAYOUT="--output HEADLESS-2 --pos ${pair#*:},0"
+			start "${scenario}-${pair%:*}"
+			for y in 100 400 700; do
+				a 1279 "${y}"; a 1300 "${y}"; b 0 "${y}"; a 600 "${y}"
+			done
+			a 640 360; b 640 360
+			finish
+			check "inexact ${pair%:*}" HEADLESS-1 640,360
+			check "inexact ${pair%:*}" HEADLESS-2 640,360
+		done
+		;;
+	inexact-reload)
+		# The client declares a scale that is no eighth, 1.1 on 1280x720 and
+		# 1.7 on 1920x1080, which Sway rounds to its 1/120 and so applies as
+		# declared while the wire says 1.09765625 and 1.69921875, and a reload
+		# then applies the configuration's own, the same: the scale is placed
+		# by what the wire and the box leave throughout, never taken as the
+		# wire's, which would put 1088 at 1.7 on 1089, and the scale the
+		# compositor announces at the reload forgets what the daemon set.
+		if [[ ${compositor} != sway ]]; then
+			echo "     (skipped: a configured scale is Sway's)"
+			continue
+		fi
+		for spec in "1.1 1280x720 1166 600,100" "1.7 1920x1080 1129 1088,400"; do
+			read -r s size pos last <<< "${spec}"
+			EXTRA_CONFIG="output HEADLESS-1 scale ${s}" FIRST_SIZE="${size}" FIRST_FLAGS="--density ${s}" LAYOUT="--output HEADLESS-2 --pos ${pos},0"
+			start "${scenario}-${s}"
+			a 600 100; a 1088 400; b 640 360
+			reload
+			a 600 100; a 1088 400; b 640 360; a "${last%,*}" "${last#*,}"
+			finish
+			check "inexact-reload ${s}" HEADLESS-1 "${last}"
+			check "inexact-reload ${s}" HEADLESS-2 640,360
+		done
 		;;
 	*)
 		echo "${scenario}: no such scenario" >&2
