@@ -96,6 +96,16 @@ pub fn rows(rects: &[Rect], height: u16) -> Vec<Range<u16>> {
     merged
 }
 
+/// The scale the output a capture was made on was drawn at, which the file
+/// does not say: its name does, `NAME-WxH@S` with `.wlcap` and `.zst` after,
+/// and without an `@` it is 1. The tiles' benches read it, as the session hands
+/// the encoder the output's.
+#[allow(dead_code)]
+pub fn named_scale(name: &str) -> f64 {
+    let stem = name.rsplit('/').next().unwrap_or(name).trim_end_matches(".zst").trim_end_matches(".wlcap");
+    stem.rsplit_once('@').and_then(|(_, scale)| scale.parse().ok()).filter(|s: &f64| *s > 0.0).unwrap_or(1.0)
+}
+
 /// A capture being written: the magic at once, then a frame for every call.
 pub struct Writer<W: Write> {
     out: W,
@@ -337,6 +347,14 @@ mod tests {
         assert_eq!(rows(&[rect(0, 3, 1, 2), rect(0, 5, 1, 1)], 10), vec![3..6]);
         assert_eq!(rows(&[rect(0, 10, 1, 1), rect(0, 4, 1, 0)], 10), Vec::<Range<u16>>::new());
         assert_eq!(rows(&[rect(0, 65535, 1, 65535)], 65535), Vec::<Range<u16>>::new());
+    }
+
+    #[test]
+    fn a_captures_scale_is_in_its_name() {
+        assert_eq!(named_scale("/a/mixed-2880x1800@2.wlcap.zst"), 2.0);
+        assert_eq!(named_scale("browser-2560x1600@1.5.wlcap"), 1.5);
+        assert_eq!(named_scale("mixed-1920x1080.wlcap.zst"), 1.0);
+        assert_eq!(named_scale("x@nope.wlcap"), 1.0);
     }
 
     #[test]

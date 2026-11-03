@@ -784,7 +784,10 @@ the picture.
   ([measured](tiles-performance.md#the-cache)).
 - **On a held list, what moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
-  components, one under 5 tiles is left to PNG, boxes merge unless the merged
+  components, one under 5 tiles' area of the layout is left to PNG — 5 at
+  scale 1, 20 at 2, `ceil(5 × scale²)` and never fewer than 5, the scale the
+  session's output is drawn at, so a spinner or a progress bar drawn at 2,
+  four times the tiles it covers at 1, is no more a video for it — boxes merge unless the merged
   box would be more than twice the moving tiles, and at most 4 regions stream
   at once. The regions are laid out again at most every 500 ms: one that
   shrinks keeps its stream, one that grows is started again at a keyframe, one

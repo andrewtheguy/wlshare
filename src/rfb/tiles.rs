@@ -271,7 +271,9 @@ const RETUNE: Duration = Duration::from_millis(500);
 const STREAM_IDLE: Duration = Duration::from_millis(1000);
 /// The most tiles a merge may cover, as a multiple of the moving tiles it joins.
 const MERGE_WASTE: u32 = 2;
-/// The fewest moving tiles a component needs to be worth a stream.
+/// The fewest moving tiles a component needs to be worth a stream at scale 1:
+/// at another, the same area of the layout, 64×64 of its pixels a tile here
+/// ([`stream_cells`]).
 const MIN_STREAM_CELLS: u32 = 5;
 /// How long a tile a stream carried is still before it is owed its still.
 const CLEANUP_IDLE: Duration = Duration::from_millis(500);
@@ -369,8 +371,17 @@ struct Component {
     moving: u32,
 }
 
-/// The 4-connected components of `cells` worth a stream.
-fn components(cells: &[(u16, u16)]) -> Vec<Component> {
+/// The fewest moving tiles a component needs to be worth a stream on an
+/// output drawn at `scale`: [`MIN_STREAM_CELLS`]'s area of the layout, so a
+/// spinner or a progress bar drawn at 2 covers four times the tiles it does at
+/// 1 and is no more a video for it; and never fewer than at 1, where fewer
+/// tiles than that are not worth a stream's keyframe and encoder.
+fn stream_cells(scale: f64) -> u32 {
+    ((f64::from(MIN_STREAM_CELLS) * scale * scale).ceil() as u32).max(MIN_STREAM_CELLS)
+}
+
+/// The 4-connected components of `cells` of at least `least` tiles.
+fn components(cells: &[(u16, u16)], least: u32) -> Vec<Component> {
     let remaining: HashSet<(u16, u16)> = cells.iter().copied().collect();
     let mut sorted: Vec<(u16, u16)> = remaining.iter().copied().collect();
     sorted.sort_unstable();
@@ -394,7 +405,7 @@ fn components(cells: &[(u16, u16)]) -> Vec<Component> {
         }
         components.push(Component { bbox, moving });
     }
-    components.retain(|c| c.moving >= MIN_STREAM_CELLS);
+    components.retain(|c| c.moving >= least);
     components
 }
 
@@ -934,6 +945,9 @@ pub struct TilesEncoder {
     quality: u8,
     /// The walk has slowed the frames: no debt is paid until it has not.
     coarse: bool,
+    /// The fewest moving tiles a region is laid out over, for the scale the
+    /// output is drawn at ([`stream_cells`]).
+    stream_cells: u32,
     /// When a read last found a tile changed.
     changed_at: Duration,
     /// The coder every stream is opened on.
@@ -987,6 +1001,7 @@ impl TilesEncoder {
             ceiling: crate::rfb::QUALITY,
             quality: crate::rfb::QUALITY,
             coarse: false,
+            stream_cells: MIN_STREAM_CELLS,
             changed_at: Duration::ZERO,
             coder,
             scratch: Vec::new(),
@@ -1022,6 +1037,13 @@ impl TilesEncoder {
         }
         self.coarse = coarse;
         self.quality = quality;
+    }
+
+    /// The scale the output is drawn at, 1 until it is said: the fewest
+    /// moving tiles a region is laid out over from the next layout on
+    /// ([`stream_cells`]). A live stream is kept, or ends, by that layout.
+    pub fn set_scale(&mut self, scale: f64) {
+        self.stream_cells = stream_cells(scale);
     }
 
     /// A new picture, a walk the list did not name before: what the client
@@ -1959,7 +1981,7 @@ impl TilesEncoder {
         if self.picture != TilesPicture::Held {
             return Ok(());
         }
-        let worthy = components(moving);
+        let worthy = components(moving, self.stream_cells);
         let busy: HashSet<(u16, u16)> = moving.iter().copied().filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell))).collect();
         for live in &mut self.live {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
@@ -2936,6 +2958,35 @@ mod tests {
         assert_eq!(page.ends, 1, "the stream ended");
         assert_eq!(page.off(&pixels), 0, "the picture settled lossless");
         assert!(page.streams.is_empty());
+    }
+
+    /// The fewest moving tiles a stream needs is an area of the layout: at
+    /// scale 2 a spinner over 3×3 tiles, 96 of the layout's pixels across,
+    /// stays stills, lossless throughout, where at 1 it streams; a video at 2
+    /// four times a widget's tiles streams as at 1.
+    #[test]
+    fn a_stream_needs_an_area_of_the_layout() {
+        assert_eq!([0.5, 1.0, 1.25, 1.5, 2.0, 3.0].map(stream_cells), [5, 5, 8, 12, 20, 45]);
+        let (w, h) = (640u16, 384u16);
+        let spin = |scale: f64, moving: Rect| {
+            let mut pixels = noise(w, h, 4);
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            encoder.set_scale(scale);
+            let mut page = Page::new(w, h);
+            step(&mut encoder, &mut page, &pixels, None, ms(0));
+            let mut lossless = true;
+            for n in 1..=40u32 {
+                paint(&mut pixels, w, moving, 500 + n);
+                step(&mut encoder, &mut page, &pixels, Some(&[moving]), ms(u64::from(n) * 50));
+                lossless &= page.off(&pixels) == 0;
+            }
+            (page.starts, lossless)
+        };
+        let spinner = Rect { x: 96, y: 96, width: 160, height: 160 };
+        assert_eq!(spin(1.0, spinner).0, 1, "9 tiles at 1 stream");
+        assert_eq!(spin(2.0, spinner), (0, true), "9 tiles at 2 are stills, lossless throughout");
+        let video = Rect { x: 128, y: 64, width: 384, height: 256 };
+        assert_eq!(spin(2.0, video).0, 1, "24 tiles at 2 stream");
     }
 
     /// A stream that ends with damage no frame of it carried leaves that

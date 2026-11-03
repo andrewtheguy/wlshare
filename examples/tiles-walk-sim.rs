@@ -43,6 +43,9 @@
 //! their damage with the next; and what the encoder owes once the desktop
 //! stops goes out on its tick, as an update that waits for the fence and the
 //! walk's interval as any other. The capture is the daemon's default, 30 Hz.
+//! The output's scale is each capture's name's, `@2` in `mixed-2880x1800@2`
+//! and 1 without one ([`wlcap::named_scale`]), which the fewest tiles a region
+//! is laid out over follows as a session's follows its output's.
 //! The gateway passes each rectangle as a record
 //! of its own, its body taking its share of the budget. Each update is the
 //! walk's to judge as the session judges it: a keyframe or the tick's alone is
@@ -451,6 +454,7 @@ fn main() -> Result<(), Error> {
         let encoder = encoder.as_mut().unwrap();
         out.clear();
         if dirty {
+            encoder.set_scale(d.scale);
             encoder.read(&d.pixels, usize::from(w) * 4, damage.as_deref(), now)?;
         }
         let update = encoder.encode(now, &mut out)?;
