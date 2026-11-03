@@ -9,8 +9,9 @@
 //!
 //! Nothing here touches an OS API. The audio extension's FLAC encoder is
 //! `sound-flac`'s own, in plain Rust, and its Opus encoder libopus from a
-//! prebuilt static archive. The H.264 the video and tiles encodings code with
-//! is the daemon's, handed in as an [`H264Coder`]. Tests here use an
+//! prebuilt static archive. The H.264 the video and tiles encodings code with,
+//! and the HEVC the video encoding may, is the daemon's, handed in as a
+//! [`VideoCoder`]. Tests here use an
 //! independent decoder for every encoder, so the two halves cannot share a
 //! misunderstanding.
 //!
@@ -111,38 +112,40 @@ pub const QUALITY_MAX: u8 = 100;
 /// reads sharp in motion.
 pub const QUALITY: u8 = 90;
 
-/// Why an H.264 coder could not open or code a stream: its encoder's reason,
+/// Why a video coder could not open or code a stream: its encoder's reason,
 /// in its own words.
-pub type H264Error = Box<dyn std::error::Error + Send + Sync>;
+pub type CoderError = Box<dyn std::error::Error + Send + Sync>;
 
-/// The H.264 coder the daemon hands the video encoding's encoder and the
-/// tiles encoding's ([`video::VideoEncoder`], [`tiles::TilesEncoder`]): its
-/// host's encoder, the hardware's where the host has one and libx264
-/// otherwise, each frame one Annex B access unit, the parameter sets ahead of
-/// each keyframe's slices, 8-bit 4:2:0 BT.601 at studio swing, the picture
-/// the stream's size rounded up to even sides. The video encoding opens a
-/// stream of it over the whole desktop, the tiles one for each region that
-/// moves, and a failure to open or to code is its encode's.
-pub trait H264Coder: Send {
+/// A coder the daemon hands the video encoding's encoder and the tiles
+/// encoding's ([`video::VideoEncoder`], [`tiles::TilesEncoder`]): each frame
+/// one Annex B access unit, the parameter sets ahead of each keyframe's
+/// slices, 8-bit BT.601 at studio swing, the picture the stream's size rounded
+/// up to even sides. The H.264 coder is its host's encoder, the hardware's
+/// where the host has one and libx264 otherwise, at 4:2:0 ([`crate::h264`]),
+/// and is what both encodings are handed; the HEVC one is NVIDIA's, at 4:4:4
+/// ([`crate::hevc`]), and the tiles' regions are never coded by it. The video
+/// encoding opens a stream of it over the whole desktop, the tiles one for
+/// each region that moves, and a failure to open or to code is its encode's.
+pub trait VideoCoder: Send {
     /// A stream over a `width`×`height` picture, which codes nothing until
     /// read into.
-    fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error>;
+    fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn VideoStream>, CoderError>;
 }
 
-/// One stream as an [`H264Coder`] codes it: read, then encode.
-pub trait H264Stream: Send {
+/// One stream as a [`VideoCoder`] codes it: read, then encode.
+pub trait VideoStream: Send {
     /// Read `pixels` — `B, G, R, X`, the stream's size, rows `stride` bytes
     /// apart — as the picture the next frame carries, where `changed` says
     /// it differs from the read before, or anywhere for `None`; the first
     /// read is the whole picture whatever `changed` says. Only the rectangles
-    /// are read, widened to the 2×2 blocks they touch, so the rest of
-    /// `pixels` need not be the picture.
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error>;
+    /// are read, at 4:2:0 widened to the 2×2 blocks they touch, so the rest
+    /// of `pixels` need not be the picture.
+    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), CoderError>;
     /// Encode the picture as last read at `quality`, the 1–100 dial, and
     /// append the frame to `out`, a keyframe where `keyframe` asks for one and
     /// for the stream's first either way: `true` for a frame appended, and
     /// `false` where the coder made none of the picture, nothing appended, and
     /// the whole picture owed to the next frame. The quality is each frame's
     /// own, so a stream follows the walk with no keyframe.
-    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error>;
+    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, CoderError>;
 }

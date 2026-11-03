@@ -249,7 +249,7 @@ fn run(
             }
         };
     }
-    let expected = Picture { width: usize::from(format.width), height: usize::from(format.height) };
+    let expected = Picture::yuv420(usize::from(format.width), usize::from(format.height));
     let feed = Rc::new(RefCell::new(Feed {
         client,
         decoder: up!(Decoder::new(), "opening the camera's decoder"),
@@ -452,7 +452,7 @@ mod tests {
         assert!(fits(format(3840, 2160)).is_ok());
         assert!(fits(format(4096, 2305)).is_err());
         assert!(fits(format(u16::MAX, u16::MAX)).is_err());
-        let largest = Picture { width: 4096, height: 2304 };
+        let largest = Picture::yuv420(4096, 2304);
         assert!(i32::try_from(largest.bytes()).is_ok());
     }
 }

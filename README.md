@@ -234,14 +234,16 @@ processor more than its target's baseline. The daemon is the package at
 the repository's root, the protocol crate under `crates/`. A bare `cargo
 test` covers both; elsewhere `cargo test -p wlshare-proto` covers the
 second. Its H.264 tests decode with libavcodec, libx264's frames on every
-machine and the hardware's where there is a VA-API encoder. Build the daemon with `cargo build --release` on a
+machine and the hardware's where there is a VA-API encoder, and its HEVC
+4:4:4 tests NVENC's frames where there is an NVIDIA GPU that codes them. Build the daemon with `cargo build --release` on a
 Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
-`libavcodec-dev`, `libx264-dev`, `libva-dev`, `libclang-dev` and
-`pkg-config`. libclang links nothing: PipeWire's, FFmpeg's and x264's `-sys`
-crates and the daemon's `build.rs`, for libva's, generate their bindings with
+`libavcodec-dev`, `libx264-dev`, `libva-dev`, `libffmpeg-nvenc-dev`,
+`libclang-dev` and `pkg-config`. libclang links nothing: PipeWire's, FFmpeg's and x264's `-sys`
+crates and the daemon's `build.rs`, for libva's and NVENC's, generate their bindings with
 bindgen, which
-loads it at build time.
+loads it at build time. NVENC's are headers alone: the NVIDIA driver's
+libraries are loaded at run time where the host has them.
 
 `scripts/capture-frames.sh` builds and runs the capture container
 (`docker/capture/`), with docker or with podman: a headless sway and the daemon started with

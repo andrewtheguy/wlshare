@@ -26,6 +26,10 @@ mod cursor;
 mod decode;
 mod framebuffer;
 mod h264;
+// The HEVC 4:4:4 coder over NVENC, tested on its own; the video stream takes
+// it once the client can ask for it.
+#[cfg_attr(not(test), expect(dead_code, reason = "no session codes HEVC yet: the wire has no way to ask for it"))]
+mod hevc;
 mod input;
 mod microphone;
 mod outputs;

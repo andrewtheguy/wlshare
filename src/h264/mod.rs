@@ -5,7 +5,7 @@
 //!
 //! The video stream is one stream over the whole desktop
 //! ([`crate::rfb::video`]), and a region of the tiles picture one over its
-//! rectangle alone ([`crate::rfb::tiles`]), each coded by the [`H264Coder`]
+//! rectangle alone ([`crate::rfb::tiles`]), each coded by the [`VideoCoder`]
 //! the daemon hands its encoder. This is that coder. On a host whose GPU has
 //! an H.264 encoder a VA-API driver reaches — Intel's iHD, AMD's Mesa — a
 //! picture that moves costs the processor its conversion to NV12 and nothing
@@ -68,7 +68,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use log::info;
-use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
+use crate::rfb::{VideoCoder, CoderError, VideoStream, Rect};
 
 /// The H.264 encoder the startup found, which every session's coder opens.
 #[derive(Debug)]
@@ -155,12 +155,12 @@ pub enum Coder {
     X264,
 }
 
-impl H264Coder for Coder {
-    fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
-        let opened: anyhow::Result<Box<dyn H264Stream>> = (|| {
+impl VideoCoder for Coder {
+    fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn VideoStream>, CoderError> {
+        let opened: anyhow::Result<Box<dyn VideoStream>> = (|| {
             anyhow::ensure!(width > 0 && height > 0, "a {width}x{height} picture has no pixels");
             let planes = Planes::new(width, height);
-            let stream: Box<dyn H264Stream> = match self {
+            let stream: Box<dyn VideoStream> = match self {
                 Self::Vaapi(display, low_power) => Box::new(Stream { backend: vaapi::Stream::open(display.clone(), *low_power, planes.coded)?, planes }),
                 Self::X264 => Box::new(Stream { backend: x264::Stream::open(planes.coded)?, planes }),
             };
@@ -184,12 +184,12 @@ struct Stream<B> {
     backend: B,
 }
 
-impl<B: Backend> H264Stream for Stream<B> {
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
+impl<B: Backend> VideoStream for Stream<B> {
+    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), CoderError> {
         self.planes.read_bgrx(pixels, stride, changed).map_err(|e| format!("{e:#}").into())
     }
 
-    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, CoderError> {
         let coded: anyhow::Result<bool> = (|| {
             anyhow::ensure!(self.planes.filled, "a stream was asked for a frame before any picture was read into it");
             self.backend.frame(&self.planes, keyframe, qp(quality), out)
@@ -199,8 +199,8 @@ impl<B: Backend> H264Stream for Stream<B> {
 }
 
 /// The QP a dial asks for: 40 at 1, 16 at 100, finer as the dial rises;
-/// H.264's step doubles every six.
-fn qp(quality: u8) -> u8 {
+/// H.264's step doubles every six, and HEVC's ([`crate::hevc`]) the same.
+pub fn qp(quality: u8) -> u8 {
     let quality = i32::from(quality.clamp(1, 100));
     (40 - ((quality - 1) * 24 + 49) / 99) as u8
 }
@@ -346,7 +346,7 @@ pub fn nal_types(unit: &[u8]) -> Vec<u8> {
 }
 
 /// A picture of noise as `B, G, R, X`, which no prediction codes for free.
-fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
+pub fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
     let mut state = seed;
     (0..w * h)
         .flat_map(|_| {

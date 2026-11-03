@@ -12,7 +12,8 @@ own: a bench's a row per capture per coder, as the bench measured it; a
 check's a row per capture; walk-sim's and tiles-walk-sim's a row per run, its
 lines gathered from every log given, the picture it played named. Given more
 than one bench's log, the tiles of each capture come last in one table, a
-column per log, and so does `WLSV`, a column per dial it was coded at: what
+column per log, and so does `WLSV`, a column per codec and dial it was coded
+at, H.264 and HEVC 4:4:4 apart: what
 each cost the processor, the link, and where the picture ended.
 """
 import json
@@ -37,11 +38,11 @@ def mb(n):
 def bench_section(name, rows):
     out = [f"## {name}", "", "| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames lossless | ends at | detail |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for r in rows:
-        coder = {"wlsv": "WLSV", "tiles": "tiles", "lossless": "lossless tiles"}[r["coder"]]
+        coder = {"wlsv": "WLSV", "wlsv-hevc": "WLSV, HEVC 4:4:4", "tiles": "tiles", "lossless": "lossless tiles"}[r["coder"]]
         rate = f"{r['bytes'] * 8 / r['seconds'] / 1e6:.1f}" if r["seconds"] > 0 else "–"
         lossless = 100 * r["lossless_frames"] / r["frames"] if r["frames"] else 0
         ends = "lossless" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
-        if r["coder"] == "wlsv":
+        if r["coder"] in ("wlsv", "wlsv-hevc"):
             detail = f"{r['keyframes']} keyframes"
         elif r["coder"] == "lossless":
             detail = f"framed {mb(r['planar']):.2f} MB, stream {mb(r.get('still', 0)):.2f} MB"
@@ -112,13 +113,13 @@ def main(paths):
     if len(benches) > 1:
         tiles = [(name, {r["capture"]: r for r in rows if r["coder"] == "tiles"}) for name, rows in benches]
         sections.append(across("The tiles, log by log", tiles))
-        # A column per dial, each capture's first row coded at it.
+        # A column per codec and dial, each capture's first row coded at it.
         by_quality = {}
         for _, rows in benches:
             for r in rows:
-                if r["coder"] == "wlsv":
-                    by_quality.setdefault(r["quality"], {}).setdefault(r["capture"], r)
-        wlsv = [(f"q{quality}", by) for quality, by in by_quality.items()]
+                if r["coder"] in ("wlsv", "wlsv-hevc"):
+                    by_quality.setdefault((r["coder"], r["quality"]), {}).setdefault(r["capture"], r)
+        wlsv = [(f"{'HEVC ' if coder == 'wlsv-hevc' else ''}q{quality}", by) for (coder, quality), by in by_quality.items()]
         if wlsv:
             sections.append(across("WLSV, by dial", wlsv))
     print("\n\n".join("\n".join(s) for s in sections))

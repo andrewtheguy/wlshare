@@ -10,13 +10,19 @@ libx264 where there is none, each frame at the quantizer the walk asks
 ([The video encoding](architecture.md#the-video-encoding)). What is left is
 text's colour, which 4:2:0 halves.
 
-- **HEVC 4:4:4.** `VAProfileHEVCMain444` on Intel's low-power encoder, from
-  Ice Lake: a second set of the headers and parameter buffers the daemon
-  hands libva for H.264, not a second design. NVIDIA has no VA-API encoder
-  and would be a backend of its own over NVENC, and AMD has no 4:4:4
-  encoder at all. A browser decodes HEVC only where its machine's decoder
-  does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
-  rest.
+- **HEVC 4:4:4.** NVIDIA's encoder codes it: `src/hevc/`, over NVENC's own
+  API, a [`VideoCoder`](../src/rfb/mod.rs) beside the H.264 one, each frame
+  at the walk's quantizer with no IDR between, tested against libavcodec's
+  HEVC decoder on an AWS g6f's L4. What is left is the wire: a private
+  pseudo-encoding the client lists beside `WLSV` where its browser decodes
+  HEVC's Range Extensions, the stream's rectangles naming which codec they
+  carry, the session choosing the HEVC coder for such a client where the
+  startup found one, and the gateway passing the stream to the page's HEVC
+  decoder; a browser decodes HEVC only where its machine's decoder does, and
+  4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the rest. Then
+  `VAProfileHEVCMain444` on Intel's low-power encoder, from Ice Lake: a
+  second set of the headers and parameter buffers the daemon hands libva for
+  H.264, not a second design. AMD has no 4:4:4 encoder at all.
 
 ## A drag from one display onto the other
 

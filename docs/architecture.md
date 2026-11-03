@@ -924,7 +924,7 @@ the picture.
   frame for about twice its bytes, on a link that has them ([measured](tiles-performance.md#the-regions-encoder)).
   `src/h264/` is that encoder, the GPU's through libva itself or libx264
   through its own API ([above](#the-video-encoding)), linked from the
-  system's libva and libx264, and the `H264Coder` of the daemon's tiles
+  system's libva and libx264, and the `VideoCoder` of the daemon's tiles
   encoder, which opens a stream of it for each region, as the video encoder
   opens one over the whole desktop. The coding
   is the video stream's: each frame at the quantizer it is handed, the dial mapped onto QP 40 down

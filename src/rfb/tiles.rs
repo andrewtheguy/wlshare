@@ -70,7 +70,7 @@
 //! the encoder's time follows the area that moves. It is 4:2:0 at wlshare's
 //! dial, held there: what a stream loses of a picture lasts
 //! only while the region moves, since it settles. The encoder is the
-//! [`H264Coder`] the daemon hands this one, its host's H.264 encoder, on a
+//! [`VideoCoder`] the daemon hands this one, its host's H.264 encoder, on a
 //! held list alone: the
 //! hardware's, where a region costs the processor its conversion alone, or
 //! else libx264 at its fastest preset. A coder that refuses a stream, or
@@ -106,7 +106,7 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use wlshare_proto::tiles::{CACHE_SLOTS, TileHeader, TilesPicture};
 
-use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
+use crate::rfb::{VideoCoder, CoderError, VideoStream, Rect};
 
 /// Why a picture could not be read or encoded.
 #[derive(Debug, Error)]
@@ -115,7 +115,7 @@ pub enum TilesError {
     Empty(u16, u16),
     /// The region coder refused a stream, or a stream its pixels or its frame.
     #[error("coding a region: {0}")]
-    Region(H264Error),
+    Region(CoderError),
     #[error(transparent)]
     Png(#[from] png::EncodingError),
     #[error("framing a planar bitmap: {0}")]
@@ -818,7 +818,7 @@ struct Live {
     id: u8,
     area: Area,
     cells: Vec<(u16, u16)>,
-    stream: Box<dyn H264Stream>,
+    stream: Box<dyn VideoStream>,
     /// The damage inside the region no frame has carried, from its top-left.
     pending: Vec<Rect>,
     dirty: bool,
@@ -937,7 +937,7 @@ pub struct TilesEncoder {
     /// When a read last found a tile changed.
     changed_at: Duration,
     /// The coder every stream is opened on.
-    coder: Box<dyn H264Coder>,
+    coder: Box<dyn VideoCoder>,
     scratch: Vec<u8>,
     /// The cache's key of each whole tile [`Self::precode`] looked up, for
     /// the still it goes in to take rather than hash it again.
@@ -958,7 +958,7 @@ impl TilesEncoder {
     /// of the picture the client's list asks for: whether the dial walks, from
     /// wlshare's own as its ceiling. The client holds nothing
     /// of it yet.
-    pub fn new(width: u16, height: u16, picture: TilesPicture, coder: Box<dyn H264Coder>) -> Result<Self, TilesError> {
+    pub fn new(width: u16, height: u16, picture: TilesPicture, coder: Box<dyn VideoCoder>) -> Result<Self, TilesError> {
         if width == 0 || height == 0 {
             return Err(TilesError::Empty(width, height));
         }
@@ -2446,7 +2446,7 @@ mod tests {
         const KEYFRAME: u8 = 0xC0;
         const FRAME: u8 = 0xDE;
 
-        fn coder() -> Box<dyn H264Coder> {
+        fn coder() -> Box<dyn VideoCoder> {
             Box::new(Self { refuse: false, fail_after: None, fail_read_after: None })
         }
     }
@@ -2461,8 +2461,8 @@ mod tests {
         fail_read_after: Option<usize>,
     }
 
-    impl H264Coder for Fake {
-        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
+    impl VideoCoder for Fake {
+        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn VideoStream>, CoderError> {
             if self.refuse {
                 return Err("the device is gone".into());
             }
@@ -2471,9 +2471,9 @@ mod tests {
         }
     }
 
-    impl H264Stream for FakeStream {
+    impl VideoStream for FakeStream {
 
-        fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
+        fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), CoderError> {
             if self.fail_read_after.is_some_and(|after| self.frames >= after) {
                 return Err("the upload failed".into());
             }
@@ -2492,7 +2492,7 @@ mod tests {
             Ok(())
         }
 
-        fn encode(&mut self, keyframe: bool, _quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+        fn encode(&mut self, keyframe: bool, _quality: u8, out: &mut Vec<u8>) -> Result<bool, CoderError> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
                 return Err("the encoder hung".into());
             }

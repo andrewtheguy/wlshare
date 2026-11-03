@@ -1,6 +1,7 @@
 //! H.264 into pictures, for the client's camera, and into the quantizers it
-//! was coded at, for the H.264 encoder's trial frames: the system's
-//! libavcodec, linked dynamically, and nothing else of FFmpeg's.
+//! was coded at, for the H.264 encoder's trial frames; and HEVC into
+//! pictures, for the HEVC encoder's: the system's libavcodec, linked
+//! dynamically, and nothing else of FFmpeg's.
 //!
 //! The client encoded the stream — a browser's `VideoEncoder`, Constrained
 //! Baseline — so what arrives is one Annex B access unit at a time, parameter
@@ -17,8 +18,8 @@ use std::ptr;
 
 use ffmpeg_sys_next as ff;
 
-/// One H.264 decoder: a libavcodec context, and the packet and frame it
-/// reuses for every unit.
+/// One H.264 or HEVC decoder: a libavcodec context, and the packet and frame
+/// it reuses for every unit.
 pub struct Decoder {
     context: *mut ff::AVCodecContext,
     packet: *mut ff::AVPacket,
@@ -35,12 +36,20 @@ unsafe impl Send for Decoder {}
 pub struct Picture {
     pub width: usize,
     pub height: usize,
+    /// 4:4:4 rather than 4:2:0.
+    pub full_chroma: bool,
 }
 
 impl Picture {
-    /// The size of a chroma plane: half of each dimension, rounded up.
+    /// A 4:2:0 picture, as the camera's are.
+    pub fn yuv420(width: usize, height: usize) -> Self {
+        Self { width, height, full_chroma: false }
+    }
+
+    /// The size of a chroma plane: half of each dimension, rounded up, or the
+    /// picture's own at 4:4:4.
     pub fn chroma(self) -> (usize, usize) {
-        (self.width.div_ceil(2), self.height.div_ceil(2))
+        if self.full_chroma { (self.width, self.height) } else { (self.width.div_ceil(2), self.height.div_ceil(2)) }
     }
 
     /// Bytes of the whole picture, planes back to back.
@@ -52,22 +61,28 @@ impl Picture {
 
 impl Decoder {
     pub fn new() -> anyhow::Result<Self> {
-        Self::open(false)
+        Self::open(ff::AVCodecID::AV_CODEC_ID_H264, false)
     }
 
     /// A decoder that also says the quantizer of every macroblock it decodes
     /// ([`Self::qps`]): the word, for the H.264 encoder's trial frames and its
     /// tests, on what an encoder coded a frame at.
     pub fn with_qps() -> anyhow::Result<Self> {
-        Self::open(true)
+        Self::open(ff::AVCodecID::AV_CODEC_ID_H264, true)
     }
 
-    fn open(qps: bool) -> anyhow::Result<Self> {
+    /// An HEVC decoder, which takes 4:4:4 as well as 4:2:0. It says no
+    /// quantizer: libavcodec's HEVC decoder reports none.
+    pub fn hevc() -> anyhow::Result<Self> {
+        Self::open(ff::AVCodecID::AV_CODEC_ID_HEVC, false)
+    }
+
+    fn open(id: ff::AVCodecID, qps: bool) -> anyhow::Result<Self> {
         // SAFETY: each allocation is checked before use, and a failure part way
         // through frees what came before it through `Drop`.
         unsafe {
-            let codec = ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_H264);
-            anyhow::ensure!(!codec.is_null(), "this libavcodec has no H.264 decoder");
+            let codec = ff::avcodec_find_decoder(id);
+            anyhow::ensure!(!codec.is_null(), "this libavcodec has no {id:?} decoder");
             let decoder = Self { context: ff::avcodec_alloc_context3(codec), packet: ff::av_packet_alloc(), frame: ff::av_frame_alloc() };
             anyhow::ensure!(
                 !decoder.context.is_null() && !decoder.packet.is_null() && !decoder.frame.is_null(),
@@ -165,18 +180,22 @@ impl Decoder {
     }
 
     /// Copy the current frame's three planes into `out`, dropping each line's
-    /// padding. Only 4:2:0 at eight bits is taken, which is every stream a
-    /// Constrained Baseline encoder can produce.
+    /// padding. Only 4:2:0 and 4:4:4 at eight bits are taken: every stream a
+    /// Constrained Baseline encoder can produce, and the HEVC encoder's.
     unsafe fn copy_frame(&self, out: &mut Vec<u8>) -> anyhow::Result<Picture> {
         // SAFETY: the caller has a frame the decoder just filled.
         unsafe {
             let frame = &*self.frame;
             let format = frame.format;
-            anyhow::ensure!(
-                format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as i32 || format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32,
-                "the decoder produced pixel format {format}, not 4:2:0"
-            );
-            let picture = Picture { width: usize::try_from(frame.width)?, height: usize::try_from(frame.height)? };
+            use ff::AVPixelFormat as F;
+            let full_chroma = if format == F::AV_PIX_FMT_YUV420P as i32 || format == F::AV_PIX_FMT_YUVJ420P as i32 {
+                false
+            } else if format == F::AV_PIX_FMT_YUV444P as i32 || format == F::AV_PIX_FMT_YUVJ444P as i32 {
+                true
+            } else {
+                anyhow::bail!("the decoder produced pixel format {format}, not 4:2:0 or 4:4:4 at eight bits")
+            };
+            let picture = Picture { width: usize::try_from(frame.width)?, height: usize::try_from(frame.height)?, full_chroma };
             let (cw, ch) = picture.chroma();
             out.clear();
             out.reserve(picture.bytes());
@@ -219,50 +238,50 @@ fn check(code: i32, what: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
-    const WIDTH: usize = 64;
-    const HEIGHT: usize = 48;
-
-    /// The picture every test stream starts from: a luma ramp across, chroma
-    /// flat, so a decoded copy can be compared value for value.
-    fn luma(x: usize, y: usize) -> u8 {
-        (16 + x * 3 + y) as u8
+    /// An HEVC stream libx265 codes, through libavcodec, of `frames` pictures
+    /// of a moving ramp at 4:4:4: every frame at `qp`, the IDR's not offset
+    /// from it, with no adaptive quantization and no B-frames, the first an
+    /// IDR. For the HEVC headers'
+    /// reader, an encoder that shares nothing with it.
+    pub fn x265(width: usize, height: usize, frames: usize, qp: u8) -> Vec<Vec<u8>> {
+        let params = format!("qp={qp}:ipratio=1:pbratio=1:aq-mode=0:bframes=0:keyint=1000:min-keyint=1000:scenecut=0:repeat-headers=1:log-level=error");
+        let options = [("x265-params", params.as_str()), ("preset", "ultrafast"), ("tune", "zerolatency")];
+        // SAFETY: libavcodec's encode loop, in `run`.
+        unsafe { run("libx265", ff::AVPixelFormat::AV_PIX_FMT_YUV444P, (width, height), frames, &options, |x, y, i| (16 + x * 2 + y + i * 3) as u8) }
     }
 
-    /// An H.264 stream made by an encoder independent of the decoder under test:
-    /// libx264, which Debian's libavcodec carries. `frames` pictures, the first
-    /// a keyframe.
-    fn encode(frames: usize) -> Vec<Vec<u8>> {
+    /// Code `frames` pictures with the libavcodec encoder `name`, each plane
+    /// of picture `i` at `(x, y)` `pixel(x, y, i)`, chroma flat, and return
+    /// the packets.
+    unsafe fn run(name: &str, format: ff::AVPixelFormat, (width, height): (usize, usize), frames: usize, options: &[(&str, &str)], pixel: impl Fn(usize, usize, usize) -> u8) -> Vec<Vec<u8>> {
         // SAFETY: test code driving libavcodec's documented encode loop, each
         // allocation checked and freed at the end.
         unsafe {
-            let name = std::ffi::CString::new("libx264").unwrap();
-            let codec = ff::avcodec_find_encoder_by_name(name.as_ptr());
-            assert!(!codec.is_null(), "libavcodec was built without libx264");
+            let cname = std::ffi::CString::new(name).unwrap();
+            let codec = ff::avcodec_find_encoder_by_name(cname.as_ptr());
+            assert!(!codec.is_null(), "libavcodec was built without {name}");
             let mut context = ff::avcodec_alloc_context3(codec);
-            (*context).width = WIDTH as i32;
-            (*context).height = HEIGHT as i32;
-            (*context).pix_fmt = ff::AVPixelFormat::AV_PIX_FMT_YUV420P;
+            (*context).width = width as i32;
+            (*context).height = height as i32;
+            (*context).pix_fmt = format;
             (*context).time_base = ff::AVRational { num: 1, den: 15 };
-            (*context).gop_size = 15;
             (*context).max_b_frames = 0;
-            let mut options = ptr::null_mut();
-            // Baseline, which is what a browser sends and which cannot be
-            // lossless, at a quantizer low enough to compare within a tolerance.
-            for (key, value) in [("profile", "baseline"), ("tune", "zerolatency"), ("qp", "10")] {
-                let (key, value) = (std::ffi::CString::new(key).unwrap(), std::ffi::CString::new(value).unwrap());
-                ff::av_dict_set(&mut options, key.as_ptr(), value.as_ptr(), 0);
+            let mut dict = ptr::null_mut();
+            for (key, value) in options {
+                let (key, value) = (std::ffi::CString::new(*key).unwrap(), std::ffi::CString::new(*value).unwrap());
+                ff::av_dict_set(&mut dict, key.as_ptr(), value.as_ptr(), 0);
             }
-            check(ff::avcodec_open2(context, codec, &mut options), "opening libx264").unwrap();
-            ff::av_dict_free(&mut options);
-
+            check(ff::avcodec_open2(context, codec, &mut dict), "opening the encoder").unwrap();
+            ff::av_dict_free(&mut dict);
             let mut frame = ff::av_frame_alloc();
-            (*frame).width = WIDTH as i32;
-            (*frame).height = HEIGHT as i32;
-            (*frame).format = ff::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
+            (*frame).width = width as i32;
+            (*frame).height = height as i32;
+            (*frame).format = format as i32;
             check(ff::av_frame_get_buffer(frame, 0), "allocating a frame").unwrap();
+            let full = format == ff::AVPixelFormat::AV_PIX_FMT_YUV444P;
             let mut packet = ff::av_packet_alloc();
             let mut units = Vec::new();
             let drain = |units: &mut Vec<Vec<u8>>| loop {
@@ -277,11 +296,11 @@ mod tests {
             for index in 0..frames {
                 check(ff::av_frame_make_writable(frame), "a writable frame").unwrap();
                 for plane in 0..3 {
-                    let (w, h) = if plane == 0 { (WIDTH, HEIGHT) } else { (WIDTH / 2, HEIGHT / 2) };
+                    let (w, h) = if plane == 0 || full { (width, height) } else { (width / 2, height / 2) };
                     let stride = (*frame).linesize[plane] as usize;
                     for y in 0..h {
                         for x in 0..w {
-                            *(*frame).data[plane].add(y * stride + x) = if plane == 0 { luma(x, y) } else { 128 };
+                            *(*frame).data[plane].add(y * stride + x) = if plane == 0 { pixel(x, y, index) } else { 128 };
                         }
                     }
                 }
@@ -298,6 +317,26 @@ mod tests {
         }
     }
 
+    const WIDTH: usize = 64;
+    const HEIGHT: usize = 48;
+
+    /// The picture every test stream starts from: a luma ramp across, chroma
+    /// flat, so a decoded copy can be compared value for value.
+    fn luma(x: usize, y: usize) -> u8 {
+        (16 + x * 3 + y) as u8
+    }
+
+    /// An H.264 stream made by an encoder independent of the decoder under test:
+    /// libx264, which Debian's libavcodec carries. `frames` pictures, the first
+    /// a keyframe.
+    fn encode(frames: usize) -> Vec<Vec<u8>> {
+        // Baseline, which is what a browser sends and which cannot be
+        // lossless, at a quantizer low enough to compare within a tolerance.
+        let options = [("profile", "baseline"), ("tune", "zerolatency"), ("qp", "10")];
+        // SAFETY: libavcodec's encode loop, in `run`.
+        unsafe { run("libx264", ff::AVPixelFormat::AV_PIX_FMT_YUV420P, (WIDTH, HEIGHT), frames, &options, |x, y, _| luma(x, y)) }
+    }
+
     #[test]
     fn a_stream_decodes_to_the_pictures_it_was_encoded_from() {
         let units = encode(3);
@@ -306,7 +345,7 @@ mod tests {
         let mut out = Vec::new();
         for unit in &units {
             let picture = decoder.decode(unit, &mut out).unwrap().expect("a picture for every unit");
-            assert_eq!(picture, Picture { width: WIDTH, height: HEIGHT });
+            assert_eq!(picture, Picture::yuv420(WIDTH, HEIGHT));
             assert_eq!(out.len(), picture.bytes());
             // Lossy, but at qp 10 a smooth ramp comes back within a few levels,
             // and a plane copied with the wrong stride or offset would not.
@@ -330,12 +369,12 @@ mod tests {
         let mut out = Vec::new();
         let _ = decoder.decode(&units[1], &mut out);
         let picture = decoder.decode(&units[0], &mut out).unwrap();
-        assert_eq!(picture, Some(Picture { width: WIDTH, height: HEIGHT }));
+        assert_eq!(picture, Some(Picture::yuv420(WIDTH, HEIGHT)));
     }
 
     #[test]
     fn an_odd_picture_rounds_its_chroma_up() {
-        let picture = Picture { width: 5, height: 3 };
+        let picture = Picture::yuv420(5, 3);
         assert_eq!(picture.chroma(), (3, 2));
         assert_eq!(picture.bytes(), 15 + 2 * 6);
     }

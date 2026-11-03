@@ -77,6 +77,7 @@ use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 // The daemon's own modules, of which the simulation uses the encoders and
 // nothing more, the decoder the H.264 encoder's tests read it back with, and
 // `walk-sim`'s model of the link and the walk it plays over it.
+#[allow(dead_code)]
 #[path = "../src/decode.rs"]
 mod decode;
 #[allow(dead_code)]

@@ -4,7 +4,7 @@
 //!
 //! **What a frame holds.** Every frame is one H.264 access unit of one stream
 //! over the whole desktop, 8-bit 4:2:0 converted from the framebuffer as
-//! BT.601 at studio swing, by the [`H264Coder`] the daemon hands the encoder:
+//! BT.601 at studio swing, by the [`VideoCoder`] the daemon hands the encoder:
 //! its host's hardware encoder, or libx264 where it has none. Each frame is
 //! coded at the dial it is handed, the walk's ([`crate::walk`]), from wlshare's
 //! dial ([`crate::rfb::QUALITY`]) down: no bitrate, no dropped frames, so every
@@ -18,7 +18,7 @@
 
 use thiserror::Error;
 
-use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
+use crate::rfb::{VideoCoder, CoderError, VideoStream, Rect};
 
 /// Why a picture could not be encoded.
 #[derive(Debug, Error)]
@@ -27,7 +27,7 @@ pub enum VideoError {
     Empty(u16, u16),
     /// The coder refused the stream, or the stream its pixels or its frame.
     #[error("coding the video stream: {0}")]
-    Codec(H264Error),
+    Codec(CoderError),
     #[error("a frame of {0} bytes is over the {max}-byte ceiling", max = wlshare_proto::MAX_BODY)]
     FrameTooLong(usize),
 }
@@ -36,13 +36,13 @@ pub enum VideoError {
 /// which converts the framebuffer and codes it. A framebuffer of another size
 /// needs another of these, whose first frame is an IDR by construction.
 pub struct VideoEncoder {
-    stream: Box<dyn H264Stream>,
+    stream: Box<dyn VideoStream>,
     size: (u16, u16),
 }
 
 impl VideoEncoder {
     /// An encoder for a `width`×`height` picture, on a stream `coder` opens.
-    pub fn new(coder: &mut dyn H264Coder, width: u16, height: u16) -> Result<Self, VideoError> {
+    pub fn new(coder: &mut dyn VideoCoder, width: u16, height: u16) -> Result<Self, VideoError> {
         if width == 0 || height == 0 {
             return Err(VideoError::Empty(width, height));
         }
@@ -137,20 +137,20 @@ mod tests {
         fail: bool,
     }
 
-    impl H264Coder for Fake {
-        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
+    impl VideoCoder for Fake {
+        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn VideoStream>, CoderError> {
             self.log.lock().unwrap().opened.push((width, height));
             Ok(Box::new(FakeStream { log: self.log.clone(), frame: self.frame.clone(), fail: self.fail }))
         }
     }
 
-    impl H264Stream for FakeStream {
-        fn read_bgrx(&mut self, _pixels: &[u8], _stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
+    impl VideoStream for FakeStream {
+        fn read_bgrx(&mut self, _pixels: &[u8], _stride: usize, changed: Option<&[Rect]>) -> Result<(), CoderError> {
             self.log.lock().unwrap().reads.push(changed.map(<[Rect]>::to_vec));
             Ok(())
         }
 
-        fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+        fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, CoderError> {
             self.log.lock().unwrap().encodes.push((keyframe, quality));
             if self.fail {
                 out.push(0xAB);

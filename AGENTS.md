@@ -37,10 +37,14 @@
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
-  `-sys` crates and the daemon's own `build.rs`, libva's, run — `libavcodec-dev` for the camera's H.264
+  `-sys` crates and the daemon's own `build.rs`, libva's and NVENC's, run — `libavcodec-dev` for the camera's H.264
   decoder, and `libx264-dev` and `libva-dev` for the H.264 encoder of the
   video and the tiles' regions (`h264/`), libx264 through its own API and the
-  GPU through libva itself, each linked dynamically from the system.
+  GPU through libva itself, each linked dynamically from the system; and
+  `libffmpeg-nvenc-dev`, nv-codec-headers, for the HEVC 4:4:4 encoder of the
+  video (`hevc/`), NVIDIA's through NVENC's own API, its headers alone: the
+  driver's `libnvidia-encode` and `libcuda` are loaded at run time where
+  the host has them, and nothing is linked.
   The audio extension's FLAC coding is not here: it is the `sound-flac`
   repository, shared with the zDesk gateway and pinned by its release tag,
   its own encoder in plain Rust: nothing is needed to build or to run.
@@ -56,7 +60,11 @@
   the machine has a VA-API encoder, its test passing with a word where it has
   none; testdesktop2
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
-  the hardware's is run for real.
+  the hardware's is run for real. The HEVC 4:4:4 encoder (`hevc/`) is tested
+  the same way against libavcodec's software HEVC decoder where the machine
+  has an NVENC that codes 4:4:4, each slice's QP read back from the stream's
+  headers (`hevc/syntax.rs`, itself held to libx265's), since that decoder
+  reports none.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland
   session it shares; packages are built only in Docker, by
   `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the
