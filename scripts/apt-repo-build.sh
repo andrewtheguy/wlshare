@@ -70,7 +70,6 @@ done < <(find "${debs_dir}" -type f -name '*.deb' -print0 | sort -z)
 
 gpg --batch --yes --dearmor < "${pubkey}" > "${name}.gpg"
 cp "${pubkey}" "${name}.asc"
-touch .nojekyll
 
 for arch in "${arches[@]}"; do
 	dir="dists/${suite}/${component}/binary-${arch}"
