@@ -1424,6 +1424,9 @@ impl Session {
             // may have changed size meanwhile. A stream made is owed its IDR
             // until one is sent, which may not be this time: the desktop may
             // be unpainted by then.
+            // The scale the output is drawn at, for the tiles' regions, read
+            // before the framebuffer's lock and never under it.
+            let scale = self.shared.desks[self.desk].geometry().scale;
             let fb = loop {
                 let fb = self.shared.desks[self.desk].framebuffer.lock().unwrap();
                 let (width, height) = (fb.width, fb.height);
@@ -1510,6 +1513,7 @@ impl Session {
                 let read: Option<Vec<crate::rfb::Rect>> =
                     damage.as_ref().map(|rects| rects.iter().map(|r| crate::rfb::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
                 let encoder = self.tiles.as_mut().expect("made before the lock was kept");
+                encoder.set_scale(scale);
                 if full {
                     encoder.forget();
                 }

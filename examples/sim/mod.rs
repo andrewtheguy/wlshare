@@ -17,6 +17,10 @@ pub type Error = Box<dyn std::error::Error>;
 pub struct Desk {
     pub at: Duration,
     pub size: (u16, u16),
+    /// The scale its capture's output was drawn at ([`crate::wlcap::named_scale`]),
+    /// which the tiles' regions follow; `walk-sim`'s one stream does not.
+    #[allow(dead_code)]
+    pub scale: f64,
     pub keyframe: bool,
     pub changed: Option<Vec<Rect>>,
     pub pixels: Vec<u8>,
@@ -28,12 +32,14 @@ pub struct Source {
     reader: Option<Reader<BufReader<Box<dyn Read>>>>,
     offset: Duration,
     last: Duration,
+    /// The scale of the capture being read.
+    scale: f64,
     peeked: Option<Desk>,
 }
 
 impl Source {
     pub fn new(paths: Vec<String>) -> Self {
-        Self { paths, reader: None, offset: Duration::ZERO, last: Duration::ZERO, peeked: None }
+        Self { paths, reader: None, offset: Duration::ZERO, last: Duration::ZERO, scale: 1.0, peeked: None }
     }
 
     fn open(path: &str) -> Result<Reader<BufReader<Box<dyn Read>>>, Error> {
@@ -53,6 +59,7 @@ impl Source {
                     return Ok(None);
                 }
                 let path = self.paths.remove(0);
+                self.scale = crate::wlcap::named_scale(&path);
                 self.reader = Some(Self::open(&path)?);
                 // A frame interval after the last capture's end.
                 self.offset = self.last + Duration::from_millis(33);
@@ -68,6 +75,7 @@ impl Source {
                     self.peeked = Some(Desk {
                         at,
                         size: f.size,
+                        scale: self.scale,
                         keyframe: f.keyframe && !(first && self.offset > Duration::ZERO),
                         changed: if first { None } else { f.changed.map(<[Rect]>::to_vec) },
                         pixels: f.pixels.to_vec(),

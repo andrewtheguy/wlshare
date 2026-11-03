@@ -23,7 +23,9 @@
 //! being a picture the client asks for whole ([`TilesEncoder::forget`]), and
 //! between the frames, and after the last until nothing is owed (60 s at
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
-//! changing. Its dial is wlshare's, held there, the picture lossless as a list that holds the dial asks: a walked
+//! changing, its output's scale the capture's name's, `@2` or 1 without one
+//! ([`wlcap::named_scale`]), which the fewest tiles a region is laid out over
+//! follows. Its dial is wlshare's, held there, the picture lossless as a list that holds the dial asks: a walked
 //! list's is progressive tiles, which `tiles-walk-sim` walks over a link.
 //! `--lossless` codes the picture a lossless list asks for instead, every
 //! tile planar, still or moving, and no region: its coder is `lossless`. Its
@@ -468,10 +470,12 @@ struct Tiles {
 }
 
 impl Tiles {
-    /// The tiles of a desktop of `size` as `picture` asks, its regions on a
-    /// coder of `encoder`'s opened for it, as a session opens one.
-    fn new(size: (u16, u16), picture: TilesPicture, encoder: &h264::Encoder) -> Result<Self, Error> {
-        Ok(Self { encoder: TilesEncoder::new(size.0, size.1, picture, Box::new(encoder.coder()?))?, page: Page::new(size), out: Vec::new() })
+    /// The tiles of a desktop of `size` drawn at `scale` as `picture` asks,
+    /// its regions on a coder of `encoder`'s opened for it, as a session opens one.
+    fn new(size: (u16, u16), scale: f64, picture: TilesPicture, encoder: &h264::Encoder) -> Result<Self, Error> {
+        let mut tiles = TilesEncoder::new(size.0, size.1, picture, Box::new(encoder.coder()?))?;
+        tiles.set_scale(scale);
+        Ok(Self { encoder: tiles, page: Page::new(size), out: Vec::new() })
     }
 
     /// Encode what is owed at `now` and draw it: the CPU time of the encode,
@@ -641,6 +645,7 @@ struct Run {
 fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&mut BufWriter<File>>) -> Result<(), Error> {
     let name = capture_name(path);
     let mut source = Source::open(path)?;
+    let scale = wlcap::named_scale(&path.to_string_lossy());
     let (mut wlsv, mut tiles) = (Tally::default(), Tally::default());
     let mut run: Option<Run> = None;
     let (mut first_at, mut last_at) = (None, Duration::ZERO);
@@ -660,7 +665,7 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 setup = cost;
                 Some(coder)
             };
-            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, args.picture(), encoder)? });
+            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, scale, args.picture(), encoder)? });
         }
         let run = run.as_mut().expect("just made");
 
@@ -769,6 +774,7 @@ const REDRAW_EVERY: Duration = Duration::from_millis(100);
 fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Error> {
     let name = capture_name(path);
     let mut source = Source::open(path)?;
+    let scale = wlcap::named_scale(&path.to_string_lossy());
     let mut run: Option<((u16, u16), Tiles)> = None;
     let mut last_at = Duration::ZERO;
     let mut picture = Vec::new();
@@ -777,7 +783,7 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
         last_at = now;
         let fresh = run.as_ref().is_none_or(|(size, _)| *size != frame.size);
         if fresh {
-            run = Some((frame.size, Tiles::new(frame.size, args.picture(), encoder)?));
+            run = Some((frame.size, Tiles::new(frame.size, scale, args.picture(), encoder)?));
         }
         let (_, tiles) = run.as_mut().expect("just made");
         tiles.ticks(now)?;
