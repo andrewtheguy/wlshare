@@ -3,7 +3,7 @@
 //! coded both ways, and what each cost the encoder and the link.
 //!
 //! ```text
-//! motion-bench [--libx264] [--hevc] [--tiles-only | --video-only] [--lossless] [--quality Q] [--frames FILE] CAPTURE...
+//! motion-bench [--libx264] [--hevc] [--tiles-only | --video-only] [--lossless] [--quality Q] [--frames FILE] [--stream FILE] CAPTURE...
 //! motion-bench check [--libx264] [--lossless] CAPTURE...
 //! ```
 //!
@@ -20,7 +20,9 @@
 //! `WLSV` alone, and writes no frames. `--hevc` codes `WLSV` as HEVC at 4:4:4
 //! by NVENC ([`hevc`]) in place of the H.264, its row's coder `wlsv-hevc`,
 //! decoded by libavcodec's HEVC decoder and turned back from 4:4:4; the regions
-//! stay H.264, as a session's do.
+//! stay H.264, as a session's do. `--stream FILE` writes one capture's `WLSV`
+//! to FILE as the wire carries it, each frame's body after the last: its
+//! length word and its access unit, for a decoder elsewhere to be tried on.
 //!
 //! **Tiles** is the encoder a session runs, one per size: each frame read with
 //! its rectangles at the time it was captured and encoded, a keyframe asked
@@ -127,7 +129,7 @@ mod wlcap;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--libx264] [--hevc] [--tiles-only | --video-only] [--lossless] [--quality Q] [--frames FILE] CAPTURE...
+const USAGE: &str = "usage: motion-bench [--libx264] [--hevc] [--tiles-only | --video-only] [--lossless] [--quality Q] [--frames FILE] [--stream FILE] CAPTURE...
        motion-bench check [--libx264] [--lossless] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
@@ -148,13 +150,15 @@ struct Args {
     /// The dial `WLSV` is coded at.
     quality: u8,
     frames: Option<PathBuf>,
+    /// Where `WLSV`'s bodies are written.
+    stream: Option<PathBuf>,
     /// `check` rather than the bench.
     check: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, video_only: false, hevc: false, lossless: false, quality: crate::rfb::QUALITY, frames: None, check: false };
+    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, video_only: false, hevc: false, lossless: false, quality: crate::rfb::QUALITY, frames: None, stream: None, check: false };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
@@ -167,6 +171,7 @@ fn parse_args() -> Result<Args, String> {
                 parsed.quality = value()?.parse().ok().filter(|q| (crate::rfb::QUALITY_MIN..=crate::rfb::QUALITY_MAX).contains(q)).ok_or("--quality takes a dial, 1 to 100")?;
             }
             "--frames" => parsed.frames = Some(PathBuf::from(value()?)),
+            "--stream" => parsed.stream = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
             "check" if parsed.captures.is_empty() && !parsed.check => parsed.check = true,
             _ => parsed.captures.push(PathBuf::from(arg)),
@@ -177,6 +182,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if parsed.check && (parsed.frames.is_some() || parsed.tiles_only || parsed.video_only || parsed.hevc) {
         return Err("check codes the tiles alone, no WLSV, and writes no frames".into());
+    }
+    if parsed.stream.is_some() && (parsed.tiles_only || parsed.check || parsed.captures.len() != 1) {
+        return Err("--stream writes one capture's WLSV".into());
     }
     if parsed.tiles_only && parsed.video_only {
         return Err("--tiles-only and --video-only leave nothing to code".into());
@@ -249,9 +257,16 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let mut stream = match args.stream.as_deref().map(File::create).transpose() {
+        Ok(file) => file.map(BufWriter::new),
+        Err(e) => {
+            eprintln!("motion-bench: the stream: {e}");
+            std::process::exit(1);
+        }
+    };
     let mut failed = false;
     for capture in &args.captures {
-        if let Err(e) = bench(capture, &args, &encoder, hevc.as_ref(), frames.as_mut()) {
+        if let Err(e) = bench(capture, &args, &encoder, hevc.as_ref(), frames.as_mut(), stream.as_mut()) {
             eprintln!("motion-bench: {}: {e}", capture.display());
             failed = true;
         }
@@ -260,6 +275,12 @@ fn main() {
         && let Err(e) = frames.flush()
     {
         eprintln!("motion-bench: the frames: {e}");
+        failed = true;
+    }
+    if let Some(stream) = &mut stream
+        && let Err(e) = stream.flush()
+    {
+        eprintln!("motion-bench: the stream: {e}");
         failed = true;
     }
     if failed {
@@ -682,7 +703,7 @@ struct Run {
     tiles: Option<Tiles>,
 }
 
-fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, hevc: Option<&hevc::Encoder>, mut frames: Option<&mut BufWriter<File>>) -> Result<(), Error> {
+fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, hevc: Option<&hevc::Encoder>, mut frames: Option<&mut BufWriter<File>>, mut stream: Option<&mut BufWriter<File>>) -> Result<(), Error> {
     let name = capture_name(path);
     let mut source = Source::open(path)?;
     let (mut wlsv, mut tiles) = (Tally::default(), Tally::default());
@@ -738,6 +759,9 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, hevc: Option<&hevc::
             };
             if made && idr {
                 wlsv.keyframes += 1;
+            }
+            if made && let Some(stream) = stream.as_deref_mut() {
+                stream.write_all(&w.out)?;
             }
             w.check()?;
             wlsv.held(&w.picture, frame.pixels);
