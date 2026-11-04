@@ -159,7 +159,7 @@ the processor time rises: over 256 the browser at 2× scale is sent in about hal
 processor (4K, 85 ms a frame against 64) for the same bytes. Wall time a 4K
 frame, at 6 threads, is at most 9 ms on the terminal, 23 on the browser.
 
-That is the daemon's libx264 since: `superfast`, the multi-hexagon over 128,
+That is the daemon's libx264 since 2026-11-03: `superfast`, the multi-hexagon over 128,
 adaptive quantization off, which `superfast` would leave on and which would
 move a macroblock's quantizer off its picture's. Its stream is High profile.
 `motion-bench --libx264` at wlshare's dial, on the desktop (bytes do not

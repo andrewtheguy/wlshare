@@ -302,8 +302,8 @@ for about 535 frames, no less than VP9. That kept the preset at `ultrafast`
 until 2026-11-03, on a flood, which is a reference and not what a preset is
 chosen by; on the scenarios it is chosen by, `superfast` with its motion
 searched over 128 pixels sends about two fifths of `ultrafast`'s bytes for
-about 1.7 times its processor time, and is the preset since
-([The preset and the search](video-performance.md#the-preset-and-the-search)).
+about 1.7 times its processor time, and has been the preset since
+2026-11-03 ([The preset and the search](video-performance.md#the-preset-and-the-search)).
 
 ## What the rules were chosen by
 
