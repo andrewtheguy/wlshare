@@ -98,8 +98,8 @@ pub fn unpack(body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
 
 /// The still stream as a client reads it: each STILL body decompressed,
 /// after the ones before it, to one bitmap of its rectangle, by ruzstd a
-/// block at a time, the bitmap read from what it holds back of the frame
-/// while it goes on ([`ruzstd::decoding::FrameDecoder::peek`]).
+/// block at a time, the bitmap what the body's blocks decode to, which the
+/// frame hands out as soon as they are decoded.
 #[derive(Default)]
 pub struct StillReader {
     frame: Option<ruzstd::decoding::FrameDecoder>,
@@ -122,9 +122,8 @@ impl StillReader {
             self.frame = Some(frame);
         }
         let frame = self.frame.as_mut().ok_or("a STILL that continues no stream")?;
-        // What the bodies before left held back is theirs.
+        // What a body before left uncollected, one that did not read, is not this one's.
         frame.collect_to_writer(std::io::sink()).map_err(|e| e.to_string())?;
-        let before = held(frame);
         while !source.is_empty() {
             let header = source.get(..3).ok_or("a block header cut short")?;
             let header = u32::from_le_bytes([header[0], header[1], header[2], 0]);
@@ -140,19 +139,12 @@ impl StillReader {
             }
             source = &source[block.len()..];
         }
-        let (a, b) = frame.peek();
         self.bitmap.clear();
-        self.bitmap.extend([a, b].concat().get(before..).ok_or("the stream went back")?);
+        frame.collect_to_writer(&mut self.bitmap).map_err(|e| e.to_string())?;
         let (rgb, used) = decode(&self.bitmap, w, h)?;
         if used != self.bitmap.len() {
             return Err(format!("a still of {} bytes, {used} of them its {w}x{h} pixels", self.bitmap.len()));
         }
         Ok(rgb)
     }
-}
-
-/// How many bytes `frame` holds back.
-fn held(frame: &ruzstd::decoding::FrameDecoder) -> usize {
-    let (a, b) = frame.peek();
-    a.len() + b.len()
 }
