@@ -7,10 +7,14 @@
 //! the build reads no header and runs no libclang for them: libva's ABI is
 //! `libva.so.2`'s since 2.0, each structure keeping its layout (a field added
 //! takes from its `va_reserved` padding) and each enum its values (one added
-//! is appended), so these hold for every 2.x the daemon runs against. Each
-//! structure's size and the offsets after its padding are asserted below as
-//! the C compiler lays out libva 2.22's headers, and each bitfield word as it
-//! packs them.
+//! is appended). Every release's headers from 2.1.0, the first to declare
+//! `VA_CODED_BUF_STATUS_BAD_BITSTREAM` and `vui_fields`'
+//! `motion_vectors_over_pic_boundaries_flag`, to 2.24.1 give these structures
+//! the same sizes, offsets and bitfield words and these constants the same
+//! values, so the package depends on libva 2.1.0 onward (`Cargo.toml`), the
+//! `libva2` package being `libva.so.2` alone. Each structure's size and the
+//! offsets after its padding are asserted below as the C compiler lays out
+//! those headers, and each bitfield word as it packs them.
 //!
 //! Enums are their underlying integers with a constant for each value used.
 

@@ -184,7 +184,12 @@ priority = "optional"
 # `pipewire` is that server alone, with no session manager to make the speaker
 # the default or link anything to it, and no PulseAudio server for most
 # applications to play through, so wireplumber and pipewire-pulse come with it.
-depends = "$auto, libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
+# libva's bindings are written out by hand (src/h264/libva.rs), not taken from
+# the headers built against, and hold for libva 2.1.0 onward: $auto's floor is
+# only the oldest version exporting each function, so this one is stated.
+# Trixie has 2.22, Ubuntu 26.04 2.23; libva2 is libva.so.2 alone, so a libva
+# whose ABI broke would be another package.
+depends = "$auto, libva2 (>= 2.1.0), libva-drm2 (>= 2.1.0), libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
 # The VA-API drivers the hardware H.264 encoder reaches the GPU through: Intel's
 # and Mesa's. Without one the video stream and the tiles' regions are libx264's,
 # on the CPU.
