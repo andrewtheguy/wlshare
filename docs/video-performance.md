@@ -7,7 +7,9 @@ wrapper, which fixes the quantizer when it opens. The question was what the
 switch costs the processor, at the same quantizer; the hardware's encoder is
 the GPU's, and its cost to the processor is the conversion and the copy onto
 its surface, which did not change. Its preset and motion search came later
-([The preset and the search](#the-preset-and-the-search)).
+([The preset and the search](#the-preset-and-the-search)), and the
+retired VP9 was measured against it as a software encoder
+([Against the retired VP9](#against-the-retired-vp9)).
 
 **How.** lab1 (8 vCPUs of an AMD EPYC Rome, 4 cores with 2 threads each,
 16 GB), idle and alone, swap off, libx264 by `--libx264`, so the encoder had
@@ -167,3 +169,48 @@ depend on the processor), gave what the command line did, within 6%: `WLSV`
 of the browser at 1080p 154.5 KB a frame before and 22.8 after, at
 2880x1800@2 306.1 and 66.5, the drag 3.1 and 1.4, the video 84.3 and 68.2,
 its mean squared error 2.86 and 2.39.
+
+## Against the retired VP9
+
+Measured on 2026-11-04 on lab2 (8 vCPUs of an AMD EPYC Rome, the instance
+rebuilt the night before), idle and alone, swap off. The question was
+whether VP9 4:2:0, coded as the daemon coded it before VP9 was retired
+(`70730c7`), would serve as the software encoder, H.264 kept for the
+hardware, on the hope that it costs no more of the processor for about the
+same bytes.
+
+**How.** Each encoder through its real code path in `motion-bench`, `WLSV`
+alone (the tiles not coded): this libx264 by `--libx264`, and the
+`wlshare-vp9` crate of `70730c7^` (libvpx 1.16, its AVX2 kernels chosen at
+run time) by `--threads 6 --wlsv-chroma 420`: screen tuning, an active map
+of the changed blocks, tile columns by width, 6 threads. Its loop filter,
+which the crate turned off from 2048 wide for the 4:4:4 stream's software
+decoder, was kept on at every width, and its speed, 7 or 9 by how much of
+the picture a frame changes, was fixed at each of 5 to 9 in turn. Every
+`frame-samples` scenario but still at 1920x1080, 2880x1800@2 and
+3840x2160@2 (120 frames, walk whole) and the mixed session at 1920x1080,
+held at dials 90, 75, 60, 42 and 20 (QP 18 to 35). Every frame decoded as
+the page would, PSNR over B, G and R against the capture; bytes at equal
+PSNR is the Bjøntegaard rate, CPU at the PSNR this libx264 reaches at dial
+60, its processor time a frame. Flood is not counted. H.264 is the lower of
+two passes; VP9's speeds one pass, which the result does not hang on. The
+runs, their scripts and the tables are the artifacts'
+`bench/h264-vp9-20261104/`.
+
+**What it showed.** Geometric means over 22 samples, against this libx264:
+
+| VP9 4:2:0 speed | Bytes at equal PSNR | screen (12) | video (3) | CPU |
+|---:|---:|---:|---:|---:|
+| 5 | 0.86 | 0.94 | 0.72 | 2.94 |
+| 6 | 1.06 | 1.33 | 0.76 | 2.45 |
+| 7 | 1.12 | 1.46 | 0.76 | 2.49 |
+| 8 | 1.27 | 1.67 | 0.80 | 1.97 |
+| 9 | 1.38 | 1.93 | 0.80 | 1.71 |
+
+VP9 sends fewer bytes on video and a scroll at every speed (video 0.72–0.80,
+the browser at speed 5 0.40–0.48), and more on a window dragged over a
+still desktop at every speed (2–10 times at speeds 6 to 9, 1.3–2.9 at 5)
+and on one uncovered at 2× scale (1.5–3.6 at speeds 6 to 9, 1.0–1.2 at 5). Its processor time is more at every speed on
+every sample but the terminal: at speed 9, the cheapest, 1.5–2.1 times on
+video and walk, at speed 5, the only one that saves bytes overall, 4–6
+times on video (4K, 240 ms a frame against 56). Software stays libx264.
