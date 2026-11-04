@@ -13,8 +13,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Opus encoder, is a static archive the build downloads, its FLAC encoder
 # plain Rust; jemalloc, the
 # allocator, is built from source with build-essential. libclang-dev is a build-time need
-# with nothing to link: pipewire-sys, libspa-sys, ffmpeg-sys-next, x264-sys and
-# the daemon's build.rs, libva's, generate their bindings with bindgen, which loads libclang, and without it a clean
+# with nothing to link: pipewire-sys, libspa-sys, ffmpeg-sys-next and x264-sys
+# generate their bindings with bindgen, which loads libclang, and without it a clean
 # build fails with "Unable to find libclang".
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

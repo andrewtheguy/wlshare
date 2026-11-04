@@ -239,9 +239,8 @@ Linux host with
 `libxkbcommon-dev`, `libpam0g-dev`, `libpipewire-0.3-dev`, `libspa-0.2-dev`,
 `libavcodec-dev`, `libx264-dev`, `libva-dev`, `libclang-dev` and
 `pkg-config`. libclang links nothing: PipeWire's, FFmpeg's and x264's `-sys`
-crates and the daemon's `build.rs`, for libva's, generate their bindings with
-bindgen, which
-loads it at build time.
+crates generate their bindings with bindgen, which loads it at build time;
+libva's are the daemon's own, written out by hand.
 
 `scripts/capture-frames.sh` builds and runs the capture container
 (`docker/capture/`), with docker or with podman: a headless sway and the daemon started with
