@@ -6,7 +6,8 @@ libx264 came to be reached through its own API rather than libavcodec's
 wrapper, which fixes the quantizer when it opens. The question was what the
 switch costs the processor, at the same quantizer; the hardware's encoder is
 the GPU's, and its cost to the processor is the conversion and the copy onto
-its surface, which did not change.
+its surface, which did not change. Its preset and motion search came later
+([The preset and the search](#the-preset-and-the-search)).
 
 **How.** lab1 (8 vCPUs of an AMD EPYC Rome, 4 cores with 2 threads each,
 16 GB), idle and alone, swap off, libx264 by `--libx264`, so the encoder had
@@ -107,3 +108,62 @@ alone. On 50 Mbit/s the walk stood at the ceiling: 120 frames, every one at
 90. On 3 Mbit/s it walked the running stream down, 90 to 70 to 50, the
 quantizer moving between frames with no keyframe but the first: 70 frames,
 26 at 90, 7 at 70 and 37 at 50.
+
+## The preset and the search
+
+Measured on 2026-11-03 on lab1 (8 vCPUs of an AMD EPYC Rome, the instance
+rebuilt that day), idle and alone, swap off. The question was which of
+libx264's presets and motion searches sends the fewest bytes for the
+processor's time, with the daemon's rate control held: CRF, every picture's
+QP forced. `ultrafast`'s diamond search reaches 16 pixels from its
+prediction, and the half-size search CRF seeds it with follows a window
+dragged but not a page scrolled.
+
+**How.** Debian trixie's `x264` 0.164.3108 command line, 6 threads, sliced,
+`zerolatency`, no B-frames, a keyframe only at the start, each picture's QP
+forced by a qpfile under `--crf`, which is `i_qpplus1` under CRF. Each sample
+is `frame-samples`' 120 frames (uncover's 48–49), each captured frame once,
+converted to 4:2:0 as the daemon converts: terminal, uncover, drag, browser
+and video at 1920x1080, 2880x1800@2 and 3840x2160@2. Every setting at QP 18,
+22, 26, 30 and 35, twice, the lower CPU time kept; each stream decoded by
+FFmpeg against its source, PSNR of Y, U and V weighted 6:1:1. Bytes at equal
+PSNR is the Bjøntegaard rate over the range both settings' curves cover; CPU
+is at the PSNR `ultrafast` reaches at QP 26. Flood is not among the samples.
+The runs, their scripts and the tables are the artifacts'
+`bench/codec420-20261103/`.
+
+**What it showed.** Geometric means over the 15 samples, against `ultrafast`:
+
+| Setting | Bytes at equal PSNR | screen (12) | video (3) | CPU |
+|---|---:|---:|---:|---:|
+| `ultrafast` | 1.00 | 1.00 | 1.00 | 1.00 |
+| `ultrafast`, `umh` over 128 | 0.56 | 0.49 | 0.99 | 1.22 |
+| `ultrafast`, `umh` over 256 | 0.49 | 0.41 | 0.99 | 1.39 |
+| `superfast` | 0.71 | 0.75 | 0.56 | 1.57 |
+| `superfast`, `umh` over 64 | 0.45 | 0.42 | 0.56 | 1.63 |
+| `superfast`, `umh` over 128 | 0.40 | 0.36 | 0.56 | 1.67 |
+| the same, adaptive quantization off | 0.40 | 0.38 | 0.51 | 1.68 |
+| `superfast`, `umh` over 256 | 0.35 | 0.31 | 0.56 | 1.87 |
+| `veryfast` | 0.61 | 0.63 | 0.53 | 2.19 |
+| `veryfast`, `umh` over 256 | 0.31 | 0.27 | 0.53 | 3.19 |
+
+The scroll is what the search is for: the browser at 1080p and QP 26's
+quality is 119 KB a frame at `ultrafast` and 18.6 KB with the multi-hexagon
+over 128, at 2880x1800@2 235 against 67, at 4K 302 against 135. On video
+it finds nothing a short search does not, and costs 1.5 to 1.7 times
+`ultrafast`'s processor time there. What halves video's bytes is the rest of
+`superfast`: CABAC, the deblocking filter, the intra partitions and the 8×8
+transform. `superfast` over 128 is where the bytes stop falling faster than
+the processor time rises: over 256 the browser at 2× scale is sent in about half the bytes
+(4K, 52 KB a frame against 95) and video costs a third more of the
+processor (4K, 85 ms a frame against 64) for the same bytes. Wall time a 4K
+frame, at 6 threads, is at most 9 ms on the terminal, 23 on the browser.
+
+That is the daemon's libx264 since: `superfast`, the multi-hexagon over 128,
+adaptive quantization off, which `superfast` would leave on and which would
+move a macroblock's quantizer off its picture's. Its stream is High profile.
+`motion-bench --libx264` at wlshare's dial, on the desktop (bytes do not
+depend on the processor), gave what the command line did, within 6%: `WLSV`
+of the browser at 1080p 154.5 KB a frame before and 22.8 after, at
+2880x1800@2 306.1 and 66.5, the drag 3.1 and 1.4, the video 84.3 and 68.2,
+its mean squared error 2.86 and 2.39.

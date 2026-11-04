@@ -391,8 +391,9 @@ Successive rectangles are one stream, each frame coded against the ones before i
 all with one decoder, in order. The coding is the daemon's H.264
 (`src/h264/`), the one the tiles picture's regions are coded by
 ([below](#the-tiles-encoding)): the host's hardware encoder through libva
-where the startup finds one, libx264 at its `ultrafast` preset through its
-own API otherwise, found once and the same for every session.
+where the startup finds one, libx264 at its `superfast` preset, its motion
+searched over 128 pixels, through its own API otherwise, found once and the
+same for every session.
 `src/rfb/video.rs` is the framebuffer's pixels in and the frame out in the
 rectangle's framing, which is `wlshare-proto`'s `video` module — the length
 word and its ceiling. What a frame holds is fixed:
@@ -403,8 +404,7 @@ word and its ceiling. What a frame holds is fixed:
   is the framebuffer's size rounded up to even sides, which libx264 requires
   and 4:2:0 cannot crop below — its last row again below it and black to its
   right — and a decoder draws it cut to the rectangle from its top-left. The
-  hardware's at High profile with CABAC, libx264's at Constrained Baseline;
-  no B-frames, so each frame in is one out, and no frame is dropped. Every
+  hardware's and libx264's both at High profile with CABAC; no B-frames, so each frame in is one out, and no frame is dropped. Every
   IDR has its sequence and picture parameter sets ahead of it, so the gateway
   reads the stream's `avc1` codec string out of the stream itself.
 - **Each frame at the quantizer the walk asks.** The 1–100 dial both
@@ -423,12 +423,18 @@ word and its ceiling. What a frame holds is fixed:
   encoder leaving a few macroblocks of every frame at the base and on the
   low-power one ignored beyond about eight either side. libx264's is x264's
   own API, the quantizer forced on each picture by `i_qpplus1` under its
-  CRF rate control, whose own choice is never made. What CRF brings is the
-  half-size picture x264 estimates its rate on and the motion it searches
-  for there, which seeds the full search: `ultrafast`'s own does not follow
-  a window dragged far in a frame. What that costs the processor and saves
-  in bytes, against a constant quantizer, is in
-  [The video's encoder](video-performance.md).
+  CRF rate control, whose own choice is never made, and its adaptive
+  quantization off, so every macroblock is at its picture's. What CRF brings
+  is the half-size picture x264 estimates its rate on and the motion it
+  searches for there, which seeds the full search and follows a window
+  dragged far in a frame. A page scrolled moves farther than a diamond
+  search over 16 pixels reaches, which is why the search is the
+  multi-hexagon over 128; `superfast` over `ultrafast` is CABAC, the
+  deblocking filter, the intra partitions and the 8×8 transform, which halve
+  a video's bytes. Together they send about two fifths of `ultrafast`'s
+  bytes at the same quality, for about 1.7 times its processor time. What
+  CRF costs and saves against a constant quantizer, and what the preset and
+  the search do, are in [The video's encoder](video-performance.md).
 - **A quality and a frame rate that follow the link.** What a link that
   falls behind gives up is quality, and frames once the quality is on its
   floor: the walk of `src/walk.rs`, which walks the tiles' dial too
@@ -923,8 +929,8 @@ the picture.
   configuration, the default — it is that one, which is what this picture is
   for: the processor pays for the conversion to NV12 and nothing of the
   search. On a host with none, or with the key off, it is libx264 at its
-  `ultrafast` preset, which cost the processor about a third of VP9's time a
-  frame for about twice its bytes, on a link that has them ([measured](tiles-performance.md#the-regions-encoder)).
+  `superfast` preset, its motion searched over 128 pixels
+  ([measured](video-performance.md#the-preset-and-the-search)).
   `src/h264/` is that encoder, the GPU's through libva itself or libx264
   through its own API ([above](#the-video-encoding)), linked from the
   system's libva and libx264, and the `H264Coder` of the daemon's tiles
@@ -940,8 +946,8 @@ the picture.
   START; a region's dial is wlshare's, held. The
   hardware's is High profile with CABAC and the 8×8 transform, one slice, the
   frame before its one reference, no reordering, which its VUI says so a
-  decoder holds no picture back; libx264's is Constrained Baseline,
-  which `ultrafast` comes to, tuned `zerolatency` — no lookahead, the
+  decoder holds no picture back; libx264's is High too, CABAC and the 8×8
+  transform, its adaptive quantization off, tuned `zerolatency` — no lookahead, the
   picture sliced among the machine's cores less two, at most eight — with no scene
   cut, and with its version SEI ahead of a stream's first IDR, which a
   decoder passes over. The gateway announces the stream from that parameter

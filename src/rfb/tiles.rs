@@ -73,7 +73,7 @@
 //! [`H264Coder`] the daemon hands this one, its host's H.264 encoder, on a
 //! held list alone: the
 //! hardware's, where a region costs the processor its conversion alone, or
-//! else libx264 at its fastest preset. A coder that refuses a stream, or
+//! else libx264 (`src/h264/x264.rs`). A coder that refuses a stream, or
 //! fails one midway, fails the encode: a region has no other codec.
 //!
 //! **It settles.** Every tile a stream carried is owed a PNG, and every
