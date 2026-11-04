@@ -49,8 +49,8 @@
 //! by the client's parser, a PNG by the `png` crate and a planar bitmap by
 //! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by
 //! ruzstd's streaming decoder and the still stream by ruzstd's
-//! `FrameDecoder` a block at a time, the fork's `peek` handing out its newest
-//! bytes)
+//! `FrameDecoder` a block at a time, the fork handing out its newest bytes as
+//! soon as their blocks are decoded)
 //! — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.

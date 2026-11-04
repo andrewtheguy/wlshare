@@ -42,8 +42,8 @@
 //!
 //! Its tests decode with a reader written here from the specifications,
 //! which shares nothing with the encoder, the zstd by ruzstd, a decoder in
-//! Rust that shares nothing with libzstd, the still stream by its fork's
-//! `FrameDecoder::peek`, which hands out an open frame's newest bytes;
+//! Rust that shares nothing with libzstd, the still stream by its fork, which
+//! hands out an open frame's newest bytes as soon as their blocks are decoded;
 //! zDesk's page decodes the zstd with the same, and the bitmaps with its RDP
 //! compositor's planar codec, the one that draws a Windows host's lossless
 //! pipeline.
