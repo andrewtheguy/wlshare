@@ -157,7 +157,7 @@ symphonia-core = "0.6"
 # compression stream back with ruzstd, a zstd decoder in Rust that shares
 # nothing with libzstd; zDesk's page decodes with it too. Its fork, which adds
 # `FrameDecoder::peek`: the still stream's newest bytes, before its frame ends.
-ruzstd = { git = "https://github.com/andrewtheguy/zstd-rs", tag = "v0.9.1-peek.2" }
+ruzstd = { git = "https://github.com/andrewtheguy/zstd-rs-tuned", tag = "v0.9.2-alpha.1" }
 # `io-std` for `examples/video-sink.rs`, the client the capture container runs
 # against the daemon, which types what it reads.
 tokio = { version = "1", features = ["io-std"] }
