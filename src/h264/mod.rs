@@ -1,7 +1,6 @@
 //! H.264 for the video stream and for the tiles picture's moving regions: the
 //! host's hardware encoder through libva itself ([`vaapi`]), where the host
-//! has one, and libx264 at its fastest preset through its own API ([`x264`])
-//! where it has none.
+//! has one, and libx264 through its own API ([`x264`]) where it has none.
 //!
 //! The video stream is one stream over the whole desktop
 //! ([`crate::rfb::video`]), and a region of the tiles picture one over its
@@ -9,9 +8,9 @@
 //! the daemon hands its encoder. This is that coder. On a host whose GPU has
 //! an H.264 encoder a VA-API driver reaches — Intel's iHD, AMD's Mesa — a
 //! picture that moves costs the processor its conversion to NV12 and nothing
-//! of the search. On a host with none, libx264's `ultrafast` codes it in
-//! about a third of the processor's time a frame that VP9 at libvpx's fastest
-//! speed took, for about twice the bytes.
+//! of the search. On a host with none, libx264 at `superfast`, its motion
+//! searched over 128 pixels, codes it, in about two fifths of `ultrafast`'s
+//! bytes for about 1.7 times its processor time.
 //!
 //! **What a stream is.** Every frame at the quantizer its encode is handed,
 //! from the dial it is asked at, with no bitrate and nothing dropped: the
@@ -23,8 +22,8 @@
 //! so each backend here is the library's own API. No B-frames, one frame in
 //! and one out, so a frame is on the wire the moment it is coded: the
 //! hardware's at High profile with CABAC, one slice, the frame before as its
-//! one reference; libx264's at Constrained Baseline, the profile `ultrafast`
-//! comes to, with its `zerolatency` tuning, no scene cut, and
+//! one reference; libx264's at High profile too, with its `zerolatency`
+//! tuning, no scene cut, and
 //! [`encoder_threads`] threads, as slices. BT.601 at studio swing, said in
 //! the stream's VUI. The picture coded is the stream's rounded up to even
 //! sides, which libx264 requires and 4:2:0 cannot crop below: a picture of an
@@ -381,6 +380,12 @@ mod tests {
         (40 + x / 2 + y) as u8
     }
 
+    /// What libx264's deblocking filter moves a pixel by in these pictures,
+    /// beyond a few levels: at a macroblock edge its strong filter rewrites
+    /// the three rows past it and averages the fourth into them, so a step of
+    /// 50 levels four rows in moves the row before it by about 10.
+    const DEBLOCK_SLACK: u8 = 6;
+
     /// A grey picture of that luma as `B, G, R, X`: equal channels, so BT.601
     /// gives the luma back as itself at studio swing's scale.
     fn picture(w: usize, h: usize) -> Vec<u8> {
@@ -414,9 +419,9 @@ mod tests {
     /// Frames `encoder` codes decode with libavcodec's software decoder to
     /// the picture they were coded from: the first an IDR with its parameter
     /// sets, the next a P frame of the damage alone, and a keyframe asked for
-    /// one. Within a few levels of the picture, and `slack` more: the
-    /// hardware's pixels are not held to libx264's, only to a rectangle's
-    /// being coded where it changed.
+    /// one. Within a few levels of the picture, and `slack` more: libx264's
+    /// [`DEBLOCK_SLACK`], and the hardware's pixels not held to libx264's,
+    /// only to a rectangle's being coded where it changed.
     fn frames_decode_to_the_picture(encoder: &Encoder, (w, h): (usize, usize), slack: u8) {
         let mut coder = encoder.coder().unwrap();
         let mut stream = coder.open(w as u16, h as u16).unwrap();
@@ -519,7 +524,7 @@ mod tests {
     #[test]
     fn libx264_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
         Encoder::X264.try_frames().expect("libx264 through its own API");
-        frames_decode_to_the_picture(&Encoder::X264, (96, 70), 0);
+        frames_decode_to_the_picture(&Encoder::X264, (96, 70), DEBLOCK_SLACK);
     }
 
     /// libx264's quantizer follows the dial frame by frame.
@@ -553,7 +558,7 @@ mod tests {
         let unit = frame(&mut encoder, &pixels, None, false);
         let types = nal_types(&unit);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "the first frame is an IDR with its parameter sets: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
 
         // Damage, in a buffer whose rows outside it are not the picture.
         let damage = Rect { x: 40, y: 20, width: 60, height: 30 };
@@ -567,11 +572,11 @@ mod tests {
         let unit = frame(&mut encoder, &rows, Some(&[damage]), false);
         let types = nal_types(&unit);
         assert!(types.contains(&1) && !types.contains(&5), "a P frame: {types:?}");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
 
         let unit = frame(&mut encoder, &pixels, None, true);
         assert!(nal_types(&unit).contains(&5), "an IDR where one was asked");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
     }
 
     /// A region of odd sides, as one clipped to the edge of an odd desktop
@@ -579,14 +584,13 @@ mod tests {
     /// region's own pixels decode to the picture.
     #[test]
     fn libx264_codes_a_region_of_odd_sides() {
-        frames_decode_to_the_picture(&Encoder::X264, (95, 69), 0);
+        frames_decode_to_the_picture(&Encoder::X264, (95, 69), DEBLOCK_SLACK);
     }
 
-    /// libx264's stream is Constrained Baseline, the profile `ultrafast`
-    /// comes to and every browser's decoder takes, with no B-frames to hold
-    /// a picture back: each frame in is one frame out.
+    /// libx264's stream is High profile, the hardware's, with no B-frames to
+    /// hold a picture back: each frame in is one frame out.
     #[test]
-    fn libx264_codes_constrained_baseline_one_frame_in_one_out() {
+    fn libx264_codes_high_one_frame_in_one_out() {
         let (w, h) = (64usize, 48usize);
         let mut coder = Encoder::X264.coder().unwrap();
         let mut stream = coder.open(w as u16, h as u16).unwrap();
@@ -595,9 +599,7 @@ mod tests {
         let mut unit = Vec::new();
         assert!(stream.encode(false, 90, &mut unit).unwrap());
         let sps = unit.windows(4).position(|s| s[..3] == [0, 0, 1] && s[3] & 0x1f == 7).expect("an SPS");
-        let (profile, constraints) = (unit[sps + 4], unit[sps + 5]);
-        assert_eq!(profile, 66, "Baseline");
-        assert_ne!(constraints & 0x40, 0, "constraint_set1: Constrained Baseline");
+        assert_eq!(unit[sps + 4], 100, "High");
         for _ in 0..5 {
             unit.clear();
             assert!(stream.encode(false, 90, &mut unit).unwrap(), "every frame in is a frame out");

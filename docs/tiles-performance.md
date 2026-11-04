@@ -298,8 +298,12 @@ four threads: libx264 `ultrafast` sent 590 frames for 15–17 s of the daemon's
 CPU where VP9 sent 395 for 33 s, about 27 ms of the processor a frame against
 83, at about 1.8 times VP9's bytes a frame, 100–135 Mbit/s against 37;
 libx264's `superfast` and `veryfast`, with CABAC and more search, cost 42 s
-for about 535 frames, no less than VP9, which is why the preset is
-`ultrafast`.
+for about 535 frames, no less than VP9. That kept the preset at `ultrafast`
+until 2026-11-03, on a flood, which is a reference and not what a preset is
+chosen by; on the scenarios it is chosen by, `superfast` with its motion
+searched over 128 pixels sends about two fifths of `ultrafast`'s bytes for
+about 1.7 times its processor time, and has been the preset since
+2026-11-03 ([The preset and the search](video-performance.md#the-preset-and-the-search)).
 
 ## What the rules were chosen by
 

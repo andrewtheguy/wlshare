@@ -1,20 +1,28 @@
-//! libx264 through its own API: an encoder at `ultrafast` with `zerolatency`,
-//! each picture handed the quantizer it is to be coded at.
+//! libx264 through its own API: an encoder at `superfast` with `zerolatency`,
+//! its motion searched by uneven multi-hexagon over 128 pixels, each picture
+//! handed the quantizer it is to be coded at.
 //!
 //! The quantizer is forced on each picture by `i_qpplus1`, under the CRF rate
 //! control. CRF's own choice is never made, every picture's quantizer being
-//! forced, and nothing in `ultrafast` moves a macroblock's from its picture's:
-//! no adaptive quantization, no macroblock tree, no lookahead. What CRF does
-//! bring is the half-size picture x264 estimates its rate on, and the motion
-//! it searches for there, which seeds the full search: `ultrafast`'s own
-//! search does not follow a window dragged far in a frame, and with the
-//! half-size one a drag is coded in a fifth of the bytes, for more of the
-//! processor than a constant quantizer takes
-//! ([measured](../../docs/video-performance.md)). A constant quantizer takes a
-//! forced one too, but within its bounds, the constant's own I and B
-//! pictures' quantizers about three either side of it, unless the ratios
-//! between them are set wide. libavcodec's wrapper would not do: it ignores a
-//! quantizer changed between frames, and copies every picture besides.
+//! forced, and nothing moves a macroblock's from its picture's: adaptive
+//! quantization off, which `superfast` would leave on, and no macroblock tree
+//! or lookahead, which `zerolatency` takes away. What CRF does bring is the
+//! half-size picture x264 estimates its rate on, and the motion it searches
+//! for there, which seeds the full search and follows a window dragged far in
+//! a frame. A constant quantizer takes a forced one too, but within its
+//! bounds, the constant's own I and B pictures' quantizers about three either
+//! side of it, unless the ratios between them are set wide. libavcodec's
+//! wrapper would not do: it ignores a quantizer changed between frames, and
+//! copies every picture besides.
+//!
+//! **The preset and the search** ([measured](../../docs/video-performance.md)).
+//! A page scrolled moves farther in a frame than `ultrafast`'s or
+//! `superfast`'s diamond search over 16 pixels reaches; the multi-hexagon over
+//! 128 finds it, and a scroll is sent in a sixth to a half of the bytes.
+//! `superfast` over `ultrafast` is CABAC, the deblocking filter, the intra
+//! partitions and the 8×8 transform, which halve a video's bytes; its stream
+//! is High profile. Together, at the same quality, about two fifths of
+//! `ultrafast`'s bytes for about 1.7 times its processor time.
 
 use std::ptr;
 
@@ -22,8 +30,11 @@ use x264_sys as x;
 
 use super::{Backend, FPS, Planes, encoder_threads};
 
-/// libx264's preset: its least search, the least of the processor's time.
-pub const PRESET: &str = "ultrafast";
+/// libx264's preset.
+pub const PRESET: &str = "superfast";
+
+/// How far, in pixels, the motion search reaches from its prediction.
+const MOTION_RANGE: i32 = 128;
 
 /// One libx264 encoder over a stream's coded picture.
 pub struct Stream {
@@ -43,7 +54,7 @@ impl Stream {
         // value returned.
         unsafe {
             let mut param: x::x264_param_t = std::mem::zeroed();
-            anyhow::ensure!(x::x264_param_default_preset(&mut param, c"ultrafast".as_ptr(), c"zerolatency".as_ptr()) == 0, "libx264 has no preset {PRESET}");
+            anyhow::ensure!(x::x264_param_default_preset(&mut param, c"superfast".as_ptr(), c"zerolatency".as_ptr()) == 0, "libx264 has no preset {PRESET}");
             // `zerolatency` takes the lookahead and the frame threads away,
             // which would each hold frames back, and slices the picture
             // among the threads instead.
@@ -66,7 +77,11 @@ impl Stream {
             param.vui.i_transfer = 6;
             param.vui.i_colmatrix = 6;
             param.vui.b_fullrange = 0;
+            param.analyse.i_me_method = x::X264_ME_UMH as i32;
+            param.analyse.i_me_range = MOTION_RANGE;
             param.rc.i_rc_method = x::X264_RC_CRF as i32;
+            // Every macroblock at its picture's forced quantizer.
+            param.rc.i_aq_mode = x::X264_AQ_NONE as i32;
             param.i_log_level = x::X264_LOG_WARNING as i32;
             let encoder = x::x264_encoder_open(&mut param);
             anyhow::ensure!(!encoder.is_null(), "libx264 opened no encoder over a {width}x{height} picture");
