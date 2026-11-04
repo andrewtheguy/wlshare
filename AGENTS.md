@@ -36,8 +36,9 @@
   Linking the daemon and its tests needs `libpam0g-dev` and
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
-  capture and the camera — the last for bindgen, which PipeWire's and FFmpeg's
-  `-sys` crates and the daemon's own `build.rs`, libva's, run — `libavcodec-dev` for the camera's H.264
+  capture and the camera — the last for bindgen, which PipeWire's, FFmpeg's
+  and x264's `-sys` crates run; libva's bindings are the daemon's own, written
+  out by hand (`h264/libva.rs`) — `libavcodec-dev` for the camera's H.264
   decoder, and `libx264-dev` and `libva-dev` for the H.264 encoder of the
   video and the tiles' regions (`h264/`), libx264 through its own API and the
   GPU through libva itself, each linked dynamically from the system.
