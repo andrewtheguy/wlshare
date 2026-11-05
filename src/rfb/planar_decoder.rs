@@ -1,8 +1,8 @@
 //! A planar bitmap read back as the specification lays it out
 //! ([MS-RDPEGDI] 2.2.2.5.1 and its RLE planes, 2.2.2.5.1.1–3), written
 //! for the tests from the text and not from the encoder, and the zstd frame
-//! around it read by ruzstd; the examples' pages draw with it too, and the
-//! still stream ([`StillReader`]) by ruzstd as well.
+//! around it read by ruzstd-decompress; the examples' pages draw with it too, and the
+//! still stream ([`StillReader`]) by ruzstd-decompress as well.
 
 /// The `w`×`h` pixels of `bitmap`, `R, G, B` a pixel, top row first, and
 /// the bytes it took; `Err` where it is not a whole lossless bitmap of
@@ -79,10 +79,10 @@ pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), Str
 
 /// The `w`×`h` pixels a [`wlshare_proto::tiles::KIND_PLANAR`] body carries,
 /// `R, G, B` a pixel, top row first: one zstd frame and nothing after it,
-/// read by ruzstd, of a planar bitmap of exactly that size.
+/// read by ruzstd-decompress, of a planar bitmap of exactly that size.
 pub fn unpack(body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
     let mut source = body;
-    let mut frame = ruzstd::decoding::StreamingDecoder::new(&mut source).map_err(|e| format!("a zstd frame: {e}"))?;
+    let mut frame = ruzstd_decompress::decoding::StreamingDecoder::new(&mut source).map_err(|e| format!("a zstd frame: {e}"))?;
     let mut bitmap = Vec::new();
     std::io::Read::read_to_end(&mut frame, &mut bitmap).map_err(|e| format!("a zstd frame: {e}"))?;
     drop(frame);
@@ -97,12 +97,12 @@ pub fn unpack(body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
 }
 
 /// The still stream as a client reads it: each STILL body decompressed,
-/// after the ones before it, to one bitmap of its rectangle, by ruzstd a
+/// after the ones before it, to one bitmap of its rectangle, by ruzstd-decompress a
 /// block at a time, the bitmap what the body's blocks decode to, which the
 /// frame hands out as soon as they are decoded.
 #[derive(Default)]
 pub struct StillReader {
-    frame: Option<ruzstd::decoding::FrameDecoder>,
+    frame: Option<ruzstd_decompress::decoding::FrameDecoder>,
     bitmap: Vec<u8>,
 }
 
@@ -117,7 +117,7 @@ impl StillReader {
     pub fn unpack(&mut self, body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
         let mut source = body;
         if body.starts_with(&ZSTD_MAGIC) {
-            let mut frame = ruzstd::decoding::FrameDecoder::new();
+            let mut frame = ruzstd_decompress::decoding::FrameDecoder::new();
             frame.init(&mut source).map_err(|e| format!("the still stream's frame: {e}"))?;
             self.frame = Some(frame);
         }

@@ -41,8 +41,8 @@
 //! percent.
 //!
 //! Its tests decode with a reader written here from the specifications,
-//! which shares nothing with the encoder, the zstd by ruzstd, a decoder in
-//! Rust that shares nothing with libzstd, the still stream by its fork, which
+//! which shares nothing with the encoder, the zstd by ruzstd-decompress, a
+//! decoder in Rust that shares nothing with libzstd, the fork of ruzstd that
 //! hands out an open frame's newest bytes as soon as their blocks are decoded;
 //! zDesk's page decodes the zstd with the same, and the bitmaps with its RDP
 //! compositor's planar codec, the one that draws a Windows host's lossless
@@ -457,7 +457,7 @@ mod tests {
         body
     }
 
-    /// A body is one zstd frame of the bitmap, read back by ruzstd: every
+    /// A body is one zstd frame of the bitmap, read back by ruzstd-decompress: every
     /// shape exact, a flat or a repeating picture a few bytes, and noise
     /// little more than its bitmap.
     #[test]
@@ -484,7 +484,7 @@ mod tests {
 
     /// Every STILL's body is the stream's bytes of its bitmap, read after the
     /// ones before it: the first a new frame and none after it, each read
-    /// exact by the client's reader, ruzstd a block at a time, a picture shown
+    /// exact by the client's reader, ruzstd-decompress a block at a time, a picture shown
     /// again a few bytes, and a stream made anew a new frame.
     #[test]
     fn a_still_is_the_streams_bytes_of_its_bitmap() {

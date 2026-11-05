@@ -916,8 +916,8 @@ the picture.
   tiles' bytes and a fifth more of their processor, for a LAN
   ([measured](tiles-performance.md#lossless-tiles)). Its tests read every
   body back with a reader of their own, written from the specification,
-  the zstd by ruzstd, a decoder that shares nothing with libzstd, from
-  andrewtheguy's fork, which adds `FrameDecoder::peek` for the still
+  the zstd by ruzstd-decompress, a decoder that shares nothing with libzstd,
+  andrewtheguy's fork of ruzstd, which adds `FrameDecoder::peek` for the still
   stream's newest bytes, held back while its frame goes on; the page
   decodes it with the same and the planar codec of the compositor that
   draws an RDP host's pipeline.
