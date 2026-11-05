@@ -931,15 +931,19 @@ the picture.
   table and long matches, a moving picture's frame being its literals'
   entropy coding. Where the desktop moves, it is a frame of its own, so
   every moving run of an update is packed at once on every core and read
-  alone. Where it is still, it is the still stream's, a 1 MiB window across
-  the session flushed at each bitmap, coded in order after the bitmaps are
-  cut on every core: a page, a terminal or a menu shown again is matched
-  against what the stream carried, which takes a third to three fifths off
+  alone, and the fast strategy steps 8 bytes past a place with no match
+  with its literals still Huffman coded (zstd's `experimental` parameters).
+  Where it is still, it is the still stream's, across the session and
+  flushed at each bitmap, looking at every place for a page's matches, with
+  the 8 MiB window the protocol allows and a 65536-entry table, as a smaller
+  one forgets a match from further back than a few thousand places whatever
+  the window, coded in order after the bitmaps are cut on every core: a page, a terminal or a menu shown again is matched
+  against what the stream carried, which takes a half to seven eighths off
   what a desktop of pages comes to in frames of their own, and a moving picture,
   which it would take nothing off, stays framed and on every core. The
   stream is state both ends keep, so it starts over with the picture, and
   with a client's `CacheEmpty`, which a page that cannot read a STILL sends
-  as one that missed a rectangle does. A still or a scroll is then a quarter
+  as one that missed a rectangle does. A still or a scroll is then about a ninth
   of a PNG's bytes or less, and a desktop that moves several times the held
   tiles' bytes and a fifth more of their processor, for a LAN
   ([measured](tiles-performance.md#lossless-tiles)). Its tests read every

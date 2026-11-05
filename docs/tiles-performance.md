@@ -938,7 +938,8 @@ every thread:
   Offline, over the 1920×1080 samples' still runs, its window chose it:
   128 KiB took the browser's 807 KB framed to 453, 1 MiB to 156 and 8 MiB
   to 144; restarting the stream every update kept 379. A tile is still by
-  the churn the held picture lays its regions out by.
+  the churn the held picture lays its regions out by. Its table and window
+  were chosen again later (below).
 
 At 1920×1080:
 
@@ -958,3 +959,49 @@ compression taking a fifth off, against 5 Mbit/s from a stock host's
 RemoteFX Progressive (zDesk's
 [Lossless, by the host's policy](https://github.com/andrewtheguy/zdesk/blob/main/docs/rdp-client.md#lossless-by-the-hosts-policy)).
 The picture is the host's, for a LAN, and costs what it costs there.
+
+**The moving frames' step and the still stream's table**, measured on
+2026-11-05 on lab1 (eight cores of EPYC Rome, rebuilt that day), alone:
+`motion-bench --tiles-only --lossless` over every sample at every size,
+0.0.119 against both changes, two runs each, each change also against
+0.0.119 alone. Archived in the artifacts as `bench/lossless-zstd-20261105/`,
+beside `bench/lossless-codecs-20261105/`, which measured what led to them.
+The bytes are this machine's count and lab1's alike. Summed over the sizes,
+the processor's time over every thread, the mean of the two runs:
+
+| Scenario | CPU, 0.0.119 → now | Bytes, 0.0.119 → now |
+|---|---:|---:|
+| browser | 13.7 → 13.5 s | 19.6 → 3.6 MB (0.18×) |
+| drag | 4.6 → 4.6 s | 0.59 → 0.52 MB (0.88×) |
+| terminal | 0.7 → 0.6 s | 1.3 → 0.9 MB (0.68×) |
+| uncover | 2.6 → 2.5 s | 3.9 → 2.7 MB (0.69×) |
+| still | 0.3 → 0.2 s | 1.4 → 0.6 MB (0.45×) |
+| video | 30.4 → 25.1 s | 2,670 → 2,679 MB |
+| walk | 46.5 → 39.9 s | 3,661 → 3,623 MB |
+| window | 7.0 → 6.6 s | 706 → 706 MB |
+| mixed | 90.7 → 77.0 s | 8,000 → 8,011 MB |
+| flood | 44.0 → 36.1 s | 3,142 → 3,446 MB |
+| all but flood | 197 → 170 s (0.87×) | 15,064 → 15,027 MB |
+
+- **The moving frames' step.** A frame of its own now steps 8 bytes past
+  a place where the fast strategy found no match, its literals forced to
+  be Huffman coded still (zstd's `literalCompressionMode`, which a step
+  otherwise turns off): a moving picture's frame is its literals' entropy
+  coding more than its matches. Alone it took the processor from 197 s
+  to 169 over all but flood for 0.19% more bytes, a flat run of tiles, a
+  few hundred bytes either way, costing the most; with the table below, a
+  video at 1920×1080 is 9.9 ms a frame where it was 11.6, its 95th
+  percentile 12.6 where it was 15.3, and at 4K 39.2 where it was 45.9. The still stream keeps every look: on a page of text a step of 2
+  cost 3 to 4% more bytes.
+- **The still stream's table.** The 4096-entry table it shared with the
+  frames forgets a match from more than a few thousand places back, so the
+  window, chosen with it, was never what limited the stream: with 2^16
+  entries, 1 MiB to 8 MiB took the browser's stills at 2880×1800 from 689 KB
+  to 364, and 0.0.119's came to 2,227. 2^16 at 8 MiB, the most the protocol lets a STILL's frame have, is
+  now the stream's: a desktop of pages comes to a half to seven eighths
+  less than framed alone (the browser 30 → 3.6 MB, the terminal 3.3 → 0.9),
+  a ninth to a twenty-fifth of the held picture's PNGs, and the stills of a walk or
+  the mixed session 7 and 15% fewer. 2^17 took under 1% more. Against
+  0.0.119's table it cost the mixed session 4% more of the processor
+  (76.4 → 79.4 s, the step in both), the stream being coded in order on
+  the encoder's thread, and the stills alone nothing.

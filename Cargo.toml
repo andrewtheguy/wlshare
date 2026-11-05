@@ -88,8 +88,9 @@ rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # The lossless tiles' compression stream (src/rfb/planar.rs): libzstd, built
 # from the crate's own copy of its source and linked in, so nothing is needed
-# to build or to run.
-zstd = { version = "0.13", default-features = false }
+# to build or to run. `experimental` is its parameters past the stable API's,
+# the literals' coding among them, which that source carries.
+zstd = { version = "0.13", default-features = false, features = ["experimental"] }
 
 # The Wayland side. wayland-client speaks the protocol in its own Rust, with no
 # libwayland linked or loaded.

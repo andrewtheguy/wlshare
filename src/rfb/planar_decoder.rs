@@ -125,6 +125,10 @@ pub struct StillReader {
     bitmap: Vec<u8>,
 }
 
+/// The largest window a still stream's frame may have, which the page's
+/// reader holds it to as this one does.
+const STILL_WINDOW_MOST: u64 = 8 << 20;
+
 /// What a zstd frame begins with.
 pub const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 
@@ -137,6 +141,7 @@ impl StillReader {
         let mut source = body;
         if body.starts_with(&ZSTD_MAGIC) {
             let mut frame = ruzstd_decompress::decoding::FrameDecoder::new();
+            frame.set_max_window_size(STILL_WINDOW_MOST);
             frame
                 .init(&mut source)
                 .map_err(|e| format!("the still stream's frame: {e}"))?;
