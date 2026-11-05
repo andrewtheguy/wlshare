@@ -21,8 +21,8 @@ use std::collections::HashMap;
 
 use log::{debug, info, warn};
 use wayland_client::backend::ObjectId;
-use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::protocol::wl_callback::{self, WlCallback};
+use wayland_client::protocol::wl_output::{self, WlOutput};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, event_created_child};
 use wayland_protocols::xdg::xdg_output::zv1::client::{
     zxdg_output_manager_v1::ZxdgOutputManagerV1,
@@ -67,21 +67,34 @@ impl OutputInfo {
     /// The output's box in the layout, once xdg-output has said.
     pub fn logical(&self) -> Option<Rect> {
         let ((x, y), (width, height)) = (self.logical_position?, self.logical_size?);
-        Some(Rect { x, y, width, height })
+        Some(Rect {
+            x,
+            y,
+            width,
+            height,
+        })
     }
 
     /// The framebuffer size a capture of this output has.
     pub fn size(&self) -> (u16, u16) {
         let (w, h) = self.mode;
         let (w, h) = match self.transform {
-            wl_output::Transform::_90 | wl_output::Transform::_270 | wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270 => (h, w),
+            wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270 => (h, w),
             _ => (w, h),
         };
-        (w.clamp(0, i32::from(u16::MAX)) as u16, h.clamp(0, i32::from(u16::MAX)) as u16)
+        (
+            w.clamp(0, i32::from(u16::MAX)) as u16,
+            h.clamp(0, i32::from(u16::MAX)) as u16,
+        )
     }
 
     pub fn is_headless(&self) -> bool {
-        self.name.as_deref().is_some_and(|n| n.starts_with("HEADLESS-"))
+        self.name
+            .as_deref()
+            .is_some_and(|n| n.starts_with("HEADLESS-"))
     }
 }
 
@@ -112,10 +125,22 @@ pub struct ModeInfo {
 #[derive(Debug, Clone, Copy)]
 pub enum ConfigKind {
     /// A SetDesktopSize: the mode alone.
-    Resize { client: ClientId, width: u16, height: u16, retry: bool },
+    Resize {
+        client: ClientId,
+        width: u16,
+        height: u16,
+        retry: bool,
+    },
     /// A density declaration: the mode and the scale together, whichever differ.
     /// `id` tells its events from a declaration's before it.
-    Declare { id: u64, client: ClientId, width: u16, height: u16, scale: f64, retry: bool },
+    Declare {
+        id: u64,
+        client: ClientId,
+        width: u16,
+        height: u16,
+        scale: f64,
+        retry: bool,
+    },
 }
 
 impl ConfigKind {
@@ -160,7 +185,9 @@ pub struct Outputs {
 impl Outputs {
     pub fn selected(&self, desk: usize) -> Option<&OutputInfo> {
         let name = self.selected[desk].as_deref()?;
-        self.outputs.iter().find(|o| o.name.as_deref() == Some(name))
+        self.outputs
+            .iter()
+            .find(|o| o.name.as_deref() == Some(name))
     }
 
     pub fn selected_head(&self, desk: usize) -> Option<&Head> {
@@ -174,7 +201,9 @@ impl Outputs {
 
     /// The desks sharing the output of this name.
     pub fn desks_on(&self, name: Option<&str>) -> Vec<usize> {
-        (0..self.selected.len()).filter(|&desk| name.is_some() && self.selected[desk].as_deref() == name).collect()
+        (0..self.selected.len())
+            .filter(|&desk| name.is_some() && self.selected[desk].as_deref() == name)
+            .collect()
     }
 
     /// The exact scale of a desk's shared output: the head's, or `wl_output`'s.
@@ -185,21 +214,35 @@ impl Outputs {
     /// An output as a pointer's motion meets it ([`Placement`]), once
     /// xdg-output has said where it is laid out, with the whole layout's box.
     pub fn placement_of(&self, output: &OutputInfo) -> Option<Placement> {
-        Some(Placement { logical: output.logical()?, size: output.size(), transform: output.transform, layout: self.layout()? })
+        Some(Placement {
+            logical: output.logical()?,
+            size: output.size(),
+            transform: output.transform,
+            layout: self.layout()?,
+        })
     }
 
     /// The layout's box: the union of every output's, as wlroots has it
     /// (`wlr_output_layout_get_box`), or `None` before any output has one.
     pub fn layout(&self) -> Option<Rect> {
-        self.outputs.iter().filter_map(OutputInfo::logical).reduce(|a, b| {
-            let (x, y) = (a.x.min(b.x), a.y.min(b.y));
-            Rect { x, y, width: (a.x + a.width).max(b.x + b.width) - x, height: (a.y + a.height).max(b.y + b.height) - y }
-        })
+        self.outputs
+            .iter()
+            .filter_map(OutputInfo::logical)
+            .reduce(|a, b| {
+                let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                Rect {
+                    x,
+                    y,
+                    width: (a.x + a.width).max(b.x + b.width) - x,
+                    height: (a.y + a.height).max(b.y + b.height) - y,
+                }
+            })
     }
 
     /// The scale `output` is drawn at: its head's, or `wl_output`'s.
     pub fn scale_of(&self, output: &OutputInfo) -> f64 {
-        self.head_scale(output).unwrap_or(f64::from(output.wl_scale.max(1)))
+        self.head_scale(output)
+            .unwrap_or(f64::from(output.wl_scale.max(1)))
     }
 
     /// The exact scale wlr-output-management gives `output`'s head, if it has
@@ -223,13 +266,21 @@ impl Outputs {
             .and_then(|name| self.head(name))
             .and_then(|h| h.current_mode.as_ref())
             .and_then(|m| self.modes.get(m));
-        let Some(mode) = mode else { return output.size() };
+        let Some(mode) = mode else {
+            return output.size();
+        };
         let (w, h) = mode.size;
         let (w, h) = match output.transform {
-            wl_output::Transform::_90 | wl_output::Transform::_270 | wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270 => (h, w),
+            wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270 => (h, w),
             _ => (w, h),
         };
-        (w.clamp(0, i32::from(u16::MAX)) as u16, h.clamp(0, i32::from(u16::MAX)) as u16)
+        (
+            w.clamp(0, i32::from(u16::MAX)) as u16,
+            h.clamp(0, i32::from(u16::MAX)) as u16,
+        )
     }
 
     /// A desk's shared output's id, or 0 while there is none: the `wl_output`
@@ -279,7 +330,10 @@ impl Outputs {
     /// put a desktop of no size in front of the client and give the capture
     /// nothing to read.
     pub fn selectable(&self, id: u32) -> Option<&OutputInfo> {
-        self.outputs.iter().find(|o| o.global == id).filter(|o| self.listable(o))
+        self.outputs
+            .iter()
+            .find(|o| o.global == id)
+            .filter(|o| self.listable(o))
     }
 
     /// Whether this is the output the configuration names.
@@ -292,10 +346,16 @@ impl Outputs {
     /// enabled yet rather than a mistake to stop on.
     pub fn select(&mut self, wanted: Option<&str>) -> anyhow::Result<()> {
         self.wanted = wanted.map(str::to_owned);
-        let named = wanted.and_then(|name| self.outputs.iter().find(|o| o.name.as_deref() == Some(name)));
+        let named = wanted.and_then(|name| {
+            self.outputs
+                .iter()
+                .find(|o| o.name.as_deref() == Some(name))
+        });
         if let (Some(name), None) = (wanted, named) {
             let have: Vec<_> = self.outputs.iter().filter_map(|o| o.name.clone()).collect();
-            info!("no output named {name} yet; the compositor has {have:?}, and the first is shared until it appears");
+            info!(
+                "no output named {name} yet; the compositor has {have:?}, and the first is shared until it appears"
+            );
         }
         let chosen = match named {
             Some(output) => output,
@@ -308,13 +368,23 @@ impl Outputs {
                 .or(self.outputs.first())
                 .ok_or_else(|| anyhow::anyhow!("the compositor has no outputs"))?,
         };
-        let name = chosen.name.clone().ok_or_else(|| anyhow::anyhow!("the output has no name; wl_output version 4 is required"))?;
+        let name = chosen.name.clone().ok_or_else(|| {
+            anyhow::anyhow!("the output has no name; wl_output version 4 is required")
+        })?;
         info!(
             "sharing output {name}: {}x{} pixels at scale {:.2}{}",
             chosen.size().0,
             chosen.size().1,
-            self.heads.iter().find(|h| h.name.as_deref() == Some(&name)).and_then(|h| h.scale).unwrap_or(f64::from(chosen.wl_scale)),
-            if chosen.is_headless() { ", headless" } else { "" }
+            self.heads
+                .iter()
+                .find(|h| h.name.as_deref() == Some(&name))
+                .and_then(|h| h.scale)
+                .unwrap_or(f64::from(chosen.wl_scale)),
+            if chosen.is_headless() {
+                ", headless"
+            } else {
+                ""
+            }
         );
         self.selected[crate::shared::FIRST] = Some(name);
         Ok(())
@@ -336,9 +406,14 @@ impl Outputs {
             info!("wlr-output-management is not available; not reconfiguring the output");
             return false;
         };
-        let Some(selected) = self.selected(desk) else { return false };
+        let Some(selected) = self.selected(desk) else {
+            return false;
+        };
         if !selected.is_headless() {
-            info!("not reconfiguring {}: not a headless output", selected.name.as_deref().unwrap_or("?"));
+            info!(
+                "not reconfiguring {}: not a headless output",
+                selected.name.as_deref().unwrap_or("?")
+            );
             return false;
         }
         let name = selected.name.clone();
@@ -377,12 +452,37 @@ impl Outputs {
 }
 
 impl Dispatch<WlOutput, ()> for Compositor {
-    fn event(state: &mut Self, output: &WlOutput, event: wl_output::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        let Some(info) = state.outputs.outputs.iter_mut().find(|o| o.output == *output) else { return };
+    fn event(
+        state: &mut Self,
+        output: &WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(info) = state
+            .outputs
+            .outputs
+            .iter_mut()
+            .find(|o| o.output == *output)
+        else {
+            return;
+        };
         match event {
-            wl_output::Event::Geometry { transform: WEnum::Value(t), .. } => info.transform = t,
-            wl_output::Event::Mode { flags, width, height, .. } => {
-                if flags.into_result().is_ok_and(|f| f.contains(wl_output::Mode::Current)) {
+            wl_output::Event::Geometry {
+                transform: WEnum::Value(t),
+                ..
+            } => info.transform = t,
+            wl_output::Event::Mode {
+                flags,
+                width,
+                height,
+                ..
+            } => {
+                if flags
+                    .into_result()
+                    .is_ok_and(|f| f.contains(wl_output::Mode::Current))
+                {
                     info.mode = (width, height);
                 }
             }
@@ -403,7 +503,10 @@ impl Dispatch<WlOutput, ()> for Compositor {
                     // Nothing is shared, and this output has just become
                     // something that can be: the desktop starts again on it.
                     state.adopt_output();
-                } else if appeared && state.outputs.is_wanted(name.as_deref()) && state.outputs.selected[FIRST] != name {
+                } else if appeared
+                    && state.outputs.is_wanted(name.as_deref())
+                    && state.outputs.selected[FIRST] != name
+                {
                     // The configured output is here, and the desktop was on
                     // another only for want of it. On its appearing and not on
                     // every `done`: a client that names another afterwards
@@ -421,11 +524,27 @@ impl Dispatch<WlOutput, ()> for Compositor {
 }
 
 impl Dispatch<ZxdgOutputV1, u32> for Compositor {
-    fn event(state: &mut Self, _: &ZxdgOutputV1, event: zxdg_output_v1::Event, global: &u32, _: &Connection, _: &QueueHandle<Self>) {
-        let Some(info) = state.outputs.outputs.iter_mut().find(|o| o.global == *global) else { return };
+    fn event(
+        state: &mut Self,
+        _: &ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        global: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(info) = state
+            .outputs
+            .outputs
+            .iter_mut()
+            .find(|o| o.global == *global)
+        else {
+            return;
+        };
         match event {
             zxdg_output_v1::Event::LogicalPosition { x, y } => info.pending_position = Some((x, y)),
-            zxdg_output_v1::Event::LogicalSize { width, height } => info.pending_size = Some((width, height)),
+            zxdg_output_v1::Event::LogicalSize { width, height } => {
+                info.pending_size = Some((width, height))
+            }
             _ => {}
         }
     }
@@ -434,10 +553,24 @@ impl Dispatch<ZxdgOutputV1, u32> for Compositor {
 wayland_client::delegate_noop!(Compositor: ignore ZxdgOutputManagerV1);
 
 impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
-    fn event(state: &mut Self, _: &ZwlrOutputManagerV1, event: zwlr_output_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrOutputManagerV1,
+        event: zwlr_output_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             zwlr_output_manager_v1::Event::Head { head } => {
-                state.outputs.heads.push(Head { head, name: None, enabled: false, scale: None, current_mode: None, scale_changed: false });
+                state.outputs.heads.push(Head {
+                    head,
+                    name: None,
+                    enabled: false,
+                    scale: None,
+                    current_mode: None,
+                    scale_changed: false,
+                });
             }
             zwlr_output_manager_v1::Event::Done { serial } => {
                 state.outputs.serial = serial;
@@ -451,7 +584,11 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
                     for desk in state.outputs.desks_on(name.as_deref()) {
                         // The report this sends answers the declaration out
                         // for that desk, if any.
-                        let settled = state.outputs.declaring.take_if(|(_, declaring)| *declaring == desk).is_some();
+                        let settled = state
+                            .outputs
+                            .declaring
+                            .take_if(|(_, declaring)| *declaring == desk)
+                            .is_some();
                         state.geometry_changed(desk);
                         if settled {
                             state.declaration_settled();
@@ -462,7 +599,9 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
                 // shared one's.
                 state.outputs_changed();
             }
-            zwlr_output_manager_v1::Event::Finished => warn!("the compositor withdrew wlr-output-management"),
+            zwlr_output_manager_v1::Event::Finished => {
+                warn!("the compositor withdrew wlr-output-management")
+            }
             _ => {}
         }
     }
@@ -473,11 +612,20 @@ impl Dispatch<ZwlrOutputManagerV1, ()> for Compositor {
 }
 
 impl Dispatch<ZwlrOutputHeadV1, ()> for Compositor {
-    fn event(state: &mut Self, head: &ZwlrOutputHeadV1, event: zwlr_output_head_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        head: &ZwlrOutputHeadV1,
+        event: zwlr_output_head_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let zwlr_output_head_v1::Event::Mode { mode } = &event {
             state.outputs.modes.insert(mode.id(), ModeInfo::default());
         }
-        let Some(h) = state.outputs.heads.iter_mut().find(|h| h.head == *head) else { return };
+        let Some(h) = state.outputs.heads.iter_mut().find(|h| h.head == *head) else {
+            return;
+        };
         match event {
             zwlr_output_head_v1::Event::Name { name } => h.name = Some(name),
             zwlr_output_head_v1::Event::Enabled { enabled } => h.enabled = enabled != 0,
@@ -506,7 +654,14 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Compositor {
 }
 
 impl Dispatch<ZwlrOutputModeV1, ()> for Compositor {
-    fn event(state: &mut Self, mode: &ZwlrOutputModeV1, event: zwlr_output_mode_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        mode: &ZwlrOutputModeV1,
+        event: zwlr_output_mode_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             zwlr_output_mode_v1::Event::Size { width, height } => {
                 state.outputs.modes.entry(mode.id()).or_default().size = (width, height);
@@ -543,7 +698,11 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                     // measured compositor, sends them first when it commits on the
                     // spot. One round trip later, whatever the compositor was going
                     // to send has arrived.
-                    if state.outputs.declaring.is_some_and(|(declaring, _)| declaring == id) {
+                    if state
+                        .outputs
+                        .declaring
+                        .is_some_and(|(declaring, _)| declaring == id)
+                    {
                         conn.display().sync(qh, ScaleSettle { id });
                     }
                 }
@@ -551,16 +710,34 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
             zwlr_output_configuration_v1::Event::Cancelled if !kind.retried() => {
                 // The layout changed under it: the `done` with the new serial
                 // is already read, so the same request is made again against it.
-                info!("the compositor cancelled an output configuration whose layout changed under it; asking again ({kind:?})");
+                info!(
+                    "the compositor cancelled an output configuration whose layout changed under it; asking again ({kind:?})"
+                );
                 match *kind {
-                    ConfigKind::Resize { client, width, height, .. } => {
+                    ConfigKind::Resize {
+                        client,
+                        width,
+                        height,
+                        ..
+                    } => {
                         if let Some(desk) = state.desk_of(client) {
                             state.desks[desk].pending_resize = None;
                             state.resize(desk, client, width, height, true);
                         }
                     }
-                    ConfigKind::Declare { id, client, width, height, scale, .. } => {
-                        if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == id) {
+                    ConfigKind::Declare {
+                        id,
+                        client,
+                        width,
+                        height,
+                        scale,
+                        ..
+                    } => {
+                        if let Some((_, desk)) = state
+                            .outputs
+                            .declaring
+                            .take_if(|(declaring, _)| *declaring == id)
+                        {
                             state.desks[desk].pending_resize = None;
                             if state.desks[desk].client == Some(client) {
                                 state.declare(desk, client, width, height, scale, true);
@@ -572,17 +749,25 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
                     }
                 }
             }
-            zwlr_output_configuration_v1::Event::Failed | zwlr_output_configuration_v1::Event::Cancelled => {
+            zwlr_output_configuration_v1::Event::Failed
+            | zwlr_output_configuration_v1::Event::Cancelled => {
                 warn!("the compositor refused an output configuration ({kind:?})");
                 match *kind {
                     ConfigKind::Resize { client, .. } => {
                         if let Some(desk) = state.desk_of(client) {
                             state.desks[desk].pending_resize = None;
                         }
-                        state.shared().emit(Event::ResizeRefused { client, status: crate::rfb::msg::EDS_STATUS_INVALID_LAYOUT });
+                        state.shared().emit(Event::ResizeRefused {
+                            client,
+                            status: crate::rfb::msg::EDS_STATUS_INVALID_LAYOUT,
+                        });
                     }
                     ConfigKind::Declare { id, .. } => {
-                        if let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == id) {
+                        if let Some((_, desk)) = state
+                            .outputs
+                            .declaring
+                            .take_if(|(declaring, _)| *declaring == id)
+                        {
                             state.desks[desk].pending_resize = None;
                             state.answer_geometry(desk, None);
                             state.declaration_settled();
@@ -597,11 +782,23 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigKind> for Compositor {
 }
 
 impl Dispatch<WlCallback, ScaleSettle> for Compositor {
-    fn event(state: &mut Self, _: &WlCallback, event: wl_callback::Event, settle: &ScaleSettle, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        settle: &ScaleSettle,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wl_callback::Event::Done { .. } = event
-            && let Some((_, desk)) = state.outputs.declaring.take_if(|(declaring, _)| *declaring == settle.id)
+            && let Some((_, desk)) = state
+                .outputs
+                .declaring
+                .take_if(|(declaring, _)| *declaring == settle.id)
         {
-            info!("the compositor applied the declaration's configuration without changing the scale; reporting the output as it is");
+            info!(
+                "the compositor applied the declaration's configuration without changing the scale; reporting the output as it is"
+            );
             state.answer_geometry(desk, None);
             state.declaration_settled();
         }

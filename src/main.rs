@@ -45,10 +45,10 @@ mod wlcap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::rfb::rsa_aes::ServerKey;
 use anyhow::Context as _;
 use clap::{CommandFactory as _, FromArgMatches as _, Parser};
 use log::{error, info};
-use crate::rfb::rsa_aes::ServerKey;
 
 use crate::auth::Login;
 use crate::session::{RsaAes, Security};
@@ -63,7 +63,11 @@ use crate::session::{RsaAes, Security};
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[derive(Parser, Debug)]
-#[command(name = "wlshare", version, about = "A VNC server for wlroots-based Wayland compositors, with pixel density on the wire")]
+#[command(
+    name = "wlshare",
+    version,
+    about = "A VNC server for wlroots-based Wayland compositors, with pixel density on the wire"
+)]
 struct Args {
     #[command(subcommand)]
     command: Option<Command>,
@@ -100,8 +104,13 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // The release and the protocol version of the private extensions it speaks,
     // which is what a gateway must match ([`wlshare_proto::version`]).
-    let version = format!("{} (wlshare protocol {})", env!("CARGO_PKG_VERSION"), wlshare_proto::PROTOCOL_VERSION);
-    let args = Args::from_arg_matches(&Args::command().version(&*version.leak()).get_matches()).unwrap_or_else(|e| e.exit());
+    let version = format!(
+        "{} (wlshare protocol {})",
+        env!("CARGO_PKG_VERSION"),
+        wlshare_proto::PROTOCOL_VERSION
+    );
+    let args = Args::from_arg_matches(&Args::command().version(&*version.leak()).get_matches())
+        .unwrap_or_else(|e| e.exit());
     let path = args.config.unwrap_or_else(config::default_path);
     let watch = match args.command {
         Some(Command::HashPassword) => return hash_password(),
@@ -123,7 +132,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(dir) = &args.capture_frames {
         refuse_capture_as_a_service()?;
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        info!("capturing what every video stream is handed into {}", dir.display());
+        info!(
+            "capturing what every video stream is handed into {}",
+            dir.display()
+        );
     }
     let security = security(&config, &path)?;
     // libavcodec's own log, on stderr, at warnings, as libx264's is
@@ -137,8 +149,17 @@ fn main() -> anyhow::Result<()> {
     // the output, so ServerInit can name a size before the first frame.
     let (compositor, shared) = compositor::start(&config)?;
 
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let result = runtime.block_on(serve(config, args.capture_frames, security, h264, shared.clone(), compositor));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(serve(
+        config,
+        args.capture_frames,
+        security,
+        h264,
+        shared.clone(),
+        compositor,
+    ));
     if let Err(e) = &result {
         error!("{e:#}");
     }
@@ -154,8 +175,12 @@ fn main() -> anyhow::Result<()> {
 /// daemon run from a terminal inside a session systemd started is not taken
 /// for one.
 fn refuse_capture_as_a_service() -> anyhow::Result<()> {
-    let started_by_systemd = std::env::var("SYSTEMD_EXEC_PID").is_ok_and(|pid| is_this_process(&pid, std::process::id()));
-    anyhow::ensure!(!started_by_systemd, "--capture-frames is for a daemon run by hand, and this one was started by systemd: take it out of the unit");
+    let started_by_systemd = std::env::var("SYSTEMD_EXEC_PID")
+        .is_ok_and(|pid| is_this_process(&pid, std::process::id()));
+    anyhow::ensure!(
+        !started_by_systemd,
+        "--capture-frames is for a daemon run by hand, and this one was started by systemd: take it out of the unit"
+    );
     Ok(())
 }
 
@@ -166,13 +191,24 @@ fn is_this_process(pid: &str, own: u32) -> bool {
 
 /// `wlshare watch`: follow the state socket the configuration names until
 /// interrupted or terminated.
-fn follow(config: &config::Config, config_path: &std::path::Path, watch: watch::Watch) -> anyhow::Result<()> {
+fn follow(
+    config: &config::Config,
+    config_path: &std::path::Path,
+    watch: watch::Watch,
+) -> anyhow::Result<()> {
     watch.validate()?;
-    let socket = config.state_socket.as_deref().with_context(|| format!("{} names no state_socket to follow", config_path.display()))?;
+    let socket = config
+        .state_socket
+        .as_deref()
+        .with_context(|| format!("{} names no state_socket to follow", config_path.display()))?;
     let socket = state::path(socket)?;
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(async {
-        let mut terminated = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).context("handling SIGTERM")?;
+        let mut terminated =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .context("handling SIGTERM")?;
         // Not known until the daemon has said, or has turned out not to be there.
         let (held, desktop) = tokio::sync::watch::channel(None);
         let following = tokio::spawn(state::follow(socket, held));
@@ -196,37 +232,66 @@ fn follow(config: &config::Config, config_path: &std::path::Path, watch: watch::
 /// and the offer says so.
 fn security(config: &config::Config, config_path: &std::path::Path) -> anyhow::Result<Security> {
     let login = match (&config.pam, &config.password) {
-        (Some(pam), _) => Some(Login::Pam { service: pam.service.clone(), account: pam::process_user()? }),
+        (Some(pam), _) => Some(Login::Pam {
+            service: pam.service.clone(),
+            account: pam::process_user()?,
+        }),
         (None, Some(password)) => {
             auth::check_hash(&password.hash).context("the [password] table's hash")?;
-            Some(Login::Password { hash: password.hash.clone() })
+            Some(Login::Password {
+                hash: password.hash.clone(),
+            })
         }
         (None, None) => None,
     };
     let Some(login) = login else {
-        info!("no [pam] or [password] table: accepting clients without authentication, in the clear");
+        info!(
+            "no [pam] or [password] table: accepting clients without authentication, in the clear"
+        );
         return Ok(Security::default());
     };
-    let key = server_key(config.rsa_key_file(config_path).expect("a login is configured"))?;
+    let key = server_key(
+        config
+            .rsa_key_file(config_path)
+            .expect("a login is configured"),
+    )?;
     let (bits, fingerprint) = (key.bits(), key.fingerprint());
     match &login {
-        Login::Pam { service, account } => info!("RSA-AES with PAM service {service:?}: the login is {account:?}'s; server key {bits} bits, fingerprint {fingerprint}"),
-        Login::Password { .. } => info!("RSA-AES with the configured password, which names no account; server key {bits} bits, fingerprint {fingerprint}"),
+        Login::Pam { service, account } => info!(
+            "RSA-AES with PAM service {service:?}: the login is {account:?}'s; server key {bits} bits, fingerprint {fingerprint}"
+        ),
+        Login::Password { .. } => info!(
+            "RSA-AES with the configured password, which names no account; server key {bits} bits, fingerprint {fingerprint}"
+        ),
     }
-    Ok(Security { rsa_aes: Some(RsaAes { key: Arc::new(key), login }) })
+    Ok(Security {
+        rsa_aes: Some(RsaAes {
+            key: Arc::new(key),
+            login,
+        }),
+    })
 }
 
 /// The server's RSA key from `key_path`, generated there on a first start.
 fn server_key(key_path: std::path::PathBuf) -> anyhow::Result<ServerKey> {
     let key = match std::fs::read_to_string(&key_path) {
-        Ok(pem) => ServerKey::from_pem(&pem).with_context(|| format!("{} is not a PKCS#8 PEM RSA key", key_path.display()))?,
+        Ok(pem) => ServerKey::from_pem(&pem)
+            .with_context(|| format!("{} is not a PKCS#8 PEM RSA key", key_path.display()))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!("generating a {}-bit RSA key into {}", crate::rfb::rsa_aes::SERVER_KEY_BITS, key_path.display());
+            info!(
+                "generating a {}-bit RSA key into {}",
+                crate::rfb::rsa_aes::SERVER_KEY_BITS,
+                key_path.display()
+            );
             let key = ServerKey::generate().context("generating the RSA key")?;
             if let Some(dir) = key_path.parent() {
-                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
             }
-            write_private(&key_path, key.to_pem().context("encoding the RSA key")?.as_bytes())?;
+            write_private(
+                &key_path,
+                key.to_pem().context("encoding the RSA key")?.as_bytes(),
+            )?;
             key
         }
         Err(e) => return Err(e).with_context(|| format!("reading {}", key_path.display())),
@@ -242,7 +307,10 @@ fn hash_password() -> anyhow::Result<()> {
     let interactive = unsafe { libc::isatty(libc::STDIN_FILENO) } == 1;
     let password = read_password("Password: ", interactive)?;
     if interactive {
-        anyhow::ensure!(password == read_password("Again: ", interactive)?, "the two passwords differ");
+        anyhow::ensure!(
+            password == read_password("Again: ", interactive)?,
+            "the two passwords differ"
+        );
     }
     println!("{}", auth::hash_password(&password)?);
     Ok(())
@@ -277,7 +345,11 @@ impl EchoOff {
         // descriptor is the process's own standard input.
         unsafe {
             let mut term: libc::termios = std::mem::zeroed();
-            anyhow::ensure!(libc::tcgetattr(libc::STDIN_FILENO, &mut term) == 0, "tcgetattr: {}", std::io::Error::last_os_error());
+            anyhow::ensure!(
+                libc::tcgetattr(libc::STDIN_FILENO, &mut term) == 0,
+                "tcgetattr: {}",
+                std::io::Error::last_os_error()
+            );
             let saved = term;
             term.c_lflag &= !libc::ECHO;
             anyhow::ensure!(
@@ -310,7 +382,8 @@ fn write_private(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> 
         .mode(0o600)
         .open(path)
         .with_context(|| format!("creating {}", path.display()))?;
-    file.write_all(contents).with_context(|| format!("writing {}", path.display()))
+    file.write_all(contents)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 async fn serve(
@@ -321,15 +394,24 @@ async fn serve(
     shared: Arc<shared::Shared>,
     mut compositor: compositor::Handle,
 ) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind(config.listen).await.with_context(|| format!("listening on {}", config.listen))?;
-    info!("listening on {}, wlshare protocol {}", config.listen, wlshare_proto::PROTOCOL_VERSION);
+    let listener = tokio::net::TcpListener::bind(config.listen)
+        .await
+        .with_context(|| format!("listening on {}", config.listen))?;
+    info!(
+        "listening on {}, wlshare protocol {}",
+        config.listen,
+        wlshare_proto::PROTOCOL_VERSION
+    );
     // Removed with the daemon, when the daemon gets to: a follower reads the
     // closed socket and not the file.
     let _state = match &config.state_socket {
         Some(socket) => {
             let socket = state::path(socket)?;
             let (followers, bound) = state::bind(&socket)?;
-            info!("telling whether the desktop is held on {}", socket.display());
+            info!(
+                "telling whether the desktop is held on {}",
+                socket.display()
+            );
             tokio::spawn(state::serve(followers, shared.clone()));
             Some(bound)
         }
@@ -337,7 +419,8 @@ async fn serve(
     };
     // What systemd stops a unit with; without a handler it ends the process
     // where it stands, the socket's file left behind.
-    let mut terminated = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).context("handling SIGTERM")?;
+    let mut terminated = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("handling SIGTERM")?;
     let session_config = Arc::new(session::SessionConfig {
         security,
         name: config.name.clone(),

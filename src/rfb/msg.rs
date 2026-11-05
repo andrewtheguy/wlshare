@@ -75,7 +75,14 @@ pub struct Screen {
 impl Screen {
     /// The one screen this server ever reports: the whole framebuffer.
     pub fn whole(width: u16, height: u16) -> Self {
-        Self { id: 0, x: 0, y: 0, width, height, flags: 0 }
+        Self {
+            id: 0,
+            x: 0,
+            y: 0,
+            width,
+            height,
+            flags: 0,
+        }
     }
 }
 
@@ -84,32 +91,69 @@ impl Screen {
 pub enum ClientMsg {
     SetPixelFormat(PixelFormat),
     SetEncodings(Vec<i32>),
-    FramebufferUpdateRequest { incremental: bool, x: u16, y: u16, width: u16, height: u16 },
-    KeyEvent { down: bool, keysym: u32 },
-    PointerEvent { buttons: u8, x: u16, y: u16 },
+    FramebufferUpdateRequest {
+        incremental: bool,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+    },
+    KeyEvent {
+        down: bool,
+        keysym: u32,
+    },
+    PointerEvent {
+        buttons: u8,
+        x: u16,
+        y: u16,
+    },
     /// Latin-1 cut text, which wlshare does not speak: framed so that it can be
     /// skipped, and otherwise ignored.
     CutText(Vec<u8>),
     /// An Extended Clipboard body ([`crate::rfb::clipboard`]): a `ClientCutText`
     /// with a negative length.
     ExtendedCutText(Vec<u8>),
-    EnableContinuousUpdates { enable: bool, x: u16, y: u16, width: u16, height: u16 },
-    Fence { flags: u32, payload: Vec<u8> },
-    SetDesktopSize { width: u16, height: u16, screens: Vec<Screen> },
+    EnableContinuousUpdates {
+        enable: bool,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+    },
+    Fence {
+        flags: u32,
+        payload: Vec<u8>,
+    },
+    SetDesktopSize {
+        width: u16,
+        height: u16,
+        screens: Vec<Screen>,
+    },
     /// The density extension's declaration: the size in pixels the client wants
     /// and the scale it wants them drawn at, as 16.16 fixed point
     /// ([`wlshare_proto::density`]).
-    ClientDensity { width: u16, height: u16, fixed: u32 },
+    ClientDensity {
+        width: u16,
+        height: u16,
+        fixed: u32,
+    },
     /// The outputs extension's request: share the output with this id, as the
     /// last list named it ([`wlshare_proto::outputs`]).
-    SelectOutput { id: u32 },
+    SelectOutput {
+        id: u32,
+    },
     /// The outputs extension's other request: have this many virtual displays
     /// ([`wlshare_proto::outputs`]).
-    VirtualDisplays { count: u32 },
+    VirtualDisplays {
+        count: u32,
+    },
     /// The scroll message: scroll by this distance in the output's logical
     /// pixels, positive rightward and downward, where the pointer is
     /// ([`wlshare_proto::scroll`]).
-    Scroll { dx: i16, dy: i16 },
+    Scroll {
+        dx: i16,
+        dy: i16,
+    },
     /// The tiles encoding's message: the client's cache of tiles holds
     /// nothing the server can draw from ([`wlshare_proto::tiles::cache_empty`]).
     CacheEmpty,
@@ -128,7 +172,10 @@ pub enum ClientMsg {
     /// The camera extension: the camera is gone.
     CameraUnplug,
     /// The camera extension: one Annex B access unit.
-    CameraSample { keyframe: bool, data: Vec<u8> },
+    CameraSample {
+        keyframe: bool,
+        data: Vec<u8>,
+    },
     /// The microphone extension: a microphone is lent ([`wlshare_proto::microphone`]).
     MicrophonePlug,
     /// The microphone extension: the microphone is gone.
@@ -169,7 +216,9 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
 ///
 /// `Ok(None)` means more bytes are needed and nothing was consumed.
 pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
-    let Some(&kind) = buf.first() else { return Ok(None) };
+    let Some(&kind) = buf.first() else {
+        return Ok(None);
+    };
     macro_rules! need {
         ($n:expr) => {
             if buf.len() < $n {
@@ -206,11 +255,24 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
         }
         CLIENT_KEY_EVENT => {
             need!(8);
-            (ClientMsg::KeyEvent { down: buf[1] != 0, keysym: u32_at(buf, 4) }, 8)
+            (
+                ClientMsg::KeyEvent {
+                    down: buf[1] != 0,
+                    keysym: u32_at(buf, 4),
+                },
+                8,
+            )
         }
         CLIENT_POINTER_EVENT => {
             need!(6);
-            (ClientMsg::PointerEvent { buttons: buf[1], x: u16_at(buf, 2), y: u16_at(buf, 4) }, 6)
+            (
+                ClientMsg::PointerEvent {
+                    buttons: buf[1],
+                    x: u16_at(buf, 2),
+                    y: u16_at(buf, 4),
+                },
+                6,
+            )
         }
         CLIENT_CUT_TEXT => {
             need!(8);
@@ -222,7 +284,14 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             }
             need!(8 + len);
             let body = buf[8..8 + len].to_vec();
-            (if extended { ClientMsg::ExtendedCutText(body) } else { ClientMsg::CutText(body) }, 8 + len)
+            (
+                if extended {
+                    ClientMsg::ExtendedCutText(body)
+                } else {
+                    ClientMsg::CutText(body)
+                },
+                8 + len,
+            )
         }
         CLIENT_ENABLE_CONTINUOUS_UPDATES => {
             need!(10);
@@ -245,7 +314,13 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
                 return Err(ParseError::FencePayloadTooLong(len));
             }
             need!(9 + len);
-            (ClientMsg::Fence { flags, payload: buf[9..9 + len].to_vec() }, 9 + len)
+            (
+                ClientMsg::Fence {
+                    flags,
+                    payload: buf[9..9 + len].to_vec(),
+                },
+                9 + len,
+            )
         }
         CLIENT_SET_DESKTOP_SIZE => {
             need!(8);
@@ -264,22 +339,48 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
                     }
                 })
                 .collect();
-            (ClientMsg::SetDesktopSize { width: u16_at(buf, 2), height: u16_at(buf, 4), screens }, 8 + 16 * n)
+            (
+                ClientMsg::SetDesktopSize {
+                    width: u16_at(buf, 2),
+                    height: u16_at(buf, 4),
+                    screens,
+                },
+                8 + 16 * n,
+            )
         }
         MSG_DENSITY => match Density::parse(buf) {
             None => return Ok(None),
-            Some((Density { width, height, fixed }, n)) => (ClientMsg::ClientDensity { width, height, fixed }, n),
+            Some((
+                Density {
+                    width,
+                    height,
+                    fixed,
+                },
+                n,
+            )) => (
+                ClientMsg::ClientDensity {
+                    width,
+                    height,
+                    fixed,
+                },
+                n,
+            ),
         },
         MSG_OUTPUTS => match wlshare_proto::outputs::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientOutputs::Select { id }, n)) => (ClientMsg::SelectOutput { id }, n),
-            Some((ClientOutputs::VirtualDisplays { count }, n)) => (ClientMsg::VirtualDisplays { count }, n),
+            Some((ClientOutputs::VirtualDisplays { count }, n)) => {
+                (ClientMsg::VirtualDisplays { count }, n)
+            }
         },
         MSG_SCROLL => match wlshare_proto::scroll::parse(buf) {
             None => return Ok(None),
             Some(((dx, dy), n)) => (ClientMsg::Scroll { dx, dy }, n),
         },
-        MSG_CACHE_EMPTY => (ClientMsg::CacheEmpty, wlshare_proto::tiles::parse_cache_empty(buf)),
+        MSG_CACHE_EMPTY => (
+            ClientMsg::CacheEmpty,
+            wlshare_proto::tiles::parse_cache_empty(buf),
+        ),
         MSG_QEMU => match wlshare_proto::audio::parse_client(buf)? {
             None => return Ok(None),
             Some((ClientAudio::Enable, n)) => (ClientMsg::AudioEnable, n),
@@ -291,7 +392,9 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ClientMsg, usize)>, ParseError> {
             None => return Ok(None),
             Some((ClientCamera::Plug(format), n)) => (ClientMsg::CameraPlug(format), n),
             Some((ClientCamera::Unplug, n)) => (ClientMsg::CameraUnplug, n),
-            Some((ClientCamera::Sample { keyframe, data }, n)) => (ClientMsg::CameraSample { keyframe, data }, n),
+            Some((ClientCamera::Sample { keyframe, data }, n)) => {
+                (ClientMsg::CameraSample { keyframe, data }, n)
+            }
         },
         MSG_MICROPHONE => match wlshare_proto::microphone::parse_client(buf)? {
             None => return Ok(None),
@@ -378,9 +481,21 @@ pub fn desktop_size_rect(width: u16, height: u16) -> [u8; 12] {
 /// An ExtendedDesktopSize rectangle, header and layout. The header's x is the
 /// reason and its y the status (RFC 6143 has neither; the extension repurposes
 /// them), and the body is the screen list.
-pub fn extended_desktop_size_rect(reason: u16, status: u16, width: u16, height: u16, screens: &[Screen]) -> Vec<u8> {
+pub fn extended_desktop_size_rect(
+    reason: u16,
+    status: u16,
+    width: u16,
+    height: u16,
+    screens: &[Screen],
+) -> Vec<u8> {
     let mut rect = Vec::with_capacity(16 + 16 * screens.len());
-    rect.extend_from_slice(&rect_header(reason, status, width, height, crate::rfb::ENCODING_EXTENDED_DESKTOP_SIZE));
+    rect.extend_from_slice(&rect_header(
+        reason,
+        status,
+        width,
+        height,
+        crate::rfb::ENCODING_EXTENDED_DESKTOP_SIZE,
+    ));
     rect.push(screens.len() as u8);
     rect.extend_from_slice(&[0, 0, 0]);
     for s in screens {
@@ -432,7 +547,10 @@ mod tests {
     fn a_partial_message_asks_for_more_and_consumes_nothing() {
         assert_eq!(parse(&[]), Ok(None));
         assert_eq!(parse(&[CLIENT_SET_ENCODINGS, 0, 0, 2, 0, 0, 0]), Ok(None));
-        assert_eq!(parse(&[CLIENT_CUT_TEXT, 0, 0, 0, 0, 0, 0, 3, b'a']), Ok(None));
+        assert_eq!(
+            parse(&[CLIENT_CUT_TEXT, 0, 0, 0, 0, 0, 0, 3, b'a']),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -449,32 +567,94 @@ mod tests {
 
     #[test]
     fn the_fixed_size_messages_parse() {
-        let (m, n) = parse(&[3, 1, 0, 2, 0, 3, 0x0D, 0x80, 0x07, 0x0A]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::FramebufferUpdateRequest { incremental: true, x: 2, y: 3, width: 3456, height: 1802 });
+        let (m, n) = parse(&[3, 1, 0, 2, 0, 3, 0x0D, 0x80, 0x07, 0x0A])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            m,
+            ClientMsg::FramebufferUpdateRequest {
+                incremental: true,
+                x: 2,
+                y: 3,
+                width: 3456,
+                height: 1802
+            }
+        );
         assert_eq!(n, 10);
         let (m, _) = parse(&[4, 1, 0, 0, 0, 0, 0xFF, 0x0D]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::KeyEvent { down: true, keysym: 0xFF0D });
+        assert_eq!(
+            m,
+            ClientMsg::KeyEvent {
+                down: true,
+                keysym: 0xFF0D
+            }
+        );
         let (m, _) = parse(&[5, 0b101, 0, 10, 0, 20]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::PointerEvent { buttons: 5, x: 10, y: 20 });
+        assert_eq!(
+            m,
+            ClientMsg::PointerEvent {
+                buttons: 5,
+                x: 10,
+                y: 20
+            }
+        );
         let (m, _) = parse(&[150, 1, 0, 0, 0, 0, 0, 8, 0, 4]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::EnableContinuousUpdates { enable: true, x: 0, y: 0, width: 8, height: 4 });
-        let (m, n) = parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0, 0]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::ClientDensity { width: 3456, height: 1802, fixed: 0x0002_0000 });
+        assert_eq!(
+            m,
+            ClientMsg::EnableContinuousUpdates {
+                enable: true,
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 4
+            }
+        );
+        let (m, n) = parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0, 0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            m,
+            ClientMsg::ClientDensity {
+                width: 3456,
+                height: 1802,
+                fixed: 0x0002_0000
+            }
+        );
         assert_eq!(n, 10);
-        assert_eq!(parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0]).unwrap(), None, "a short ClientDensity asks for more");
+        assert_eq!(
+            parse(&[0xE0, 0, 0x0D, 0x80, 0x07, 0x0A, 0, 2, 0]).unwrap(),
+            None,
+            "a short ClientDensity asks for more"
+        );
         let (m, n) = parse(&[0xE1, 0, 0, 0, 0, 0, 0, 7]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::SelectOutput { id: 7 });
         assert_eq!(n, 8);
         let (m, n) = parse(&[0xE1, 1, 0, 0, 0, 0, 0, 2]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::VirtualDisplays { count: 2 });
-        assert_eq!(parse(&[0xE1, 9, 0, 0, 0, 0, 0, 2]), Err(ParseError::Outputs(OutputsParseError::UnknownOperation(9))));
+        assert_eq!(
+            parse(&[0xE1, 9, 0, 0, 0, 0, 0, 2]),
+            Err(ParseError::Outputs(OutputsParseError::UnknownOperation(9)))
+        );
         assert_eq!(n, 8);
-        assert_eq!(parse(&[0xE1, 0, 0, 0, 0, 0, 0]).unwrap(), None, "a short SelectOutput asks for more");
-        let (m, n) = parse(&[0xE5, 0, 0xFF, 0xE0, 0x01, 0x00, 0xFF]).unwrap().unwrap();
+        assert_eq!(
+            parse(&[0xE1, 0, 0, 0, 0, 0, 0]).unwrap(),
+            None,
+            "a short SelectOutput asks for more"
+        );
+        let (m, n) = parse(&[0xE5, 0, 0xFF, 0xE0, 0x01, 0x00, 0xFF])
+            .unwrap()
+            .unwrap();
         assert_eq!(m, ClientMsg::Scroll { dx: -32, dy: 256 });
         assert_eq!(n, 6);
-        assert_eq!(parse(&[0xE5, 0, 0xFF, 0xE0, 0x01]).unwrap(), None, "a short Scroll asks for more");
-        assert_eq!(parse(&[0xE6, 0xE6]).unwrap(), Some((ClientMsg::CacheEmpty, 1)));
+        assert_eq!(
+            parse(&[0xE5, 0, 0xFF, 0xE0, 0x01]).unwrap(),
+            None,
+            "a short Scroll asks for more"
+        );
+        assert_eq!(
+            parse(&[0xE6, 0xE6]).unwrap(),
+            Some((ClientMsg::CacheEmpty, 1))
+        );
     }
 
     #[test]
@@ -485,41 +665,100 @@ mod tests {
         let (m, _) = parse(&[255, 1, 0, 1]).unwrap().unwrap();
         assert_eq!(m, ClientMsg::AudioDisable);
         assert_eq!(parse(&[255, 1, 0, 2, 3, 2, 0, 0]), Ok(None));
-        let (m, n) = parse(&[255, 1, 0, 2, 3, 2, 0, 0, 0xBB, 0x80]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::AudioFormat(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }));
+        let (m, n) = parse(&[255, 1, 0, 2, 3, 2, 0, 0, 0xBB, 0x80])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            m,
+            ClientMsg::AudioFormat(AudioFormat {
+                sample: SampleFormat::S16,
+                channels: 2,
+                frequency: 48_000
+            })
+        );
         assert_eq!(n, 10);
         assert_eq!(parse(&[255, 1, 0, 3, 0, 0, 0xFA]), Ok(None));
         let (m, n) = parse(&[255, 1, 0, 3, 0, 0, 0xFA, 0x00]).unwrap().unwrap();
         assert_eq!((m, n), (ClientMsg::AudioBitrate(64_000), 8));
-        assert_eq!(parse(&[255, 1, 0, 3, 0, 0, 0, 1]), Err(ParseError::Audio(AudioParseError::BadBitrate(1))));
-        assert_eq!(parse(&[255, 7, 0, 0]), Err(ParseError::Audio(AudioParseError::UnknownSubmessage(7))));
+        assert_eq!(
+            parse(&[255, 1, 0, 3, 0, 0, 0, 1]),
+            Err(ParseError::Audio(AudioParseError::BadBitrate(1)))
+        );
+        assert_eq!(
+            parse(&[255, 7, 0, 0]),
+            Err(ParseError::Audio(AudioParseError::UnknownSubmessage(7)))
+        );
     }
 
     #[test]
     fn the_camera_submessages_parse_and_a_bad_one_is_fatal() {
-        let (m, n) = parse(&[0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0, 15, 0, 0, 0, 1]).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::CameraPlug(CameraFormat { width: 640, height: 480, fps_numerator: 15, fps_denominator: 1 }));
+        let (m, n) = parse(&[
+            0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0, 15, 0, 0, 0, 1,
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            m,
+            ClientMsg::CameraPlug(CameraFormat {
+                width: 640,
+                height: 480,
+                fps_numerator: 15,
+                fps_denominator: 1
+            })
+        );
         assert_eq!(n, 16);
-        assert_eq!(parse(&[0xE2, 1, 0, 0]).unwrap().unwrap(), (ClientMsg::CameraUnplug, 4));
-        let (m, n) = parse(&[0xE2, 2, 1, 0, 0, 0, 0, 2, 0xAB, 0xCD, 0xE2]).unwrap().unwrap();
-        assert_eq!((m, n), (ClientMsg::CameraSample { keyframe: true, data: vec![0xAB, 0xCD] }, 10));
+        assert_eq!(
+            parse(&[0xE2, 1, 0, 0]).unwrap().unwrap(),
+            (ClientMsg::CameraUnplug, 4)
+        );
+        let (m, n) = parse(&[0xE2, 2, 1, 0, 0, 0, 0, 2, 0xAB, 0xCD, 0xE2])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (m, n),
+            (
+                ClientMsg::CameraSample {
+                    keyframe: true,
+                    data: vec![0xAB, 0xCD]
+                },
+                10
+            )
+        );
         assert_eq!(parse(&[0xE2, 2, 1, 0, 0, 0, 0, 2, 0xAB]), Ok(None));
-        assert_eq!(parse(&[0xE2, 9, 0, 0]), Err(ParseError::Camera(CameraParseError::UnknownOperation(9))));
+        assert_eq!(
+            parse(&[0xE2, 9, 0, 0]),
+            Err(ParseError::Camera(CameraParseError::UnknownOperation(9)))
+        );
     }
 
     #[test]
     fn the_microphone_submessages_parse_and_a_bad_one_is_fatal() {
-        assert_eq!(parse(&[0xE3, 0, 0, 0, 0xFF]).unwrap().unwrap(), (ClientMsg::MicrophonePlug, 4));
-        assert_eq!(parse(&[0xE3, 1, 0, 0]).unwrap().unwrap(), (ClientMsg::MicrophoneUnplug, 4));
-        let (m, n) = parse(&[0xE3, 2, 0, 0, 0, 0, 0, 2, 0x34, 0x12, 0xE3]).unwrap().unwrap();
+        assert_eq!(
+            parse(&[0xE3, 0, 0, 0, 0xFF]).unwrap().unwrap(),
+            (ClientMsg::MicrophonePlug, 4)
+        );
+        assert_eq!(
+            parse(&[0xE3, 1, 0, 0]).unwrap().unwrap(),
+            (ClientMsg::MicrophoneUnplug, 4)
+        );
+        let (m, n) = parse(&[0xE3, 2, 0, 0, 0, 0, 0, 2, 0x34, 0x12, 0xE3])
+            .unwrap()
+            .unwrap();
         assert_eq!((m, n), (ClientMsg::MicrophoneSample(vec![0x34, 0x12]), 10));
         assert_eq!(parse(&[0xE3, 2, 0, 0, 0, 0, 0, 2, 0x34]), Ok(None));
-        assert_eq!(parse(&[0xE3, 9, 0, 0]), Err(ParseError::Microphone(MicrophoneParseError::UnknownOperation(9))));
+        assert_eq!(
+            parse(&[0xE3, 9, 0, 0]),
+            Err(ParseError::Microphone(
+                MicrophoneParseError::UnknownOperation(9)
+            ))
+        );
     }
 
     #[test]
     fn cut_text_is_latin1_unless_its_length_is_negative() {
-        let (m, n) = parse(&[6, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'a']).unwrap().unwrap();
+        let (m, n) = parse(&[6, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'a'])
+            .unwrap()
+            .unwrap();
         assert_eq!(m, ClientMsg::CutText(vec![0xE9, b'a']));
         assert_eq!(n, 10);
         let mut buf = vec![6, 0, 0, 0];
@@ -530,7 +769,10 @@ mod tests {
         assert_eq!(n, 12);
         let mut huge = vec![6, 0, 0, 0];
         huge.extend_from_slice(&((MAX_CUT_TEXT as u32) + 1).to_be_bytes());
-        assert_eq!(parse(&huge), Err(ParseError::CutTextTooLong(MAX_CUT_TEXT + 1)));
+        assert_eq!(
+            parse(&huge),
+            Err(ParseError::CutTextTooLong(MAX_CUT_TEXT + 1))
+        );
     }
 
     #[test]
@@ -539,7 +781,13 @@ mod tests {
         buf.extend_from_slice(&FENCE_REQUEST.to_be_bytes());
         buf.extend_from_slice(&[2, 9, 9]);
         let (m, n) = parse(&buf).unwrap().unwrap();
-        assert_eq!(m, ClientMsg::Fence { flags: FENCE_REQUEST, payload: vec![9, 9] });
+        assert_eq!(
+            m,
+            ClientMsg::Fence {
+                flags: FENCE_REQUEST,
+                payload: vec![9, 9]
+            }
+        );
         assert_eq!(n, 11);
 
         let mut buf = vec![251, 0, 0x0D, 0x80, 0x07, 0x0A, 1, 0];
@@ -552,7 +800,14 @@ mod tests {
             ClientMsg::SetDesktopSize {
                 width: 3456,
                 height: 1802,
-                screens: vec![Screen { id: 7, x: 0, y: 0, width: 3456, height: 1802, flags: 0x1234 }],
+                screens: vec![Screen {
+                    id: 7,
+                    x: 0,
+                    y: 0,
+                    width: 3456,
+                    height: 1802,
+                    flags: 0x1234
+                }],
             }
         );
         assert_eq!(n, 24);
@@ -566,20 +821,41 @@ mod tests {
     #[test]
     fn server_messages_have_the_documented_layouts() {
         assert_eq!(update_header(2), [0, 0, 0, 2]);
-        assert_eq!(rect_header(1, 2, 3, 4, -308), [0, 1, 0, 2, 0, 3, 0, 4, 0xFF, 0xFF, 0xFE, 0xCC]);
-        let rect = extended_desktop_size_rect(EDS_REASON_THIS_CLIENT, EDS_STATUS_OK, 8, 4, &[Screen::whole(8, 4)]);
+        assert_eq!(
+            rect_header(1, 2, 3, 4, -308),
+            [0, 1, 0, 2, 0, 3, 0, 4, 0xFF, 0xFF, 0xFE, 0xCC]
+        );
+        let rect = extended_desktop_size_rect(
+            EDS_REASON_THIS_CLIENT,
+            EDS_STATUS_OK,
+            8,
+            4,
+            &[Screen::whole(8, 4)],
+        );
         assert_eq!(rect.len(), 12 + 4 + 16);
         assert_eq!(&rect[..4], &[0, 1, 0, 0]);
         assert_eq!(rect[12], 1);
         assert_eq!(&rect[16..20], &[0, 0, 0, 0]);
         assert_eq!(&rect[24..28], &[0, 8, 0, 4]);
-        assert_eq!(fence(FENCE_REQUEST, &[1]), vec![248, 0, 0, 0, 0x80, 0, 0, 0, 1, 1]);
-        assert_eq!(server_extended_cut_text(&[8, 0, 0, 1]), vec![3, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFC, 8, 0, 0, 1]);
+        assert_eq!(
+            fence(FENCE_REQUEST, &[1]),
+            vec![248, 0, 0, 0, 0x80, 0, 0, 0, 1, 1]
+        );
+        assert_eq!(
+            server_extended_cut_text(&[8, 0, 0, 1]),
+            vec![3, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFC, 8, 0, 0, 1]
+        );
         let init = server_init(8, 4, &PixelFormat::NATIVE, "desktop");
         assert_eq!(init.len(), 31);
         assert_eq!(&init[..4], &[0, 8, 0, 4]);
-        assert_eq!(&init[20..], &[0, 0, 0, 7, b'd', b'e', b's', b'k', b't', b'o', b'p']);
+        assert_eq!(
+            &init[20..],
+            &[0, 0, 0, 7, b'd', b'e', b's', b'k', b't', b'o', b'p']
+        );
         assert_eq!(security_types(&[SECURITY_NONE, 5]), vec![2, 1, 5]);
-        assert_eq!(security_failed("no"), vec![0, 0, 0, 1, 0, 0, 0, 2, b'n', b'o']);
+        assert_eq!(
+            security_failed("no"),
+            vec![0, 0, 0, 1, 0, 0, 0, 2, b'n', b'o']
+        );
     }
 }

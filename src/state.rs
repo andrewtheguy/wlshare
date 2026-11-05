@@ -40,8 +40,12 @@ pub fn path(configured: &Path) -> anyhow::Result<PathBuf> {
     if configured.is_absolute() {
         return Ok(configured.to_owned());
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .with_context(|| format!("state_socket {} is relative and XDG_RUNTIME_DIR is not set", configured.display()))?;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").with_context(|| {
+        format!(
+            "state_socket {} is relative and XDG_RUNTIME_DIR is not set",
+            configured.display()
+        )
+    })?;
     Ok(PathBuf::from(runtime).join(configured))
 }
 
@@ -80,12 +84,22 @@ pub fn bind(path: &Path) -> anyhow::Result<(UnixListener, Bound)> {
     // Held from here: the directory is made under the process's own mask and
     // not the one another bind has swapped in for its socket, which would
     // make it a directory nothing can be created in.
-    let _one = MASK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _one = MASK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(dir) = path.parent() {
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).with_context(|| format!("creating {}", dir.display()))?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
     }
     // A socket nothing answers on is one a daemon left behind.
-    anyhow::ensure!(std::os::unix::net::UnixStream::connect(path).is_err(), "another daemon is listening on {}", path.display());
+    anyhow::ensure!(
+        std::os::unix::net::UnixStream::connect(path).is_err(),
+        "another daemon is listening on {}",
+        path.display()
+    );
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -106,7 +120,13 @@ pub fn bind(path: &Path) -> anyhow::Result<(UnixListener, Bound)> {
     };
     let listener = listener.with_context(|| format!("listening on {}", path.display()))?;
     let file = file(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok((listener, Bound { path: path.to_owned(), file }))
+    Ok((
+        listener,
+        Bound {
+            path: path.to_owned(),
+            file,
+        },
+    ))
 }
 
 /// Accept followers for as long as the daemon runs.
@@ -171,7 +191,9 @@ pub async fn follow(path: PathBuf, held: watch::Sender<Option<bool>>) {
                         Ok(Some(line)) if line == HELD => set(true),
                         Ok(Some(line)) if line == FREE => set(false),
                         Ok(Some(line)) => {
-                            error!("the daemon said {line:?}, which is neither {HELD:?} nor {FREE:?}");
+                            error!(
+                                "the daemon said {line:?}, which is neither {HELD:?} nor {FREE:?}"
+                            );
                             break;
                         }
                         Ok(None) => {
@@ -205,7 +227,17 @@ mod tests {
 
     fn shared() -> Arc<Shared> {
         let (commands, _rx) = calloop::channel::channel();
-        Arc::new(Shared::new(Framebuffer::new(1, 1), Geometry { width: 1, height: 1, scale: 1.0 }, Displays::default(), commands, 0))
+        Arc::new(Shared::new(
+            Framebuffer::new(1, 1),
+            Geometry {
+                width: 1,
+                height: 1,
+                scale: 1.0,
+            },
+            Displays::default(),
+            commands,
+            0,
+        ))
     }
 
     /// A directory of this test's own: the tests run at once.
@@ -218,7 +250,9 @@ mod tests {
     /// Make a test's directory while no bind has the process's mask: one made
     /// under a bind's would be a directory nothing can be created in.
     fn make(dir: &Path) {
-        let _one = MASK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = MASK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::fs::create_dir_all(dir).unwrap();
     }
 
@@ -238,7 +272,9 @@ mod tests {
     async fn arrived(stream: &mut UnixStream) -> String {
         let mut text = Vec::new();
         let mut buffer = [0u8; 64];
-        while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buffer)).await {
+        while let Ok(Ok(n)) =
+            tokio::time::timeout(Duration::from_millis(200), stream.read(&mut buffer)).await
+        {
             if n == 0 {
                 text.extend_from_slice(b"<closed>");
                 break;
@@ -291,10 +327,16 @@ mod tests {
         drop(listener);
         let before = mask();
         let (_listener, _bound) = bind(&path).unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         // The mask the process had is the one it has again.
         assert_eq!(mask(), before);
-        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -331,19 +373,49 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         listener.set_nonblocking(true).unwrap();
         let listener = UnixListener::from_std(listener).unwrap();
-        let (mut daemon, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept()).await.unwrap().unwrap();
+        let (mut daemon, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
         daemon.write_all(b"free\nheld\n").await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), seen.wait_for(|held| *held == Some(true))).await.unwrap().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            seen.wait_for(|held| *held == Some(true)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         // Killed: no word, only the end of the stream.
         drop(daemon);
-        tokio::time::timeout(Duration::from_secs(1), seen.wait_for(|held| *held == Some(false))).await.unwrap().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            seen.wait_for(|held| *held == Some(false)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         // And back: the follower finds it again by itself.
-        let (mut daemon, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept()).await.unwrap().unwrap();
+        let (mut daemon, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
         daemon.write_all(b"held\n").await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), seen.wait_for(|held| *held == Some(true))).await.unwrap().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            seen.wait_for(|held| *held == Some(true)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         // A word it does not know ends the connection, held by nobody.
         daemon.write_all(b"taken\n").await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), seen.wait_for(|held| *held == Some(false))).await.unwrap().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            seen.wait_for(|held| *held == Some(false)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         following.abort();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -357,11 +429,17 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         let (held, mut seen) = watch::channel(None);
         let following = tokio::spawn(follow(path.clone(), held));
-        let (mut daemon, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept()).await.unwrap().unwrap();
+        let (mut daemon, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(*seen.borrow_and_update(), None);
         daemon.write_all(b"held\n").await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), seen.changed()).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(1), seen.changed())
+            .await
+            .unwrap()
+            .unwrap();
         // Held is the first thing it says: a free before it would have turned
         // the monitors on under a client.
         assert_eq!(*seen.borrow_and_update(), Some(true));
@@ -371,9 +449,15 @@ mod tests {
 
     #[test]
     fn a_relative_socket_is_under_the_runtime_directory() {
-        assert_eq!(path(Path::new("/run/x/state.sock")).unwrap(), PathBuf::from("/run/x/state.sock"));
+        assert_eq!(
+            path(Path::new("/run/x/state.sock")).unwrap(),
+            PathBuf::from("/run/x/state.sock")
+        );
         if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-            assert_eq!(path(Path::new("wlshare/state.sock")).unwrap(), PathBuf::from(runtime).join("wlshare/state.sock"));
+            assert_eq!(
+                path(Path::new("wlshare/state.sock")).unwrap(),
+                PathBuf::from(runtime).join("wlshare/state.sock")
+            );
         }
     }
 }

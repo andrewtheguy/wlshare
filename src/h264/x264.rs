@@ -54,7 +54,14 @@ impl Stream {
         // value returned.
         unsafe {
             let mut param: x::x264_param_t = std::mem::zeroed();
-            anyhow::ensure!(x::x264_param_default_preset(&mut param, c"superfast".as_ptr(), c"zerolatency".as_ptr()) == 0, "libx264 has no preset {PRESET}");
+            anyhow::ensure!(
+                x::x264_param_default_preset(
+                    &mut param,
+                    c"superfast".as_ptr(),
+                    c"zerolatency".as_ptr()
+                ) == 0,
+                "libx264 has no preset {PRESET}"
+            );
             // `zerolatency` takes the lookahead and the frame threads away,
             // which would each hold frames back, and slices the picture
             // among the threads instead.
@@ -84,14 +91,23 @@ impl Stream {
             param.rc.i_aq_mode = x::X264_AQ_NONE as i32;
             param.i_log_level = x::X264_LOG_WARNING as i32;
             let encoder = x::x264_encoder_open(&mut param);
-            anyhow::ensure!(!encoder.is_null(), "libx264 opened no encoder over a {width}x{height} picture");
+            anyhow::ensure!(
+                !encoder.is_null(),
+                "libx264 opened no encoder over a {width}x{height} picture"
+            );
             Ok(Self { encoder, pts: 0 })
         }
     }
 }
 
 impl Backend for Stream {
-    fn frame(&mut self, planes: &Planes, keyframe: bool, qp: u8, out: &mut Vec<u8>) -> anyhow::Result<bool> {
+    fn frame(
+        &mut self,
+        planes: &Planes,
+        keyframe: bool,
+        qp: u8,
+        out: &mut Vec<u8>,
+    ) -> anyhow::Result<bool> {
         // SAFETY: the picture points into the planes, which outlive the call
         // and which x264 reads and does not keep; the NAL units it returns are
         // its own, laid end to end, and read within the size it says.
@@ -105,13 +121,23 @@ impl Backend for Stream {
             picture.img.i_stride[0] = planes.stride as i32;
             picture.img.i_stride[1] = planes.stride as i32;
             // The first picture of an encoder is an IDR whatever is asked.
-            picture.i_type = if keyframe { x::X264_TYPE_IDR } else { x::X264_TYPE_AUTO } as i32;
+            picture.i_type = if keyframe {
+                x::X264_TYPE_IDR
+            } else {
+                x::X264_TYPE_AUTO
+            } as i32;
             picture.i_qpplus1 = i32::from(qp) + 1;
             picture.i_pts = self.pts;
             self.pts += 1;
             let mut coded: x::x264_picture_t = std::mem::zeroed();
             let (mut nals, mut count) = (ptr::null_mut(), 0);
-            let size = x::x264_encoder_encode(self.encoder, &mut nals, &mut count, &mut picture, &mut coded);
+            let size = x::x264_encoder_encode(
+                self.encoder,
+                &mut nals,
+                &mut count,
+                &mut picture,
+                &mut coded,
+            );
             anyhow::ensure!(size >= 0, "libx264 failed to code a frame ({size})");
             if size == 0 {
                 return Ok(false);

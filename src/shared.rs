@@ -48,15 +48,33 @@ pub enum Command {
     /// beside it ends with it. Sent for every connection, joined or not, and
     /// ignored for one already superseded.
     ClientLeft(ClientId),
-    Key { client: ClientId, keysym: u32, down: bool },
-    Pointer { client: ClientId, buttons: u8, x: u16, y: u16 },
+    Key {
+        client: ClientId,
+        keysym: u32,
+        down: bool,
+    },
+    Pointer {
+        client: ClientId,
+        buttons: u8,
+        x: u16,
+        y: u16,
+    },
     /// Scroll: the client scrolls by this distance in logical pixels.
     Scroll { client: ClientId, dx: i16, dy: i16 },
     /// SetDesktopSize: the client wants the desktop `width`×`height` pixels.
-    Resize { client: ClientId, width: u16, height: u16 },
+    Resize {
+        client: ClientId,
+        width: u16,
+        height: u16,
+    },
     /// ClientDensity: the client wants the output `width`×`height` pixels drawn
     /// at `scale`, in one configuration.
-    Declare { client: ClientId, width: u16, height: u16, scale: f64 },
+    Declare {
+        client: ClientId,
+        width: u16,
+        height: u16,
+        scale: f64,
+    },
     /// SelectOutput: the client wants the output with this id shared.
     SelectOutput { client: ClientId, id: u32 },
     /// VirtualDisplays: the client wants this many headless outputs, which the
@@ -114,7 +132,9 @@ pub struct Displays {
 impl Displays {
     /// Whether a desk's shared output is the one of this name.
     pub fn shares(&self, desk: usize, name: &str) -> bool {
-        self.entries.iter().any(|entry| entry.id == self.active[desk] && entry.name == name)
+        self.entries
+            .iter()
+            .any(|entry| entry.id == self.active[desk] && entry.name == name)
     }
 
     /// Whether the compositor has an output of this name to share.
@@ -153,7 +173,12 @@ pub struct Desk {
 impl Desk {
     fn new(framebuffer: Framebuffer, geometry: Geometry) -> Self {
         let (frame_tx, _) = watch::channel(framebuffer.generation);
-        Self { framebuffer: Mutex::new(framebuffer), frame_tx, geometry: Mutex::new(geometry), cursor: Mutex::new(None) }
+        Self {
+            framebuffer: Mutex::new(framebuffer),
+            frame_tx,
+            geometry: Mutex::new(geometry),
+            cursor: Mutex::new(None),
+        }
     }
 
     pub fn geometry(&self) -> Geometry {
@@ -247,7 +272,8 @@ impl Shared {
 
     /// Say who is on the desktop; the session that was ends.
     pub fn set_holder(&self, client: Option<ClientId>) {
-        self.seats.send_modify(|seats| seats.holder = client.map_or(0, |c| c.0));
+        self.seats
+            .send_modify(|seats| seats.holder = client.map_or(0, |c| c.0));
     }
 
     /// Say which connection shows an output beside the client on the desktop.

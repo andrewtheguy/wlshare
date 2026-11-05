@@ -54,7 +54,10 @@ pub struct Watch {
 
 impl Watch {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.held.is_some() || self.free.is_some(), "watch names neither --held nor --free");
+        anyhow::ensure!(
+            self.held.is_some() || self.free.is_some(),
+            "watch names neither --held nor --free"
+        );
         anyhow::ensure!(self.timeout_secs > 0, "--timeout-secs must be at least 1");
         Ok(())
     }
@@ -64,7 +67,11 @@ impl Watch {
 /// which nothing runs — until `stop` is sent or dropped or
 /// nothing is following the daemon any more. The desktop is then freed, if the
 /// last command said it was held: nothing else would put back what *held* did.
-pub async fn run(mut desktop: watch::Receiver<Option<bool>>, watch: Watch, mut stop: oneshot::Receiver<()>) {
+pub async fn run(
+    mut desktop: watch::Receiver<Option<bool>>,
+    watch: Watch,
+    mut stop: oneshot::Receiver<()>,
+) {
     let timeout = Duration::from_secs(watch.timeout_secs);
     // What the last command told the session: held, or free. None has run yet,
     // and what the session was left as is not known.
@@ -99,7 +106,11 @@ pub async fn run(mut desktop: watch::Receiver<Option<bool>>, watch: Watch, mut s
             }
         }
         let held = held == Some(true);
-        let (name, command) = if held { ("held", &watch.held) } else { ("free", &watch.free) };
+        let (name, command) = if held {
+            ("held", &watch.held)
+        } else {
+            ("free", &watch.free)
+        };
         if let Some(command) = command {
             let running = run_command(name, command, timeout);
             tokio::pin!(running);
@@ -119,7 +130,9 @@ pub async fn run(mut desktop: watch::Receiver<Option<bool>>, watch: Watch, mut s
         }
         established = Some(held);
     }
-    if established == Some(true) && let Some(command) = &watch.free {
+    if established == Some(true)
+        && let Some(command) = &watch.free
+    {
         info!("stopping with the desktop held: freeing it");
         run_command("free", command, timeout).await;
     }
@@ -127,7 +140,10 @@ pub async fn run(mut desktop: watch::Receiver<Option<bool>>, watch: Watch, mut s
 
 /// Whether the desktop is held now, if that is known yet, with `vacant_since`
 /// kept to match.
-fn observe(desktop: &mut watch::Receiver<Option<bool>>, vacant_since: &mut Option<Instant>) -> Option<bool> {
+fn observe(
+    desktop: &mut watch::Receiver<Option<bool>>,
+    vacant_since: &mut Option<Instant>,
+) -> Option<bool> {
     let held = *desktop.borrow_and_update();
     match held {
         Some(true) => *vacant_since = None,
@@ -146,7 +162,9 @@ struct Group(Option<libc::pid_t>);
 
 impl Group {
     fn kill(&mut self) -> std::io::Result<()> {
-        let Some(pid) = self.0.take() else { return Ok(()) };
+        let Some(pid) = self.0.take() else {
+            return Ok(());
+        };
         if unsafe { libc::killpg(pid, libc::SIGKILL) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -183,7 +201,10 @@ async fn run_command(name: &str, command: &str, timeout: Duration) {
         Ok(Ok(status)) => warn!("desktop {name}: command exited with {status}"),
         Ok(Err(e)) => error!("desktop {name}: waiting for the command: {e}"),
         Err(_) => {
-            error!("desktop {name}: command still running after {}s; killing it", timeout.as_secs());
+            error!(
+                "desktop {name}: command still running after {}s; killing it",
+                timeout.as_secs()
+            );
             if let Err(e) = group.kill() {
                 error!("desktop {name}: killing the command's process group: {e}");
             }
@@ -206,7 +227,12 @@ mod tests {
     /// what order.
     fn watch(log: &std::path::Path, free_after_secs: u64) -> Watch {
         let line = |word: &str| format!("echo {word} >> {}", log.display());
-        Watch { held: Some(line("held")), free: Some(line("free")), free_after_secs, timeout_secs: 5 }
+        Watch {
+            held: Some(line("held")),
+            free: Some(line("free")),
+            free_after_secs,
+            timeout_secs: 5,
+        }
     }
 
     async fn settle() {
@@ -214,7 +240,11 @@ mod tests {
     }
 
     fn lines(log: &std::path::Path) -> Vec<String> {
-        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_owned).collect()
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     #[tokio::test]
@@ -332,7 +362,10 @@ mod tests {
         let watch = Watch {
             // What hangs is the shell, and what would write late is a child of
             // it that killing the shell alone leaves running.
-            held: Some(format!("(sleep 2; echo late >> {}) & sleep 30", log.display())),
+            held: Some(format!(
+                "(sleep 2; echo late >> {}) & sleep 30",
+                log.display()
+            )),
             free: Some(format!("echo free >> {}", log.display())),
             free_after_secs: 0,
             timeout_secs: 1,
@@ -392,7 +425,10 @@ mod tests {
         let task = tokio::spawn(run(following, watch(&log, 60), stopped));
         settle().await;
         drop(stop);
-        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(lines(&log), ["held", "free"]);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -402,7 +438,10 @@ mod tests {
         let dir = tempfile_dir("dropped");
         let log = dir.join("log");
         let command = format!("(sleep 1; echo late >> {}) & sleep 30", log.display());
-        let task = tokio::spawn(async move { run_command("held", &command, Duration::from_secs(60)).await });
+        let task =
+            tokio::spawn(
+                async move { run_command("held", &command, Duration::from_secs(60)).await },
+            );
         tokio::time::sleep(Duration::from_millis(200)).await;
         task.abort();
         tokio::time::sleep(Duration::from_millis(1300)).await;
@@ -412,7 +451,12 @@ mod tests {
 
     #[test]
     fn a_watcher_needs_a_command_and_a_timeout() {
-        let watch = |held: Option<&str>, timeout_secs| Watch { held: held.map(str::to_owned), free: None, free_after_secs: 5, timeout_secs };
+        let watch = |held: Option<&str>, timeout_secs| Watch {
+            held: held.map(str::to_owned),
+            free: None,
+            free_after_secs: 5,
+            timeout_secs,
+        };
         assert!(watch(None, 60).validate().is_err());
         watch(Some("true"), 60).validate().unwrap();
         assert!(watch(Some("true"), 0).validate().is_err());

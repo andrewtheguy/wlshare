@@ -62,7 +62,10 @@ const MIN_STREAM_CELLS: usize = 5;
 /// LAN and behind a page on 1 Mbit/s alike: one quantization table for the
 /// three components, and the stages of quality 50 and 75 before full.
 const HOST_QUANT: &str = "66768899a9";
-const HOST_STAGES: [&str; 2] = ["111122121111112212111111221201", "101111010010111201001011121100"];
+const HOST_STAGES: [&str; 2] = [
+    "111122121111112212111111221201",
+    "101111010010111201001011121100",
+];
 
 fn main() {
     if let Err(e) = run() {
@@ -72,7 +75,10 @@ fn main() {
 }
 
 fn hex(s: &str) -> Result<Vec<u8>, Error> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("{s}: {e}").into())).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("{s}: {e}").into()))
+        .collect()
 }
 
 fn run() -> Result<(), Error> {
@@ -83,14 +89,26 @@ fn run() -> Result<(), Error> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--quant" => quant = args.next().ok_or("--quant needs five bytes")?,
-            "--stages" => stages = args.next().ok_or("--stages needs tables")?.split(',').map(str::to_owned).collect(),
+            "--stages" => {
+                stages = args
+                    .next()
+                    .ok_or("--stages needs tables")?
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect()
+            }
             _ => captures.push(arg),
         }
     }
     if captures.is_empty() {
         return Err("usage: progressive-stills [--quant HEX] [--stages HEX,...] CAPTURE...".into());
     }
-    let quant = Quant::from_bytes(hex(&quant)?.as_slice().try_into().map_err(|_| "--quant takes five bytes")?);
+    let quant = Quant::from_bytes(
+        hex(&quant)?
+            .as_slice()
+            .try_into()
+            .map_err(|_| "--quant takes five bytes")?,
+    );
     let mut table = Vec::new();
     for (i, s) in stages.iter().enumerate() {
         let b = hex(s)?;
@@ -98,13 +116,20 @@ fn run() -> Result<(), Error> {
             return Err("a stage is fifteen bytes".into());
         }
         // Labelled as the host labels its two, else spaced out to full.
-        let quality = if stages.len() == 2 { [50, 75][i] } else { (100 * (i + 1) / (stages.len() + 1)) as u8 };
+        let quality = if stages.len() == 2 {
+            [50, 75][i]
+        } else {
+            (100 * (i + 1) / (stages.len() + 1)) as u8
+        };
         let mut with_quality = vec![quality];
         with_quality.extend_from_slice(&b);
         table.push(Stage::from_bytes(&with_quality));
     }
     table.push(Stage::FULL);
-    let tables = Tables { quant: [quant; 3], stages: table };
+    let tables = Tables {
+        quant: [quant; 3],
+        stages: table,
+    };
     for capture in captures {
         let stats = play(Path::new(&capture), &tables)?;
         println!("{}", stats.json(&capture, &tables));
@@ -115,12 +140,19 @@ fn run() -> Result<(), Error> {
 fn open(path: &Path) -> Result<Reader<Box<dyn Read>>, Error> {
     let input: Box<dyn Read> = if path.extension().is_some_and(|e| e == "zst") {
         let file = File::open(path)?;
-        let child = Command::new("zstd").arg("-dc").stdin(file).stdout(Stdio::piped()).spawn().map_err(|e| format!("running zstd: {e}"))?;
+        let child = Command::new("zstd")
+            .arg("-dc")
+            .stdin(file)
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("running zstd: {e}"))?;
         Box::new(child.stdout.ok_or("zstd has no stdout")?)
     } else {
         Box::new(File::open(path)?)
     };
-    Ok(Reader::new(Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>)?)
+    Ok(Reader::new(
+        Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>,
+    )?)
 }
 
 fn tile_hash(pixels: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize) -> (u64, bool) {
@@ -156,7 +188,16 @@ fn crop_rgb(pixels: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize)
 /// The squared error over B, G and R between the capture's `w`×`h` at
 /// `(x, y)` and a decoded tile of `tw` pixels a row, `B, G, R, X`.
 #[allow(clippy::too_many_arguments)]
-fn tile_se(pixels: &[u8], width: usize, x: usize, y: usize, w: usize, h: usize, shown: &[u8], tw: usize) -> f64 {
+fn tile_se(
+    pixels: &[u8],
+    width: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    shown: &[u8],
+    tw: usize,
+) -> f64 {
     let mut se = 0f64;
     for row in 0..h {
         let src = &pixels[((y + row) * width + x) * 4..][..w * 4];
@@ -201,7 +242,11 @@ fn png_bytes(w: usize, h: usize, rgb: &[u8]) -> Result<usize, Error> {
         encoder.set_filter(png::Filter::Adaptive);
     }
     let mut writer = encoder.write_header()?;
-    if indexed { writer.write_image_data(&indices)? } else { writer.write_image_data(rgb)? }
+    if indexed {
+        writer.write_image_data(&indices)?
+    } else {
+        writer.write_image_data(rgb)?
+    }
     writer.finish()?;
     Ok(out.len())
 }
@@ -226,9 +271,16 @@ impl Churn {
     fn observe(&mut self, key: (u16, u16), now: Duration) {
         let origin = *self.origin.get_or_insert(now);
         let slot = Self::slot(origin, now);
-        let cell = self.churn.entry(key).or_insert(ChurnCell { history: 0, last_slot: slot });
+        let cell = self.churn.entry(key).or_insert(ChurnCell {
+            history: 0,
+            last_slot: slot,
+        });
         let elapsed = slot.saturating_sub(cell.last_slot);
-        cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+        cell.history = if elapsed >= CHURN_WINDOW {
+            0
+        } else {
+            cell.history << elapsed
+        };
         cell.history |= 1;
         cell.last_slot = slot;
     }
@@ -238,12 +290,18 @@ impl Churn {
     }
 
     fn moving(&mut self, now: Duration) -> HashSet<(u16, u16)> {
-        let Some(origin) = self.origin else { return HashSet::new() };
+        let Some(origin) = self.origin else {
+            return HashSet::new();
+        };
         let slot = Self::slot(origin, now);
         let mut moving = HashSet::new();
         self.churn.retain(|key, cell| {
             let elapsed = slot.saturating_sub(cell.last_slot);
-            cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+            cell.history = if elapsed >= CHURN_WINDOW {
+                0
+            } else {
+                cell.history << elapsed
+            };
             cell.last_slot = slot;
             if cell.history.count_ones() >= CHURN_MOVING {
                 moving.insert(*key);
@@ -264,7 +322,12 @@ fn carried(moving: &HashSet<(u16, u16)>) -> HashSet<(u16, u16)> {
         let mut group = vec![start];
         let mut stack = vec![start];
         while let Some((c, r)) = stack.pop() {
-            for next in [(c.wrapping_sub(1), r), (c + 1, r), (c, r.wrapping_sub(1)), (c, r + 1)] {
+            for next in [
+                (c.wrapping_sub(1), r),
+                (c + 1, r),
+                (c, r.wrapping_sub(1)),
+                (c, r + 1),
+            ] {
                 if moving.contains(&next) && seen.insert(next) {
                     group.push(next);
                     stack.push(next);
@@ -302,7 +365,11 @@ impl Fidelity {
     }
 
     fn psnr(&self) -> f64 {
-        if self.se == 0.0 { 99.0 } else { 10.0 * (255.0f64 * 255.0 * self.samples / self.se).log10() }
+        if self.se == 0.0 {
+            99.0
+        } else {
+            10.0 * (255.0f64 * 255.0 * self.samples / self.se).log10()
+        }
     }
 }
 
@@ -316,7 +383,10 @@ struct Classic {
 
 impl Classic {
     fn json(&self) -> String {
-        format!("{{\"tiles\":{},\"flat\":{},\"png\":{}}}", self.tiles, self.flat, self.png)
+        format!(
+            "{{\"tiles\":{},\"flat\":{},\"png\":{}}}",
+            self.tiles, self.flat, self.png
+        )
     }
 }
 
@@ -360,7 +430,11 @@ struct Progressive {
 
 impl Progressive {
     fn json(&self, tables: &Tables) -> String {
-        let why: Vec<String> = WHY.iter().zip(&self.why).map(|(name, sent)| format!("\"{name}\":{}", sent.json())).collect();
+        let why: Vec<String> = WHY
+            .iter()
+            .zip(&self.why)
+            .map(|(name, sent)| format!("\"{name}\":{}", sent.json()))
+            .collect();
         format!(
             "{{\"stage\":{},\"stills\":{},\"why\":{{{}}},\"moving\":{},\"cpu_ms\":{:.0}}}",
             tables.stages[self.stage].quality,
@@ -385,7 +459,11 @@ struct Stats {
 
 impl Stats {
     fn json(&self, capture: &str, tables: &Tables) -> String {
-        let why: Vec<String> = WHY.iter().zip(&self.why).map(|(name, c)| format!("\"{name}\":{}", c.json())).collect();
+        let why: Vec<String> = WHY
+            .iter()
+            .zip(&self.why)
+            .map(|(name, c)| format!("\"{name}\":{}", c.json()))
+            .collect();
         let progressive: Vec<String> = self.progressive.iter().map(|p| p.json(tables)).collect();
         format!(
             "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"stills\":{},\"why\":{{{}}},\"cpu_ms\":{{\"png\":{:.0}}},\"progressive\":[{}]}}",
@@ -404,11 +482,26 @@ impl Stats {
 /// Send a tile through `p` as a first pass at its stage and, unless it is
 /// moving, the upgrades to full, counting it under `sent`.
 #[allow(clippy::too_many_arguments)]
-fn send(p: &mut Progressive, sent_kinds: &mut [&mut Sent], pixels: &[u8], width: usize, cell: (u16, u16), geometry: (usize, usize, usize, usize), refine: bool) {
+fn send(
+    p: &mut Progressive,
+    sent_kinds: &mut [&mut Sent],
+    pixels: &[u8],
+    width: usize,
+    cell: (u16, u16),
+    geometry: (usize, usize, usize, usize),
+    refine: bool,
+) {
     let (x, y, w, h) = geometry;
     let last = p.encoder.tables.stages.len() - 1;
     let started = Instant::now();
-    let pass = p.encoder.first(cell, &pixels[(y * width + x) * 4..], width * 4, w, h, p.stage);
+    let pass = p.encoder.first(
+        cell,
+        &pixels[(y * width + x) * 4..],
+        width * 4,
+        w,
+        h,
+        p.stage,
+    );
     let shown = p.encoder.shown(cell).expect("coded");
     let se_first = tile_se(pixels, width, x, y, w, h, &shown, TILE);
     let mut upgrades = 0;
@@ -432,7 +525,13 @@ fn send(p: &mut Progressive, sent_kinds: &mut [&mut Sent], pixels: &[u8], width:
 }
 
 /// Upgrade a tile that stopped moving to full.
-fn settle(p: &mut Progressive, pixels: &[u8], width: usize, cell: (u16, u16), geometry: (usize, usize, usize, usize)) {
+fn settle(
+    p: &mut Progressive,
+    pixels: &[u8],
+    width: usize,
+    cell: (u16, u16),
+    geometry: (usize, usize, usize, usize),
+) {
     let (x, y, w, h) = geometry;
     let last = p.encoder.tables.stages.len() - 1;
     let started = Instant::now();
@@ -481,7 +580,14 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
             churn = Churn::default();
             if stats.progressive.is_empty() || stats.progressive[0].encoder.cols() != tiles_x {
                 stats.progressive = (0..tables.stages.len())
-                    .map(|stage| Progressive { stage, encoder: Encoder::new(frame.size.0, tables.clone()), stills: Sent::default(), why: [Sent::default(); 4], moving: Sent::default(), cpu: Duration::ZERO })
+                    .map(|stage| Progressive {
+                        stage,
+                        encoder: Encoder::new(frame.size.0, tables.clone()),
+                        stills: Sent::default(),
+                        why: [Sent::default(); 4],
+                        moving: Sent::default(),
+                        cpu: Duration::ZERO,
+                    })
                     .collect();
             }
             for ty in 0..tiles_y as u16 {
@@ -494,7 +600,14 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
                     for p in &mut stats.progressive {
                         p.encoder.forget_tile((tx, ty));
                         let last = p.encoder.tables.stages.len() - 1;
-                        p.encoder.first((tx, ty), &pixels[(y * width + x) * 4..], width * 4, w, h, last);
+                        p.encoder.first(
+                            (tx, ty),
+                            &pixels[(y * width + x) * 4..],
+                            width * 4,
+                            w,
+                            h,
+                            last,
+                        );
                     }
                 }
             }
@@ -547,7 +660,15 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
                 streamed.insert(key);
                 for p in &mut stats.progressive {
                     let mut moving = std::mem::take(&mut p.moving);
-                    send(p, &mut [&mut moving], pixels, width, key, geometry(key.0, key.1), false);
+                    send(
+                        p,
+                        &mut [&mut moving],
+                        pixels,
+                        width,
+                        key,
+                        geometry(key.0, key.1),
+                        false,
+                    );
                     p.moving = moving;
                 }
             } else {
@@ -565,7 +686,11 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
         }
         // Tiles a stream carried that stopped and did not change this frame
         // are owed the rest of what they show.
-        let stopped: Vec<(u16, u16)> = streamed.iter().filter(|k| !moving.contains(k)).copied().collect();
+        let stopped: Vec<(u16, u16)> = streamed
+            .iter()
+            .filter(|k| !moving.contains(k))
+            .copied()
+            .collect();
         for key in stopped {
             streamed.remove(&key);
             let (x, y, w, h) = geometry(key.0, key.1);
@@ -591,8 +716,19 @@ fn play(path: &Path, tables: &Tables) -> Result<Stats, Error> {
                     settle(p, pixels, width, key, (x, y, w, h));
                     continue;
                 }
-                let (mut all, mut this) = (std::mem::take(&mut p.stills), std::mem::take(&mut p.why[why as usize]));
-                send(p, &mut [&mut all, &mut this], pixels, width, key, (x, y, w, h), true);
+                let (mut all, mut this) = (
+                    std::mem::take(&mut p.stills),
+                    std::mem::take(&mut p.why[why as usize]),
+                );
+                send(
+                    p,
+                    &mut [&mut all, &mut this],
+                    pixels,
+                    width,
+                    key,
+                    (x, y, w, h),
+                    true,
+                );
                 p.stills = all;
                 p.why[why as usize] = this;
             }

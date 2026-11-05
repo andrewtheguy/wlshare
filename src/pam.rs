@@ -36,7 +36,12 @@ struct PamResponse {
     resp_retcode: c_int,
 }
 
-type ConvFn = unsafe extern "C" fn(c_int, *mut *const PamMessage, *mut *mut PamResponse, *mut c_void) -> c_int;
+type ConvFn = unsafe extern "C" fn(
+    c_int,
+    *mut *const PamMessage,
+    *mut *mut PamResponse,
+    *mut c_void,
+) -> c_int;
 
 #[repr(C)]
 struct PamConv {
@@ -48,7 +53,12 @@ type PamHandle = c_void;
 
 #[link(name = "pam")]
 unsafe extern "C" {
-    fn pam_start(service: *const c_char, user: *const c_char, conv: *const PamConv, pamh: *mut *mut PamHandle) -> c_int;
+    fn pam_start(
+        service: *const c_char,
+        user: *const c_char,
+        conv: *const PamConv,
+        pamh: *mut *mut PamHandle,
+    ) -> c_int;
     fn pam_set_item(pamh: *mut PamHandle, item_type: c_int, item: *const c_void) -> c_int;
     fn pam_authenticate(pamh: *mut PamHandle, flags: c_int) -> c_int;
     fn pam_acct_mgmt(pamh: *mut PamHandle, flags: c_int) -> c_int;
@@ -91,14 +101,27 @@ pub fn process_user() -> anyhow::Result<String> {
             let mut buf = vec![0u8; size];
             let mut pwd: libc::passwd = std::mem::zeroed();
             let mut result: *mut libc::passwd = ptr::null_mut();
-            let rc = libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr().cast(), buf.len(), &mut result);
+            let rc = libc::getpwuid_r(
+                uid,
+                &mut pwd,
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            );
             if rc == libc::ERANGE {
                 size *= 2;
                 continue;
             }
-            anyhow::ensure!(rc == 0, "getpwuid_r({uid}) failed: {}", std::io::Error::from_raw_os_error(rc));
+            anyhow::ensure!(
+                rc == 0,
+                "getpwuid_r({uid}) failed: {}",
+                std::io::Error::from_raw_os_error(rc)
+            );
             anyhow::ensure!(!result.is_null(), "uid {uid} has no passwd entry");
-            return Ok(CStr::from_ptr(pwd.pw_name).to_str().context("the account name is not UTF-8")?.to_owned());
+            return Ok(CStr::from_ptr(pwd.pw_name)
+                .to_str()
+                .context("the account name is not UTF-8")?
+                .to_owned());
         }
     }
 }
@@ -107,16 +130,28 @@ pub fn process_user() -> anyhow::Result<String> {
 /// must accept the password for it and let the account in. Blocks for as long
 /// as the stack takes — its modules may sleep on failure or run programs — so
 /// call it off the runtime.
-pub fn check(service: &str, account: &str, username: &str, password: &str, remote: &str) -> Result<(), Refused> {
+pub fn check(
+    service: &str,
+    account: &str,
+    username: &str,
+    password: &str,
+    remote: &str,
+) -> Result<(), Refused> {
     if username != account {
-        return Err(Refused::new(format!("the login names {username:?}, and this desktop belongs to {account:?}")));
+        return Err(Refused::new(format!(
+            "the login names {username:?}, and this desktop belongs to {account:?}"
+        )));
     }
     let answers = Answers {
-        username: CString::new(username).map_err(|_| Refused::new("the username contains a NUL"))?,
-        password: CString::new(password).map_err(|_| Refused::new("the password contains a NUL"))?,
+        username: CString::new(username)
+            .map_err(|_| Refused::new("the username contains a NUL"))?,
+        password: CString::new(password)
+            .map_err(|_| Refused::new("the password contains a NUL"))?,
     };
-    let service = CString::new(service).map_err(|_| Refused::new("the PAM service name contains a NUL"))?;
-    let remote = CString::new(remote).map_err(|_| Refused::new("the remote address contains a NUL"))?;
+    let service =
+        CString::new(service).map_err(|_| Refused::new("the PAM service name contains a NUL"))?;
+    let remote =
+        CString::new(remote).map_err(|_| Refused::new("the remote address contains a NUL"))?;
     let conv = PamConv {
         conv: Some(converse),
         appdata_ptr: (&answers as *const Answers).cast_mut().cast(),
@@ -126,9 +161,17 @@ pub fn check(service: &str, account: &str, username: &str, password: &str, remot
     // handle is ended before it returns. libpam copies what it keeps.
     unsafe {
         let mut handle: *mut PamHandle = ptr::null_mut();
-        let rc = pam_start(service.as_ptr(), answers.username.as_ptr(), &conv, &mut handle);
+        let rc = pam_start(
+            service.as_ptr(),
+            answers.username.as_ptr(),
+            &conv,
+            &mut handle,
+        );
         if rc != PAM_SUCCESS {
-            return Err(Refused::new(format!("pam_start failed: {}", strerror(ptr::null_mut(), rc))));
+            return Err(Refused::new(format!(
+                "pam_start failed: {}",
+                strerror(ptr::null_mut(), rc)
+            )));
         }
         let rc = pam_set_item(handle, PAM_RHOST, remote.as_ptr().cast());
         if rc != PAM_SUCCESS {
@@ -141,7 +184,11 @@ pub fn check(service: &str, account: &str, username: &str, password: &str, remot
         } else {
             "pam_authenticate"
         };
-        let outcome = if rc == PAM_SUCCESS { Ok(()) } else { Err(Refused::new(format!("{step}: {}", strerror(handle, rc)))) };
+        let outcome = if rc == PAM_SUCCESS {
+            Ok(())
+        } else {
+            Err(Refused::new(format!("{step}: {}", strerror(handle, rc))))
+        };
         pam_end(handle, rc);
         outcome
     }
@@ -151,7 +198,11 @@ unsafe fn strerror(handle: *mut PamHandle, rc: c_int) -> String {
     // SAFETY: pam_strerror returns a static string for any code.
     unsafe {
         let text = pam_strerror(handle, rc);
-        if text.is_null() { format!("PAM error {rc}") } else { CStr::from_ptr(text).to_string_lossy().into_owned() }
+        if text.is_null() {
+            format!("PAM error {rc}")
+        } else {
+            CStr::from_ptr(text).to_string_lossy().into_owned()
+        }
     }
 }
 
@@ -159,7 +210,12 @@ unsafe fn strerror(handle: *mut PamHandle, rc: c_int) -> String {
 /// one with the username, log what the stack has to say, and refuse anything
 /// else. Linux-PAM hands the messages as an array of pointers, and takes the
 /// responses as one `calloc`ed array it will `free`, each answer `malloc`ed.
-unsafe extern "C" fn converse(num_msg: c_int, msg: *mut *const PamMessage, resp: *mut *mut PamResponse, appdata: *mut c_void) -> c_int {
+unsafe extern "C" fn converse(
+    num_msg: c_int,
+    msg: *mut *const PamMessage,
+    resp: *mut *mut PamResponse,
+    appdata: *mut c_void,
+) -> c_int {
     if num_msg <= 0 || msg.is_null() || resp.is_null() || appdata.is_null() {
         return PAM_CONV_ERR;
     }
@@ -168,13 +224,18 @@ unsafe extern "C" fn converse(num_msg: c_int, msg: *mut *const PamMessage, resp:
     unsafe {
         let answers = &*appdata.cast::<Answers>();
         let count = num_msg as usize;
-        let responses = libc::calloc(count, std::mem::size_of::<PamResponse>()).cast::<PamResponse>();
+        let responses =
+            libc::calloc(count, std::mem::size_of::<PamResponse>()).cast::<PamResponse>();
         if responses.is_null() {
             return PAM_BUF_ERR;
         }
         for i in 0..count {
             let message = &**msg.add(i);
-            let text = if message.msg.is_null() { String::new() } else { CStr::from_ptr(message.msg).to_string_lossy().into_owned() };
+            let text = if message.msg.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr(message.msg).to_string_lossy().into_owned()
+            };
             let answer = match message.msg_style {
                 PAM_PROMPT_ECHO_OFF => Some(&answers.password),
                 PAM_PROMPT_ECHO_ON => Some(&answers.username),
@@ -187,7 +248,9 @@ unsafe extern "C" fn converse(num_msg: c_int, msg: *mut *const PamMessage, resp:
                     None
                 }
                 other => {
-                    warn!("pam: message style {other} is not understood; refusing the conversation");
+                    warn!(
+                        "pam: message style {other} is not understood; refusing the conversation"
+                    );
                     for j in 0..i {
                         libc::free((*responses.add(j)).resp.cast());
                     }
@@ -225,7 +288,14 @@ mod tests {
     #[test]
     fn another_account_is_refused_before_pam_is_asked() {
         let account = process_user().unwrap();
-        let err = check("wlshare", &account, &format!("not-{account}"), "x", "127.0.0.1").unwrap_err();
+        let err = check(
+            "wlshare",
+            &account,
+            &format!("not-{account}"),
+            "x",
+            "127.0.0.1",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("belongs to"), "{err}");
     }
 }

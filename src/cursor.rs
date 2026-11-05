@@ -30,6 +30,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::rfb::cursor::CursorImage;
 use calloop::RegistrationToken;
 use calloop::timer::{TimeoutAction, Timer};
 use log::{debug, error};
@@ -47,7 +48,6 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
 };
-use crate::rfb::cursor::CursorImage;
 
 use crate::capture::ShmBuffer;
 use crate::compositor::Compositor;
@@ -170,16 +170,29 @@ impl Compositor {
     /// Open a cursor session on the shared output, if a client is on the desktop,
     /// none is open, and the seat can hand over a pointer to open it with.
     pub fn start_cursor(&mut self, desk: usize) {
-        if self.desks[desk].client.is_none() || self.desks[desk].cursor.session.is_some() || !self.seat_had_pointer || self.desks[desk].cursor.stopped {
+        if self.desks[desk].client.is_none()
+            || self.desks[desk].cursor.session.is_some()
+            || !self.seat_had_pointer
+            || self.desks[desk].cursor.stopped
+        {
             return;
         }
-        let (Some(sources), Some(manager), Some(seat)) = (&self.capture_sources, &self.image_copy, &self.seat) else { return };
-        let Some(output) = self.outputs.selected(desk) else { return };
+        let (Some(sources), Some(manager), Some(seat)) =
+            (&self.capture_sources, &self.image_copy, &self.seat)
+        else {
+            return;
+        };
+        let Some(output) = self.outputs.selected(desk) else {
+            return;
+        };
         let pointer = seat.get_pointer(&self.qh, ());
         let source = sources.create_source(&output.output, &self.qh, ());
         let cursor = manager.create_pointer_cursor_session(&source, &pointer, &self.qh, ());
         let capture = cursor.get_capture_session(&self.qh, ());
-        debug!("capturing the cursor of output {}", output.name.as_deref().unwrap_or_default());
+        debug!(
+            "capturing the cursor of output {}",
+            output.name.as_deref().unwrap_or_default()
+        );
         self.desks[desk].cursor.session = Some(Session {
             pointer,
             source,
@@ -212,7 +225,12 @@ impl Compositor {
     /// Publish what a client should draw: the last image, while the cursor is on
     /// the output.
     fn show_cursor(&self, desk: usize) {
-        let image = self.desks[desk].cursor.session.as_ref().filter(|s| s.entered).and_then(|s| s.image.clone());
+        let image = self.desks[desk]
+            .cursor
+            .session
+            .as_ref()
+            .filter(|s| s.entered)
+            .and_then(|s| s.image.clone());
         self.shared().set_cursor(desk, image);
     }
 
@@ -220,13 +238,21 @@ impl Compositor {
     /// said what to capture it into.
     fn capture_cursor(&mut self, desk: usize) {
         let cursor = &mut self.desks[desk].cursor;
-        let Some(session) = &mut cursor.session else { return };
+        let Some(session) = &mut cursor.session else {
+            return;
+        };
         if session.frame.is_some() || cursor.retry.is_some() {
             return;
         }
-        let Some((width, height, format)) = session.constraints else { return };
+        let Some((width, height, format)) = session.constraints else {
+            return;
+        };
         let stride = width * 4;
-        if !session.buffer.as_ref().is_some_and(|b| b.matches(width, height, stride, format)) {
+        if !session
+            .buffer
+            .as_ref()
+            .is_some_and(|b| b.matches(width, height, stride, format))
+        {
             match ShmBuffer::new(&self.shm, &self.qh, width, height, stride, format) {
                 Ok(b) => {
                     debug!("cursor buffer {width}x{height}, {format:?}");
@@ -252,11 +278,14 @@ impl Compositor {
         if self.desks[desk].cursor.retry.is_some() {
             return;
         }
-        match self.handle.insert_source(Timer::from_duration(RETRY), move |_, _, state: &mut Compositor| {
-            state.desks[desk].cursor.retry = None;
-            state.capture_cursor(desk);
-            TimeoutAction::Drop
-        }) {
+        match self.handle.insert_source(
+            Timer::from_duration(RETRY),
+            move |_, _, state: &mut Compositor| {
+                state.desks[desk].cursor.retry = None;
+                state.capture_cursor(desk);
+                TimeoutAction::Drop
+            },
+        ) {
             Ok(token) => self.desks[desk].cursor.retry = Some(token),
             Err(e) => error!("cannot schedule a cursor capture: {e}"),
         }
@@ -264,12 +293,34 @@ impl Compositor {
 }
 
 impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Compositor {
-    fn event(state: &mut Self, capture: &ExtImageCopyCaptureSessionV1, event: ext_image_copy_capture_session_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        let Some(desk) = state.desks.iter().position(|d| d.cursor.session.as_ref().is_some_and(|s| &s.capture == capture)) else { return };
-        let session = state.desks[desk].cursor.session.as_mut().expect("found above");
+    fn event(
+        state: &mut Self,
+        capture: &ExtImageCopyCaptureSessionV1,
+        event: ext_image_copy_capture_session_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(desk) = state.desks.iter().position(|d| {
+            d.cursor
+                .session
+                .as_ref()
+                .is_some_and(|s| &s.capture == capture)
+        }) else {
+            return;
+        };
+        let session = state.desks[desk]
+            .cursor
+            .session
+            .as_mut()
+            .expect("found above");
         match event {
-            ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => session.size = (width, height),
-            ext_image_copy_capture_session_v1::Event::ShmFormat { format: WEnum::Value(format) } => session.formats.push(format),
+            ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => {
+                session.size = (width, height)
+            }
+            ext_image_copy_capture_session_v1::Event::ShmFormat {
+                format: WEnum::Value(format),
+            } => session.formats.push(format),
             ext_image_copy_capture_session_v1::Event::Done => {
                 let (width, height) = session.size;
                 let formats = std::mem::take(&mut session.formats);
@@ -282,7 +333,9 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Compositor {
                 // The four with alpha are equally good; the first wlroots
                 // offers is the one it reads back without a conversion.
                 let Some(&format) = formats.iter().find(|&&f| rgba_bytes(f).is_some()) else {
-                    error!("the compositor offers the cursor only as {formats:?}; this server needs a 32-bit format with alpha: ARGB8888, ABGR8888, RGBA8888 or BGRA8888");
+                    error!(
+                        "the compositor offers the cursor only as {formats:?}; this server needs a 32-bit format with alpha: ARGB8888, ABGR8888, RGBA8888 or BGRA8888"
+                    );
                     session.constraints = None;
                     return;
                 };
@@ -302,24 +355,60 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for Compositor {
 }
 
 impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Compositor {
-    fn event(state: &mut Self, frame: &ExtImageCopyCaptureFrameV1, event: ext_image_copy_capture_frame_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        let Some(desk) = state.desks.iter().position(|d| d.cursor.session.as_ref().is_some_and(|s| s.frame.as_ref() == Some(frame))) else { return };
-        let session = state.desks[desk].cursor.session.as_mut().expect("found above");
+    fn event(
+        state: &mut Self,
+        frame: &ExtImageCopyCaptureFrameV1,
+        event: ext_image_copy_capture_frame_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(desk) = state.desks.iter().position(|d| {
+            d.cursor
+                .session
+                .as_ref()
+                .is_some_and(|s| s.frame.as_ref() == Some(frame))
+        }) else {
+            return;
+        };
+        let session = state.desks[desk]
+            .cursor
+            .session
+            .as_mut()
+            .expect("found above");
         match event {
-            ext_image_copy_capture_frame_v1::Event::Transform { transform: WEnum::Value(t) } => session.transform = t,
+            ext_image_copy_capture_frame_v1::Event::Transform {
+                transform: WEnum::Value(t),
+            } => session.transform = t,
             ext_image_copy_capture_frame_v1::Event::Ready => {
                 frame.destroy();
                 session.frame = None;
-                let (Some(buffer), Some((.., format))) = (&session.buffer, session.constraints) else { return };
+                let (Some(buffer), Some((.., format))) = (&session.buffer, session.constraints)
+                else {
+                    return;
+                };
                 let order = rgba_bytes(format).expect("only formats with alpha are chosen");
-                let rgba = to_rgba(&buffer.map, buffer.width, buffer.height, buffer.stride, order);
-                let (rgba, width, height) = upright(rgba, buffer.width, buffer.height, session.transform);
+                let rgba = to_rgba(
+                    &buffer.map,
+                    buffer.width,
+                    buffer.height,
+                    buffer.stride,
+                    order,
+                );
+                let (rgba, width, height) =
+                    upright(rgba, buffer.width, buffer.height, session.transform);
                 // The hotspot is not turned with the pixels. The protocol puts
                 // it in buffer coordinates, but wlroots reports the one its
                 // output cursor was given, which is upright already.
-                let image = CursorImage::cropped(width as u16, height as u16, session.hotspot, &rgba);
+                let image =
+                    CursorImage::cropped(width as u16, height as u16, session.hotspot, &rgba);
                 match &image {
-                    Some(i) => debug!("cursor {}x{}, hotspot {:?}", i.width(), i.height(), i.hotspot()),
+                    Some(i) => debug!(
+                        "cursor {}x{}, hotspot {:?}",
+                        i.width(),
+                        i.height(),
+                        i.hotspot()
+                    ),
                     None => debug!("the cursor paints nothing"),
                 }
                 session.image = image.map(Arc::new);
@@ -345,9 +434,27 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Compositor {
 }
 
 impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
-    fn event(state: &mut Self, cursor: &ExtImageCopyCaptureCursorSessionV1, event: ext_image_copy_capture_cursor_session_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        let Some(desk) = state.desks.iter().position(|d| d.cursor.session.as_ref().is_some_and(|s| &s.cursor == cursor)) else { return };
-        let session = state.desks[desk].cursor.session.as_mut().expect("found above");
+    fn event(
+        state: &mut Self,
+        cursor: &ExtImageCopyCaptureCursorSessionV1,
+        event: ext_image_copy_capture_cursor_session_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(desk) = state.desks.iter().position(|d| {
+            d.cursor
+                .session
+                .as_ref()
+                .is_some_and(|s| &s.cursor == cursor)
+        }) else {
+            return;
+        };
+        let session = state.desks[desk]
+            .cursor
+            .session
+            .as_mut()
+            .expect("found above");
         match event {
             ext_image_copy_capture_cursor_session_v1::Event::Enter => {
                 session.entered = true;
@@ -357,7 +464,9 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Compositor {
                 session.entered = false;
                 state.show_cursor(desk);
             }
-            ext_image_copy_capture_cursor_session_v1::Event::Hotspot { x, y } => session.hotspot = (x, y),
+            ext_image_copy_capture_cursor_session_v1::Event::Hotspot { x, y } => {
+                session.hotspot = (x, y)
+            }
             // The client places the pointer where it sent it.
             _ => {}
         }
@@ -389,7 +498,11 @@ mod tests {
             map.extend_from_slice(&memory);
             map.extend_from_slice(&[9; 4]);
             let order = rgba_bytes(format).unwrap();
-            assert_eq!(to_rgba(&map, 1, 2, 8, order), vec![1, 2, 3, 4, 1, 2, 3, 4], "{format:?}");
+            assert_eq!(
+                to_rgba(&map, 1, 2, 8, order),
+                vec![1, 2, 3, 4, 1, 2, 3, 4],
+                "{format:?}"
+            );
         }
         // A cursor without alpha is no cursor.
         assert_eq!(rgba_bytes(wl_shm::Format::Xrgb8888), None);
@@ -405,7 +518,11 @@ mod tests {
         // and each buffer below is it drawn by hand as wl_output.transform
         // describes: turned counter-clockwise, flipped about the vertical axis
         // first for the flipped ones.
-        let px = |s: &str| s.split_whitespace().flat_map(|c| [c.as_bytes()[0]; 4]).collect::<Vec<u8>>();
+        let px = |s: &str| {
+            s.split_whitespace()
+                .flat_map(|c| [c.as_bytes()[0]; 4])
+                .collect::<Vec<u8>>()
+        };
         let cases = [
             (Transform::Normal, (3, 2), "a b c d e f"),
             (Transform::_90, (2, 3), "c f b e a d"),
@@ -417,7 +534,11 @@ mod tests {
             (Transform::Flipped270, (2, 3), "f c e b d a"),
         ];
         for (transform, (w, h), buffer) in cases {
-            assert_eq!(upright(px(buffer), w, h, transform), (px("a b c d e f"), 3, 2), "{transform:?}");
+            assert_eq!(
+                upright(px(buffer), w, h, transform),
+                (px("a b c d e f"), 3, 2),
+                "{transform:?}"
+            );
         }
     }
 }

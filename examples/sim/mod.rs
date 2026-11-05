@@ -39,12 +39,23 @@ pub struct Source {
 
 impl Source {
     pub fn new(paths: Vec<String>) -> Self {
-        Self { paths, reader: None, offset: Duration::ZERO, last: Duration::ZERO, scale: 1.0, peeked: None }
+        Self {
+            paths,
+            reader: None,
+            offset: Duration::ZERO,
+            last: Duration::ZERO,
+            scale: 1.0,
+            peeked: None,
+        }
     }
 
     fn open(path: &str) -> Result<Reader<BufReader<Box<dyn Read>>>, Error> {
         let input: Box<dyn Read> = if path.ends_with(".zst") {
-            let mut child = Command::new("zstd").arg("-dc").arg(path).stdout(Stdio::piped()).spawn()?;
+            let mut child = Command::new("zstd")
+                .arg("-dc")
+                .arg(path)
+                .stdout(Stdio::piped())
+                .spawn()?;
             Box::new(child.stdout.take().unwrap())
         } else {
             Box::new(File::open(path)?)
@@ -77,7 +88,11 @@ impl Source {
                         size: f.size,
                         scale: self.scale,
                         keyframe: f.keyframe && !(first && self.offset > Duration::ZERO),
-                        changed: if first { None } else { f.changed.map(<[Rect]>::to_vec) },
+                        changed: if first {
+                            None
+                        } else {
+                            f.changed.map(<[Rect]>::to_vec)
+                        },
                         pixels: f.pixels.to_vec(),
                     });
                 }
@@ -106,8 +121,15 @@ pub struct Link {
 
 impl Link {
     fn rate_at(&self, t: Duration) -> (f64, Option<Duration>) {
-        let i = self.rates.iter().rposition(|(from, _)| *from <= t).unwrap_or(0);
-        (self.rates[i].1, self.rates.get(i + 1).map(|(from, _)| *from))
+        let i = self
+            .rates
+            .iter()
+            .rposition(|(from, _)| *from <= t)
+            .unwrap_or(0);
+        (
+            self.rates[i].1,
+            self.rates.get(i + 1).map(|(from, _)| *from),
+        )
     }
 
     /// When `bytes` written at `at` have all left the bottleneck.
@@ -168,19 +190,39 @@ impl Gateway {
     /// A gateway to a browser on a link of `rates`, each from when it starts,
     /// of a round trip `rtt`, `hop` from the session.
     pub fn new(rates: Vec<(Duration, f64)>, rtt: Duration, hop: Duration) -> Self {
-        let link = Link { rates, one_way: rtt / 2, free: Duration::ZERO };
-        Self { link, hop, queued: VecDeque::new(), owed: VecDeque::new(), echoed: Duration::ZERO, painted: Duration::ZERO }
+        let link = Link {
+            rates,
+            one_way: rtt / 2,
+            free: Duration::ZERO,
+        };
+        Self {
+            link,
+            hop,
+            queued: VecDeque::new(),
+            owed: VecDeque::new(),
+            echoed: Duration::ZERO,
+            painted: Duration::ZERO,
+        }
     }
 
     /// An update the session wrote at `sent`, its `records` in order, each its
     /// bytes on the link and those of them the budget is taken for: when the
     /// browser has painted it, and when its fence's echo is back at the session.
-    pub fn frame(&mut self, sent: Duration, records: &[(usize, usize)], paint: Duration) -> (Duration, Duration) {
+    pub fn frame(
+        &mut self,
+        sent: Duration,
+        records: &[(usize, usize)],
+        paint: Duration,
+    ) -> (Duration, Duration) {
         let (mut handed, mut end) = (sent + self.hop / 2, Duration::ZERO);
         for &(bytes, budgeted) in records {
             let share = budgeted.min(BUDGET);
             loop {
-                while self.queued.front().is_some_and(|(written, _)| *written <= handed) {
+                while self
+                    .queued
+                    .front()
+                    .is_some_and(|(written, _)| *written <= handed)
+                {
                     self.queued.pop_front();
                 }
                 if self.queued.iter().map(|(_, share)| share).sum::<usize>() + share <= BUDGET {
@@ -198,7 +240,9 @@ impl Gateway {
         while self.owed.front().is_some_and(|(_, acked)| *acked <= handed) {
             self.owed.pop_front();
         }
-        let hold = self.owed.front().map_or(Duration::ZERO, |(at, _)| (handed - *at).saturating_sub(self.link.one_way * 2));
+        let hold = self.owed.front().map_or(Duration::ZERO, |(at, _)| {
+            (handed - *at).saturating_sub(self.link.one_way * 2)
+        });
         self.owed.push_back((handed, painted + self.link.one_way));
         self.echoed = (handed + hold.min(Duration::from_millis(500))).max(self.echoed);
         (painted, self.echoed + self.hop / 2)
@@ -214,7 +258,10 @@ pub fn link_steps(value: &str) -> Result<Vec<(Duration, f64)>, Error> {
             let (rate, from) = step.split_once('@').unwrap_or((step, "0"));
             let (rate, from) = (rate.parse::<f64>()?, from.parse::<f64>()?);
             if !(rate.is_finite() && rate > 0.0 && from.is_finite() && from >= 0.0) {
-                return Err(format!("--link step {step}: a rate above zero and a time of zero or more").into());
+                return Err(format!(
+                    "--link step {step}: a rate above zero and a time of zero or more"
+                )
+                .into());
             }
             Ok((Duration::from_secs_f64(from), rate * 1e6 / 8.0))
         })
@@ -227,13 +274,32 @@ pub fn link_steps(value: &str) -> Result<Vec<(Duration, f64)>, Error> {
 
 /// The link's steps as JSON: each rate in Mbit/s and the second it starts at.
 pub fn rates_json(rates: &[(Duration, f64)]) -> String {
-    let steps: Vec<String> = rates.iter().map(|(from, rate)| format!("{{\"mbps\":{},\"from_s\":{}}}", rate * 8.0 / 1e6, from.as_secs_f64())).collect();
+    let steps: Vec<String> = rates
+        .iter()
+        .map(|(from, rate)| {
+            format!(
+                "{{\"mbps\":{},\"from_s\":{}}}",
+                rate * 8.0 / 1e6,
+                from.as_secs_f64()
+            )
+        })
+        .collect();
     format!("[{}]", steps.join(","))
 }
 
 /// A run's name: its captures' file names, less `.wlcap.zst`, joined by `+`.
 pub fn run_name(paths: &[String]) -> String {
-    paths.iter().map(|p| p.rsplit('/').next().unwrap().trim_end_matches(".wlcap.zst").to_string()).collect::<Vec<_>>().join("+")
+    paths
+        .iter()
+        .map(|p| {
+            p.rsplit('/')
+                .next()
+                .unwrap()
+                .trim_end_matches(".wlcap.zst")
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// Up to `jitter` ms more of the browser's paint, at random, the same run

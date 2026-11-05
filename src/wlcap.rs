@@ -60,7 +60,10 @@ const HEADER: usize = 16;
 pub enum CaptureError {
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error("not a capture: the file does not begin with {}", String::from_utf8_lossy(MAGIC))]
+    #[error(
+        "not a capture: the file does not begin with {}",
+        String::from_utf8_lossy(MAGIC)
+    )]
     Magic,
     #[error("the capture ends inside frame {0}")]
     Truncated(u64),
@@ -102,8 +105,16 @@ pub fn rows(rects: &[Rect], height: u16) -> Vec<Range<u16>> {
 /// the encoder the output's.
 #[allow(dead_code)]
 pub fn named_scale(name: &str) -> f64 {
-    let stem = name.rsplit('/').next().unwrap_or(name).trim_end_matches(".zst").trim_end_matches(".wlcap");
-    stem.rsplit_once('@').and_then(|(_, scale)| scale.parse().ok()).filter(|s: &f64| *s > 0.0).unwrap_or(1.0)
+    let stem = name
+        .rsplit('/')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(".zst")
+        .trim_end_matches(".wlcap");
+    stem.rsplit_once('@')
+        .and_then(|(_, scale)| scale.parse().ok())
+        .filter(|s: &f64| *s > 0.0)
+        .unwrap_or(1.0)
 }
 
 /// A capture being written: the magic at once, then a frame for every call.
@@ -125,20 +136,43 @@ impl<W: Write> Writer<W> {
     /// `quality`, with a keyframe asked or not. `changed` is where the
     /// picture differs from the one before, and then only the rows the
     /// rectangles span are read from `pixels`; `None` is a whole picture.
-    pub fn frame(&mut self, size: (u16, u16), quality: u8, keyframe: bool, changed: Option<&[Rect]>, pixels: &[u8], stride: usize) -> Result<(), CaptureError> {
+    pub fn frame(
+        &mut self,
+        size: (u16, u16),
+        quality: u8,
+        keyframe: bool,
+        changed: Option<&[Rect]>,
+        pixels: &[u8],
+        stride: usize,
+    ) -> Result<(), CaptureError> {
         let at = self.began.get_or_insert_with(Instant::now).elapsed();
         self.frame_at(at, size, quality, keyframe, changed, pixels, stride)
     }
 
     /// [`Self::frame`] at a time given, counted from the capture's first.
     #[allow(clippy::too_many_arguments)]
-    pub fn frame_at(&mut self, at: Duration, size: (u16, u16), quality: u8, keyframe: bool, changed: Option<&[Rect]>, pixels: &[u8], stride: usize) -> Result<(), CaptureError> {
+    pub fn frame_at(
+        &mut self,
+        at: Duration,
+        size: (u16, u16),
+        quality: u8,
+        keyframe: bool,
+        changed: Option<&[Rect]>,
+        pixels: &[u8],
+        stride: usize,
+    ) -> Result<(), CaptureError> {
         let (width, height) = size;
         let row = usize::from(width) * 4;
-        if width == 0 || height == 0 || stride < row || pixels.len() < (usize::from(height) - 1) * stride + row {
+        if width == 0
+            || height == 0
+            || stride < row
+            || pixels.len() < (usize::from(height) - 1) * stride + row
+        {
             return Err(CaptureError::Pixels(width, height, pixels.len(), stride));
         }
-        let count = changed.map_or(Ok(0), |rects| u16::try_from(rects.len()).map_err(|_| CaptureError::Rects(rects.len())))?;
+        let count = changed.map_or(Ok(0), |rects| {
+            u16::try_from(rects.len()).map_err(|_| CaptureError::Rects(rects.len()))
+        })?;
         let mut flags = 0;
         if keyframe {
             flags |= FLAG_KEYFRAME;
@@ -247,7 +281,13 @@ impl<R: Read> Reader<R> {
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(CaptureError::Magic),
             Err(e) => return Err(e.into()),
         }
-        Ok(Self { input, index: 0, size: (0, 0), pixels: Vec::new(), rects: Vec::new() })
+        Ok(Self {
+            input,
+            index: 0,
+            size: (0, 0),
+            pixels: Vec::new(),
+            rects: Vec::new(),
+        })
     }
 
     /// The next frame, or `None` at the end of the capture. A capture that
@@ -268,21 +308,35 @@ impl<R: Read> Reader<R> {
             }
         }
         let u16_at = |at: usize| u16::from_le_bytes([header[at], header[at + 1]]);
-        let at = Duration::from_micros(u64::from_le_bytes(header[..8].try_into().expect("eight bytes")));
-        let (width, height, quality, flags, count) = (u16_at(8), u16_at(10), header[12], header[13], u16_at(14));
+        let at = Duration::from_micros(u64::from_le_bytes(
+            header[..8].try_into().expect("eight bytes"),
+        ));
+        let (width, height, quality, flags, count) =
+            (u16_at(8), u16_at(10), header[12], header[13], u16_at(14));
         if flags & !(FLAG_KEYFRAME | FLAG_RECTS) != 0 || (flags & FLAG_RECTS == 0 && count != 0) {
             return Err(CaptureError::Flags(index, flags));
         }
         if width == 0 || height == 0 {
             return Err(CaptureError::Empty(index, width, height));
         }
-        let truncated = |e: io::Error| if e.kind() == io::ErrorKind::UnexpectedEof { CaptureError::Truncated(index) } else { e.into() };
+        let truncated = |e: io::Error| {
+            if e.kind() == io::ErrorKind::UnexpectedEof {
+                CaptureError::Truncated(index)
+            } else {
+                e.into()
+            }
+        };
         self.rects.clear();
         for _ in 0..count {
             let mut rect = [0; 8];
             self.input.read_exact(&mut rect).map_err(truncated)?;
             let field = |at: usize| u16::from_le_bytes([rect[at], rect[at + 1]]);
-            self.rects.push(Rect { x: field(0), y: field(2), width: field(4), height: field(6) });
+            self.rects.push(Rect {
+                x: field(0),
+                y: field(2),
+                width: field(4),
+                height: field(6),
+            });
         }
         let row = usize::from(width) * 4;
         let spans = if flags & FLAG_RECTS == 0 {
@@ -299,7 +353,11 @@ impl<R: Read> Reader<R> {
             rows(&self.rects, height)
         };
         for span in spans {
-            self.input.read_exact(&mut self.pixels[usize::from(span.start) * row..usize::from(span.end) * row]).map_err(truncated)?;
+            self.input
+                .read_exact(
+                    &mut self.pixels[usize::from(span.start) * row..usize::from(span.end) * row],
+                )
+                .map_err(truncated)?;
         }
         self.index += 1;
         Ok(Some(Frame {
@@ -333,20 +391,43 @@ mod tests {
     }
 
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
-        Rect { x, y, width, height }
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// The rows of `pixels` in `span`, tight.
     fn tight(pixels: &[u8], stride: usize, width: u16, span: Range<u16>) -> Vec<u8> {
-        span.flat_map(|y| pixels[usize::from(y) * stride..][..usize::from(width) * 4].to_vec()).collect()
+        span.flat_map(|y| pixels[usize::from(y) * stride..][..usize::from(width) * 4].to_vec())
+            .collect()
     }
 
     #[test]
     fn rows_are_merged_sorted_and_clipped() {
-        assert_eq!(rows(&[rect(0, 6, 1, 2), rect(0, 1, 1, 2), rect(5, 2, 1, 3), rect(0, 9, 1, 50)], 10), vec![1..5, 6..8, 9..10]);
+        assert_eq!(
+            rows(
+                &[
+                    rect(0, 6, 1, 2),
+                    rect(0, 1, 1, 2),
+                    rect(5, 2, 1, 3),
+                    rect(0, 9, 1, 50)
+                ],
+                10
+            ),
+            vec![1..5, 6..8, 9..10]
+        );
         assert_eq!(rows(&[rect(0, 3, 1, 2), rect(0, 5, 1, 1)], 10), vec![3..6]);
-        assert_eq!(rows(&[rect(0, 10, 1, 1), rect(0, 4, 1, 0)], 10), Vec::<Range<u16>>::new());
-        assert_eq!(rows(&[rect(0, 65535, 1, 65535)], 65535), Vec::<Range<u16>>::new());
+        assert_eq!(
+            rows(&[rect(0, 10, 1, 1), rect(0, 4, 1, 0)], 10),
+            Vec::<Range<u16>>::new()
+        );
+        assert_eq!(
+            rows(&[rect(0, 65535, 1, 65535)], 65535),
+            Vec::<Range<u16>>::new()
+        );
     }
 
     #[test]
@@ -365,9 +446,39 @@ mod tests {
         let rects = [rect(1, 4, 2, 2), rect(3, 1, 9, 1), rect(0, 5, 1, 1)];
         let mut file = Vec::new();
         let mut writer = Writer::new(&mut file).unwrap();
-        writer.frame_at(Duration::ZERO, (width, height), 90, true, None, &first, stride).unwrap();
-        writer.frame_at(Duration::from_micros(33_367), (width, height), 71, false, Some(&rects), &second, stride).unwrap();
-        writer.frame_at(Duration::from_secs(5000), (width, height), 100, false, Some(&[]), &second, stride).unwrap();
+        writer
+            .frame_at(
+                Duration::ZERO,
+                (width, height),
+                90,
+                true,
+                None,
+                &first,
+                stride,
+            )
+            .unwrap();
+        writer
+            .frame_at(
+                Duration::from_micros(33_367),
+                (width, height),
+                71,
+                false,
+                Some(&rects),
+                &second,
+                stride,
+            )
+            .unwrap();
+        writer
+            .frame_at(
+                Duration::from_secs(5000),
+                (width, height),
+                100,
+                false,
+                Some(&[]),
+                &second,
+                stride,
+            )
+            .unwrap();
 
         // The parser of the test: the layout, read with nothing of the module's.
         let mut at = 0;
@@ -409,25 +520,66 @@ mod tests {
         let rects = [rect(2, 2, 3, 2), rect(0, 6, 6, 1)];
         let mut file = Vec::new();
         let mut writer = Writer::new(&mut file).unwrap();
-        writer.frame_at(Duration::ZERO, (6, 8), 90, true, None, &first, stride).unwrap();
-        writer.frame_at(Duration::from_millis(40), (6, 8), 85, false, Some(&rects), &second, stride).unwrap();
-        writer.frame_at(Duration::from_millis(80), (9, 3), 90, true, None, &wide, stride).unwrap();
+        writer
+            .frame_at(Duration::ZERO, (6, 8), 90, true, None, &first, stride)
+            .unwrap();
+        writer
+            .frame_at(
+                Duration::from_millis(40),
+                (6, 8),
+                85,
+                false,
+                Some(&rects),
+                &second,
+                stride,
+            )
+            .unwrap();
+        writer
+            .frame_at(
+                Duration::from_millis(80),
+                (9, 3),
+                90,
+                true,
+                None,
+                &wide,
+                stride,
+            )
+            .unwrap();
 
         let mut reader = Reader::new(&file[..]).unwrap();
         let frame = reader.next().unwrap().unwrap();
-        assert_eq!((frame.index, frame.at, frame.size, frame.quality, frame.keyframe), (0, Duration::ZERO, (6, 8), 90, true));
+        assert_eq!(
+            (
+                frame.index,
+                frame.at,
+                frame.size,
+                frame.quality,
+                frame.keyframe
+            ),
+            (0, Duration::ZERO, (6, 8), 90, true)
+        );
         assert_eq!(frame.changed, None);
         assert_eq!(frame.changed_pixels(), 48);
         assert_eq!(frame.pixels, tight(&first, stride, 6, 0..8));
 
         let frame = reader.next().unwrap().unwrap();
-        assert_eq!((frame.index, frame.at, frame.size, frame.quality, frame.keyframe), (1, Duration::from_millis(40), (6, 8), 85, false));
+        assert_eq!(
+            (
+                frame.index,
+                frame.at,
+                frame.size,
+                frame.quality,
+                frame.keyframe
+            ),
+            (1, Duration::from_millis(40), (6, 8), 85, false)
+        );
         assert_eq!(frame.changed, Some(&rects[..]));
         assert_eq!(frame.changed_pixels(), 12);
         // The second picture in the rows the rectangles span, the first elsewhere.
         let mut expected = tight(&first, stride, 6, 0..8);
         for span in [2..4, 6..7] {
-            expected[usize::from(span.start) * 24..usize::from(span.end) * 24].copy_from_slice(&tight(&second, stride, 6, span));
+            expected[usize::from(span.start) * 24..usize::from(span.end) * 24]
+                .copy_from_slice(&tight(&second, stride, 6, span));
         }
         assert_eq!(frame.pixels, expected);
 
@@ -443,23 +595,56 @@ mod tests {
         let rects = [rect(0, 0, 4, 4), rect(2, 2, 4, 4), rect(8, 3, 50, 1)];
         let mut file = Vec::new();
         let mut writer = Writer::new(&mut file).unwrap();
-        writer.frame_at(Duration::ZERO, (10, 10), 90, true, None, &pixels, 40).unwrap();
-        writer.frame_at(Duration::ZERO, (10, 10), 90, false, Some(&rects), &pixels, 40).unwrap();
+        writer
+            .frame_at(Duration::ZERO, (10, 10), 90, true, None, &pixels, 40)
+            .unwrap();
+        writer
+            .frame_at(
+                Duration::ZERO,
+                (10, 10),
+                90,
+                false,
+                Some(&rects),
+                &pixels,
+                40,
+            )
+            .unwrap();
         let mut reader = Reader::new(&file[..]).unwrap();
         reader.next().unwrap().unwrap();
-        assert_eq!(reader.next().unwrap().unwrap().changed_pixels(), 16 + 16 - 4 + 2);
+        assert_eq!(
+            reader.next().unwrap().unwrap().changed_pixels(),
+            16 + 16 - 4 + 2
+        );
     }
 
     #[test]
     fn what_is_not_a_capture_is_refused() {
-        assert!(matches!(Reader::new(&b"DKIF\0\0 \0"[..]), Err(CaptureError::Magic)));
-        assert!(matches!(Reader::new(&b"WLSH"[..]), Err(CaptureError::Magic)));
+        assert!(matches!(
+            Reader::new(&b"DKIF\0\0 \0"[..]),
+            Err(CaptureError::Magic)
+        ));
+        assert!(matches!(
+            Reader::new(&b"WLSH"[..]),
+            Err(CaptureError::Magic)
+        ));
 
         let pixels = picture(4, 4, 16, 0);
         let mut file = Vec::new();
         let mut writer = Writer::new(&mut file).unwrap();
-        writer.frame_at(Duration::ZERO, (4, 4), 90, true, None, &pixels, 16).unwrap();
-        writer.frame_at(Duration::ZERO, (4, 4), 90, false, Some(&[rect(0, 1, 4, 2)]), &pixels, 16).unwrap();
+        writer
+            .frame_at(Duration::ZERO, (4, 4), 90, true, None, &pixels, 16)
+            .unwrap();
+        writer
+            .frame_at(
+                Duration::ZERO,
+                (4, 4),
+                90,
+                false,
+                Some(&[rect(0, 1, 4, 2)]),
+                &pixels,
+                16,
+            )
+            .unwrap();
         let whole = file.clone();
 
         // Cut anywhere inside the second frame: its header, its rectangle, its rows.
@@ -467,19 +652,50 @@ mod tests {
         for cut in [second + 1, second + HEADER + 3, whole.len() - 1] {
             let mut reader = Reader::new(&whole[..cut]).unwrap();
             reader.next().unwrap().unwrap();
-            assert!(matches!(reader.next(), Err(CaptureError::Truncated(1))), "cut at {cut}");
+            assert!(
+                matches!(reader.next(), Err(CaptureError::Truncated(1))),
+                "cut at {cut}"
+            );
         }
 
         // Rectangles of a picture nothing before them holds.
         let headless = [&MAGIC[..], &whole[second..]].concat();
         let mut reader = Reader::new(&headless[..]).unwrap();
-        assert!(matches!(reader.next(), Err(CaptureError::NoPicture(0, 4, 4))));
+        assert!(matches!(
+            reader.next(),
+            Err(CaptureError::NoPicture(0, 4, 4))
+        ));
 
         let mut flags = whole.clone();
         flags[MAGIC.len() + 13] = 4;
-        assert!(matches!(Reader::new(&flags[..]).unwrap().next(), Err(CaptureError::Flags(0, 4))));
+        assert!(matches!(
+            Reader::new(&flags[..]).unwrap().next(),
+            Err(CaptureError::Flags(0, 4))
+        ));
 
-        assert!(matches!(Writer::new(Vec::new()).unwrap().frame_at(Duration::ZERO, (4, 4), 90, true, None, &pixels[..60], 16), Err(CaptureError::Pixels(4, 4, 60, 16))));
-        assert!(matches!(Writer::new(Vec::new()).unwrap().frame_at(Duration::ZERO, (0, 4), 90, true, None, &pixels, 16), Err(CaptureError::Pixels(0, 4, _, 16))));
+        assert!(matches!(
+            Writer::new(Vec::new()).unwrap().frame_at(
+                Duration::ZERO,
+                (4, 4),
+                90,
+                true,
+                None,
+                &pixels[..60],
+                16
+            ),
+            Err(CaptureError::Pixels(4, 4, 60, 16))
+        ));
+        assert!(matches!(
+            Writer::new(Vec::new()).unwrap().frame_at(
+                Duration::ZERO,
+                (0, 4),
+                90,
+                true,
+                None,
+                &pixels,
+                16
+            ),
+            Err(CaptureError::Pixels(0, 4, _, 16))
+        ));
     }
 }

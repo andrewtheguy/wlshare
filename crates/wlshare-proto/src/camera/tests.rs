@@ -1,6 +1,11 @@
 use super::*;
 
-const VGA: CameraFormat = CameraFormat { width: 640, height: 480, fps_numerator: 30_000, fps_denominator: 1_001 };
+const VGA: CameraFormat = CameraFormat {
+    width: 640,
+    height: 480,
+    fps_numerator: 30_000,
+    fps_denominator: 1_001,
+};
 
 /// A server message as the documented layouts describe it, decoded without
 /// the builders.
@@ -27,7 +32,11 @@ fn decode(bytes: &[u8]) -> Decoded {
         3 => Decoded::Keyframe,
         other => panic!("operation {other} is not a server message"),
     };
-    let len = if matches!(decoded, Decoded::Start(_)) { 16 } else { 4 };
+    let len = if matches!(decoded, Decoded::Start(_)) {
+        16
+    } else {
+        4
+    };
     assert_eq!(bytes.len(), len, "the message is exactly its layout");
     decoded
 }
@@ -56,33 +65,76 @@ fn a_start_has_the_documented_layout() {
 
 #[test]
 fn the_client_operations_parse() {
-    let plug = [0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03, 0xE9, 0xFF];
+    let plug = [
+        0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03, 0xE9, 0xFF,
+    ];
     assert_eq!(parse_client(&plug), Ok(Some((ClientCamera::Plug(VGA), 16))));
-    assert_eq!(parse_client(&[0xE2, 1, 0, 0, 0xFF]), Ok(Some((ClientCamera::Unplug, 4))));
+    assert_eq!(
+        parse_client(&[0xE2, 1, 0, 0, 0xFF]),
+        Ok(Some((ClientCamera::Unplug, 4)))
+    );
     let sample = [0xE2, 2, SAMPLE_KEYFRAME, 0, 0, 0, 0, 3, 0, 0, 1, 0xFF];
-    assert_eq!(parse_client(&sample), Ok(Some((ClientCamera::Sample { keyframe: true, data: vec![0, 0, 1] }, 11))));
+    assert_eq!(
+        parse_client(&sample),
+        Ok(Some((
+            ClientCamera::Sample {
+                keyframe: true,
+                data: vec![0, 0, 1]
+            },
+            11
+        )))
+    );
     let delta = [0xE2, 2, 0, 0, 0, 0, 0, 1, 9];
-    assert_eq!(parse_client(&delta), Ok(Some((ClientCamera::Sample { keyframe: false, data: vec![9] }, 9))));
+    assert_eq!(
+        parse_client(&delta),
+        Ok(Some((
+            ClientCamera::Sample {
+                keyframe: false,
+                data: vec![9]
+            },
+            9
+        )))
+    );
 }
 
 #[test]
 fn a_partial_message_asks_for_more() {
     assert_eq!(parse_client(&[0xE2, 0, 0]), Ok(None));
-    assert_eq!(parse_client(&[0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03]), Ok(None));
+    assert_eq!(
+        parse_client(&[
+            0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03
+        ]),
+        Ok(None)
+    );
     assert_eq!(parse_client(&[0xE2, 2, 0, 0, 0, 0, 0]), Ok(None));
-    assert_eq!(parse_client(&[0xE2, 2, 0, 0, 0, 0, 0, 3, 0, 0]), Ok(None), "the unit is not all here");
+    assert_eq!(
+        parse_client(&[0xE2, 2, 0, 0, 0, 0, 0, 3, 0, 0]),
+        Ok(None),
+        "the unit is not all here"
+    );
 }
 
 #[test]
 fn a_bad_operation_format_or_length_is_fatal() {
-    assert_eq!(parse_client(&[0xE2, 7, 0, 0]), Err(CameraParseError::UnknownOperation(7)));
     assert_eq!(
-        parse_client(&[0xE2, 0, 0, 0, 0, 0, 0x01, 0xE0, 0, 0, 0, 30, 0, 0, 0, 1]),
-        Err(CameraParseError::EmptyGeometry { width: 0, height: 480 })
+        parse_client(&[0xE2, 7, 0, 0]),
+        Err(CameraParseError::UnknownOperation(7))
     );
     assert_eq!(
-        parse_client(&[0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0, 30, 0, 0, 0, 0]),
-        Err(CameraParseError::BadRate { numerator: 30, denominator: 0 })
+        parse_client(&[0xE2, 0, 0, 0, 0, 0, 0x01, 0xE0, 0, 0, 0, 30, 0, 0, 0, 1]),
+        Err(CameraParseError::EmptyGeometry {
+            width: 0,
+            height: 480
+        })
+    );
+    assert_eq!(
+        parse_client(&[
+            0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0, 30, 0, 0, 0, 0
+        ]),
+        Err(CameraParseError::BadRate {
+            numerator: 30,
+            denominator: 0
+        })
     );
     let over = (MAX_SAMPLE as u32 + 1).to_be_bytes();
     assert_eq!(
@@ -96,11 +148,31 @@ fn a_bad_operation_format_or_length_is_fatal() {
 /// the tests above hold to the documented ones.
 #[test]
 fn the_client_messages_parse_back() {
-    assert_eq!(plug(VGA), [0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03, 0xE9]);
-    assert_eq!(parse_client(&plug(VGA)), Ok(Some((ClientCamera::Plug(VGA), 16))));
+    assert_eq!(
+        plug(VGA),
+        [
+            0xE2, 0, 0, 0, 0x02, 0x80, 0x01, 0xE0, 0, 0, 0x75, 0x30, 0, 0, 0x03, 0xE9
+        ]
+    );
+    assert_eq!(
+        parse_client(&plug(VGA)),
+        Ok(Some((ClientCamera::Plug(VGA), 16)))
+    );
     assert_eq!(parse_client(&unplug()), Ok(Some((ClientCamera::Unplug, 4))));
-    assert_eq!(sample(true, &[0, 0, 1]), [0xE2, 2, SAMPLE_KEYFRAME, 0, 0, 0, 0, 3, 0, 0, 1]);
-    assert_eq!(parse_client(&sample(false, &[9])), Ok(Some((ClientCamera::Sample { keyframe: false, data: vec![9] }, 9))));
+    assert_eq!(
+        sample(true, &[0, 0, 1]),
+        [0xE2, 2, SAMPLE_KEYFRAME, 0, 0, 0, 0, 3, 0, 0, 1]
+    );
+    assert_eq!(
+        parse_client(&sample(false, &[9])),
+        Ok(Some((
+            ClientCamera::Sample {
+                keyframe: false,
+                data: vec![9]
+            },
+            9
+        )))
+    );
 }
 
 /// The server's messages, read back by the client's parser, against the
@@ -115,7 +187,14 @@ fn the_server_messages_parse_back() {
     ] {
         assert_eq!(parse_server(&bytes), Ok(Some((expected, bytes.len()))));
         assert_eq!(server_len(bytes.first_chunk().unwrap()), Ok(bytes.len()));
-        assert_eq!(parse_server(&bytes[..bytes.len() - 1]), Ok(None), "a partial message asks for more");
+        assert_eq!(
+            parse_server(&bytes[..bytes.len() - 1]),
+            Ok(None),
+            "a partial message asks for more"
+        );
     }
-    assert_eq!(parse_server(&[0xE2, 4, 0, 0]), Err(CameraParseError::UnknownOperation(4)));
+    assert_eq!(
+        parse_server(&[0xE2, 4, 0, 0]),
+        Err(CameraParseError::UnknownOperation(4))
+    );
 }

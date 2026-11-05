@@ -117,7 +117,10 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientMicrophone, usize)>, Mic
             if buf.len() < end {
                 return Ok(None);
             }
-            Ok(Some((ClientMicrophone::Sample(buf[MICROPHONE_SAMPLE_HEADER_LEN..end].to_vec()), end)))
+            Ok(Some((
+                ClientMicrophone::Sample(buf[MICROPHONE_SAMPLE_HEADER_LEN..end].to_vec()),
+                end,
+            )))
         }
         other => Err(MicrophoneParseError::UnknownOperation(other)),
     }
@@ -219,16 +222,19 @@ pub fn server_len(header: &[u8; MICROPHONE_BARE_LEN]) -> Result<usize, Microphon
 /// Parse the server's microphone message at the front of `buf`, whose first
 /// byte is [`MSG_MICROPHONE`]. `Ok(None)` means more bytes are needed.
 pub fn parse_server(buf: &[u8]) -> Result<Option<(ServerMicrophone, usize)>, MicrophoneParseError> {
-    let Some(header) = buf.first_chunk::<MICROPHONE_BARE_LEN>() else { return Ok(None) };
+    let Some(header) = buf.first_chunk::<MICROPHONE_BARE_LEN>() else {
+        return Ok(None);
+    };
     let len = server_len(header)?;
     if buf.len() < len {
         return Ok(None);
     }
     let msg = match header[1] {
         SERVER_MICROPHONE_AVAILABLE => ServerMicrophone::Available,
-        SERVER_MICROPHONE_START => {
-            ServerMicrophone::Start(MicrophoneFormat { channels: crate::u16_at(buf, 4), frequency: crate::u32_at(buf, 8) })
-        }
+        SERVER_MICROPHONE_START => ServerMicrophone::Start(MicrophoneFormat {
+            channels: crate::u16_at(buf, 4),
+            frequency: crate::u32_at(buf, 8),
+        }),
         _ => ServerMicrophone::Stop,
     };
     Ok(Some((msg, len)))

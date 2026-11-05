@@ -52,14 +52,21 @@
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{
+    AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, BufReader,
+};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 
 use crate::rfb::client::{self, RectBody, ServerMsg};
 use crate::rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
-use crate::rfb::rsa_aes::{self, ClientKey, Credentials, FrameReader, SECURITY_RSA_AES_128, SECURITY_RSA_AES_256, Sealer, Strength};
-use crate::rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE};
+use crate::rfb::rsa_aes::{
+    self, ClientKey, Credentials, FrameReader, SECURITY_RSA_AES_128, SECURITY_RSA_AES_256, Sealer,
+    Strength,
+};
+use crate::rfb::{
+    ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE,
+};
 
 // The daemon's protocol module, of which the sink uses the client's half.
 #[allow(unused)]
@@ -100,13 +107,18 @@ impl Out {
 /// A line of `--keys` that is a pointer's: `@X,Y,BUTTONS`.
 fn pointer(line: &str) -> Option<(u16, u16, u8)> {
     let mut fields = line.strip_prefix('@')?.split(',');
-    let at = (fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?);
+    let at = (
+        fields.next()?.parse().ok()?,
+        fields.next()?.parse().ok()?,
+        fields.next()?.parse().ok()?,
+    );
     fields.next().is_none().then_some(at)
 }
 
 /// Whether an Annex B access unit holds an IDR slice, NAL unit type 5.
 fn idr(unit: &[u8]) -> bool {
-    unit.windows(4).any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 5)
+    unit.windows(4)
+        .any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 5)
 }
 
 /// The `--h264` file being written and the size of its frames.
@@ -118,33 +130,71 @@ struct Recording {
 /// Write a frame of this size to the `--h264` file: the one being written if
 /// that is its size, and otherwise one begun for it, the first at the path and
 /// each after it at the path with its number.
-fn record(path: &str, recording: &mut Option<Recording>, streams: &mut u32, size: (u16, u16), frame: &[u8]) -> std::io::Result<()> {
+fn record(
+    path: &str,
+    recording: &mut Option<Recording>,
+    streams: &mut u32,
+    size: (u16, u16),
+    frame: &[u8],
+) -> std::io::Result<()> {
     if recording.as_ref().is_none_or(|r| r.size != size) {
         if let Some(mut done) = recording.take() {
             done.file.flush()?;
         }
         *streams += 1;
-        let path = if *streams == 1 { path.to_owned() } else { format!("{path}.{streams}") };
+        let path = if *streams == 1 {
+            path.to_owned()
+        } else {
+            format!("{path}.{streams}")
+        };
         eprintln!("video-sink: {path} is the frames at {}x{}", size.0, size.1);
-        *recording = Some(Recording { file: std::io::BufWriter::new(std::fs::File::create(path)?), size });
+        *recording = Some(Recording {
+            file: std::io::BufWriter::new(std::fs::File::create(path)?),
+            size,
+        });
     }
-    recording.as_mut().expect("begun above").file.write_all(frame)
+    recording
+        .as_mut()
+        .expect("begun above")
+        .file
+        .write_all(frame)
 }
 
 fn size(s: &str) -> Result<(u16, u16), String> {
     let (w, h) = s.split_once('x').ok_or_else(|| format!("{s}: not WxH"))?;
-    Ok((w.parse().map_err(|_| format!("{w}: not a width"))?, h.parse().map_err(|_| format!("{h}: not a height"))?))
+    Ok((
+        w.parse().map_err(|_| format!("{w}: not a width"))?,
+        h.parse().map_err(|_| format!("{h}: not a height"))?,
+    ))
 }
 
 fn at<T>(s: &str, parse: impl Fn(&str) -> Result<T, String>) -> Result<(f64, T), String> {
-    let (secs, rest) = s.split_once(':').ok_or_else(|| format!("{s}: not SECS:..."))?;
-    Ok((secs.parse().map_err(|_| format!("{secs}: not seconds"))?, parse(rest)?))
+    let (secs, rest) = s
+        .split_once(':')
+        .ok_or_else(|| format!("{s}: not SECS:..."))?;
+    Ok((
+        secs.parse().map_err(|_| format!("{secs}: not seconds"))?,
+        parse(rest)?,
+    ))
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let addr = args.next().ok_or("an address to connect to")?;
-    let mut parsed = Args { addr, size: (0, 0), seconds: 30, frames: 0, resize: None, slow: None, keyframe: None, keys: false, beside: false, h264: None, login: None, fingerprint: None };
+    let mut parsed = Args {
+        addr,
+        size: (0, 0),
+        seconds: 30,
+        frames: 0,
+        resize: None,
+        slow: None,
+        keyframe: None,
+        keys: false,
+        beside: false,
+        h264: None,
+        login: None,
+        fingerprint: None,
+    };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -152,7 +202,13 @@ fn parse_args() -> Result<Args, String> {
             "--seconds" => parsed.seconds = value()?.parse().map_err(|_| "a number of seconds")?,
             "--frames" => parsed.frames = value()?.parse().map_err(|_| "a number of frames")?,
             "--resize" => parsed.resize = Some(at(&value()?, size)?),
-            "--slow" => parsed.slow = Some(at(&value()?, |s| at(s, |ms| ms.parse().map_err(|_| format!("{ms}: not milliseconds"))))?),
+            "--slow" => {
+                parsed.slow = Some(at(&value()?, |s| {
+                    at(s, |ms| {
+                        ms.parse().map_err(|_| format!("{ms}: not milliseconds"))
+                    })
+                })?)
+            }
             "--keys" => parsed.keys = true,
             "--beside" => parsed.beside = true,
             "--h264" => parsed.h264 = Some(value()?),
@@ -209,42 +265,92 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let chosen = [SECURITY_RSA_AES_256, SECURITY_RSA_AES_128]
                 .into_iter()
                 .find(|t| types.contains(t))
-                .ok_or_else(|| format!("the daemon offers security {types:?}, not RSA-AES: it takes no login"))?;
+                .ok_or_else(|| {
+                    format!("the daemon offers security {types:?}, not RSA-AES: it takes no login")
+                })?;
             let strength = Strength::of(chosen).expect("both are RSA-AES types");
-            let password = std::env::var("VIDEO_SINK_PASSWORD").map_err(|_| "--login takes its password from VIDEO_SINK_PASSWORD")?;
+            let password = std::env::var("VIDEO_SINK_PASSWORD")
+                .map_err(|_| "--login takes its password from VIDEO_SINK_PASSWORD")?;
             out.send(&[chosen]).await?;
-            let exchange = rsa_aes::begin(&mut reader, &mut out.half, strength, ClientKey::of_bits(2048)?).await?;
+            let exchange = rsa_aes::begin(
+                &mut reader,
+                &mut out.half,
+                strength,
+                ClientKey::of_bits(2048)?,
+            )
+            .await?;
             // Before the credentials: whoever holds another key is not the
             // daemon they are for.
-            let pinned = args.fingerprint.as_deref().expect("--login comes with --fingerprint");
+            let pinned = args
+                .fingerprint
+                .as_deref()
+                .expect("--login comes with --fingerprint");
             if !exchange.fingerprint().eq_ignore_ascii_case(pinned) {
-                return Err(format!("the server's key is {}, not --fingerprint's {pinned}: nothing was sent to it", exchange.fingerprint()).into());
+                return Err(format!(
+                    "the server's key is {}, not --fingerprint's {pinned}: nothing was sent to it",
+                    exchange.fingerprint()
+                )
+                .into());
             }
-            eprintln!("video-sink: the server's key is {}, asking for {:?}", exchange.fingerprint(), exchange.subtype());
-            let session = exchange.login(&mut out.half, &Credentials { username: username.clone(), password }).await?;
+            eprintln!(
+                "video-sink: the server's key is {}, asking for {:?}",
+                exchange.fingerprint(),
+                exchange.subtype()
+            );
+            let session = exchange
+                .login(
+                    &mut out.half,
+                    &Credentials {
+                        username: username.clone(),
+                        password,
+                    },
+                )
+                .await?;
             out.sealer = Some(session.sealer);
             Box::new(FrameReader::new(reader, session.opener))
         }
     };
     client::read_security_result(&mut socket).await?;
-    out.send(&[if args.beside { wlshare_proto::CLIENT_INIT_BESIDE } else { 1 }]).await?;
+    out.send(&[if args.beside {
+        wlshare_proto::CLIENT_INIT_BESIDE
+    } else {
+        1
+    }])
+    .await?;
     let init = client::read_server_init(&mut socket).await?;
-    eprintln!("video-sink: {} is {}x{}", init.name, init.width, init.height);
+    eprintln!(
+        "video-sink: {} is {}x{}",
+        init.name, init.width, init.height
+    );
 
     // Cursor because the daemon requires it of every client; its rectangles
     // are parsed and dropped like everything but the frames.
     let mut encodings = vec![wlshare_proto::ENCODING_VIDEO];
-    encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
-    encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
+    encodings.extend([
+        ENCODING_FENCE,
+        ENCODING_CONTINUOUS_UPDATES,
+        ENCODING_EXTENDED_DESKTOP_SIZE,
+        ENCODING_CURSOR,
+    ]);
+    encodings.push(wlshare_proto::version::encoding(
+        wlshare_proto::PROTOCOL_VERSION,
+    ));
     out.send(&client::set_encodings(&encodings)).await?;
     // The daemon answers the version first, before anything is asked of it.
     client::read_protocol_version(&mut socket).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {
-        out.send(&client::set_desktop_size(args.size.0, args.size.1)).await?;
+        out.send(&client::set_desktop_size(args.size.0, args.size.1))
+            .await?;
     }
-    out.send(&client::enable_continuous_updates(true, 0, 0, width, height)).await?;
-    out.send(&client::framebuffer_update_request(false, 0, 0, width, height)).await?;
+    out.send(&client::enable_continuous_updates(
+        true, 0, 0, width, height,
+    ))
+    .await?;
+    out.send(&client::framebuffer_update_request(
+        false, 0, 0, width, height,
+    ))
+    .await?;
 
     let began = Instant::now();
     let end = began + Duration::from_secs(args.seconds);
@@ -252,7 +358,9 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (mut resize, mut keyframe) = (args.resize, args.keyframe);
     let mut slowed = false;
     let (mut recording, mut streams) = (None, 0);
-    let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
+    let mut keys = args
+        .keys
+        .then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
     let (mut frames, mut bytes, mut keyframes, mut second) = (0u64, 0u64, 0u64, 0u64);
@@ -278,7 +386,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             && now >= secs
         {
             keyframe = None;
-            out.send(&client::framebuffer_update_request(false, 0, 0, width, height)).await?;
+            out.send(&client::framebuffer_update_request(
+                false, 0, 0, width, height,
+            ))
+            .await?;
         }
         let typed = async {
             match &mut keys {
@@ -324,21 +435,37 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                     keyframes += 1;
                                 }
                                 if let Some(path) = &args.h264 {
-                                    record(path, &mut recording, &mut streams, (rect.width, rect.height), &frame)?;
+                                    record(
+                                        path,
+                                        &mut recording,
+                                        &mut streams,
+                                        (rect.width, rect.height),
+                                        &frame,
+                                    )?;
                                 }
                             }
                             RectBody::ExtendedDesktopSize { .. } => {
                                 (width, height) = (rect.width, rect.height);
-                                eprintln!("video-sink: {:.1}s desktop {width}x{height}", began.elapsed().as_secs_f64());
-                                out.send(&client::enable_continuous_updates(true, 0, 0, width, height)).await?;
-                                out.send(&client::framebuffer_update_request(false, 0, 0, width, height)).await?;
+                                eprintln!(
+                                    "video-sink: {:.1}s desktop {width}x{height}",
+                                    began.elapsed().as_secs_f64()
+                                );
+                                out.send(&client::enable_continuous_updates(
+                                    true, 0, 0, width, height,
+                                ))
+                                .await?;
+                                out.send(&client::framebuffer_update_request(
+                                    false, 0, 0, width, height,
+                                ))
+                                .await?;
                             }
                             _ => {}
                         }
                     }
                 }
                 ServerMsg::Fence { flags, payload } if flags & FENCE_REQUEST != 0 => {
-                    out.send(&client::fence(flags & !FENCE_REQUEST, &payload)).await?;
+                    out.send(&client::fence(flags & !FENCE_REQUEST, &payload))
+                        .await?;
                 }
                 _ => {}
             }

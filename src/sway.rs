@@ -63,21 +63,31 @@ impl Sway {
     pub fn from_env() -> Option<Self> {
         // Set and empty, as a session that cleared it leaves it, is unset.
         let Some(path) = std::env::var_os("SWAYSOCK").filter(|path| !path.is_empty()) else {
-            info!("no SWAYSOCK in the environment: a client's virtual displays are the outputs the compositor has");
+            info!(
+                "no SWAYSOCK in the environment: a client's virtual displays are the outputs the compositor has"
+            );
             return None;
         };
         Self::at(Path::new(&path))
     }
 
     fn at(path: &Path) -> Option<Self> {
-        let sway = Self { path: path.to_path_buf() };
+        let sway = Self {
+            path: path.to_path_buf(),
+        };
         match sway.version() {
             Ok(version) => {
-                info!("sway {version} at {}: a client may ask for up to {MOST} virtual displays", path.display());
+                info!(
+                    "sway {version} at {}: a client may ask for up to {MOST} virtual displays",
+                    path.display()
+                );
                 Some(sway)
             }
             Err(e) => {
-                warn!("{}: {e:#}; a client's virtual displays are the outputs the compositor has", path.display());
+                warn!(
+                    "{}: {e:#}; a client's virtual displays are the outputs the compositor has",
+                    path.display()
+                );
                 None
             }
         }
@@ -105,17 +115,22 @@ impl Sway {
 
     fn command(&self, command: &str) -> anyhow::Result<()> {
         let reply = self.request(RUN_COMMAND, command.as_bytes())?;
-        let outcomes: Vec<Outcome> = serde_json::from_slice(&reply).with_context(|| format!("reading sway's answer to `{command}`"))?;
+        let outcomes: Vec<Outcome> = serde_json::from_slice(&reply)
+            .with_context(|| format!("reading sway's answer to `{command}`"))?;
         for outcome in outcomes {
             if !outcome.success {
-                anyhow::bail!("sway refused `{command}`: {}", outcome.error.as_deref().unwrap_or("no reason given"));
+                anyhow::bail!(
+                    "sway refused `{command}`: {}",
+                    outcome.error.as_deref().unwrap_or("no reason given")
+                );
             }
         }
         Ok(())
     }
 
     fn request(&self, kind: u32, payload: &[u8]) -> anyhow::Result<Vec<u8>> {
-        let mut stream = UnixStream::connect(&self.path).with_context(|| format!("connecting to sway's IPC at {}", self.path.display()))?;
+        let mut stream = UnixStream::connect(&self.path)
+            .with_context(|| format!("connecting to sway's IPC at {}", self.path.display()))?;
         stream.set_read_timeout(Some(TIMEOUT))?;
         stream.set_write_timeout(Some(TIMEOUT))?;
         let mut msg = Vec::with_capacity(14 + payload.len());
@@ -125,14 +140,24 @@ impl Sway {
         msg.extend_from_slice(payload);
         stream.write_all(&msg).context("writing to sway's IPC")?;
         let mut header = [0u8; 14];
-        stream.read_exact(&mut header).context("reading sway's reply")?;
-        anyhow::ensure!(&header[..6] == MAGIC, "the socket does not answer as sway's IPC");
+        stream
+            .read_exact(&mut header)
+            .context("reading sway's reply")?;
+        anyhow::ensure!(
+            &header[..6] == MAGIC,
+            "the socket does not answer as sway's IPC"
+        );
         let len = u32::from_ne_bytes(header[6..10].try_into().expect("four bytes")) as usize;
         let replied = u32::from_ne_bytes(header[10..14].try_into().expect("four bytes"));
-        anyhow::ensure!(replied == kind, "sway answered a message of type {kind} with type {replied}");
+        anyhow::ensure!(
+            replied == kind,
+            "sway answered a message of type {kind} with type {replied}"
+        );
         anyhow::ensure!(len <= MAX_REPLY, "a {len}-byte reply from sway");
         let mut reply = vec![0u8; len];
-        stream.read_exact(&mut reply).context("reading sway's reply")?;
+        stream
+            .read_exact(&mut reply)
+            .context("reading sway's reply")?;
         Ok(reply)
     }
 }
@@ -173,14 +198,29 @@ impl VirtualDisplays {
     /// Note what the compositor has now, and say what is to be done: nothing
     /// while a step is in flight, and otherwise the step [`step`] names.
     /// `shared` and `preferred` are as `step` takes them.
-    pub fn next(&mut self, headless: &[String], shared: Option<&str>, preferred: Option<&str>) -> Step {
-        if self.creating.as_ref().is_some_and(|before| headless.iter().any(|name| !before.contains(name))) {
+    pub fn next(
+        &mut self,
+        headless: &[String],
+        shared: Option<&str>,
+        preferred: Option<&str>,
+    ) -> Step {
+        if self
+            .creating
+            .as_ref()
+            .is_some_and(|before| headless.iter().any(|name| !before.contains(name)))
+        {
             self.creating = None;
         }
-        if self.unplugging.as_ref().is_some_and(|name| !headless.contains(name)) {
+        if self
+            .unplugging
+            .as_ref()
+            .is_some_and(|name| !headless.contains(name))
+        {
             self.unplugging = None;
         }
-        let Some(wanted) = self.wanted else { return Step::Settled };
+        let Some(wanted) = self.wanted else {
+            return Step::Settled;
+        };
         if self.creating.is_some() || self.unplugging.is_some() {
             return Step::Settled;
         }
@@ -202,7 +242,12 @@ impl VirtualDisplays {
 /// is on, is never unplugged: it is the one the client is looking at. Of the
 /// rest the latest made goes first — the highest number, since wlroots counts
 /// up — and `preferred`, the configured output, last.
-pub fn step(wanted: u32, headless: &[String], shared: Option<&str>, preferred: Option<&str>) -> Step {
+pub fn step(
+    wanted: u32,
+    headless: &[String],
+    shared: Option<&str>,
+    preferred: Option<&str>,
+) -> Step {
     let wanted = usize::try_from(wanted).unwrap_or(usize::MAX);
     if headless.len() < wanted {
         return Step::Create;
@@ -210,8 +255,16 @@ pub fn step(wanted: u32, headless: &[String], shared: Option<&str>, preferred: O
     if headless.len() == wanted {
         return Step::Settled;
     }
-    let mut candidates: Vec<&String> = headless.iter().filter(|name| Some(name.as_str()) != shared).collect();
-    candidates.sort_by_key(|name| (Some(name.as_str()) == preferred, std::cmp::Reverse(number(name))));
+    let mut candidates: Vec<&String> = headless
+        .iter()
+        .filter(|name| Some(name.as_str()) != shared)
+        .collect();
+    candidates.sort_by_key(|name| {
+        (
+            Some(name.as_str()) == preferred,
+            std::cmp::Reverse(number(name)),
+        )
+    });
     match candidates.first() {
         Some(name) => Step::Unplug((*name).clone()),
         None => Step::Settled,
@@ -220,7 +273,10 @@ pub fn step(wanted: u32, headless: &[String], shared: Option<&str>, preferred: O
 
 /// The number wlroots gave a headless output: `HEADLESS-3` is 3.
 fn number(name: &str) -> u32 {
-    name.rsplit('-').next().and_then(|n| n.parse().ok()).unwrap_or(0)
+    name.rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -235,12 +291,41 @@ mod tests {
 
     #[test]
     fn a_count_below_what_there_is_makes_one_and_a_count_above_unplugs_the_latest() {
-        assert_eq!(step(2, &names(&["HEADLESS-1"]), Some("HEADLESS-1"), Some("HEADLESS-1")), Step::Create);
-        assert_eq!(step(1, &names(&["HEADLESS-1"]), Some("HEADLESS-1"), Some("HEADLESS-1")), Step::Settled);
-        assert_eq!(step(2, &names(&["HEADLESS-1", "HEADLESS-2"]), Some("HEADLESS-1"), None), Step::Settled);
+        assert_eq!(
+            step(
+                2,
+                &names(&["HEADLESS-1"]),
+                Some("HEADLESS-1"),
+                Some("HEADLESS-1")
+            ),
+            Step::Create
+        );
+        assert_eq!(
+            step(
+                1,
+                &names(&["HEADLESS-1"]),
+                Some("HEADLESS-1"),
+                Some("HEADLESS-1")
+            ),
+            Step::Settled
+        );
+        assert_eq!(
+            step(
+                2,
+                &names(&["HEADLESS-1", "HEADLESS-2"]),
+                Some("HEADLESS-1"),
+                None
+            ),
+            Step::Settled
+        );
         // The latest made goes first, whatever order the compositor listed them in.
         assert_eq!(
-            step(1, &names(&["HEADLESS-3", "HEADLESS-1", "HEADLESS-10"]), Some("HEADLESS-1"), Some("HEADLESS-1")),
+            step(
+                1,
+                &names(&["HEADLESS-3", "HEADLESS-1", "HEADLESS-10"]),
+                Some("HEADLESS-1"),
+                Some("HEADLESS-1")
+            ),
             Step::Unplug("HEADLESS-10".into())
         );
     }
@@ -249,53 +334,137 @@ mod tests {
     fn the_shared_output_stays_and_the_configured_one_goes_last() {
         // The client on HEADLESS-2 asking for one keeps HEADLESS-2, its own, and
         // loses the configured HEADLESS-1: there is nothing else to unplug.
-        assert_eq!(step(1, &names(&["HEADLESS-1", "HEADLESS-2"]), Some("HEADLESS-2"), Some("HEADLESS-1")), Step::Unplug("HEADLESS-1".into()));
+        assert_eq!(
+            step(
+                1,
+                &names(&["HEADLESS-1", "HEADLESS-2"]),
+                Some("HEADLESS-2"),
+                Some("HEADLESS-1")
+            ),
+            Step::Unplug("HEADLESS-1".into())
+        );
         // With a third, the configured one is kept over it.
         assert_eq!(
-            step(1, &names(&["HEADLESS-1", "HEADLESS-2", "HEADLESS-3"]), Some("HEADLESS-2"), Some("HEADLESS-1")),
+            step(
+                1,
+                &names(&["HEADLESS-1", "HEADLESS-2", "HEADLESS-3"]),
+                Some("HEADLESS-2"),
+                Some("HEADLESS-1")
+            ),
             Step::Unplug("HEADLESS-3".into())
         );
         // Nothing but the shared one is nothing to unplug.
-        assert_eq!(step(0, &names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled);
+        assert_eq!(
+            step(0, &names(&["HEADLESS-1"]), Some("HEADLESS-1"), None),
+            Step::Settled
+        );
     }
 
     #[test]
     fn one_step_is_in_flight_at_a_time() {
         let mut v = VirtualDisplays::default();
-        assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled, "nothing asked");
+        assert_eq!(
+            v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None),
+            Step::Settled,
+            "nothing asked"
+        );
         v.wanted = Some(2);
-        assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Create);
+        assert_eq!(
+            v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None),
+            Step::Create
+        );
         v.creating(names(&["HEADLESS-1"]));
-        assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled, "the output is still to appear");
-        assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-2"]), Some("HEADLESS-1"), None), Step::Settled, "and now there are two");
+        assert_eq!(
+            v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None),
+            Step::Settled,
+            "the output is still to appear"
+        );
+        assert_eq!(
+            v.next(
+                &names(&["HEADLESS-1", "HEADLESS-2"]),
+                Some("HEADLESS-1"),
+                None
+            ),
+            Step::Settled,
+            "and now there are two"
+        );
         v.wanted = Some(1);
-        assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-2"]), Some("HEADLESS-1"), None), Step::Unplug("HEADLESS-2".into()));
+        assert_eq!(
+            v.next(
+                &names(&["HEADLESS-1", "HEADLESS-2"]),
+                Some("HEADLESS-1"),
+                None
+            ),
+            Step::Unplug("HEADLESS-2".into())
+        );
         v.unplugging("HEADLESS-2".into());
-        assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-2"]), Some("HEADLESS-1"), None), Step::Settled, "still going");
-        assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Settled, "gone, and one is what was asked");
+        assert_eq!(
+            v.next(
+                &names(&["HEADLESS-1", "HEADLESS-2"]),
+                Some("HEADLESS-1"),
+                None
+            ),
+            Step::Settled,
+            "still going"
+        );
+        assert_eq!(
+            v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None),
+            Step::Settled,
+            "gone, and one is what was asked"
+        );
         // A client leaving clears the request; a step in flight settles on its own.
         v.wanted = None;
         v.creating(names(&["HEADLESS-1"]));
-        assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-3"]), Some("HEADLESS-1"), None), Step::Settled);
+        assert_eq!(
+            v.next(
+                &names(&["HEADLESS-1", "HEADLESS-3"]),
+                Some("HEADLESS-1"),
+                None
+            ),
+            Step::Settled
+        );
         v.wanted = Some(2);
-        assert_eq!(v.next(&names(&["HEADLESS-1", "HEADLESS-3"]), Some("HEADLESS-1"), None), Step::Settled, "the earlier step has landed");
+        assert_eq!(
+            v.next(
+                &names(&["HEADLESS-1", "HEADLESS-3"]),
+                Some("HEADLESS-1"),
+                None
+            ),
+            Step::Settled,
+            "the earlier step has landed"
+        );
     }
 
     /// An output going while the made one arrives leaves the count as it was:
     /// the step has landed all the same, and the next is taken.
     #[test]
     fn a_made_output_has_landed_whatever_went_meanwhile() {
-        let mut v = VirtualDisplays { wanted: Some(2), ..VirtualDisplays::default() };
-        assert_eq!(v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None), Step::Create);
+        let mut v = VirtualDisplays {
+            wanted: Some(2),
+            ..VirtualDisplays::default()
+        };
+        assert_eq!(
+            v.next(&names(&["HEADLESS-1"]), Some("HEADLESS-1"), None),
+            Step::Create
+        );
         v.creating(names(&["HEADLESS-1"]));
         // HEADLESS-1 was unplugged by hand as HEADLESS-2 arrived: still one short.
-        assert_eq!(v.next(&names(&["HEADLESS-2"]), Some("HEADLESS-2"), None), Step::Create);
+        assert_eq!(
+            v.next(&names(&["HEADLESS-2"]), Some("HEADLESS-2"), None),
+            Step::Create
+        );
     }
 
     /// A sway written from the i3-ipc layout answers each request on a socket
     /// of its own, and what it was sent is checked against the layout too.
-    fn fake_sway(replies: Vec<(u32, Vec<u8>, &'static str)>) -> (PathBuf, std::thread::JoinHandle<()>) {
-        let dir = std::env::temp_dir().join(format!("wlshare-sway-test-{}-{:?}", std::process::id(), std::thread::current().id()));
+    fn fake_sway(
+        replies: Vec<(u32, Vec<u8>, &'static str)>,
+    ) -> (PathBuf, std::thread::JoinHandle<()>) {
+        let dir = std::env::temp_dir().join(format!(
+            "wlshare-sway-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sock");
         let _ = std::fs::remove_file(&path);
@@ -325,14 +494,30 @@ mod tests {
     #[test]
     fn commands_are_framed_as_i3_ipc_and_a_refusal_is_an_error_with_its_reason() {
         let (path, served) = fake_sway(vec![
-            (GET_VERSION, b"".to_vec(), r#"{"human_readable":"1.11","major":1,"minor":11,"patch":0}"#),
-            (RUN_COMMAND, b"create_output".to_vec(), r#"[{"success":true}]"#),
-            (RUN_COMMAND, b"output HEADLESS-2 unplug".to_vec(), r#"[{"success":false,"error":"Only headless outputs can be unplugged"}]"#),
+            (
+                GET_VERSION,
+                b"".to_vec(),
+                r#"{"human_readable":"1.11","major":1,"minor":11,"patch":0}"#,
+            ),
+            (
+                RUN_COMMAND,
+                b"create_output".to_vec(),
+                r#"[{"success":true}]"#,
+            ),
+            (
+                RUN_COMMAND,
+                b"output HEADLESS-2 unplug".to_vec(),
+                r#"[{"success":false,"error":"Only headless outputs can be unplugged"}]"#,
+            ),
         ]);
         let sway = Sway::at(&path).expect("a sway that answers its version");
         sway.create_output().unwrap();
         let err = sway.unplug("HEADLESS-2").unwrap_err();
-        assert!(err.to_string().contains("Only headless outputs can be unplugged"), "{err:#}");
+        assert!(
+            err.to_string()
+                .contains("Only headless outputs can be unplugged"),
+            "{err:#}"
+        );
         served.join().unwrap();
     }
 

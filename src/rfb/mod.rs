@@ -137,12 +137,18 @@ pub trait H264Stream: Send {
     /// read is the whole picture whatever `changed` says. Only the rectangles
     /// are read, widened to the 2×2 blocks they touch, so the rest of
     /// `pixels` need not be the picture.
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error>;
+    fn read_bgrx(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        changed: Option<&[Rect]>,
+    ) -> Result<(), H264Error>;
     /// Encode the picture as last read at `quality`, the 1–100 dial, and
     /// append the frame to `out`, a keyframe where `keyframe` asks for one and
     /// for the stream's first either way: `true` for a frame appended, and
     /// `false` where the coder made none of the picture, nothing appended, and
     /// the whole picture owed to the next frame. The quality is each frame's
     /// own, so a stream follows the walk with no keyframe.
-    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error>;
+    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>)
+    -> Result<bool, H264Error>;
 }

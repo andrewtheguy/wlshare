@@ -49,7 +49,10 @@ const NAL_PPS: u8 = 8;
 impl Sequence {
     /// The sequence's crop, in 4:2:0's two-pixel units: right and bottom.
     pub fn crop(&self) -> (u32, u32) {
-        ((self.mbs.0 * 16 - self.size.0) / 2, (self.mbs.1 * 16 - self.size.1) / 2)
+        (
+            (self.mbs.0 * 16 - self.size.0) / 2,
+            (self.mbs.1 * 16 - self.size.1) / 2,
+        )
     }
 
     /// The sequence parameter set, id 0.
@@ -143,7 +146,11 @@ impl Slice {
 
     /// The slice's header, the whole picture's one slice, up to its data.
     pub fn header(&self) -> Vec<u8> {
-        let mut w = if self.idr { Writer::nal(3, NAL_IDR) } else { Writer::nal(2, NAL_SLICE) };
+        let mut w = if self.idr {
+            Writer::nal(3, NAL_IDR)
+        } else {
+            Writer::nal(2, NAL_SLICE)
+        };
         w.ue(0); // first_mb_in_slice
         w.ue(u32::from(self.slice_type()));
         w.ue(0); // pic_parameter_set_id
@@ -201,8 +208,13 @@ pub fn level_idc(mbs: (u32, u32)) -> u8 {
     let frame = mbs.0 * mbs.1;
     let rate = frame * super::FPS;
     // Also no side over the square root of eight times the frame size.
-    let fits = |max_fs: u32| frame <= max_fs && u64::from(mbs.0.max(mbs.1)).pow(2) <= u64::from(max_fs) * 8;
-    LEVELS.iter().find(|&&(_, max_fs, max_rate)| fits(max_fs) && rate <= max_rate).map_or(62, |&(level, ..)| level)
+    let fits = |max_fs: u32| {
+        frame <= max_fs && u64::from(mbs.0.max(mbs.1)).pow(2) <= u64::from(max_fs) * 8
+    };
+    LEVELS
+        .iter()
+        .find(|&&(_, max_fs, max_rate)| fits(max_fs) && rate <= max_rate)
+        .map_or(62, |&(level, ..)| level)
 }
 
 /// A NAL unit written a bit at a time, most significant first, its emulation
@@ -219,7 +231,12 @@ struct Writer {
 impl Writer {
     /// A unit's start code and header.
     fn nal(ref_idc: u8, kind: u8) -> Self {
-        Self { out: vec![0, 0, 0, 1, ref_idc << 5 | kind], byte: 0, used: 0, zeros: 0 }
+        Self {
+            out: vec![0, 0, 0, 1, ref_idc << 5 | kind],
+            byte: 0,
+            used: 0,
+            zeros: 0,
+        }
     }
 
     fn bit(&mut self, bit: bool) {
@@ -255,7 +272,11 @@ impl Writer {
 
     /// Exp-Golomb, signed: 1, −1, 2, −2… as 1, 2, 3, 4….
     fn se(&mut self, value: i32) {
-        self.ue(if value > 0 { (value as u32) * 2 - 1 } else { value.unsigned_abs() * 2 });
+        self.ue(if value > 0 {
+            (value as u32) * 2 - 1
+        } else {
+            value.unsigned_abs() * 2
+        });
     }
 
     /// `rbsp_trailing_bits`: a one, then zeros to the byte.
@@ -288,10 +309,16 @@ mod tests {
     #[test]
     fn exp_golomb_codes_are_h264s() {
         // 0 → 1, 1 → 010, 2 → 011, 3 → 00100, 7 → 0001000.
-        assert_eq!(written(|w| [0, 1, 2, 3].into_iter().for_each(|v| w.ue(v))), [0b1010_0110, 0b0100_0000]);
+        assert_eq!(
+            written(|w| [0, 1, 2, 3].into_iter().for_each(|v| w.ue(v))),
+            [0b1010_0110, 0b0100_0000]
+        );
         assert_eq!(written(|w| w.ue(7)), [0b0001_0000]);
         // se: 1 → 010, −1 → 011, 0 → 1, −3 → 00111.
-        assert_eq!(written(|w| [1, -1, 0, -3].into_iter().for_each(|v| w.se(v))), [0b0100_1110, 0b0111_0000]);
+        assert_eq!(
+            written(|w| [1, -1, 0, -3].into_iter().for_each(|v| w.se(v))),
+            [0b0100_1110, 0b0111_0000]
+        );
     }
 
     #[test]
@@ -320,10 +347,27 @@ mod tests {
     /// where `ffmpeg` is not on the path.
     #[test]
     fn ffmpeg_reads_the_headers_as_written() {
-        let sequence = Sequence { level_idc: 42, mbs: (120, 68), size: (1920, 1080) };
+        let sequence = Sequence {
+            level_idc: 42,
+            mbs: (120, 68),
+            size: (1920, 1080),
+        };
         let mut stream = sequence.sps();
         stream.extend(pps());
-        for slice in [Slice { idr: true, frame_num: 0, idr_pic_id: 3, qp: 18 }, Slice { idr: false, frame_num: 37, idr_pic_id: 0, qp: 35 }] {
+        for slice in [
+            Slice {
+                idr: true,
+                frame_num: 0,
+                idr_pic_id: 3,
+                qp: 18,
+            },
+            Slice {
+                idr: false,
+                frame_num: 37,
+                idr_pic_id: 0,
+                qp: 35,
+            },
+        ] {
             stream.extend(slice.header());
             // Slice data for the filter to pass over, which it leaves alone.
             stream.extend([0x88, 0x84, 0x00, 0x33, 0xFF]);
@@ -337,7 +381,16 @@ mod tests {
         let run = std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "trace", "-f", "h264", "-i"])
             .arg(&path)
-            .args(["-c", "copy", "-copyinkf", "-bsf:v", "trace_headers", "-f", "null", "-"])
+            .args([
+                "-c",
+                "copy",
+                "-copyinkf",
+                "-bsf:v",
+                "trace_headers",
+                "-f",
+                "null",
+                "-",
+            ])
             .output();
         std::fs::remove_dir_all(&dir).ok();
         let Ok(run) = run else {
@@ -349,7 +402,10 @@ mod tests {
         let said = |name: &str| -> Vec<i64> {
             trace
                 .lines()
-                .filter(|l| l.starts_with("[trace_headers") && l.split_whitespace().any(|token| token == name))
+                .filter(|l| {
+                    l.starts_with("[trace_headers")
+                        && l.split_whitespace().any(|token| token == name)
+                })
                 .map(|l| l.rsplit('=').next().unwrap().trim().parse().unwrap())
                 .collect()
         };
@@ -372,7 +428,10 @@ mod tests {
             ("transform_8x8_mode_flag", 1),
         ] {
             let values = said(name);
-            assert!(!values.is_empty() && values.iter().all(|&v| v == value), "{name}: {values:?}, not {value}, in ffmpeg's trace:\n{trace}");
+            assert!(
+                !values.is_empty() && values.iter().all(|&v| v == value),
+                "{name}: {values:?}, not {value}, in ffmpeg's trace:\n{trace}"
+            );
         }
         for (name, values) in [
             ("first_mb_in_slice", &[0, 0][..]),

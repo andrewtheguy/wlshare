@@ -211,7 +211,11 @@ impl ListHeader {
     /// The header of a list, whose first byte is [`MSG_OUTPUTS`].
     pub fn parse(header: &[u8; LIST_HEADER_LEN]) -> Self {
         debug_assert_eq!(header[0], MSG_OUTPUTS);
-        Self { virtual_displays: header[1], count: crate::u16_at(header, 2), active: crate::u32_at(header, 4) }
+        Self {
+            virtual_displays: header[1],
+            count: crate::u16_at(header, 2),
+            active: crate::u32_at(header, 4),
+        }
     }
 }
 

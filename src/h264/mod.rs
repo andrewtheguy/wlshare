@@ -65,9 +65,9 @@ mod x264;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
 use anyhow::Context as _;
 use log::info;
-use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
 
 /// The H.264 encoder the startup found, which every session's coder opens.
 #[derive(Debug)]
@@ -99,7 +99,9 @@ impl Encoder {
         } else {
             info!("hardware_h264 is off: the hardware H.264 encoder is not looked for");
         }
-        Self::X264.try_frames().context("no H.264 encoder: libx264 codes nothing here")?;
+        Self::X264
+            .try_frames()
+            .context("no H.264 encoder: libx264 codes nothing here")?;
         info!("software H.264: libx264 at {}", x264::PRESET);
         Ok(Self::X264)
     }
@@ -121,18 +123,35 @@ impl Encoder {
         let (w, h) = PROBE_SIZE;
         let mut stream = coder.open(w, h).map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut decoder = crate::decode::Decoder::with_qps()?;
-        for (n, (quality, nal, kind)) in [(50, 5, "an IDR picture"), (100, 1, "a P frame")].into_iter().enumerate() {
+        for (n, (quality, nal, kind)) in [(50, 5, "an IDR picture"), (100, 1, "a P frame")]
+            .into_iter()
+            .enumerate()
+        {
             // A new picture each frame, so the P frame's macroblocks are coded
             // and not skipped at the first's quantizer.
-            stream.read_bgrx(&noise(w.into(), h.into(), 0x9E37_79B9 + n as u32), usize::from(w) * 4, None).map_err(|e| anyhow::anyhow!("{e}"))?;
+            stream
+                .read_bgrx(
+                    &noise(w.into(), h.into(), 0x9E37_79B9 + n as u32),
+                    usize::from(w) * 4,
+                    None,
+                )
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let mut out = Vec::new();
-            anyhow::ensure!(stream.encode(n == 0, quality, &mut out).map_err(|e| anyhow::anyhow!("{e}"))?, "the encoder made no frame {n}");
+            anyhow::ensure!(
+                stream
+                    .encode(n == 0, quality, &mut out)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+                "the encoder made no frame {n}"
+            );
             anyhow::ensure!(nal_types(&out).contains(&nal), "frame {n} is not {kind}");
             let mut blocks = decoder.qps(&out).context("decoding a trial frame")?;
             blocks.sort_unstable();
             let asked = i32::from(qp(quality));
             let median = blocks.get(blocks.len() / 2).copied();
-            anyhow::ensure!(median == Some(asked), "frame {n} was asked QP {asked} and coded at {median:?}");
+            anyhow::ensure!(
+                median == Some(asked),
+                "frame {n} was asked QP {asked} and coded at {median:?}"
+            );
         }
         Ok(())
     }
@@ -141,7 +160,9 @@ impl Encoder {
     /// device.
     pub fn coder(&self) -> anyhow::Result<Coder> {
         Ok(match self {
-            Self::Vaapi { device, low_power } => Coder::Vaapi(Arc::new(vaapi::Display::open(device)?), *low_power),
+            Self::Vaapi { device, low_power } => {
+                Coder::Vaapi(Arc::new(vaapi::Display::open(device)?), *low_power)
+            }
             Self::X264 => Coder::X264,
         })
     }
@@ -157,11 +178,20 @@ pub enum Coder {
 impl H264Coder for Coder {
     fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
         let opened: anyhow::Result<Box<dyn H264Stream>> = (|| {
-            anyhow::ensure!(width > 0 && height > 0, "a {width}x{height} picture has no pixels");
+            anyhow::ensure!(
+                width > 0 && height > 0,
+                "a {width}x{height} picture has no pixels"
+            );
             let planes = Planes::new(width, height);
             let stream: Box<dyn H264Stream> = match self {
-                Self::Vaapi(display, low_power) => Box::new(Stream { backend: vaapi::Stream::open(display.clone(), *low_power, planes.coded)?, planes }),
-                Self::X264 => Box::new(Stream { backend: x264::Stream::open(planes.coded)?, planes }),
+                Self::Vaapi(display, low_power) => Box::new(Stream {
+                    backend: vaapi::Stream::open(display.clone(), *low_power, planes.coded)?,
+                    planes,
+                }),
+                Self::X264 => Box::new(Stream {
+                    backend: x264::Stream::open(planes.coded)?,
+                    planes,
+                }),
             };
             Ok(stream)
         })();
@@ -173,7 +203,13 @@ impl H264Coder for Coder {
 /// `qp`, as an IDR where `keyframe` says so, and append the access unit to
 /// `out`. Whether it made a frame.
 trait Backend: Send {
-    fn frame(&mut self, planes: &Planes, keyframe: bool, qp: u8, out: &mut Vec<u8>) -> anyhow::Result<bool>;
+    fn frame(
+        &mut self,
+        planes: &Planes,
+        keyframe: bool,
+        qp: u8,
+        out: &mut Vec<u8>,
+    ) -> anyhow::Result<bool>;
 }
 
 /// One stream, the desktop's or a region's: the NV12 picture in front of an
@@ -184,13 +220,28 @@ struct Stream<B> {
 }
 
 impl<B: Backend> H264Stream for Stream<B> {
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
-        self.planes.read_bgrx(pixels, stride, changed).map_err(|e| format!("{e:#}").into())
+    fn read_bgrx(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        changed: Option<&[Rect]>,
+    ) -> Result<(), H264Error> {
+        self.planes
+            .read_bgrx(pixels, stride, changed)
+            .map_err(|e| format!("{e:#}").into())
     }
 
-    fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+    fn encode(
+        &mut self,
+        keyframe: bool,
+        quality: u8,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, H264Error> {
         let coded: anyhow::Result<bool> = (|| {
-            anyhow::ensure!(self.planes.filled, "a stream was asked for a frame before any picture was read into it");
+            anyhow::ensure!(
+                self.planes.filled,
+                "a stream was asked for a frame before any picture was read into it"
+            );
             self.backend.frame(&self.planes, keyframe, qp(quality), out)
         })();
         coded.map_err(|e| format!("{e:#}").into())
@@ -210,7 +261,9 @@ fn qp(quality: u8) -> u8 {
 /// across its threads as slices; the two cores kept back are for the
 /// compositor and the session, which are what make the next frame.
 pub fn encoder_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(2)).clamp(1, MAX_ENCODER_THREADS)
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get().saturating_sub(2))
+        .clamp(1, MAX_ENCODER_THREADS)
 }
 
 /// The most threads libx264 takes, whatever the machine: about one a
@@ -257,7 +310,12 @@ impl Planes {
 
     /// Read `changed` of `pixels` into the planes, or the whole picture where
     /// it is `None` or none has been read yet.
-    fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> anyhow::Result<()> {
+    fn read_bgrx(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        changed: Option<&[Rect]>,
+    ) -> anyhow::Result<()> {
         let (w, h) = self.size;
         match changed.filter(|_| self.filled) {
             Some(rects) => {
@@ -266,7 +324,16 @@ impl Planes {
                 }
             }
             None => {
-                self.convert(pixels, stride, Rect { x: 0, y: 0, width: w, height: h })?;
+                self.convert(
+                    pixels,
+                    stride,
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: w,
+                        height: h,
+                    },
+                )?;
                 self.filled = true;
             }
         }
@@ -286,25 +353,49 @@ impl Planes {
     fn convert(&mut self, pixels: &[u8], stride: usize, rect: Rect) -> anyhow::Result<()> {
         let (w, h) = (usize::from(self.size.0), usize::from(self.size.1));
         let (left, top) = (usize::from(rect.x) & !1, usize::from(rect.y) & !1);
-        let right = (usize::from(rect.x) + usize::from(rect.width)).next_multiple_of(2).min(w);
-        let bottom = (usize::from(rect.y) + usize::from(rect.height)).next_multiple_of(2).min(h.next_multiple_of(2));
+        let right = (usize::from(rect.x) + usize::from(rect.width))
+            .next_multiple_of(2)
+            .min(w);
+        let bottom = (usize::from(rect.y) + usize::from(rect.height))
+            .next_multiple_of(2)
+            .min(h.next_multiple_of(2));
         if left >= right || top >= bottom {
             return Ok(());
         }
         let rw = right - left;
-        anyhow::ensure!(stride >= w * 4 && pixels.len() >= (h - 1) * stride + w * 4, "a {w}x{h} picture at a stride of {stride} does not fit in {} bytes", pixels.len());
+        anyhow::ensure!(
+            stride >= w * 4 && pixels.len() >= (h - 1) * stride + w * 4,
+            "a {w}x{h} picture at a stride of {stride} does not fit in {} bytes",
+            pixels.len()
+        );
         let ps = self.stride;
         let last = bottom - 2;
         if last > top {
             let rgba = &pixels[top * stride + left * 4..last * stride + left * 4];
-            nv12(&mut self.y[top * ps + left..last * ps + left], &mut self.uv[top / 2 * ps + left..last / 2 * ps + left], ps, rgba, stride, rw, last - top)?;
+            nv12(
+                &mut self.y[top * ps + left..last * ps + left],
+                &mut self.uv[top / 2 * ps + left..last / 2 * ps + left],
+                ps,
+                rgba,
+                stride,
+                rw,
+                last - top,
+            )?;
         }
         let mut pair = std::mem::take(&mut self.pair);
         pair.clear();
         for row in [last, (last + 1).min(h - 1)] {
             pair.extend_from_slice(&pixels[row * stride + left * 4..row * stride + right * 4]);
         }
-        let converted = nv12(&mut self.y[last * ps + left..bottom * ps + left], &mut self.uv[last / 2 * ps + left..bottom / 2 * ps + left], ps, &pair, rw * 4, rw, 2);
+        let converted = nv12(
+            &mut self.y[last * ps + left..bottom * ps + left],
+            &mut self.uv[last / 2 * ps + left..bottom / 2 * ps + left],
+            ps,
+            &pair,
+            rw * 4,
+            rw,
+            2,
+        );
         self.pair = pair;
         converted
     }
@@ -313,8 +404,18 @@ impl Planes {
 /// Convert `height` rows of `width` pixels, `B, G, R, X` rows `rgba_stride`
 /// apart, into NV12 planes `stride` apart: BT.601 at studio swing. `height` is
 /// even, and each slice is exactly its rows.
-fn nv12(y: &mut [u8], uv: &mut [u8], stride: usize, rgba: &[u8], rgba_stride: usize, width: usize, height: usize) -> anyhow::Result<()> {
-    use yuv::{BufferStoreMut, YuvBiPlanarImageMut, YuvConversionMode, YuvRange, YuvStandardMatrix};
+fn nv12(
+    y: &mut [u8],
+    uv: &mut [u8],
+    stride: usize,
+    rgba: &[u8],
+    rgba_stride: usize,
+    width: usize,
+    height: usize,
+) -> anyhow::Result<()> {
+    use yuv::{
+        BufferStoreMut, YuvBiPlanarImageMut, YuvConversionMode, YuvRange, YuvStandardMatrix,
+    };
     let mut image = YuvBiPlanarImageMut {
         y_plane: BufferStoreMut::Borrowed(y),
         y_stride: stride as u32,
@@ -323,8 +424,15 @@ fn nv12(y: &mut [u8], uv: &mut [u8], stride: usize, rgba: &[u8], rgba_stride: us
         width: width as u32,
         height: height as u32,
     };
-    yuv::bgra_to_yuv_nv12(&mut image, rgba, rgba_stride as u32, YuvRange::Limited, YuvStandardMatrix::Bt601, YuvConversionMode::Professional)
-        .map_err(|e| anyhow::anyhow!("converting a {width}x{height} rectangle to NV12: {e}"))
+    yuv::bgra_to_yuv_nv12(
+        &mut image,
+        rgba,
+        rgba_stride as u32,
+        YuvRange::Limited,
+        YuvStandardMatrix::Bt601,
+        YuvConversionMode::Professional,
+    )
+    .map_err(|e| anyhow::anyhow!("converting a {width}x{height} rectangle to NV12: {e}"))
 }
 
 /// The NAL unit types of an Annex B access unit, in order.
@@ -370,7 +478,12 @@ mod tests {
 
     #[test]
     fn nal_types_are_read_off_annex_b_start_codes() {
-        assert_eq!(nal_types(&[0, 0, 0, 1, 0x67, 0xAA, 0, 0, 1, 0x68, 0, 0, 0, 1, 0x65, 0x88]), [7, 8, 5]);
+        assert_eq!(
+            nal_types(&[
+                0, 0, 0, 1, 0x67, 0xAA, 0, 0, 1, 0x68, 0, 0, 0, 1, 0x65, 0x88
+            ]),
+            [7, 8, 5]
+        );
         assert!(nal_types(&[1, 2, 3]).is_empty());
     }
 
@@ -402,16 +515,32 @@ mod tests {
     /// Decode `unit` with libavcodec's software decoder and compare its luma
     /// with `pixels`'s grey, within `tolerance` levels after studio swing: a
     /// picture of the region's size rounded up to even sides.
-    fn decodes_to(decoder: &mut crate::decode::Decoder, unit: &[u8], pixels: &[u8], w: usize, h: usize, tolerance: u8) {
+    fn decodes_to(
+        decoder: &mut crate::decode::Decoder,
+        unit: &[u8],
+        pixels: &[u8],
+        w: usize,
+        h: usize,
+        tolerance: u8,
+    ) {
         let mut out = Vec::new();
-        let decoded = decoder.decode(unit, &mut out).unwrap().expect("a picture for every unit");
-        assert_eq!((decoded.width, decoded.height), (w.next_multiple_of(2), h.next_multiple_of(2)));
+        let decoded = decoder
+            .decode(unit, &mut out)
+            .unwrap()
+            .expect("a picture for every unit");
+        assert_eq!(
+            (decoded.width, decoded.height),
+            (w.next_multiple_of(2), h.next_multiple_of(2))
+        );
         for y in 0..h {
             for x in 0..w {
                 let grey = pixels[(y * w + x) * 4];
                 let expected = 16.0 + f64::from(grey) * 219.0 / 255.0;
                 let got = f64::from(out[y * decoded.width + x]);
-                assert!((got - expected).abs() <= f64::from(tolerance), "luma at {x},{y}: {got}, not {expected:.1}");
+                assert!(
+                    (got - expected).abs() <= f64::from(tolerance),
+                    "luma at {x},{y}: {got}, not {expected:.1}"
+                );
             }
         }
     }
@@ -428,11 +557,28 @@ mod tests {
         let mut pixels = picture(w, h);
         let mut decoder = crate::decode::Decoder::new().unwrap();
 
-        stream.read_bgrx(&pixels, w * 4, Some(&[Rect { x: 1, y: 1, width: 1, height: 1 }])).unwrap();
+        stream
+            .read_bgrx(
+                &pixels,
+                w * 4,
+                Some(&[Rect {
+                    x: 1,
+                    y: 1,
+                    width: 1,
+                    height: 1,
+                }]),
+            )
+            .unwrap();
         let mut unit = Vec::new();
-        assert!(stream.encode(false, 100, &mut unit).unwrap(), "a frame of the first picture");
+        assert!(
+            stream.encode(false, 100, &mut unit).unwrap(),
+            "a frame of the first picture"
+        );
         let types = nal_types(&unit);
-        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "the first frame carries SPS, PPS and an IDR: {types:?}");
+        assert!(
+            types.contains(&7) && types.contains(&8) && types.contains(&5),
+            "the first frame carries SPS, PPS and an IDR: {types:?}"
+        );
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
 
         // A rectangle changes, and the frame after it is a P frame.
@@ -441,11 +587,25 @@ mod tests {
                 pixels[(y * w + x) * 4..][..3].copy_from_slice(&[200, 200, 200]);
             }
         }
-        stream.read_bgrx(&pixels, w * 4, Some(&[Rect { x: 31, y: 20, width: 29, height: 20 }])).unwrap();
+        stream
+            .read_bgrx(
+                &pixels,
+                w * 4,
+                Some(&[Rect {
+                    x: 31,
+                    y: 20,
+                    width: 29,
+                    height: 20,
+                }]),
+            )
+            .unwrap();
         unit.clear();
         assert!(stream.encode(false, 100, &mut unit).unwrap());
         let types = nal_types(&unit);
-        assert!(types.contains(&1) && !types.contains(&5), "a P frame: {types:?}");
+        assert!(
+            types.contains(&1) && !types.contains(&5),
+            "a P frame: {types:?}"
+        );
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
 
         // A rectangle along the bottom edge, away from the left one, changes:
@@ -455,7 +615,18 @@ mod tests {
                 pixels[(y * w + x) * 4..][..3].copy_from_slice(&[180, 180, 180]);
             }
         }
-        stream.read_bgrx(&pixels, w * 4, Some(&[Rect { x: 41, y: (h - 3) as u16, width: (w - 41) as u16, height: 3 }])).unwrap();
+        stream
+            .read_bgrx(
+                &pixels,
+                w * 4,
+                Some(&[Rect {
+                    x: 41,
+                    y: (h - 3) as u16,
+                    width: (w - 41) as u16,
+                    height: 3,
+                }]),
+            )
+            .unwrap();
         unit.clear();
         assert!(stream.encode(false, 100, &mut unit).unwrap());
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
@@ -464,7 +635,10 @@ mod tests {
         unit.clear();
         assert!(stream.encode(true, 100, &mut unit).unwrap());
         let types = nal_types(&unit);
-        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "an IDR with its parameter sets where one was asked: {types:?}");
+        assert!(
+            types.contains(&7) && types.contains(&8) && types.contains(&5),
+            "an IDR with its parameter sets where one was asked: {types:?}"
+        );
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + slack);
     }
 
@@ -484,7 +658,9 @@ mod tests {
         let walk = [90u8, 90, 50, 1, 100, 20, 70, 1, 100];
         let mut sizes = Vec::new();
         for (n, &quality) in walk.iter().enumerate() {
-            stream.read_bgrx(&noise(w, h, 0x9E37_79B9 + n as u32), w * 4, None).unwrap();
+            stream
+                .read_bgrx(&noise(w, h, 0x9E37_79B9 + n as u32), w * 4, None)
+                .unwrap();
             let mut unit = Vec::new();
             assert!(stream.encode(false, quality, &mut unit).unwrap());
             let idr = nal_types(&unit).contains(&5);
@@ -492,14 +668,36 @@ mod tests {
             let asked = i32::from(qp(quality));
             let mut blocks = decoder.qps(&unit).unwrap();
             blocks.sort_unstable();
-            assert_eq!(blocks.get(blocks.len() / 2), Some(&asked), "frame {n} at quality {quality}: the median macroblock's QP");
+            assert_eq!(
+                blocks.get(blocks.len() / 2),
+                Some(&asked),
+                "frame {n} at quality {quality}: the median macroblock's QP"
+            );
             let slack = if exact { 0 } else { MACROBLOCK_SLACK };
-            assert!(!blocks.is_empty() && blocks.iter().all(|&q| q.abs_diff(asked) <= slack), "frame {n} at quality {quality}: macroblocks from {:?} to {:?}, not {asked} within {slack}", blocks.iter().min(), blocks.iter().max());
+            assert!(
+                !blocks.is_empty() && blocks.iter().all(|&q| q.abs_diff(asked) <= slack),
+                "frame {n} at quality {quality}: macroblocks from {:?} to {:?}, not {asked} within {slack}",
+                blocks.iter().min(),
+                blocks.iter().max()
+            );
             sizes.push((quality, unit.len()));
         }
-        let fine = sizes.iter().filter(|(q, _)| *q == 100).map(|(_, s)| *s).min().unwrap();
-        let coarse = sizes.iter().filter(|(q, _)| *q == 1).map(|(_, s)| *s).max().unwrap();
-        assert!(coarse * 2 < fine, "the dial at 1 codes noise in under half the bytes of 100: {sizes:?}");
+        let fine = sizes
+            .iter()
+            .filter(|(q, _)| *q == 100)
+            .map(|(_, s)| *s)
+            .min()
+            .unwrap();
+        let coarse = sizes
+            .iter()
+            .filter(|(q, _)| *q == 1)
+            .map(|(_, s)| *s)
+            .max()
+            .unwrap();
+        assert!(
+            coarse * 2 < fine,
+            "the dial at 1 codes noise in under half the bytes of 100: {sizes:?}"
+        );
     }
 
     /// How far a hardware encoder's macroblock may stand from its slice's QP.
@@ -511,7 +709,9 @@ mod tests {
     #[test]
     fn hardware_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
         let Some(encoder) = vaapi::find() else {
-            eprintln!("no VA-API H.264 encoder on this machine; the hardware coder is not exercised");
+            eprintln!(
+                "no VA-API H.264 encoder on this machine; the hardware coder is not exercised"
+            );
             return;
         };
         frames_decode_to_the_picture(&encoder, (96, 70), 18);
@@ -523,7 +723,9 @@ mod tests {
     /// host without a GPU codes its streams with.
     #[test]
     fn libx264_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
-        Encoder::X264.try_frames().expect("libx264 through its own API");
+        Encoder::X264
+            .try_frames()
+            .expect("libx264 through its own API");
         frames_decode_to_the_picture(&Encoder::X264, (96, 70), DEBLOCK_SLACK);
     }
 
@@ -546,22 +748,42 @@ mod tests {
         let mut coder = Encoder::X264.coder().unwrap();
         let mut encoder = VideoEncoder::new(&mut coder, w as u16, h as u16).unwrap();
         let mut decoder = crate::decode::Decoder::new().unwrap();
-        let frame = |encoder: &mut VideoEncoder, pixels: &[u8], changed: Option<&[Rect]>, keyframe: bool| {
+        let frame = |encoder: &mut VideoEncoder,
+                     pixels: &[u8],
+                     changed: Option<&[Rect]>,
+                     keyframe: bool| {
             encoder.read(pixels, w * 4, changed).unwrap();
             let mut out = Vec::new();
-            assert!(encoder.encode(keyframe, crate::rfb::QUALITY, &mut out).unwrap(), "a frame");
-            assert_eq!(u32::from_be_bytes(out[..4].try_into().unwrap()) as usize, out.len() - 4, "the length word is the access unit's");
+            assert!(
+                encoder
+                    .encode(keyframe, crate::rfb::QUALITY, &mut out)
+                    .unwrap(),
+                "a frame"
+            );
+            assert_eq!(
+                u32::from_be_bytes(out[..4].try_into().unwrap()) as usize,
+                out.len() - 4,
+                "the length word is the access unit's"
+            );
             out.split_off(4)
         };
 
         let mut pixels = picture(w, h);
         let unit = frame(&mut encoder, &pixels, None, false);
         let types = nal_types(&unit);
-        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "the first frame is an IDR with its parameter sets: {types:?}");
+        assert!(
+            types.contains(&7) && types.contains(&8) && types.contains(&5),
+            "the first frame is an IDR with its parameter sets: {types:?}"
+        );
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
 
         // Damage, in a buffer whose rows outside it are not the picture.
-        let damage = Rect { x: 40, y: 20, width: 60, height: 30 };
+        let damage = Rect {
+            x: 40,
+            y: 20,
+            width: 60,
+            height: 30,
+        };
         let mut rows = vec![0xAAu8; w * h * 4];
         for y in 20..50 {
             for x in 40..100 {
@@ -571,7 +793,10 @@ mod tests {
         }
         let unit = frame(&mut encoder, &rows, Some(&[damage]), false);
         let types = nal_types(&unit);
-        assert!(types.contains(&1) && !types.contains(&5), "a P frame: {types:?}");
+        assert!(
+            types.contains(&1) && !types.contains(&5),
+            "a P frame: {types:?}"
+        );
         decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
 
         let unit = frame(&mut encoder, &pixels, None, true);
@@ -598,11 +823,17 @@ mod tests {
         stream.read_bgrx(&pixels, w * 4, None).unwrap();
         let mut unit = Vec::new();
         assert!(stream.encode(false, 90, &mut unit).unwrap());
-        let sps = unit.windows(4).position(|s| s[..3] == [0, 0, 1] && s[3] & 0x1f == 7).expect("an SPS");
+        let sps = unit
+            .windows(4)
+            .position(|s| s[..3] == [0, 0, 1] && s[3] & 0x1f == 7)
+            .expect("an SPS");
         assert_eq!(unit[sps + 4], 100, "High");
         for _ in 0..5 {
             unit.clear();
-            assert!(stream.encode(false, 90, &mut unit).unwrap(), "every frame in is a frame out");
+            assert!(
+                stream.encode(false, 90, &mut unit).unwrap(),
+                "every frame in is a frame out"
+            );
         }
     }
 }

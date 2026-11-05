@@ -14,8 +14,9 @@
   depends on `thiserror` alone. Its version is the protocol version,
   `<N>.0.0`: any change to what it does bumps `PROTOCOL_VERSION` and the
   crate's version together, and the release that brings it tags `proto-v<N>`;
-  a change to its comments or its tests alone bumps nothing, and the release
-  checks that nothing else differs from the tag. Its tests are each module's
+  a change to its comments, its formatting or its tests alone bumps nothing,
+  and the release checks that nothing else differs from the tag, both
+  formatted by rustfmt before they are compared. Its tests are each module's
   in a file of its own, `src/<module>/tests.rs` (`src/tests.rs` for the
   crate's root), which the check leaves out by its path. Every private extension's bytes, both
   directions, are built and parsed there, never in the daemon or the gateway.
@@ -62,7 +63,9 @@
   session it shares; packages are built only in Docker, by
   `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the
   wlroots, Sway and labwc the APT repository serves, never on the host.
-- Do not run `cargo fmt`. Use `anyhow` for application errors and `thiserror` for
+- Rust is kept as `cargo fmt` formats it under `rustfmt.toml`, and CI checks
+  it. For codex only no `cargo fmt`: when it does git diff, it gets stuck
+  after cargo fmt. Use `anyhow` for application errors and `thiserror` for
   typed protocol errors.
 - Translate the READMEs' Simplified (`zh-CN`) and Traditional (`zh-TW`)
   Chinese each from the English, never one by converting the other's

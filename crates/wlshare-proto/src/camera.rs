@@ -84,7 +84,10 @@ pub enum ClientCamera {
     Plug(CameraFormat),
     Unplug,
     /// One Annex B access unit.
-    Sample { keyframe: bool, data: Vec<u8> },
+    Sample {
+        keyframe: bool,
+        data: Vec<u8>,
+    },
 }
 
 /// Why a client's camera message could not be one.
@@ -118,10 +121,16 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientCamera, usize)>, CameraP
             }
             let format = format_at(buf);
             if format.width == 0 || format.height == 0 {
-                return Err(CameraParseError::EmptyGeometry { width: format.width, height: format.height });
+                return Err(CameraParseError::EmptyGeometry {
+                    width: format.width,
+                    height: format.height,
+                });
             }
             if format.fps_numerator == 0 || format.fps_denominator == 0 {
-                return Err(CameraParseError::BadRate { numerator: format.fps_numerator, denominator: format.fps_denominator });
+                return Err(CameraParseError::BadRate {
+                    numerator: format.fps_numerator,
+                    denominator: format.fps_denominator,
+                });
             }
             Ok(Some((ClientCamera::Plug(format), CAMERA_FORMAT_LEN)))
         }
@@ -139,7 +148,13 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientCamera, usize)>, CameraP
                 return Ok(None);
             }
             let keyframe = buf[2] & SAMPLE_KEYFRAME != 0;
-            Ok(Some((ClientCamera::Sample { keyframe, data: buf[CAMERA_SAMPLE_HEADER_LEN..end].to_vec() }, end)))
+            Ok(Some((
+                ClientCamera::Sample {
+                    keyframe,
+                    data: buf[CAMERA_SAMPLE_HEADER_LEN..end].to_vec(),
+                },
+                end,
+            )))
         }
         other => Err(CameraParseError::UnknownOperation(other)),
     }
@@ -235,7 +250,12 @@ pub fn unplug() -> [u8; CAMERA_BARE_LEN] {
 /// a client sends none.
 pub fn sample(keyframe: bool, unit: &[u8]) -> Vec<u8> {
     let mut msg = Vec::with_capacity(CAMERA_SAMPLE_HEADER_LEN + unit.len());
-    msg.extend_from_slice(&[MSG_CAMERA, CLIENT_CAMERA_SAMPLE, if keyframe { SAMPLE_KEYFRAME } else { 0 }, 0]);
+    msg.extend_from_slice(&[
+        MSG_CAMERA,
+        CLIENT_CAMERA_SAMPLE,
+        if keyframe { SAMPLE_KEYFRAME } else { 0 },
+        0,
+    ]);
     msg.extend_from_slice(&(unit.len() as u32).to_be_bytes());
     msg.extend_from_slice(unit);
     msg
@@ -262,7 +282,9 @@ pub fn server_len(header: &[u8; CAMERA_BARE_LEN]) -> Result<usize, CameraParseEr
     debug_assert_eq!(header[0], MSG_CAMERA);
     match header[1] {
         SERVER_CAMERA_START => Ok(CAMERA_FORMAT_LEN),
-        SERVER_CAMERA_AVAILABLE | SERVER_CAMERA_STOP | SERVER_CAMERA_KEYFRAME => Ok(CAMERA_BARE_LEN),
+        SERVER_CAMERA_AVAILABLE | SERVER_CAMERA_STOP | SERVER_CAMERA_KEYFRAME => {
+            Ok(CAMERA_BARE_LEN)
+        }
         other => Err(CameraParseError::UnknownOperation(other)),
     }
 }
@@ -270,7 +292,9 @@ pub fn server_len(header: &[u8; CAMERA_BARE_LEN]) -> Result<usize, CameraParseEr
 /// Parse the server's camera message at the front of `buf`, whose first byte
 /// is [`MSG_CAMERA`]. `Ok(None)` means more bytes are needed.
 pub fn parse_server(buf: &[u8]) -> Result<Option<(ServerCamera, usize)>, CameraParseError> {
-    let Some(header) = buf.first_chunk::<CAMERA_BARE_LEN>() else { return Ok(None) };
+    let Some(header) = buf.first_chunk::<CAMERA_BARE_LEN>() else {
+        return Ok(None);
+    };
     let len = server_len(header)?;
     if buf.len() < len {
         return Ok(None);

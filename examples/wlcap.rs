@@ -83,7 +83,15 @@ fn parse_args() -> Result<(String, Args), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or("a command")?;
     let capture = PathBuf::from(args.next().ok_or("a capture to read")?);
-    let mut parsed = Args { capture, frames: 0, busiest: false, from: 0, out: PathBuf::new(), fps: 30, from_given: false };
+    let mut parsed = Args {
+        capture,
+        frames: 0,
+        busiest: false,
+        from: 0,
+        out: PathBuf::new(),
+        fps: 30,
+        from_given: false,
+    };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
@@ -94,7 +102,13 @@ fn parse_args() -> Result<(String, Args), String> {
                 parsed.from_given = true;
             }
             "--out" => parsed.out = PathBuf::from(value()?),
-            "--fps" => parsed.fps = value()?.parse().ok().filter(|fps| (1..=1000).contains(fps)).ok_or("--fps takes a rate from 1 to 1000")?,
+            "--fps" => {
+                parsed.fps = value()?
+                    .parse()
+                    .ok()
+                    .filter(|fps| (1..=1000).contains(fps))
+                    .ok_or("--fps takes a rate from 1 to 1000")?
+            }
             other => return Err(format!("{other}: not a flag")),
         }
     }
@@ -106,7 +120,9 @@ fn parse_args() -> Result<(String, Args), String> {
         }
         "trim" => {
             if parsed.out.as_os_str().is_empty() || (parsed.from == 0 && parsed.frames == 0) {
-                return Err("trim takes --out, and --from, a frame after the first, or --frames".into());
+                return Err(
+                    "trim takes --out, and --from, a frame after the first, or --frames".into(),
+                );
             }
             if parsed.busiest && (parsed.from_given || parsed.frames == 0) {
                 return Err("--busiest takes --frames and no --from".into());
@@ -159,12 +175,22 @@ impl Source {
         let (input, zstd): (Box<dyn Read>, _) = if path.extension().is_some_and(|e| e == "zst") {
             // Opened here so that a file that is not there is this program's to say.
             let file = File::open(path)?;
-            let mut child = Command::new("zstd").arg("-dc").stdin(file).stdout(Stdio::piped()).spawn().map_err(|e| format!("running zstd: {e}"))?;
+            let mut child = Command::new("zstd")
+                .arg("-dc")
+                .stdin(file)
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("running zstd: {e}"))?;
             (Box::new(child.stdout.take().expect("piped")), Some(child))
         } else {
             (Box::new(File::open(path)?), None)
         };
-        Ok(Self { reader: Reader::new(Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>)?, zstd })
+        Ok(Self {
+            reader: Reader::new(
+                Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>
+            )?,
+            zstd,
+        })
     }
 
     /// After the capture's end was read: whether `zstd` read all of its own.
@@ -238,9 +264,16 @@ fn info(args: &Args) -> Result<(), Error> {
         let whole = frames.iter().filter(|f| f.whole).count();
         let keyframes = frames.iter().filter(|f| f.keyframe).count();
         let partial: Vec<&Seen> = frames.iter().filter(|f| !f.whole).collect();
-        let share = if partial.is_empty() { 0.0 } else { partial.iter().map(|f| f.changed).sum::<u64>() as f64 * 100.0 / (partial.len() as f64 * f64::from(width) * f64::from(height)) };
+        let share = if partial.is_empty() {
+            0.0
+        } else {
+            partial.iter().map(|f| f.changed).sum::<u64>() as f64 * 100.0
+                / (partial.len() as f64 * f64::from(width) * f64::from(height))
+        };
         let seconds = (frames[frames.len() - 1].micros - frames[0].micros) as f64 / 1e6;
-        let (low, high) = frames.iter().fold((u8::MAX, 0), |(low, high), f| (low.min(f.quality), high.max(f.quality)));
+        let (low, high) = frames.iter().fold((u8::MAX, 0), |(low, high), f| {
+            (low.min(f.quality), high.max(f.quality))
+        });
         println!(
             "{width}x{height}: frames {}..{}, {:.1} s, {whole} whole, {keyframes} keyframes asked, the other {} changed {share:.1}% of the picture each, quality {low}..{high}",
             run.start,
@@ -258,7 +291,13 @@ fn times(args: &Args) -> Result<(), Error> {
     println!("frame,ms,width,height,whole,keyframe,changed");
     for (index, f) in seen.iter().enumerate() {
         let (width, height) = f.size;
-        println!("{index},{:.1},{width},{height},{},{},{}", (f.micros - start) as f64 / 1e3, u8::from(f.whole), u8::from(f.keyframe), f.changed);
+        println!(
+            "{index},{:.1},{width},{height},{},{},{}",
+            (f.micros - start) as f64 / 1e3,
+            u8::from(f.whole),
+            u8::from(f.keyframe),
+            f.changed
+        );
     }
     Ok(())
 }
@@ -270,7 +309,11 @@ fn frames(args: &Args, out: impl std::io::Write) -> Result<(), Error> {
         true => args.from,
         false => {
             let seen = scan(&args.capture)?;
-            runs(&seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?.start as u64
+            runs(&seen)
+                .into_iter()
+                .max_by_key(|run| (run.len(), std::cmp::Reverse(run.start)))
+                .ok_or("the capture holds no frames")?
+                .start as u64
         }
     };
     let tick = Duration::from_secs(1) / args.fps;
@@ -325,7 +368,10 @@ fn frames(args: &Args, out: impl std::io::Write) -> Result<(), Error> {
 /// counted as every pixel it would draw the window to wherever one is.
 fn window(seen: &[Seen], frames: usize, busiest: bool) -> Result<usize, Error> {
     let moved = |f: &Seen| if f.whole { 0 } else { f.changed };
-    let run = runs(seen).into_iter().max_by_key(|run| (run.len(), std::cmp::Reverse(run.start))).ok_or("the capture holds no frames")?;
+    let run = runs(seen)
+        .into_iter()
+        .max_by_key(|run| (run.len(), std::cmp::Reverse(run.start)))
+        .ok_or("the capture holds no frames")?;
     let (width, height) = seen[run.start].size;
     let run = moving(seen, run);
     if run.len() < frames {
@@ -369,14 +415,22 @@ fn trim(args: &Args) -> Result<(), Error> {
             (start, start + frames)
         }
     };
-    let part = args.out.with_file_name(format!(".wlcap-{}.part", std::process::id()));
+    let part = args
+        .out
+        .with_file_name(format!(".wlcap-{}.part", std::process::id()));
     let file = File::create(&part)?;
-    let (output, mut zstd): (Box<dyn std::io::Write>, _) = if args.out.extension().is_some_and(|e| e == "zst") {
-        let mut child = Command::new("zstd").arg("-qc").stdin(Stdio::piped()).stdout(file).spawn().map_err(|e| format!("running zstd: {e}"))?;
-        (Box::new(child.stdin.take().expect("piped")), Some(child))
-    } else {
-        (Box::new(file), None)
-    };
+    let (output, mut zstd): (Box<dyn std::io::Write>, _) =
+        if args.out.extension().is_some_and(|e| e == "zst") {
+            let mut child = Command::new("zstd")
+                .arg("-qc")
+                .stdin(Stdio::piped())
+                .stdout(file)
+                .spawn()
+                .map_err(|e| format!("running zstd: {e}"))?;
+            (Box::new(child.stdin.take().expect("piped")), Some(child))
+        } else {
+            (Box::new(file), None)
+        };
     let written = (|| {
         let mut writer = Writer::new(BufWriter::with_capacity(1 << 20, output))?;
         let mut source = Source::open(&args.capture)?;
@@ -392,8 +446,20 @@ fn trim(args: &Args) -> Result<(), Error> {
             kept += 1;
             let first = began.is_none();
             let at = frame.at - *began.get_or_insert(frame.at);
-            let (keyframe, changed) = if first { (true, None) } else { (frame.keyframe, frame.changed) };
-            writer.frame_at(at, frame.size, frame.quality, keyframe, changed, frame.pixels, usize::from(frame.size.0) * 4)?;
+            let (keyframe, changed) = if first {
+                (true, None)
+            } else {
+                (frame.keyframe, frame.changed)
+            };
+            writer.frame_at(
+                at,
+                frame.size,
+                frame.quality,
+                keyframe,
+                changed,
+                frame.pixels,
+                usize::from(frame.size.0) * 4,
+            )?;
         }
         // Only a capture read to its end has zstd's exit to answer for.
         if !cut {
@@ -403,7 +469,12 @@ fn trim(args: &Args) -> Result<(), Error> {
             return Err(format!("the capture ends before frame {start}").into());
         }
         if end != u64::MAX && start + kept < end {
-            return Err(format!("the capture ends after frame {}, short of the {} asked from {start}", start + kept - 1, end - start).into());
+            return Err(format!(
+                "the capture ends after frame {}, short of the {} asked from {start}",
+                start + kept - 1,
+                end - start
+            )
+            .into());
         }
         writer.flush()?;
         eprintln!("wlcap: trim: frames {start}..{}", start + kept - 1);
@@ -432,11 +503,22 @@ mod tests {
     /// A capture of 1×1 frames at 100 ms apart, one per `(size, value)`:
     /// each picture's every byte is the value, so the output says which.
     fn capture(name: &str, frames: &[(u16, u8)]) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("wlcap-test-{}-{name}.wlcap", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("wlcap-test-{}-{name}.wlcap", std::process::id()));
         let mut writer = Writer::new(File::create(&path).unwrap()).unwrap();
         for (i, &(width, value)) in frames.iter().enumerate() {
             let pixels = vec![value; usize::from(width) * 4];
-            writer.frame_at(Duration::from_millis(100 * i as u64), (width, 1), 50, i == 0, None, &pixels, pixels.len()).unwrap();
+            writer
+                .frame_at(
+                    Duration::from_millis(100 * i as u64),
+                    (width, 1),
+                    50,
+                    i == 0,
+                    None,
+                    &pixels,
+                    pixels.len(),
+                )
+                .unwrap();
         }
         writer.flush().unwrap();
         path
@@ -444,7 +526,15 @@ mod tests {
 
     /// `frames` at 10 fps, a tick a frame: the values of the pictures written.
     fn played(path: &Path, from: Option<u64>) -> Vec<u8> {
-        let args = Args { capture: path.to_owned(), frames: 0, busiest: false, from: from.unwrap_or(0), out: PathBuf::new(), fps: 10, from_given: from.is_some() };
+        let args = Args {
+            capture: path.to_owned(),
+            frames: 0,
+            busiest: false,
+            from: from.unwrap_or(0),
+            out: PathBuf::new(),
+            fps: 10,
+            from_given: from.is_some(),
+        };
         let mut out = Vec::new();
         frames(&args, &mut out).unwrap();
         out.chunks(4).map(|pixel| pixel[0]).collect()
@@ -453,7 +543,18 @@ mod tests {
     /// A run of 1×1 frames at `micros`, the first `whole` of them whole
     /// pictures and every one changing as much as the next.
     fn seen(micros: &[u64], whole: usize) -> Vec<Seen> {
-        micros.iter().enumerate().map(|(i, &micros)| Seen { size: (1, 1), micros, quality: 50, keyframe: i < whole, whole: i < whole, changed: 1 }).collect()
+        micros
+            .iter()
+            .enumerate()
+            .map(|(i, &micros)| Seen {
+                size: (1, 1),
+                micros,
+                quality: 50,
+                keyframe: i < whole,
+                whole: i < whole,
+                changed: 1,
+            })
+            .collect()
     }
 
     #[test]
@@ -463,7 +564,10 @@ mod tests {
         let frames = seen(&[0, 30_000, 1_530_000, 1_560_000, 1_590_000, 1_620_000], 2);
         assert_eq!(window(&frames, 3, false).unwrap(), 2);
         assert_eq!(window(&frames, 3, true).unwrap(), 2);
-        assert!(window(&frames, 5, false).is_err(), "the still opening is not counted towards the frames asked");
+        assert!(
+            window(&frames, 5, false).is_err(),
+            "the still opening is not counted towards the frames asked"
+        );
     }
 
     #[test]
@@ -485,7 +589,10 @@ mod tests {
         let frames = seen(&[0, 30_000, 80_000, 130_000], 2);
         assert_eq!(window(&frames, 3, false).unwrap(), 0);
         // A run with no whole picture to open it is as it is.
-        assert_eq!(window(&seen(&[0, 1_500_000, 1_550_000], 0), 3, false).unwrap(), 0);
+        assert_eq!(
+            window(&seen(&[0, 1_500_000, 1_550_000], 0), 3, false).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -506,7 +613,10 @@ mod tests {
 
     #[test]
     fn from_plays_its_run_alone() {
-        let path = capture("from", &[(1, 1), (1, 2), (2, 3), (2, 4), (1, 5), (1, 6), (1, 7)]);
+        let path = capture(
+            "from",
+            &[(1, 1), (1, 2), (2, 3), (2, 4), (1, 5), (1, 6), (1, 7)],
+        );
         // Its run's start, or within it; and a run before the longest.
         assert_eq!(played(&path, Some(4)), [5, 6, 7]);
         assert_eq!(played(&path, Some(5)), [6, 7]);

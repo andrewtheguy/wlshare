@@ -60,7 +60,18 @@ pub struct Quant(pub [u8; 10]);
 impl Quant {
     /// The shifts of the five packed bytes of an `RFX_COMPONENT_CODEC_QUANT`.
     pub fn from_bytes(b: [u8; 5]) -> Self {
-        Self([b[3] >> 4, b[4] & 0xF, b[4] >> 4, b[2] & 0xF, b[2] >> 4, b[3] & 0xF, b[0] >> 4, b[1] & 0xF, b[1] >> 4, b[0] & 0xF])
+        Self([
+            b[3] >> 4,
+            b[4] & 0xF,
+            b[4] >> 4,
+            b[2] & 0xF,
+            b[2] >> 4,
+            b[3] & 0xF,
+            b[0] >> 4,
+            b[1] & 0xF,
+            b[1] >> 4,
+            b[0] & 0xF,
+        ])
     }
 }
 
@@ -76,12 +87,18 @@ impl Stage {
     /// The full stage: nothing held back; `examples/progressive-stills.rs`
     /// ends its tables with it.
     #[allow(dead_code)]
-    pub const FULL: Stage = Stage { quality: 100, shifts: [Quant([0; 10]); 3] };
+    pub const FULL: Stage = Stage {
+        quality: 100,
+        shifts: [Quant([0; 10]); 3],
+    };
 
     /// A quality label and the three components' packed shifts.
     pub fn from_bytes(b: &[u8]) -> Self {
         let q = |at: usize| Quant::from_bytes(b[at..at + 5].try_into().unwrap());
-        Self { quality: b[0], shifts: [q(1), q(6), q(11)] }
+        Self {
+            quality: b[0],
+            shifts: [q(1), q(6), q(11)],
+        }
     }
 }
 
@@ -99,13 +116,23 @@ impl Tables {
     /// ([`wlshare_proto::progressive::QUANT`] and `STAGES`).
     pub fn protocol() -> Self {
         use wlshare_proto::progressive::{QUANT, STAGES};
-        Self { quant: [Quant::from_bytes(QUANT); 3], stages: STAGES.iter().map(|stage| Stage::from_bytes(stage)).collect() }
+        Self {
+            quant: [Quant::from_bytes(QUANT); 3],
+            stages: STAGES
+                .iter()
+                .map(|stage| Stage::from_bytes(stage))
+                .collect(),
+        }
     }
 
     /// Index of the full stage in the region's table, which the tile's
     /// quality byte names, or 0xFF for a stage holding nothing back.
     fn quality_byte(&self, stage: usize) -> u8 {
-        if self.stages[stage].shifts == [Quant([0; 10]); 3] { 0xFF } else { stage as u8 }
+        if self.stages[stage].shifts == [Quant([0; 10]); 3] {
+            0xFF
+        } else {
+            stage as u8
+        }
     }
 }
 
@@ -181,7 +208,10 @@ static NOTHING: [i16; COEFFS * 3] = [0; COEFFS * 3];
 /// it is read. Each thread keeps a stash of its own ([`STASH`]) and moves
 /// them to and from this one [`BATCH`] at a time, so the threads coding an
 /// update's tiles do not queue on its lock.
-static SPARE: Mutex<Spare> = Mutex::new(Spare { coefficients: Vec::new(), signs: Vec::new() });
+static SPARE: Mutex<Spare> = Mutex::new(Spare {
+    coefficients: Vec::new(),
+    signs: Vec::new(),
+});
 
 #[derive(Default)]
 struct Spare {
@@ -238,13 +268,22 @@ fn let_go(coefficients: [&mut Vec<i16>; 2], signs: &mut Vec<i8>) {
     // the allocator.
     let _ = STASH.try_with(|stash| {
         let mut stash = stash.borrow_mut();
-        stash.coefficients.extend(coefficients.into_iter().filter(|c| !c.is_empty()).map(std::mem::take));
+        stash.coefficients.extend(
+            coefficients
+                .into_iter()
+                .filter(|c| !c.is_empty())
+                .map(std::mem::take),
+        );
         if !signs.is_empty() {
             stash.signs.push(std::mem::take(signs));
         }
         if stash.coefficients.len() >= 2 * BATCH || stash.signs.len() >= 2 * BATCH {
             let mut spare = SPARE.lock().expect("spare");
-            give(&mut stash.coefficients, &mut spare.coefficients, SPARE_MAX.0);
+            give(
+                &mut stash.coefficients,
+                &mut spare.coefficients,
+                SPARE_MAX.0,
+            );
             give(&mut stash.signs, &mut spare.signs, SPARE_MAX.1);
         }
     });
@@ -276,7 +315,12 @@ pub struct Job {
 impl Encoder {
     pub fn new(width: u16, tables: Tables) -> Self {
         assert!(!tables.stages.is_empty(), "a stage to code at");
-        Self { tables, cols: usize::from(width).div_ceil(TILE), tiles: HashMap::new(), ready: HashMap::new() }
+        Self {
+            tables,
+            cols: usize::from(width).div_ceil(TILE),
+            tiles: HashMap::new(),
+            ready: HashMap::new(),
+        }
     }
 
     /// Code each of `jobs` as [`Self::first_or_full`] would, on rayon's
@@ -284,15 +328,43 @@ impl Encoder {
     /// what the decoder holds of its tile now, and keep the passes for the
     /// calls that ask for them; the decoder's state is untouched until they
     /// do.
-    pub fn precode(&mut self, jobs: &[Job], pixels: &[u8], stride: usize, stage: usize, slack: f32) {
+    pub fn precode(
+        &mut self,
+        jobs: &[Job],
+        pixels: &[u8],
+        stride: usize,
+        stage: usize,
+        slack: f32,
+    ) {
         let (tables, tiles) = (&self.tables, &self.tiles);
         let code = |job: &Job| {
-            let (pass, held) = SCRATCH.with_borrow_mut(|scratch| code_tile(tables, scratch, job.cell, tiles.get(&job.cell), &pixels[job.at..], stride, job.w, job.h, stage, Some(slack)));
+            let (pass, held) = SCRATCH.with_borrow_mut(|scratch| {
+                code_tile(
+                    tables,
+                    scratch,
+                    job.cell,
+                    tiles.get(&job.cell),
+                    &pixels[job.at..],
+                    stride,
+                    job.w,
+                    job.h,
+                    stage,
+                    Some(slack),
+                )
+            });
             (job.cell, pass, held)
         };
         let done: Vec<_> = jobs.par_iter().with_min_len(TASK_TILES).map(code).collect();
         for (cell, pass, held) in done {
-            self.ready.insert(cell, Ready { stage, slack, pass, held });
+            self.ready.insert(
+                cell,
+                Ready {
+                    stage,
+                    slack,
+                    pass,
+                    held,
+                },
+            );
         }
     }
 
@@ -331,9 +403,30 @@ impl Encoder {
     /// tile and the difference has more zeros, and leave the tile owed the
     /// stages after.
     #[allow(clippy::too_many_arguments)]
-    pub fn first(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize) -> Pass {
+    pub fn first(
+        &mut self,
+        cell: (u16, u16),
+        pixels: &[u8],
+        stride: usize,
+        w: usize,
+        h: usize,
+        stage: usize,
+    ) -> Pass {
         self.ready.remove(&cell);
-        let (pass, held) = SCRATCH.with_borrow_mut(|scratch| code_tile(&self.tables, scratch, cell, self.tiles.get(&cell), pixels, stride, w, h, stage, None));
+        let (pass, held) = SCRATCH.with_borrow_mut(|scratch| {
+            code_tile(
+                &self.tables,
+                scratch,
+                cell,
+                self.tiles.get(&cell),
+                pixels,
+                stride,
+                w,
+                h,
+                stage,
+                None,
+            )
+        });
         self.tiles.insert(cell, held);
         pass
     }
@@ -348,10 +441,37 @@ impl Encoder {
     /// of the tiles tried where the rule before tried 26%, and 99.6% of those
     /// sent whole found, where it was all of them).
     #[allow(clippy::too_many_arguments)]
-    pub fn first_or_full(&mut self, cell: (u16, u16), pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: f32) -> Pass {
+    pub fn first_or_full(
+        &mut self,
+        cell: (u16, u16),
+        pixels: &[u8],
+        stride: usize,
+        w: usize,
+        h: usize,
+        stage: usize,
+        slack: f32,
+    ) -> Pass {
         let (pass, held) = match self.ready.remove(&cell) {
-            Some(Ready { stage: at, slack: by, pass, held }) if (at, by) == (stage, slack) => (pass, held),
-            _ => SCRATCH.with_borrow_mut(|scratch| code_tile(&self.tables, scratch, cell, self.tiles.get(&cell), pixels, stride, w, h, stage, Some(slack))),
+            Some(Ready {
+                stage: at,
+                slack: by,
+                pass,
+                held,
+            }) if (at, by) == (stage, slack) => (pass, held),
+            _ => SCRATCH.with_borrow_mut(|scratch| {
+                code_tile(
+                    &self.tables,
+                    scratch,
+                    cell,
+                    self.tiles.get(&cell),
+                    pixels,
+                    stride,
+                    w,
+                    h,
+                    stage,
+                    Some(slack),
+                )
+            }),
         };
         self.tiles.insert(cell, held);
         pass
@@ -360,7 +480,13 @@ impl Encoder {
     /// The stage tile `cell` stands at, where the decoder holds it.
     pub fn stage_of(&self, cell: (u16, u16)) -> Option<usize> {
         let held = self.tiles.get(&cell)?;
-        Some(self.tables.stages.iter().position(|stage| stage.shifts == held.shifts).unwrap_or(0))
+        Some(
+            self.tables
+                .stages
+                .iter()
+                .position(|stage| stage.shifts == held.shifts)
+                .unwrap_or(0),
+        )
     }
 
     /// Send tile `cell` the bits between the stage it stands at and `stage`,
@@ -382,7 +508,10 @@ impl Encoder {
             let mut raw = BitWriter::new();
             for (band, &(at, len)) in BANDS.iter().enumerate() {
                 let (from, p) = (u32::from(held.shifts[c].0[band]), u32::from(to[c].0[band]));
-                assert!(from >= p, "an upgrade holds back no more than the pass before it");
+                assert!(
+                    from >= p,
+                    "an upgrade holds back no more than the pass before it"
+                );
                 let bits = from - p;
                 if bits == 0 {
                     continue;
@@ -460,30 +589,72 @@ impl Encoder {
 /// bytes, its loops eight lanes of 32 bits wide where SSE2's are four. What
 /// it calls that is worth the wider lanes is inlined into each.
 #[allow(clippy::too_many_arguments)]
-fn code_tile(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: Option<&Held>, pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: Option<f32>) -> (Pass, Held) {
+fn code_tile(
+    tables: &Tables,
+    scratch: &mut Scratch,
+    cell: (u16, u16),
+    before: Option<&Held>,
+    pixels: &[u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    stage: usize,
+    slack: Option<f32>,
+) -> (Pass, Held) {
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: the processor has AVX2.
-        return unsafe { code_tile_avx2(tables, scratch, cell, before, pixels, stride, w, h, stage, slack) };
+        return unsafe {
+            code_tile_avx2(
+                tables, scratch, cell, before, pixels, stride, w, h, stage, slack,
+            )
+        };
     }
-    code_tile_in(tables, scratch, cell, before, pixels, stride, w, h, stage, slack)
+    code_tile_in(
+        tables, scratch, cell, before, pixels, stride, w, h, stage, slack,
+    )
 }
 
 /// [`code_tile`] for a processor with AVX2.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(clippy::too_many_arguments)]
-fn code_tile_avx2(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: Option<&Held>, pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: Option<f32>) -> (Pass, Held) {
-    code_tile_in(tables, scratch, cell, before, pixels, stride, w, h, stage, slack)
+fn code_tile_avx2(
+    tables: &Tables,
+    scratch: &mut Scratch,
+    cell: (u16, u16),
+    before: Option<&Held>,
+    pixels: &[u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    stage: usize,
+    slack: Option<f32>,
+) -> (Pass, Held) {
+    code_tile_in(
+        tables, scratch, cell, before, pixels, stride, w, h, stage, slack,
+    )
 }
 
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn code_tile_in(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: Option<&Held>, pixels: &[u8], stride: usize, w: usize, h: usize, stage: usize, slack: Option<f32>) -> (Pass, Held) {
+fn code_tile_in(
+    tables: &Tables,
+    scratch: &mut Scratch,
+    cell: (u16, u16),
+    before: Option<&Held>,
+    pixels: &[u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    stage: usize,
+    slack: Option<f32>,
+) -> (Pass, Held) {
     let full = tables.stages.len() - 1;
     let target = analyse(tables, scratch, pixels, stride, w, h);
     let Some(slack) = slack.filter(|_| stage != full) else {
-        return code_first(tables, scratch, cell, before, &target, stage).into_held(target, tables.stages[stage].shifts);
+        return code_first(tables, scratch, cell, before, &target, stage)
+            .into_held(target, tables.stages[stage].shifts);
     };
     let (held_back, zeroed) = held_back(tables, &target, stage);
     let coarse = code_first(tables, scratch, cell, before, &target, stage);
@@ -510,10 +681,16 @@ fn held_back(tables: &Tables, target: &[i16], stage: usize) -> (u32, u32) {
         for (&(at, len), &shift) in BANDS.iter().zip(&shifts.0) {
             let band = &target[c * COEFFS + at..c * COEFFS + at + len];
             for k in 0..shift {
-                bits += band.iter().map(|&t| u32::from(i32::from(t).unsigned_abs() >> k != 0)).sum::<u32>();
+                bits += band
+                    .iter()
+                    .map(|&t| u32::from(i32::from(t).unsigned_abs() >> k != 0))
+                    .sum::<u32>();
             }
             if shift > 0 {
-                zeroed += band.iter().map(|&t| u32::from(t != 0 && i32::from(t).unsigned_abs() >> shift == 0)).sum::<u32>();
+                zeroed += band
+                    .iter()
+                    .map(|&t| u32::from(t != 0 && i32::from(t).unsigned_abs() >> shift == 0))
+                    .sum::<u32>();
             }
         }
     }
@@ -522,7 +699,14 @@ fn held_back(tables: &Tables, target: &[i16], stage: usize) -> (u32, u32) {
 
 /// The tile's quantized coefficients: YCbCr, the wavelet, the quantizer.
 #[inline(always)]
-fn analyse(tables: &Tables, scratch: &mut Scratch, pixels: &[u8], stride: usize, w: usize, h: usize) -> Vec<i16> {
+fn analyse(
+    tables: &Tables,
+    scratch: &mut Scratch,
+    pixels: &[u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+) -> Vec<i16> {
     to_ycbcr(pixels, stride, w, h, &mut scratch.work);
     for c in 0..3 {
         let comp = &mut scratch.work[c * COEFFS..(c + 1) * COEFFS];
@@ -546,8 +730,20 @@ struct Coded {
 
 impl Coded {
     fn into_held(mut self, target: Vec<i16>, shifts: [Quant; 3]) -> (Pass, Held) {
-        let (held, sign) = (std::mem::take(&mut self.held), std::mem::take(&mut self.sign));
-        (std::mem::take(&mut self.pass), Held { target, held, sign, shifts, full: shifts == [Quant([0; 10]); 3] })
+        let (held, sign) = (
+            std::mem::take(&mut self.held),
+            std::mem::take(&mut self.sign),
+        );
+        (
+            std::mem::take(&mut self.pass),
+            Held {
+                target,
+                held,
+                sign,
+                shifts,
+                full: shifts == [Quant([0; 10]); 3],
+            },
+        )
     }
 }
 
@@ -561,7 +757,14 @@ impl Drop for Coded {
 /// the decoder holds of it, `before`: the difference from that where it has
 /// more zeros, the tile itself otherwise.
 #[inline(always)]
-fn code_first(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: Option<&Held>, target: &[i16], stage: usize) -> Coded {
+fn code_first(
+    tables: &Tables,
+    scratch: &mut Scratch,
+    cell: (u16, u16),
+    before: Option<&Held>,
+    target: &[i16],
+    stage: usize,
+) -> Coded {
     let shifts = tables.stages[stage].shifts;
     // A match rather than a closure, which would be compiled apart from
     // [`code_tile`]'s AVX2 copy and run as the baseline's.
@@ -576,7 +779,12 @@ fn code_first(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: 
     let coded = &mut scratch.coded;
     for c in 0..3 {
         let range = c * COEFFS..(c + 1) * COEFFS;
-        let (target, base, have, sign) = (&target[range.clone()], &base[range.clone()], &mut held[range.clone()], &mut sign[range]);
+        let (target, base, have, sign) = (
+            &target[range.clone()],
+            &base[range.clone()],
+            &mut held[range.clone()],
+            &mut sign[range],
+        );
         for (band, &(at, len)) in BANDS.iter().enumerate() {
             let p = u32::from(shifts[c].0[band]);
             // The LL band's held back bits are floored, the others' toward
@@ -584,7 +792,12 @@ fn code_first(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: 
             // them before the shift.
             let carry = if band == LL3 { 0 } else { (1 << p) - 1 };
             let span = at..at + len;
-            for (((&t, &b), have), coded) in target[span.clone()].iter().zip(&base[span.clone()]).zip(&mut have[span.clone()]).zip(&mut coded[span]) {
+            for (((&t, &b), have), coded) in target[span.clone()]
+                .iter()
+                .zip(&base[span.clone()])
+                .zip(&mut have[span.clone()])
+                .zip(&mut coded[span])
+            {
                 let sb = i32::from(t) - i32::from(b);
                 let q = (sb + ((sb >> 31) & carry)) >> p;
                 *have = (i32::from(b) + (q << p)) as i16;
@@ -615,7 +828,14 @@ fn code_first(tables: &Tables, scratch: &mut Scratch, cell: (u16, u16), before: 
     for d in &data {
         b.extend_from_slice(d);
     }
-    Coded { pass: Pass { block: block(WBT_TILE_FIRST, &b), diff }, held, sign }
+    Coded {
+        pass: Pass {
+            block: block(WBT_TILE_FIRST, &b),
+            diff,
+        },
+        held,
+        sign,
+    }
 }
 
 /// `v / 2^p` rounded toward zero.
@@ -651,7 +871,12 @@ fn to_ycbcr(pixels: &[u8], stride: usize, w: usize, h: usize, out: &mut [i32]) {
         for y in 0..TILE {
             let row = pixels[y * stride..][..TILE * 4].as_chunks::<4>().0;
             let span = y * TILE..(y + 1) * TILE;
-            for (((px, cy_out), cb_out), cr_out) in row.iter().zip(&mut cy_out[span.clone()]).zip(&mut cb_out[span.clone()]).zip(&mut cr_out[span]) {
+            for (((px, cy_out), cb_out), cr_out) in row
+                .iter()
+                .zip(&mut cy_out[span.clone()])
+                .zip(&mut cb_out[span.clone()])
+                .zip(&mut cr_out[span])
+            {
                 let (b, g, r) = (i32::from(px[0]), i32::from(px[1]), i32::from(px[2]));
                 let cy = (r * 9798 + g * 19235 + b * 3735) >> 10;
                 let cb = (r * -5535 + g * -10868 + b * 16403) >> 10;
@@ -709,7 +934,11 @@ fn band_l(n: usize) -> usize {
 }
 
 fn band_h(n: usize) -> usize {
-    if n.is_multiple_of(2) { n / 2 - 1 } else { n / 2 }
+    if n.is_multiple_of(2) {
+        n / 2 - 1
+    } else {
+        n / 2
+    }
 }
 
 /// One line of `n` samples to its `band_l(n)` low and `band_h(n)` high
@@ -767,7 +996,12 @@ fn dwt_lines(x: &[i32], n: usize, w: usize, out: &mut [i32]) {
     let row = |i: usize| &x[i * w..(i + 1) * w];
     let (low, high) = out[..n * w].split_at_mut(nl * w);
     for (k, h) in high.chunks_exact_mut(w).enumerate() {
-        for (((h, &a), &b), &c) in h.iter_mut().zip(row(2 * k)).zip(row(2 * k + 1)).zip(row(2 * k + 2)) {
+        for (((h, &a), &b), &c) in h
+            .iter_mut()
+            .zip(row(2 * k))
+            .zip(row(2 * k + 1))
+            .zip(row(2 * k + 2))
+        {
             *h = (b - half(a + c)) >> 1;
         }
     }
@@ -777,7 +1011,12 @@ fn dwt_lines(x: &[i32], n: usize, w: usize, out: &mut [i32]) {
     }
     for k in 1..nh {
         let (before, after) = (&high[(k - 1) * w..k * w], &high[k * w..(k + 1) * w]);
-        for (((l, &a), &h0), &h1) in low[k * w..(k + 1) * w].iter_mut().zip(row(2 * k)).zip(before).zip(after) {
+        for (((l, &a), &h0), &h1) in low[k * w..(k + 1) * w]
+            .iter_mut()
+            .zip(row(2 * k))
+            .zip(before)
+            .zip(after)
+        {
             *l = a + half(h0 + h1);
         }
     }
@@ -787,7 +1026,11 @@ fn dwt_lines(x: &[i32], n: usize, w: usize, out: &mut [i32]) {
         for ((l, &a), &h) in edge.iter_mut().zip(row(2 * nh)).zip(last) {
             *l = a + half(h);
         }
-        for ((l, &a), &b) in low[(nl - 1) * w..nl * w].iter_mut().zip(row(n - 1)).zip(row(n - 2)) {
+        for ((l, &a), &b) in low[(nl - 1) * w..nl * w]
+            .iter_mut()
+            .zip(row(n - 1))
+            .zip(row(n - 2))
+        {
             *l = 2 * a - b;
         }
     } else {
@@ -815,7 +1058,12 @@ fn dwt_row(x: &[i32], low: &mut [i32], high: &mut [i32]) {
         *h = (b - half(a + c)) >> 1;
     }
     low[0] = even[0] + high[0];
-    for (((l, &a), &h0), &h1) in low[1..nh].iter_mut().zip(&even[1..]).zip(&high[..nh]).zip(&high[1..nh]) {
+    for (((l, &a), &h0), &h1) in low[1..nh]
+        .iter_mut()
+        .zip(&even[1..])
+        .zip(&high[..nh])
+        .zip(&high[1..nh])
+    {
         *l = a + half(h0 + h1);
     }
     if n.is_multiple_of(2) {
@@ -841,10 +1089,18 @@ fn dwt_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
     let (front, ll_band) = buf.split_at_mut(ll);
     let (hl_band, rest) = front.split_at_mut(lh);
     let (lh_band, hh_band) = rest.split_at_mut(hh - lh);
-    for ((row, low), high) in lows.chunks_exact(n).zip(ll_band.chunks_exact_mut(nl)).zip(hl_band.chunks_exact_mut(nh)) {
+    for ((row, low), high) in lows
+        .chunks_exact(n)
+        .zip(ll_band.chunks_exact_mut(nl))
+        .zip(hl_band.chunks_exact_mut(nh))
+    {
         dwt_row(row, low, high);
     }
-    for ((row, low), high) in highs.chunks_exact(n).zip(lh_band.chunks_exact_mut(nl)).zip(hh_band.chunks_exact_mut(nh)) {
+    for ((row, low), high) in highs
+        .chunks_exact(n)
+        .zip(lh_band.chunks_exact_mut(nl))
+        .zip(hh_band.chunks_exact_mut(nh))
+    {
         dwt_row(row, low, high);
     }
 }
@@ -855,11 +1111,19 @@ fn idwt_level(buf: &mut [i32], temp: &mut [i32], n: usize) {
     let rows = &mut temp[..n * n];
     let mut line = vec![0; n];
     for r in 0..nl {
-        idwt_line(&buf[ll + r * nl..ll + (r + 1) * nl], &buf[hl + r * nh..hl + (r + 1) * nh], &mut line);
+        idwt_line(
+            &buf[ll + r * nl..ll + (r + 1) * nl],
+            &buf[hl + r * nh..hl + (r + 1) * nh],
+            &mut line,
+        );
         rows[r * n..(r + 1) * n].copy_from_slice(&line);
     }
     for r in 0..nh {
-        idwt_line(&buf[lh + r * nl..lh + (r + 1) * nl], &buf[hh + r * nh..hh + (r + 1) * nh], &mut line);
+        idwt_line(
+            &buf[lh + r * nl..lh + (r + 1) * nl],
+            &buf[hh + r * nh..hh + (r + 1) * nh],
+            &mut line,
+        );
         rows[(nl + r) * n..(nl + r + 1) * n].copy_from_slice(&line);
     }
     let (mut low, mut high) = (vec![0; nl], vec![0; nh]);
@@ -916,7 +1180,11 @@ struct BitWriter {
 
 impl BitWriter {
     fn new() -> Self {
-        Self { bytes: Vec::new(), bits: 0, pending: 0 }
+        Self {
+            bytes: Vec::new(),
+            bits: 0,
+            pending: 0,
+        }
     }
 
     /// The low `n` bits of `value`, any number of them, those past its 32
@@ -927,7 +1195,14 @@ impl BitWriter {
             self.word(0, 32);
             n -= 32;
         }
-        self.word(if n == 32 { value } else { value & ((1 << n) - 1) }, n);
+        self.word(
+            if n == 32 {
+                value
+            } else {
+                value & ((1 << n) - 1)
+            },
+            n,
+        );
     }
 
     /// `n` ones.
@@ -946,7 +1221,8 @@ impl BitWriter {
         self.pending += n;
         if self.pending >= 32 {
             self.pending -= 32;
-            self.bytes.extend_from_slice(&((self.bits >> self.pending) as u32).to_be_bytes());
+            self.bytes
+                .extend_from_slice(&((self.bits >> self.pending) as u32).to_be_bytes());
         }
     }
 
@@ -991,8 +1267,17 @@ fn golomb(w: &mut BitWriter, code: u32, kr: &mut u32, krp: &mut u32) {
 pub fn rlgr1_encode(coeffs: &[i16]) -> Vec<u8> {
     // Sixteen zeros at a time from the end, an OR of each sixteen, then one:
     // a coarse pass leaves most of the finest bands zero.
-    let zeros = coeffs.as_rchunks::<16>().1.iter().rev().take_while(|sixteen| sixteen.iter().fold(0, |any, &c| any | c) == 0).count();
-    let end = coeffs[..coeffs.len() - zeros * 16].iter().rposition(|&c| c != 0).map_or(0, |p| p + 1);
+    let zeros = coeffs
+        .as_rchunks::<16>()
+        .1
+        .iter()
+        .rev()
+        .take_while(|sixteen| sixteen.iter().fold(0, |any, &c| any | c) == 0)
+        .count();
+    let end = coeffs[..coeffs.len() - zeros * 16]
+        .iter()
+        .rposition(|&c| c != 0)
+        .map_or(0, |p| p + 1);
     let coeffs = &coeffs[..end];
     let mut w = BitWriter::new();
     let (mut k, mut kp, mut kr, mut krp) = (1u32, 8u32, 1u32, 8u32);
@@ -1028,9 +1313,17 @@ pub fn rlgr1_encode(coeffs: &[i16]) -> Vec<u8> {
         } else {
             let v = i32::from(coeffs[i]);
             i += 1;
-            let code = if v < 0 { 2 * v.unsigned_abs() - 1 } else { 2 * v as u32 };
+            let code = if v < 0 {
+                2 * v.unsigned_abs() - 1
+            } else {
+                2 * v as u32
+            };
             golomb(&mut w, code, &mut kr, &mut krp);
-            kp = if code == 0 { (kp + 3).min(KPMAX) } else { kp.saturating_sub(3) };
+            kp = if code == 0 {
+                (kp + 3).min(KPMAX)
+            } else {
+                kp.saturating_sub(3)
+            };
             k = kp >> 3;
         }
     }
@@ -1052,7 +1345,11 @@ struct SrlWriter {
 
 impl SrlWriter {
     fn new() -> Self {
-        Self { w: BitWriter::new(), kp: 8, zeros: 0 }
+        Self {
+            w: BitWriter::new(),
+            kp: 8,
+            zeros: 0,
+        }
     }
 
     fn put(&mut self, v: i32, bits: u32) {
@@ -1117,11 +1414,28 @@ mod tests {
                 n += 1;
             }
         }
-        if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64 * 255.0 * n as f64 / se).log10() }
+        if se == 0.0 {
+            f64::INFINITY
+        } else {
+            10.0 * (255.0f64 * 255.0 * n as f64 / se).log10()
+        }
     }
 
     fn tables() -> Tables {
-        Tables { quant: [Quant([6; 10]); 3], stages: vec![Stage { quality: 25, shifts: [Quant([5, 5, 5, 4, 4, 4, 3, 3, 3, 2]); 3] }, Stage { quality: 50, shifts: [Quant([3, 3, 3, 2, 2, 2, 1, 1, 1, 1]); 3] }, Stage::FULL] }
+        Tables {
+            quant: [Quant([6; 10]); 3],
+            stages: vec![
+                Stage {
+                    quality: 25,
+                    shifts: [Quant([5, 5, 5, 4, 4, 4, 3, 3, 3, 2]); 3],
+                },
+                Stage {
+                    quality: 50,
+                    shifts: [Quant([3, 3, 3, 2, 2, 2, 1, 1, 1, 1]); 3],
+                },
+                Stage::FULL,
+            ],
+        }
     }
 
     /// [`code_tile`]'s AVX2 copy codes what its baseline does, pass and state
@@ -1141,19 +1455,60 @@ mod tests {
                 [h as u8, (h * 7 % 256) as u8, (x * 4) as u8]
             }),
             tile(|x, y| [(x * 4) as u8, (y * 4) as u8, ((x + y) * 2) as u8]),
-            tile(|x, y| if (x / 3 + y / 5) % 4 == 0 { [20, 20, 30] } else { [250, 248, 240] }),
+            tile(|x, y| {
+                if (x / 3 + y / 5) % 4 == 0 {
+                    [20, 20, 30]
+                } else {
+                    [250, 248, 240]
+                }
+            }),
         ];
-        let mut scratch = Scratch { work: vec![0; COEFFS * 3], temp: vec![0; COEFFS * 2], coded: vec![0; COEFFS] };
-        let same = |(a, x): &(Pass, Held), (b, y): &(Pass, Held)| a.block == b.block && (&x.target, &x.held, &x.sign, x.shifts) == (&y.target, &y.held, &y.sign, y.shifts);
+        let mut scratch = Scratch {
+            work: vec![0; COEFFS * 3],
+            temp: vec![0; COEFFS * 2],
+            coded: vec![0; COEFFS],
+        };
+        let same = |(a, x): &(Pass, Held), (b, y): &(Pass, Held)| {
+            a.block == b.block
+                && (&x.target, &x.held, &x.sign, x.shifts)
+                    == (&y.target, &y.held, &y.sign, y.shifts)
+        };
         for (w, h) in [(TILE, TILE), (37, 21)] {
             for stage in 0..tables.stages.len() {
                 for slack in [None, Some(1.25)] {
                     let mut before: Option<Held> = None;
                     for px in &pictures {
-                        let base = code_tile_in(&tables, &mut scratch, (1, 2), before.as_ref(), px, TILE * 4, w, h, stage, slack);
+                        let base = code_tile_in(
+                            &tables,
+                            &mut scratch,
+                            (1, 2),
+                            before.as_ref(),
+                            px,
+                            TILE * 4,
+                            w,
+                            h,
+                            stage,
+                            slack,
+                        );
                         // SAFETY: the processor has AVX2.
-                        let wide = unsafe { code_tile_avx2(&tables, &mut scratch, (1, 2), before.as_ref(), px, TILE * 4, w, h, stage, slack) };
-                        assert!(same(&base, &wide), "{w}x{h} at stage {stage}, slack {slack:?}");
+                        let wide = unsafe {
+                            code_tile_avx2(
+                                &tables,
+                                &mut scratch,
+                                (1, 2),
+                                before.as_ref(),
+                                px,
+                                TILE * 4,
+                                w,
+                                h,
+                                stage,
+                                slack,
+                            )
+                        };
+                        assert!(
+                            same(&base, &wide),
+                            "{w}x{h} at stage {stage}, slack {slack:?}"
+                        );
                         before = Some(base.1);
                     }
                 }
@@ -1172,7 +1527,13 @@ mod tests {
                 let h = ((x * 2654435761usize) ^ (y * 40503)) % 251;
                 [h as u8, (h * 7 % 256) as u8, (x * 4) as u8]
             }),
-            tile(|x, y| if (x * 7 + y * 13) % 11 < 3 && y % 9 != 0 { [0, 0, 0] } else { [255, 255, 255] }),
+            tile(|x, y| {
+                if (x * 7 + y * 13) % 11 < 3 && y % 9 != 0 {
+                    [0, 0, 0]
+                } else {
+                    [255, 255, 255]
+                }
+            }),
             tile(|x, y| [(x * 4) as u8, (y * 4) as u8, ((x ^ y) * 4) as u8]),
             tile(|_, _| [37, 120, 200]),
         ];
@@ -1183,20 +1544,37 @@ mod tests {
         let mut check = |enc: &mut Encoder, cell: (u16, u16), block: Vec<u8>, what: &str| {
             frame += 1;
             let rect = (cell.0 * 64, cell.1 * 64, 64, 64);
-            let shown = dec.decode(&wlshare_proto::progressive::stream(frame, &[rect], &[&block]));
+            let shown = dec.decode(&wlshare_proto::progressive::stream(
+                frame,
+                &[rect],
+                &[&block],
+            ));
             assert_eq!(shown.len(), 1);
             assert_eq!(shown[0].0, cell, "{what}: the block's tile");
-            assert!(shown[0].1 == enc.shown(cell).unwrap(), "{what}: the decoder shows what the encoder says");
+            assert!(
+                shown[0].1 == enc.shown(cell).unwrap(),
+                "{what}: the decoder shows what the encoder says"
+            );
         };
         for (i, px) in pictures.iter().enumerate() {
             let cell = (i as u16, 0);
             for stage in 0..full {
                 enc.forget_tile(cell);
                 let pass = enc.first_or_full(cell, px, TILE * 4, TILE, TILE, stage, 1.25);
-                check(&mut enc, cell, pass.block, &format!("tile {i}, a first pass at {stage}"));
+                check(
+                    &mut enc,
+                    cell,
+                    pass.block,
+                    &format!("tile {i}, a first pass at {stage}"),
+                );
                 while let Some(stood) = enc.stage_of(cell).filter(|&s| s < full) {
                     let up = enc.upgrade(cell, stood + 1).expect("an upgrade");
-                    check(&mut enc, cell, up, &format!("tile {i}, an upgrade to {}", stood + 1));
+                    check(
+                        &mut enc,
+                        cell,
+                        up,
+                        &format!("tile {i}, an upgrade to {}", stood + 1),
+                    );
                 }
             }
             // Changed under the decoder: a difference where it has more zeros.
@@ -1208,7 +1586,11 @@ mod tests {
             check(&mut enc, cell, pass.block, &format!("tile {i}, changed"));
             let up = enc.upgrade(cell, full).expect("to full");
             check(&mut enc, cell, up, &format!("tile {i}, changed, to full"));
-            assert!(psnr(&enc.shown(cell).unwrap(), &changed) > 30.0, "tile {i} at full: {:.1} dB", psnr(&enc.shown(cell).unwrap(), &changed));
+            assert!(
+                psnr(&enc.shown(cell).unwrap(), &changed) > 30.0,
+                "tile {i} at full: {:.1} dB",
+                psnr(&enc.shown(cell).unwrap(), &changed)
+            );
         }
     }
 
@@ -1256,7 +1638,11 @@ mod tests {
             let pixels: Vec<u8> = (0..COEFFS).flat_map(|_| [px[0], px[1], px[2], 0]).collect();
             let mut out = vec![0; COEFFS * 3];
             to_ycbcr(&pixels, TILE * 4, TILE, TILE, &mut out);
-            assert!(out.iter().all(|v| (-4096..=4095).contains(v)), "{px:?}: {:?}", [out[0], out[COEFFS], out[2 * COEFFS]]);
+            assert!(
+                out.iter().all(|v| (-4096..=4095).contains(v)),
+                "{px:?}: {:?}",
+                [out[0], out[COEFFS], out[2 * COEFFS]]
+            );
         }
     }
 
@@ -1264,7 +1650,9 @@ mod tests {
     #[test]
     fn the_wavelet_is_its_lines() {
         for n in [64usize, 33, 17] {
-            let picture: Vec<i32> = (0..n * n).map(|i| ((i * 7919 + 13) % 8191) as i32 - 4096).collect();
+            let picture: Vec<i32> = (0..n * n)
+                .map(|i| ((i * 7919 + 13) % 8191) as i32 - 4096)
+                .collect();
             let mut temp = vec![0; COEFFS * 2];
             let (mut ours, mut lines) = (picture.clone(), picture);
             dwt_level(&mut ours, &mut temp, n);
@@ -1276,13 +1664,18 @@ mod tests {
     #[test]
     fn the_wavelet_inverts() {
         for n in [64usize, 33, 17] {
-            let x: Vec<i32> = (0..n).map(|i| ((i * 37 + 11) % 97) as i32 * 13 - 600).collect();
+            let x: Vec<i32> = (0..n)
+                .map(|i| ((i * 37 + 11) % 97) as i32 * 13 - 600)
+                .collect();
             let (mut low, mut high) = (vec![0; band_l(n)], vec![0; band_h(n)]);
             dwt_line(&x, &mut low, &mut high);
             let mut back = vec![0; n];
             idwt_line(&low, &high, &mut back);
             for (i, (a, b)) in x.iter().zip(&back).enumerate() {
-                assert!((a - b).abs() <= 1, "line of {n}, sample {i}: {a} back as {b}");
+                assert!(
+                    (a - b).abs() <= 1,
+                    "line of {n}, sample {i}: {a} back as {b}"
+                );
             }
         }
     }
@@ -1298,7 +1691,13 @@ mod tests {
 
     #[test]
     fn upgrades_reach_what_a_full_first_pass_shows() {
-        let px = tile(|x, y| if (x / 8 + y / 8) % 2 == 0 { [250, 250, 250] } else { [20, 30, 200] });
+        let px = tile(|x, y| {
+            if (x / 8 + y / 8) % 2 == 0 {
+                [250, 250, 250]
+            } else {
+                [20, 30, 200]
+            }
+        });
         let mut full = Encoder::new(64, tables());
         full.first((0, 0), &px, TILE * 4, TILE, TILE, 2);
         let mut staged = Encoder::new(64, tables());
@@ -1310,10 +1709,17 @@ mod tests {
         assert!(staged.upgrade((0, 0), 2).is_none());
         assert_eq!(staged.shown((0, 0)), full.shown((0, 0)));
         assert!(p0 < p1, "{p0} {p1}");
-        assert!(coarse.block.len() < full.tiles[&(0, 0)].target.len(), "a coarse pass is small: {}", coarse.block.len());
+        assert!(
+            coarse.block.len() < full.tiles[&(0, 0)].target.len(),
+            "a coarse pass is small: {}",
+            coarse.block.len()
+        );
         assert!(up1.len() + up2.len() > 0);
         // The bits add up: what the stages hold is what full holds.
-        assert_eq!(staged.held((0, 0)).unwrap().held, full.held((0, 0)).unwrap().held);
+        assert_eq!(
+            staged.held((0, 0)).unwrap().held,
+            full.held((0, 0)).unwrap().held
+        );
     }
 
     #[test]
@@ -1334,7 +1740,10 @@ mod tests {
         enc.upgrade((0, 0), 2).unwrap();
         let mut fresh = Encoder::new(64, tables());
         fresh.first((0, 0), &changed, TILE * 4, TILE, TILE, 2);
-        assert_eq!(enc.held((0, 0)).unwrap().held, fresh.held((0, 0)).unwrap().held);
+        assert_eq!(
+            enc.held((0, 0)).unwrap().held,
+            fresh.held((0, 0)).unwrap().held
+        );
     }
 
     /// First passes coded ahead on threads are the ones coded in order, and
@@ -1355,7 +1764,8 @@ mod tests {
         let mut picture = vec![0u8; stride * TILE];
         for (i, px) in tiles.iter().enumerate() {
             for y in 0..TILE {
-                picture[y * stride + i * TILE * 4..][..TILE * 4].copy_from_slice(&px[y * TILE * 4..][..TILE * 4]);
+                picture[y * stride + i * TILE * 4..][..TILE * 4]
+                    .copy_from_slice(&px[y * TILE * 4..][..TILE * 4]);
             }
         }
         let (mut ordered, mut ahead) = (Encoder::new(256, tables()), Encoder::new(256, tables()));
@@ -1364,18 +1774,34 @@ mod tests {
             enc.first((0, 0), &tiles[1], TILE * 4, TILE, TILE, 2);
             enc.first((1, 0), &tiles[2], TILE * 4, TILE, TILE, 0);
         }
-        let jobs: Vec<Job> = (0..tiles.len()).map(|i| Job { cell: (i as u16, 0), at: i * TILE * 4, w: TILE, h: TILE }).collect();
+        let jobs: Vec<Job> = (0..tiles.len())
+            .map(|i| Job {
+                cell: (i as u16, 0),
+                at: i * TILE * 4,
+                w: TILE,
+                h: TILE,
+            })
+            .collect();
         ahead.precode(&jobs, &picture, stride, 1, 1.25);
         // Touched in between: coded again, as in order.
         for enc in [&mut ordered, &mut ahead] {
             enc.upgrade((1, 0), 2);
         }
         for job in &jobs {
-            let a = ordered.first_or_full(job.cell, &picture[job.at..], stride, TILE, TILE, 1, 1.25);
+            let a =
+                ordered.first_or_full(job.cell, &picture[job.at..], stride, TILE, TILE, 1, 1.25);
             let b = ahead.first_or_full(job.cell, &picture[job.at..], stride, TILE, TILE, 1, 1.25);
             assert_eq!((a.block, a.diff), (b.block, b.diff), "tile {:?}", job.cell);
-            let (a, b) = (ordered.held(job.cell).unwrap(), ahead.held(job.cell).unwrap());
-            assert_eq!((&a.held, &a.sign, a.shifts, a.full), (&b.held, &b.sign, b.shifts, b.full), "tile {:?}", job.cell);
+            let (a, b) = (
+                ordered.held(job.cell).unwrap(),
+                ahead.held(job.cell).unwrap(),
+            );
+            assert_eq!(
+                (&a.held, &a.sign, a.shifts, a.full),
+                (&b.held, &b.sign, b.shifts, b.full),
+                "tile {:?}",
+                job.cell
+            );
         }
     }
 }
@@ -1392,11 +1818,33 @@ pub mod decoder {
 
     const N: usize = 4096;
     /// Each band's offset and length in a component, HL1 first, LL3 last.
-    const BANDS: [(usize, usize); 10] = [(0, 1023), (1023, 1023), (2046, 961), (3007, 272), (3279, 272), (3551, 256), (3807, 72), (3879, 72), (3951, 64), (4015, 81)];
+    const BANDS: [(usize, usize); 10] = [
+        (0, 1023),
+        (1023, 1023),
+        (2046, 961),
+        (3007, 272),
+        (3279, 272),
+        (3551, 256),
+        (3807, 72),
+        (3879, 72),
+        (3951, 64),
+        (4015, 81),
+    ];
 
     /// The ten nibbles of a packed quantizer table, in band order.
     fn nibbles(b: &[u8]) -> [u8; 10] {
-        [b[3] >> 4, b[4] & 0xF, b[4] >> 4, b[2] & 0xF, b[2] >> 4, b[3] & 0xF, b[0] >> 4, b[1] & 0xF, b[1] >> 4, b[0] & 0xF]
+        [
+            b[3] >> 4,
+            b[4] & 0xF,
+            b[4] >> 4,
+            b[2] & 0xF,
+            b[2] >> 4,
+            b[3] & 0xF,
+            b[0] >> 4,
+            b[1] & 0xF,
+            b[1] >> 4,
+            b[0] & 0xF,
+        ]
     }
 
     struct Bits<'a> {
@@ -1406,7 +1854,10 @@ pub mod decoder {
 
     impl Bits<'_> {
         fn bit(&mut self) -> u32 {
-            let b = self.data.get(self.at / 8).map_or(0, |byte| u32::from(byte >> (7 - self.at % 8)) & 1);
+            let b = self
+                .data
+                .get(self.at / 8)
+                .map_or(0, |byte| u32::from(byte >> (7 - self.at % 8)) & 1);
             self.at += 1;
             b
         }
@@ -1451,8 +1902,16 @@ pub mod decoder {
                 kp = kp.saturating_sub(6);
             } else {
                 let code = gr(&mut bits, &mut kr, &mut krp);
-                out.push(if code % 2 == 1 { -((code as i32 + 1) / 2) } else { code as i32 / 2 });
-                kp = if code == 0 { (kp + 3).min(80) } else { kp.saturating_sub(3) };
+                out.push(if code % 2 == 1 {
+                    -((code as i32 + 1) / 2)
+                } else {
+                    code as i32 / 2
+                });
+                kp = if code == 0 {
+                    (kp + 3).min(80)
+                } else {
+                    kp.saturating_sub(3)
+                };
             }
         }
         out.resize(N, 0);
@@ -1534,13 +1993,22 @@ pub mod decoder {
             let mut at = 12 + rects * 8;
             let quant: Vec<[u8; 10]> = (0..quants).map(|i| nibbles(&r[at + i * 5..])).collect();
             at += quants * 5;
-            let stage: Vec<[[u8; 10]; 3]> = (0..stages).map(|i| [0, 1, 2].map(|c| nibbles(&r[at + i * 16 + 1 + c * 5..]))).collect();
+            let stage: Vec<[[u8; 10]; 3]> = (0..stages)
+                .map(|i| [0, 1, 2].map(|c| nibbles(&r[at + i * 16 + 1 + c * 5..])))
+                .collect();
             at += stages * 16;
             let mut shown = Vec::new();
             while at < r.len() {
-                let (kind, len) = (u16::from_le_bytes([r[at], r[at + 1]]), u32::from_le_bytes(r[at + 2..at + 6].try_into().unwrap()) as usize);
+                let (kind, len) = (
+                    u16::from_le_bytes([r[at], r[at + 1]]),
+                    u32::from_le_bytes(r[at + 2..at + 6].try_into().unwrap()) as usize,
+                );
                 let t = &r[at + 6..at + len];
-                let q = [quant[usize::from(t[0])], quant[usize::from(t[1])], quant[usize::from(t[2])]];
+                let q = [
+                    quant[usize::from(t[0])],
+                    quant[usize::from(t[1])],
+                    quant[usize::from(t[2])],
+                ];
                 let cell = (le16(t, 3) as u16, le16(t, 5) as u16);
                 match kind {
                     0xCCC6 => self.first(cell, t, &stage),
@@ -1555,9 +2023,17 @@ pub mod decoder {
 
         fn first(&mut self, cell: (u16, u16), t: &[u8], stage: &[[[u8; 10]; 3]]) {
             let (difference, quality) = (t[7] & 1 == 1, t[8]);
-            let shifts = if quality == 0xFF { [[0; 10]; 3] } else { stage[usize::from(quality)] };
+            let shifts = if quality == 0xFF {
+                [[0; 10]; 3]
+            } else {
+                stage[usize::from(quality)]
+            };
             let lens = [le16(t, 9), le16(t, 11), le16(t, 13)];
-            let tile = self.tiles.entry(cell).or_insert_with(|| Tile { coeffs: [vec![0; N], vec![0; N], vec![0; N]], sign: [vec![0; N], vec![0; N], vec![0; N]], shifts });
+            let tile = self.tiles.entry(cell).or_insert_with(|| Tile {
+                coeffs: [vec![0; N], vec![0; N], vec![0; N]],
+                sign: [vec![0; N], vec![0; N], vec![0; N]],
+                shifts,
+            });
             let mut from = 17;
             for c in 0..3 {
                 let mut v = rlgr1(&t[from..from + lens[c]]);
@@ -1567,10 +2043,16 @@ pub mod decoder {
                     v[i] += v[i - 1];
                 }
                 for (band, &(at, len)) in BANDS.iter().enumerate() {
-                    let held = tile.coeffs[c][at..at + len].iter_mut().zip(&mut tile.sign[c][at..at + len]);
+                    let held = tile.coeffs[c][at..at + len]
+                        .iter_mut()
+                        .zip(&mut tile.sign[c][at..at + len]);
                     for ((coeff, sign), &v) in held.zip(&v[at..at + len]) {
                         let value = (v << shifts[c][band]) as i16;
-                        *coeff = if difference { coeff.wrapping_add(value) } else { value };
+                        *coeff = if difference {
+                            coeff.wrapping_add(value)
+                        } else {
+                            value
+                        };
                         *sign = v.signum() as i8;
                     }
                 }
@@ -1580,15 +2062,30 @@ pub mod decoder {
 
         fn upgrade(&mut self, cell: (u16, u16), t: &[u8], stage: &[[[u8; 10]; 3]]) {
             let quality = t[7];
-            let to = if quality == 0xFF { [[0; 10]; 3] } else { stage[usize::from(quality)] };
+            let to = if quality == 0xFF {
+                [[0; 10]; 3]
+            } else {
+                stage[usize::from(quality)]
+            };
             let lens: Vec<usize> = (0..6).map(|i| le16(t, 8 + i * 2)).collect();
-            let tile = self.tiles.get_mut(&cell).expect("an upgrade of a tile the decoder holds");
+            let tile = self
+                .tiles
+                .get_mut(&cell)
+                .expect("an upgrade of a tile the decoder holds");
             let mut from = 20;
             for c in 0..3 {
                 let srl = &t[from..from + lens[c * 2]];
                 let raw = &t[from + lens[c * 2]..from + lens[c * 2] + lens[c * 2 + 1]];
                 from += lens[c * 2] + lens[c * 2 + 1];
-                let (mut srl, mut raw) = (Srl { bits: Bits { data: srl, at: 0 }, kp: 8, zeros: 0, value: false }, Bits { data: raw, at: 0 });
+                let (mut srl, mut raw) = (
+                    Srl {
+                        bits: Bits { data: srl, at: 0 },
+                        kp: 8,
+                        zeros: 0,
+                        value: false,
+                    },
+                    Bits { data: raw, at: 0 },
+                );
                 for (band, &(at, len)) in BANDS.iter().enumerate() {
                     let (was, now) = (tile.shifts[c][band], to[c][band]);
                     let n = u32::from(was - now);
@@ -1621,7 +2118,10 @@ pub mod decoder {
                 .map(|c| {
                     let mut v = vec![0i32; N];
                     for (band, &(at, len)) in BANDS.iter().enumerate() {
-                        for (v, &coeff) in v[at..at + len].iter_mut().zip(&tile.coeffs[c][at..at + len]) {
+                        for (v, &coeff) in v[at..at + len]
+                            .iter_mut()
+                            .zip(&tile.coeffs[c][at..at + len])
+                        {
                             *v = i32::from((i32::from(coeff) << (quant[c][band] - 1)) as i16);
                         }
                     }
@@ -1678,7 +2178,14 @@ pub mod decoder {
         let (hl, lh, hh, ll) = (0, nl * nh, 2 * nl * nh, 2 * nl * nh + nh * nh);
         let mut rows = vec![0; n * n];
         for r in 0..n {
-            let (low, high) = if r < nl { (&v[ll + r * nl..][..nl], &v[hl + r * nh..][..nh]) } else { (&v[lh + (r - nl) * nl..][..nl], &v[hh + (r - nl) * nh..][..nh]) };
+            let (low, high) = if r < nl {
+                (&v[ll + r * nl..][..nl], &v[hl + r * nh..][..nh])
+            } else {
+                (
+                    &v[lh + (r - nl) * nl..][..nl],
+                    &v[hh + (r - nl) * nh..][..nh],
+                )
+            };
             rows[r * n..(r + 1) * n].copy_from_slice(&inverse_line(low, high, n));
         }
         for x in 0..n {

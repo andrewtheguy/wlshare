@@ -10,7 +10,9 @@
 pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), String> {
     let header = *bitmap.first().ok_or("no format header")?;
     if header & 0x07 != 0 || header & 0x08 != 0 {
-        return Err(format!("format header {header:#04x}: colour loss or subsampling"));
+        return Err(format!(
+            "format header {header:#04x}: colour loss or subsampling"
+        ));
     }
     if header & 0x20 == 0 {
         return Err("an alpha plane".into());
@@ -65,15 +67,27 @@ pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), Str
                     for x in 0..w {
                         let v = plane[y * w + x];
                         // The bottom bit is the sign of the difference.
-                        let delta = if v & 1 == 0 { (v >> 1) as i16 } else { -(((v >> 1) as i16) + 1) };
-                        plane[y * w + x] = (plane[(y - 1) * w + x] as i16 + delta).rem_euclid(256) as u8;
+                        let delta = if v & 1 == 0 {
+                            (v >> 1) as i16
+                        } else {
+                            -(((v >> 1) as i16) + 1)
+                        };
+                        plane[y * w + x] =
+                            (plane[(y - 1) * w + x] as i16 + delta).rem_euclid(256) as u8;
                     }
                 }
             }
         }
     }
-    let [red, green, blue] = &planes[..] else { unreachable!("three planes") };
-    let rgb = red.iter().zip(green).zip(blue).flat_map(|((&r, &g), &b)| [r, g, b]).collect();
+    let [red, green, blue] = &planes[..] else {
+        unreachable!("three planes")
+    };
+    let rgb = red
+        .iter()
+        .zip(green)
+        .zip(blue)
+        .flat_map(|((&r, &g), &b)| [r, g, b])
+        .collect();
     Ok((rgb, at))
 }
 
@@ -82,16 +96,21 @@ pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), Str
 /// read by ruzstd-decompress, of a planar bitmap of exactly that size.
 pub fn unpack(body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
     let mut source = body;
-    let mut frame = ruzstd_decompress::decoding::StreamingDecoder::new(&mut source).map_err(|e| format!("a zstd frame: {e}"))?;
+    let mut frame = ruzstd_decompress::decoding::StreamingDecoder::new(&mut source)
+        .map_err(|e| format!("a zstd frame: {e}"))?;
     let mut bitmap = Vec::new();
-    std::io::Read::read_to_end(&mut frame, &mut bitmap).map_err(|e| format!("a zstd frame: {e}"))?;
+    std::io::Read::read_to_end(&mut frame, &mut bitmap)
+        .map_err(|e| format!("a zstd frame: {e}"))?;
     drop(frame);
     if !source.is_empty() {
         return Err(format!("{} bytes past the zstd frame", source.len()));
     }
     let (rgb, used) = decode(&bitmap, w, h)?;
     if used != bitmap.len() {
-        return Err(format!("a planar bitmap of {} bytes, {used} of them its {w}x{h} pixels", bitmap.len()));
+        return Err(format!(
+            "a planar bitmap of {} bytes, {used} of them its {w}x{h} pixels",
+            bitmap.len()
+        ));
     }
     Ok(rgb)
 }
@@ -118,12 +137,19 @@ impl StillReader {
         let mut source = body;
         if body.starts_with(&ZSTD_MAGIC) {
             let mut frame = ruzstd_decompress::decoding::FrameDecoder::new();
-            frame.init(&mut source).map_err(|e| format!("the still stream's frame: {e}"))?;
+            frame
+                .init(&mut source)
+                .map_err(|e| format!("the still stream's frame: {e}"))?;
             self.frame = Some(frame);
         }
-        let frame = self.frame.as_mut().ok_or("a STILL that continues no stream")?;
+        let frame = self
+            .frame
+            .as_mut()
+            .ok_or("a STILL that continues no stream")?;
         // What a body before left uncollected, one that did not read, is not this one's.
-        frame.collect_to_writer(std::io::sink()).map_err(|e| e.to_string())?;
+        frame
+            .collect_to_writer(std::io::sink())
+            .map_err(|e| e.to_string())?;
         while !source.is_empty() {
             let header = source.get(..3).ok_or("a block header cut short")?;
             let header = u32::from_le_bytes([header[0], header[1], header[2], 0]);
@@ -131,19 +157,30 @@ impl StillReader {
                 return Err("a last block, which ends the stream's frame".into());
             }
             // An RLE block's content is its one byte.
-            let content = if (header >> 1) & 3 == 1 { 1 } else { (header >> 3) as usize };
+            let content = if (header >> 1) & 3 == 1 {
+                1
+            } else {
+                (header >> 3) as usize
+            };
             let block = source.get(..3 + content).ok_or("a block cut short")?;
-            let (read, _) = frame.decode_from_to(block, &mut []).map_err(|e| format!("the still stream: {e}"))?;
+            let (read, _) = frame
+                .decode_from_to(block, &mut [])
+                .map_err(|e| format!("the still stream: {e}"))?;
             if read != block.len() {
                 return Err("a block that does not decode".into());
             }
             source = &source[block.len()..];
         }
         self.bitmap.clear();
-        frame.collect_to_writer(&mut self.bitmap).map_err(|e| e.to_string())?;
+        frame
+            .collect_to_writer(&mut self.bitmap)
+            .map_err(|e| e.to_string())?;
         let (rgb, used) = decode(&self.bitmap, w, h)?;
         if used != self.bitmap.len() {
-            return Err(format!("a still of {} bytes, {used} of them its {w}x{h} pixels", self.bitmap.len()));
+            return Err(format!(
+                "a still of {} bytes, {used} of them its {w}x{h} pixels",
+                self.bitmap.len()
+            ));
         }
         Ok(rgb)
     }

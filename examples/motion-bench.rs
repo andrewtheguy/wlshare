@@ -92,14 +92,14 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use cpu_time::ProcessTime;
-use wlshare_proto::tiles::TilesPicture;
 use wlcap::Reader;
+use wlshare_proto::tiles::TilesPicture;
 use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
 
+use crate::rfb::Rect;
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::msg;
 use crate::rfb::tiles::TilesEncoder;
-use crate::rfb::Rect;
 use crate::rfb::video::VideoEncoder;
 
 // The daemon's own modules, of which the bench uses the encoders, the
@@ -145,7 +145,15 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let mut parsed = Args { captures: Vec::new(), libx264: false, tiles_only: false, lossless: false, quality: crate::rfb::QUALITY, frames: None, check: false };
+    let mut parsed = Args {
+        captures: Vec::new(),
+        libx264: false,
+        tiles_only: false,
+        lossless: false,
+        quality: crate::rfb::QUALITY,
+        frames: None,
+        check: false,
+    };
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
         match arg.as_str() {
@@ -153,7 +161,11 @@ fn parse_args() -> Result<Args, String> {
             "--tiles-only" => parsed.tiles_only = true,
             "--lossless" => parsed.lossless = true,
             "--quality" => {
-                parsed.quality = value()?.parse().ok().filter(|q| (crate::rfb::QUALITY_MIN..=crate::rfb::QUALITY_MAX).contains(q)).ok_or("--quality takes a dial, 1 to 100")?;
+                parsed.quality = value()?
+                    .parse()
+                    .ok()
+                    .filter(|q| (crate::rfb::QUALITY_MIN..=crate::rfb::QUALITY_MAX).contains(q))
+                    .ok_or("--quality takes a dial, 1 to 100")?;
             }
             "--frames" => parsed.frames = Some(PathBuf::from(value()?)),
             flag if flag.starts_with("--") => return Err(format!("{flag}: not a flag")),
@@ -173,7 +185,11 @@ fn parse_args() -> Result<Args, String> {
 impl Args {
     /// The tiles picture coded.
     fn picture(&self) -> TilesPicture {
-        if self.lossless { TilesPicture::Lossless } else { TilesPicture::Held }
+        if self.lossless {
+            TilesPicture::Lossless
+        } else {
+            TilesPicture::Held
+        }
     }
 }
 
@@ -196,7 +212,10 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("motion-bench: WLSV and the regions are H.264 by {}", encoder.name());
+    eprintln!(
+        "motion-bench: WLSV and the regions are H.264 by {}",
+        encoder.name()
+    );
     if args.check {
         let mut failed = false;
         for capture in &args.captures {
@@ -247,12 +266,22 @@ impl Source {
     fn open(path: &Path) -> Result<Self, Error> {
         let (input, zstd): (Box<dyn Read>, _) = if path.extension().is_some_and(|e| e == "zst") {
             let file = File::open(path)?;
-            let mut child = Command::new("zstd").arg("-dc").stdin(file).stdout(Stdio::piped()).spawn().map_err(|e| format!("running zstd: {e}"))?;
+            let mut child = Command::new("zstd")
+                .arg("-dc")
+                .stdin(file)
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("running zstd: {e}"))?;
             (Box::new(child.stdout.take().expect("piped")), Some(child))
         } else {
             (Box::new(File::open(path)?), None)
         };
-        Ok(Self { reader: Reader::new(Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>)?, zstd })
+        Ok(Self {
+            reader: Reader::new(
+                Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>
+            )?,
+            zstd,
+        })
     }
 
     /// After the capture's end was read: whether `zstd` read all of its own.
@@ -328,7 +357,15 @@ struct Page {
 impl Page {
     fn new((w, h): (u16, u16)) -> Self {
         let stride = usize::from(w) * 4;
-        Self { stride, canvas: vec![0; stride * usize::from(h)], decoders: HashMap::new(), slots: HashMap::new(), planes: Vec::new(), scratch: Vec::new(), stills: Default::default() }
+        Self {
+            stride,
+            canvas: vec![0; stride * usize::from(h)],
+            decoders: HashMap::new(),
+            slots: HashMap::new(),
+            planes: Vec::new(),
+            scratch: Vec::new(),
+            stills: Default::default(),
+        }
     }
 
     /// One update of `count` rectangles, parsed as a client parses it and drawn.
@@ -339,13 +376,22 @@ impl Page {
         }
         let mut wire = msg::update_header(count).to_vec();
         wire.extend_from_slice(rects);
-        let Some((ServerMsg::Update(rects), used)) = client::parse(&wire)? else { return Err("an update cut short".into()) };
+        let Some((ServerMsg::Update(rects), used)) = client::parse(&wire)? else {
+            return Err("an update cut short".into());
+        };
         if used != wire.len() {
             return Err("bytes past the update's rectangles".into());
         }
         for rect in rects {
-            let RectBody::Tiles(body) = rect.body else { return Err("a rectangle of another encoding".into()) };
-            let (x, y, w, h) = (usize::from(rect.x), usize::from(rect.y), usize::from(rect.width), usize::from(rect.height));
+            let RectBody::Tiles(body) = rect.body else {
+                return Err("a rectangle of another encoding".into());
+            };
+            let (x, y, w, h) = (
+                usize::from(rect.x),
+                usize::from(rect.y),
+                usize::from(rect.width),
+                usize::from(rect.height),
+            );
             match body {
                 TileBody::Png(png) => {
                     sent.png += png.len() as u64;
@@ -354,15 +400,25 @@ impl Page {
                     let mut reader = decoder.read_info()?;
                     let mut rgb = vec![0; reader.output_buffer_size().ok_or("a PNG too large")?];
                     let info = reader.next_frame(&mut rgb)?;
-                    if (info.width as usize, info.height as usize, info.color_type) != (w, h, png::ColorType::Rgb) {
-                        return Err(format!("a PNG of {}x{} {:?} for {w}x{h}", info.width, info.height, info.color_type).into());
+                    if (info.width as usize, info.height as usize, info.color_type)
+                        != (w, h, png::ColorType::Rgb)
+                    {
+                        return Err(format!(
+                            "a PNG of {}x{} {:?} for {w}x{h}",
+                            info.width, info.height, info.color_type
+                        )
+                        .into());
                     }
                     self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Start { stream, frame } => {
                     sent.video += frame.len() as u64;
                     sent.starts += 1;
-                    if self.decoders.insert(stream, decode::Decoder::new()?).is_some() {
+                    if self
+                        .decoders
+                        .insert(stream, decode::Decoder::new()?)
+                        .is_some()
+                    {
                         return Err(format!("stream {stream} started while live").into());
                     }
                     self.region(stream, (x, y, w, h), &frame)?;
@@ -372,18 +428,30 @@ impl Page {
                     self.region(stream, (x, y, w, h), &frame)?;
                 }
                 TileBody::End { stream } => {
-                    self.decoders.remove(&stream).ok_or_else(|| format!("stream {stream} ended while not live"))?;
+                    self.decoders
+                        .remove(&stream)
+                        .ok_or_else(|| format!("stream {stream} ended while not live"))?;
                 }
-                TileBody::Copy { x: from_x, y: from_y } => {
+                TileBody::Copy {
+                    x: from_x,
+                    y: from_y,
+                } => {
                     sent.copies += 1;
                     let (from_x, from_y) = (usize::from(from_x), usize::from(from_y));
-                    if (from_x + w) * 4 > self.stride || (from_y + h) * self.stride > self.canvas.len() {
-                        return Err(format!("a copy from {from_x},{from_y} of {w}x{h}, past the desktop").into());
+                    if (from_x + w) * 4 > self.stride
+                        || (from_y + h) * self.stride > self.canvas.len()
+                    {
+                        return Err(format!(
+                            "a copy from {from_x},{from_y} of {w}x{h}, past the desktop"
+                        )
+                        .into());
                     }
                     // Copied out first, so a source the rectangle overlaps is read whole.
                     self.scratch.clear();
                     for row in from_y..from_y + h {
-                        self.scratch.extend_from_slice(&self.canvas[row * self.stride + from_x * 4..][..w * 4]);
+                        self.scratch.extend_from_slice(
+                            &self.canvas[row * self.stride + from_x * 4..][..w * 4],
+                        );
                     }
                     for (row, from) in (y..y + h).zip(self.scratch.chunks_exact(w * 4)) {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
@@ -392,9 +460,14 @@ impl Page {
                 TileBody::Store { slot } => {
                     let tile = usize::from(wlshare_proto::tiles::TILE);
                     if (w, h) != (tile, tile) || x % tile != 0 || y % tile != 0 {
-                        return Err(format!("a store of {w}x{h}+{x}+{y}, not one tile on the grid").into());
+                        return Err(format!(
+                            "a store of {w}x{h}+{x}+{y}, not one tile on the grid"
+                        )
+                        .into());
                     }
-                    let kept: Vec<u8> = (y..y + h).flat_map(|row| self.canvas[row * self.stride + x * 4..][..w * 4].to_vec()).collect();
+                    let kept: Vec<u8> = (y..y + h)
+                        .flat_map(|row| self.canvas[row * self.stride + x * 4..][..w * 4].to_vec())
+                        .collect();
                     self.slots.insert(slot, kept);
                 }
                 TileBody::Cached { slot } => {
@@ -403,7 +476,10 @@ impl Page {
                     if (w, h) != (tile, tile) {
                         return Err(format!("a cached draw of {w}x{h}, not one tile").into());
                     }
-                    let kept = self.slots.get(&slot).ok_or_else(|| format!("slot {slot} drawn from before it was stored"))?;
+                    let kept = self
+                        .slots
+                        .get(&slot)
+                        .ok_or_else(|| format!("slot {slot} drawn from before it was stored"))?;
                     for (row, from) in (y..y + h).zip(kept.chunks_exact(w * 4)) {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
                     }
@@ -418,7 +494,12 @@ impl Page {
                     let rgb = self.stills.unpack(&body, w, h)?;
                     self.paste((x, y, w, h), &rgb);
                 }
-                TileBody::Progressive(_) => return Err("a progressive tile, which neither a held list nor a lossless one is sent".into()),
+                TileBody::Progressive(_) => {
+                    return Err(
+                        "a progressive tile, which neither a held list nor a lossless one is sent"
+                            .into(),
+                    );
+                }
             }
         }
         Ok(sent)
@@ -436,9 +517,19 @@ impl Page {
         }
     }
 
-    fn region(&mut self, stream: u8, (x, y, w, h): (usize, usize, usize, usize), frame: &[u8]) -> Result<(), Error> {
-        let decoder = self.decoders.get_mut(&stream).ok_or_else(|| format!("a frame of stream {stream}, which is not live"))?;
-        let picture = decoder.decode(frame, &mut self.planes)?.ok_or_else(|| format!("a frame of stream {stream} decoded to no picture"))?;
+    fn region(
+        &mut self,
+        stream: u8,
+        (x, y, w, h): (usize, usize, usize, usize),
+        frame: &[u8],
+    ) -> Result<(), Error> {
+        let decoder = self
+            .decoders
+            .get_mut(&stream)
+            .ok_or_else(|| format!("a frame of stream {stream}, which is not live"))?;
+        let picture = decoder
+            .decode(frame, &mut self.planes)?
+            .ok_or_else(|| format!("a frame of stream {stream} decoded to no picture"))?;
         // The picture is the region's size rounded up to even sides, cut to
         // the region from its top-left.
         let (pw, ph) = (picture.width, picture.height);
@@ -448,12 +539,32 @@ impl Page {
         let (cw, ch) = picture.chroma();
         let (luma, chroma) = self.planes.split_at(pw * ph);
         let (u, v) = chroma.split_at(cw * ch);
-        let planar = YuvPlanarImage { y_plane: luma, y_stride: pw as u32, u_plane: u, u_stride: cw as u32, v_plane: v, v_stride: cw as u32, width: pw as u32, height: ph as u32 };
+        let planar = YuvPlanarImage {
+            y_plane: luma,
+            y_stride: pw as u32,
+            u_plane: u,
+            u_stride: cw as u32,
+            v_plane: v,
+            v_stride: cw as u32,
+            width: pw as u32,
+            height: ph as u32,
+        };
         self.scratch.resize(pw * ph * 4, 0);
-        yuv::yuv420_to_bgra(&planar, &mut self.scratch, (pw * 4) as u32, YuvRange::Limited, YuvStandardMatrix::Bt601)?;
+        yuv::yuv420_to_bgra(
+            &planar,
+            &mut self.scratch,
+            (pw * 4) as u32,
+            YuvRange::Limited,
+            YuvStandardMatrix::Bt601,
+        )?;
         for (row, from) in (y..y + h).zip(self.scratch.chunks_exact(pw * 4)) {
             let at = row * self.stride + x * 4;
-            for (to, from) in self.canvas[at..at + w * 4].as_chunks_mut::<4>().0.iter_mut().zip(from.as_chunks::<4>().0) {
+            for (to, from) in self.canvas[at..at + w * 4]
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(from.as_chunks::<4>().0)
+            {
                 to[..3].copy_from_slice(&from[..3]);
             }
         }
@@ -472,10 +583,19 @@ struct Tiles {
 impl Tiles {
     /// The tiles of a desktop of `size` drawn at `scale` as `picture` asks,
     /// its regions on a coder of `encoder`'s opened for it, as a session opens one.
-    fn new(size: (u16, u16), scale: f64, picture: TilesPicture, encoder: &h264::Encoder) -> Result<Self, Error> {
+    fn new(
+        size: (u16, u16),
+        scale: f64,
+        picture: TilesPicture,
+        encoder: &h264::Encoder,
+    ) -> Result<Self, Error> {
         let mut tiles = TilesEncoder::new(size.0, size.1, picture, Box::new(encoder.coder()?))?;
         tiles.set_scale(scale);
-        Ok(Self { encoder: tiles, page: Page::new(size), out: Vec::new() })
+        Ok(Self {
+            encoder: tiles,
+            page: Page::new(size),
+            out: Vec::new(),
+        })
     }
 
     /// Encode what is owed at `now` and draw it: the CPU time of the encode,
@@ -493,7 +613,13 @@ impl Tiles {
 
     /// One captured frame read and encoded, its read's CPU time counted too:
     /// `whole` for a picture the client asks for whole.
-    fn frame(&mut self, pixels: &[u8], changed: Option<&[Rect]>, whole: bool, now: Duration) -> Result<(Duration, Sent), Error> {
+    fn frame(
+        &mut self,
+        pixels: &[u8],
+        changed: Option<&[Rect]>,
+        whole: bool,
+        now: Duration,
+    ) -> Result<(Duration, Sent), Error> {
         let stride = usize::from(self.encoder.size().0) * 4;
         let cpu = ProcessTime::now();
         if whole {
@@ -575,7 +701,18 @@ impl Wlsv {
         let encoder = VideoEncoder::new(&mut coder, w, h)?;
         let made = cpu.elapsed();
         let picture = vec![0; usize::from(w) * 4 * usize::from(h)];
-        Ok((Self { encoder, decoder, started: false, picture, planes: Vec::new(), scratch: Vec::new(), out: Vec::new() }, made))
+        Ok((
+            Self {
+                encoder,
+                decoder,
+                started: false,
+                picture,
+                planes: Vec::new(),
+                scratch: Vec::new(),
+                out: Vec::new(),
+            },
+            made,
+        ))
     }
 
     /// Decode what the last encode appended, if anything: the picture the
@@ -586,7 +723,10 @@ impl Wlsv {
         }
         let (w, h) = self.encoder.size();
         let (w, h) = (usize::from(w), usize::from(h));
-        let picture = self.decoder.decode(&self.out[HEADER..], &mut self.planes)?.ok_or("a WLSV frame decoded to no picture")?;
+        let picture = self
+            .decoder
+            .decode(&self.out[HEADER..], &mut self.planes)?
+            .ok_or("a WLSV frame decoded to no picture")?;
         let (pw, ph) = (picture.width, picture.height);
         if (pw, ph) != (w.next_multiple_of(2), h.next_multiple_of(2)) {
             return Err(format!("a {w}x{h} desktop decoded as {pw}x{ph}").into());
@@ -594,10 +734,29 @@ impl Wlsv {
         let (cw, ch) = picture.chroma();
         let (luma, chroma) = self.planes.split_at(pw * ph);
         let (u, v) = chroma.split_at(cw * ch);
-        let planar = YuvPlanarImage { y_plane: luma, y_stride: pw as u32, u_plane: u, u_stride: cw as u32, v_plane: v, v_stride: cw as u32, width: pw as u32, height: ph as u32 };
+        let planar = YuvPlanarImage {
+            y_plane: luma,
+            y_stride: pw as u32,
+            u_plane: u,
+            u_stride: cw as u32,
+            v_plane: v,
+            v_stride: cw as u32,
+            width: pw as u32,
+            height: ph as u32,
+        };
         self.scratch.resize(pw * ph * 4, 0);
-        yuv::yuv420_to_bgra(&planar, &mut self.scratch, (pw * 4) as u32, YuvRange::Limited, YuvStandardMatrix::Bt601)?;
-        for (to, from) in self.picture.chunks_exact_mut(w * 4).zip(self.scratch.chunks_exact(pw * 4)) {
+        yuv::yuv420_to_bgra(
+            &planar,
+            &mut self.scratch,
+            (pw * 4) as u32,
+            YuvRange::Limited,
+            YuvStandardMatrix::Bt601,
+        )?;
+        for (to, from) in self
+            .picture
+            .chunks_exact_mut(w * 4)
+            .zip(self.scratch.chunks_exact(pw * 4))
+        {
             to.copy_from_slice(&from[..w * 4]);
         }
         Ok(())
@@ -642,7 +801,12 @@ struct Run {
     tiles: Tiles,
 }
 
-fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&mut BufWriter<File>>) -> Result<(), Error> {
+fn bench(
+    path: &Path,
+    args: &Args,
+    encoder: &h264::Encoder,
+    mut frames: Option<&mut BufWriter<File>>,
+) -> Result<(), Error> {
     let name = capture_name(path);
     let mut source = Source::open(path)?;
     let scale = wlcap::named_scale(&path.to_string_lossy());
@@ -665,7 +829,11 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 setup = cost;
                 Some(coder)
             };
-            run = Some(Run { size: frame.size, wlsv: coder, tiles: Tiles::new(frame.size, scale, args.picture(), encoder)? });
+            run = Some(Run {
+                size: frame.size,
+                wlsv: coder,
+                tiles: Tiles::new(frame.size, scale, args.picture(), encoder)?,
+            });
         }
         let run = run.as_mut().expect("just made");
 
@@ -679,14 +847,24 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         if let Some(w) = run.wlsv.as_mut() {
             let cpu = ProcessTime::now();
             w.out.clear();
-            w.encoder.read(frame.pixels, stride, if w.started { frame.changed } else { None })?;
-            let made = w.encoder.encode(!w.started || frame.keyframe, args.quality, &mut w.out)?;
+            w.encoder.read(
+                frame.pixels,
+                stride,
+                if w.started { frame.changed } else { None },
+            )?;
+            let made = w
+                .encoder
+                .encode(!w.started || frame.keyframe, args.quality, &mut w.out)?;
             let wlsv_cpu = cpu.elapsed() + setup;
             w.started = true;
             wlsv.frames += 1;
             wlsv.cpu += wlsv_cpu;
             wlsv.per_frame.push(wlsv_cpu);
-            let wlsv_bytes = if made { (w.out.len() - HEADER) as u64 } else { 0 };
+            let wlsv_bytes = if made {
+                (w.out.len() - HEADER) as u64
+            } else {
+                0
+            };
             wlsv.sent.video += wlsv_bytes;
             if made && h264::nal_types(&w.out[HEADER..]).contains(&5) {
                 wlsv.keyframes += 1;
@@ -697,7 +875,9 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
         }
 
         // The tiles.
-        let (tiles_cpu, sent) = run.tiles.frame(frame.pixels, frame.changed, frame.keyframe && !fresh, now)?;
+        let (tiles_cpu, sent) =
+            run.tiles
+                .frame(frame.pixels, frame.changed, frame.keyframe && !fresh, now)?;
         tiles.frames += 1;
         tiles.cpu += tiles_cpu;
         tiles.per_frame.push(tiles_cpu);
@@ -714,7 +894,8 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
                 frame.changed_pixels(),
-                wlsv_spent.map_or_else(|| "null".to_owned(), |(cpu, _)| cpu.as_micros().to_string()),
+                wlsv_spent
+                    .map_or_else(|| "null".to_owned(), |(cpu, _)| cpu.as_micros().to_string()),
                 wlsv_spent.map_or_else(|| "null".to_owned(), |(_, bytes)| bytes.to_string()),
                 tiles_cpu.as_micros(),
                 sent.bytes(),
@@ -735,7 +916,12 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
 
     // The tiles' tail: the tick on, nothing changing, until nothing is owed.
     let mut ended = last_at;
-    while let Some(at) = run.tiles.encoder.tick_at().filter(|at| *at <= last_at + TAIL) {
+    while let Some(at) = run
+        .tiles
+        .encoder
+        .tick_at()
+        .filter(|at| *at <= last_at + TAIL)
+    {
         let (cost, sent) = run.tiles.encode(at)?;
         tiles.tail_cpu += cost;
         tiles.tail_tick = tiles.tail_tick.max(cost);
@@ -747,18 +933,42 @@ fn bench(path: &Path, args: &Args, encoder: &h264::Encoder, mut frames: Option<&
     tiles.settled = run.tiles.encoder.tick_at().is_none();
     tiles.tail = ended.saturating_sub(last_at);
 
-    let seconds = last_at.saturating_sub(first_at.unwrap_or_default()).as_secs_f64();
+    let seconds = last_at
+        .saturating_sub(first_at.unwrap_or_default())
+        .as_secs_f64();
     wlsv.settled = true;
     if let Some(w) = &run.wlsv {
-        row(&name, "wlsv", args.quality, &wlsv, seconds, compare(&w.picture, &picture));
+        row(
+            &name,
+            "wlsv",
+            args.quality,
+            &wlsv,
+            seconds,
+            compare(&w.picture, &picture),
+        );
     }
-    row(&name, if args.lossless { "lossless" } else { "tiles" }, crate::rfb::QUALITY, &tiles, seconds, compare(&run.tiles.page.canvas, &picture));
+    row(
+        &name,
+        if args.lossless { "lossless" } else { "tiles" },
+        crate::rfb::QUALITY,
+        &tiles,
+        seconds,
+        compare(&run.tiles.page.canvas, &picture),
+    );
     Ok(())
 }
 
 /// A capture's name, without its extensions.
 fn capture_name(path: &Path) -> String {
-    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().trim_end_matches(".zst").trim_end_matches(".wlcap").to_owned())
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| {
+            n.to_string_lossy()
+                .trim_end_matches(".zst")
+                .trim_end_matches(".wlcap")
+                .to_owned()
+        },
+    )
 }
 
 // ── check ────────────────────────────────────────────────────────────────────
@@ -783,7 +993,10 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
         last_at = now;
         let fresh = run.as_ref().is_none_or(|(size, _)| *size != frame.size);
         if fresh {
-            run = Some((frame.size, Tiles::new(frame.size, scale, args.picture(), encoder)?));
+            run = Some((
+                frame.size,
+                Tiles::new(frame.size, scale, args.picture(), encoder)?,
+            ));
         }
         let (_, tiles) = run.as_mut().expect("just made");
         tiles.ticks(now)?;
@@ -809,7 +1022,12 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
     let quiet = tiles.ticks(now)?.1.bytes() + tiles.encode(now)?.1.bytes();
 
     // Redrawn: the whole picture again, every pixel as it was.
-    let whole = [Rect { x: 0, y: 0, width: size.0, height: size.1 }];
+    let whole = [Rect {
+        x: 0,
+        y: 0,
+        width: size.0,
+        height: size.1,
+    }];
     let mut redrawn = 0;
     for _ in 0..REDRAWS {
         now += REDRAW_EVERY;
@@ -820,7 +1038,11 @@ fn check(path: &Path, args: &Args, encoder: &h264::Encoder) -> Result<bool, Erro
 
     let (off, mse) = compare(&tiles.page.canvas, &picture);
     let passed = settled && quiet == 0 && redrawn == 0 && off == 0;
-    let settled_s = if settled { settled_in.as_secs_f64().to_string() } else { "null".to_owned() };
+    let settled_s = if settled {
+        settled_in.as_secs_f64().to_string()
+    } else {
+        "null".to_owned()
+    };
     println!(
         "{{\"capture\":{},\"settled\":{settled},\"settled_s\":{settled_s},\"quiet_bytes\":{quiet},\"redraw_bytes\":{redrawn},\"end_off\":{off},\"end_mse\":{mse},\"pass\":{passed}}}",
         json(&name)
@@ -835,12 +1057,30 @@ fn ms(d: Duration) -> f64 {
 /// One coder's line: `end` what the page
 /// ended off by, its pixels and its mean squared error.
 #[allow(clippy::too_many_arguments)]
-fn row(name: &str, coder: &str, quality: u8, tally: &Tally, seconds: f64, (end_off, end_mse): (u64, f64)) {
+fn row(
+    name: &str,
+    coder: &str,
+    quality: u8,
+    tally: &Tally,
+    seconds: f64,
+    (end_off, end_mse): (u64, f64),
+) {
     let mut per_frame = tally.per_frame.clone();
     per_frame.sort_unstable();
-    let p95 = per_frame.get((per_frame.len() * 95 / 100).min(per_frame.len().saturating_sub(1))).copied().unwrap_or_default();
-    let mean = if tally.frames == 0 { 0.0 } else { ms(per_frame.iter().sum()) / tally.frames as f64 };
-    let held_mse = if tally.frames == 0 { 0.0 } else { tally.mse / tally.frames as f64 };
+    let p95 = per_frame
+        .get((per_frame.len() * 95 / 100).min(per_frame.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or_default();
+    let mean = if tally.frames == 0 {
+        0.0
+    } else {
+        ms(per_frame.iter().sum()) / tally.frames as f64
+    };
+    let held_mse = if tally.frames == 0 {
+        0.0
+    } else {
+        tally.mse / tally.frames as f64
+    };
     println!(
         "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"planar\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),

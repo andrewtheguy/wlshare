@@ -158,16 +158,21 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use log::{debug, info, warn};
-use wlshare_proto::audio::{AudioFormat, Codec, audio_begin, audio_end, audio_rect};
-use wlshare_proto::camera::{CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop};
-use wlshare_proto::density::{from_fixed, output_scale};
-use wlshare_proto::microphone::{microphone_available, microphone_start, microphone_stop};
-use wlshare_proto::outputs::output_list;
-use wlshare_proto::{ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS, ENCODING_VIDEO, PROTOCOL_VERSION, version};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, watch};
+use wlshare_proto::audio::{AudioFormat, Codec, audio_begin, audio_end, audio_rect};
+use wlshare_proto::camera::{
+    CameraFormat, camera_available, camera_keyframe, camera_start, camera_stop,
+};
+use wlshare_proto::density::{from_fixed, output_scale};
+use wlshare_proto::microphone::{microphone_available, microphone_start, microphone_stop};
+use wlshare_proto::outputs::output_list;
+use wlshare_proto::{
+    ENCODING_AUDIO, ENCODING_CAMERA, ENCODING_DENSITY, ENCODING_MICROPHONE, ENCODING_OUTPUTS,
+    ENCODING_VIDEO, PROTOCOL_VERSION, version,
+};
 
 use crate::audio::{Capture, Lease};
 use crate::auth::Login;
@@ -180,15 +185,17 @@ use crate::rfb::msg::{self, ClientMsg, Screen};
 use crate::rfb::pixel::PixelFormat;
 use crate::rfb::rsa_aes::{self, FrameReader, Sealer, ServerKey};
 use crate::rfb::tiles::TilesEncoder;
-use wlshare_proto::tiles::TilesPicture;
 use crate::rfb::video::VideoEncoder;
 use crate::rfb::zrle::{ZrleEncoder, encode_raw_rect};
 use crate::rfb::{
-    ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW, ENCODING_ZRLE,
+    ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA,
+    ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE, ENCODING_RAW,
+    ENCODING_ZRLE,
 };
+use crate::shared::{BESIDE, ClientId, Command, Event, FIRST, Seats, Shared};
 use crate::walk::{Pace, QualityWalk};
 use crate::wlcap;
-use crate::shared::{BESIDE, ClientId, Command, Event, FIRST, Seats, Shared};
+use wlshare_proto::tiles::TilesPicture;
 
 /// What the server offers at the security step, and what it checks the client
 /// against: RSA-AES with a login, or nothing at all, in which case anyone who
@@ -250,7 +257,11 @@ pub enum Reader {
 }
 
 impl AsyncRead for Reader {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Self::Plain(r) => Pin::new(r).poll_read(cx, buf),
             Self::Sealed(r) => Pin::new(r).poll_read(cx, buf),
@@ -280,13 +291,24 @@ impl Writer {
     }
 }
 
-pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: Arc<SessionConfig>) -> anyhow::Result<()> {
+pub async fn run(
+    id: ClientId,
+    socket: TcpStream,
+    shared: Arc<Shared>,
+    config: Arc<SessionConfig>,
+) -> anyhow::Result<()> {
     socket.set_nodelay(true)?;
-    let peer = socket.peer_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let peer = socket
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
     let (reader, writer) = socket.into_split();
-    let (reader, mut writer, beside) = tokio::time::timeout(config.handshake_timeout, handshake(reader, writer, &config, &peer))
-        .await
-        .map_err(|_| anyhow::anyhow!("the handshake took over {:?}", config.handshake_timeout))??;
+    let (reader, mut writer, beside) = tokio::time::timeout(
+        config.handshake_timeout,
+        handshake(reader, writer, &config, &peer),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("the handshake took over {:?}", config.handshake_timeout))??;
     let mut seats = shared.seats.subscribe();
     // Before the join: what the compositor says of the desk as this client
     // takes it is news the session must not miss.
@@ -295,7 +317,10 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
     let desk = if beside {
         shared.command(Command::BesideJoined(id));
         // Its ServerInit names the output it was given, so it waits to be.
-        let joined = seats.wait_for(|seats| seats.beside == id.0 || seats.beside_ended >= id.0).await.context("the compositor thread is gone")?;
+        let joined = seats
+            .wait_for(|seats| seats.beside == id.0 || seats.beside_ended >= id.0)
+            .await
+            .context("the compositor thread is gone")?;
         anyhow::ensure!(joined.beside == id.0, "there is nothing to show beside");
         BESIDE
     } else {
@@ -307,7 +332,10 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
             && !config.output_wait.is_zero()
             && !shared.displays().lists(wanted)
         {
-            info!("client {}: waiting up to {:?} for output {wanted}", id.0, config.output_wait);
+            info!(
+                "client {}: waiting up to {:?} for output {wanted}",
+                id.0, config.output_wait
+            );
             // The desktop is held for as long as this waits, so it waits for
             // nobody who is no longer owed it: a client that left, or one a
             // later connection took the desktop from.
@@ -321,8 +349,14 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
             };
             match arrived {
                 Arrival::Shared => {}
-                Arrival::Elsewhere => info!("client {}: output {wanted} is here, and the desktop stays on the output a client chose", id.0),
-                Arrival::Absent => warn!("client {}: output {wanted} has not appeared; the desktop is the output shared meanwhile", id.0),
+                Arrival::Elsewhere => info!(
+                    "client {}: output {wanted} is here, and the desktop stays on the output a client chose",
+                    id.0
+                ),
+                Arrival::Absent => warn!(
+                    "client {}: output {wanted} has not appeared; the desktop is the output shared meanwhile",
+                    id.0
+                ),
             }
         }
         FIRST
@@ -332,8 +366,19 @@ pub async fn run(id: ClientId, socket: TcpStream, shared: Arc<Shared>, config: A
         let fb = shared.desks[desk].framebuffer.lock().unwrap();
         (fb.width, fb.height)
     };
-    writer.send(&msg::server_init(width, height, &PixelFormat::NATIVE, &config.name)).await?;
-    info!("client {}: authenticated; desktop {width}x{height}{}", id.0, if beside { ", beside" } else { "" });
+    writer
+        .send(&msg::server_init(
+            width,
+            height,
+            &PixelFormat::NATIVE,
+            &config.name,
+        ))
+        .await?;
+    info!(
+        "client {}: authenticated; desktop {width}x{height}{}",
+        id.0,
+        if beside { ", beside" } else { "" }
+    );
 
     let frames = shared.desks[desk].frame_tx.subscribe();
     let mut session = Session::new(id, desk, shared, config, events, frames, (width, height));
@@ -388,7 +433,12 @@ enum Arrival {
 /// `arrivals` was subscribed before the join that may bring the output about,
 /// so its arriving is not missed; the list is read again on every event rather
 /// than trusted to one, since a receiver that lagged has dropped some.
-async fn output_shared(shared: &Shared, wanted: &str, wait: Duration, arrivals: &mut broadcast::Receiver<Event>) -> Arrival {
+async fn output_shared(
+    shared: &Shared,
+    wanted: &str,
+    wait: Duration,
+    arrivals: &mut broadcast::Receiver<Event>,
+) -> Arrival {
     let waiting = async {
         while !shared.displays().lists(wanted) {
             if let Err(broadcast::error::RecvError::Closed) = arrivals.recv().await {
@@ -418,16 +468,26 @@ async fn peer_closed(socket: &TcpStream) {
     std::future::pending().await
 }
 
-async fn superseded(seats: &mut watch::Receiver<Seats>, id: ClientId, beside: bool) -> anyhow::Result<anyhow::Error> {
+async fn superseded(
+    seats: &mut watch::Receiver<Seats>,
+    id: ClientId,
+    beside: bool,
+) -> anyhow::Result<anyhow::Error> {
     loop {
         let current = *seats.borrow_and_update();
         if beside && current.beside_ended >= id.0 {
             return Ok(anyhow::anyhow!("its display beside ended"));
         }
         if !beside && current.holder > id.0 {
-            return Ok(anyhow::anyhow!("client {} took the desktop", current.holder));
+            return Ok(anyhow::anyhow!(
+                "client {} took the desktop",
+                current.holder
+            ));
         }
-        seats.changed().await.context("the compositor thread is gone")?;
+        seats
+            .changed()
+            .await
+            .context("the compositor thread is gone")?;
     }
 }
 
@@ -435,37 +495,73 @@ async fn superseded(seats: &mut watch::Receiver<Seats>, id: ClientId, beside: bo
 /// the session runs over, and whether the ClientInit asked to be shown another
 /// output beside the client on the desktop ([`wlshare_proto::CLIENT_INIT_BESIDE`]). Any
 /// other value takes the desktop, RFB's shared flag included.
-async fn handshake(mut reader: OwnedReadHalf, mut writer: OwnedWriteHalf, config: &SessionConfig, peer: &str) -> anyhow::Result<(Reader, Writer, bool)> {
+async fn handshake(
+    mut reader: OwnedReadHalf,
+    mut writer: OwnedWriteHalf,
+    config: &SessionConfig,
+    peer: &str,
+) -> anyhow::Result<(Reader, Writer, bool)> {
     writer.write_all(msg::PROTOCOL_VERSION).await?;
     let mut version = [0u8; 12];
-    reader.read_exact(&mut version).await.context("reading the client's version")?;
+    reader
+        .read_exact(&mut version)
+        .await
+        .context("reading the client's version")?;
     if &version != msg::PROTOCOL_VERSION {
         let reason = "this server speaks RFB 3.8 only";
         writer.write_all(&msg::security_refusal(reason)).await?;
-        anyhow::bail!("client version {:?}; {reason}", String::from_utf8_lossy(&version).trim_end());
+        anyhow::bail!(
+            "client version {:?}; {reason}",
+            String::from_utf8_lossy(&version).trim_end()
+        );
     }
     let offered = config.security.offered();
     writer.write_all(&msg::security_types(&offered)).await?;
-    let chosen = reader.read_u8().await.context("reading the security type")?;
+    let chosen = reader
+        .read_u8()
+        .await
+        .context("reading the security type")?;
     if !offered.contains(&chosen) {
-        writer.write_all(&msg::security_failed("unsupported security type")).await?;
+        writer
+            .write_all(&msg::security_failed("unsupported security type"))
+            .await?;
         anyhow::bail!("client chose security type {chosen}, not one of {offered:?}");
     }
     // `chosen` is one of `offered`, so the branch it names is configured.
     let (mut reader, mut writer) = match chosen {
-        msg::SECURITY_NONE => (Reader::Plain(reader), Writer { inner: writer, sealer: None }),
+        msg::SECURITY_NONE => (
+            Reader::Plain(reader),
+            Writer {
+                inner: writer,
+                sealer: None,
+            },
+        ),
         _ => {
-            let RsaAes { key, login } = config.security.rsa_aes.as_ref().expect("RSA-AES was offered");
+            let RsaAes { key, login } = config
+                .security
+                .rsa_aes
+                .as_ref()
+                .expect("RSA-AES was offered");
             let strength = rsa_aes::Strength::of(chosen).expect("one of the two offered");
-            let (credentials, session) = rsa_aes::authenticate(&mut reader, &mut writer, strength, key, login.subtype()).await.context("RSA-AES key exchange")?;
+            let (credentials, session) =
+                rsa_aes::authenticate(&mut reader, &mut writer, strength, key, login.subtype())
+                    .await
+                    .context("RSA-AES key exchange")?;
             // Everything from here on is inside the frames, the refusal included.
-            let mut writer = Writer { inner: writer, sealer: Some(session.sealer) };
+            let mut writer = Writer {
+                inner: writer,
+                sealer: Some(session.sealer),
+            };
             let reader = Reader::Sealed(FrameReader::new(reader, session.opener));
             let (login, peer) = (login.clone(), peer.to_owned());
-            let checked = tokio::task::spawn_blocking(move || login.check(&credentials, &peer)).await.context("the login check did not finish")?;
+            let checked = tokio::task::spawn_blocking(move || login.check(&credentials, &peer))
+                .await
+                .context("the login check did not finish")?;
             if let Err(refused) = checked {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                writer.send(&msg::security_failed("authentication failed")).await?;
+                writer
+                    .send(&msg::security_failed("authentication failed"))
+                    .await?;
                 anyhow::bail!("login refused: {refused}");
             }
             (reader, writer)
@@ -598,7 +694,15 @@ struct Piece {
 impl Session {
     /// A session on `desk` before its first SetEncodings: no encoding listed,
     /// the client holding a desktop of `known_size`.
-    fn new(id: ClientId, desk: usize, shared: Arc<Shared>, config: Arc<SessionConfig>, events: broadcast::Receiver<Event>, frames: watch::Receiver<u64>, known_size: (u16, u16)) -> Self {
+    fn new(
+        id: ClientId,
+        desk: usize,
+        shared: Arc<Shared>,
+        config: Arc<SessionConfig>,
+        events: broadcast::Receiver<Event>,
+        frames: watch::Receiver<u64>,
+        known_size: (u16, u16),
+    ) -> Self {
         let walk = QualityWalk::new(crate::rfb::QUALITY, config.capture, true);
         Self {
             id,
@@ -714,9 +818,15 @@ impl Session {
     async fn plug_microphone(&mut self) -> anyhow::Result<()> {
         self.unplug_microphone().await?;
         let id = self.id;
-        match tokio::task::spawn_blocking(move || Microphone::plug(id)).await.context("the microphone thread did not start")? {
+        match tokio::task::spawn_blocking(move || Microphone::plug(id))
+            .await
+            .context("the microphone thread did not start")?
+        {
             Ok(microphone) => self.microphone = Some(microphone),
-            Err(e) => warn!("client {}: the microphone could not be plugged: {e:#}", self.id.0),
+            Err(e) => warn!(
+                "client {}: the microphone could not be plugged: {e:#}",
+                self.id.0
+            ),
         }
         Ok(())
     }
@@ -725,7 +835,9 @@ impl Session {
     async fn unplug_microphone(&mut self) -> anyhow::Result<()> {
         if let Some(microphone) = self.microphone.take() {
             // Unplugging joins PipeWire's thread, which is a blocking wait.
-            tokio::task::spawn_blocking(move || drop(microphone)).await.context("the microphone thread did not stop")?;
+            tokio::task::spawn_blocking(move || drop(microphone))
+                .await
+                .context("the microphone thread did not stop")?;
         }
         Ok(())
     }
@@ -733,8 +845,14 @@ impl Session {
     /// Tell the client what the desktop decided about its camera. A camera that
     /// failed is told to stop, so the client encodes nothing more for it, and
     /// unplugged.
-    async fn send_camera_signal(&mut self, signal: CameraSignal, writer: &mut Writer) -> anyhow::Result<()> {
-        let Some(camera) = &self.camera else { return Ok(()) };
+    async fn send_camera_signal(
+        &mut self,
+        signal: CameraSignal,
+        writer: &mut Writer,
+    ) -> anyhow::Result<()> {
+        let Some(camera) = &self.camera else {
+            return Ok(());
+        };
         match signal {
             CameraSignal::Start => writer.send(&camera_start(camera.format)).await?,
             CameraSignal::Stop => writer.send(&camera_stop()).await?,
@@ -753,9 +871,15 @@ impl Session {
     async fn plug_camera(&mut self, format: CameraFormat) -> anyhow::Result<()> {
         self.unplug_camera().await?;
         let id = self.id;
-        match tokio::task::spawn_blocking(move || Camera::plug(id, format)).await.context("the camera thread did not start")? {
+        match tokio::task::spawn_blocking(move || Camera::plug(id, format))
+            .await
+            .context("the camera thread did not start")?
+        {
             Ok(camera) => self.camera = Some(camera),
-            Err(e) => warn!("client {}: the camera could not be plugged: {e:#}", self.id.0),
+            Err(e) => warn!(
+                "client {}: the camera could not be plugged: {e:#}",
+                self.id.0
+            ),
         }
         Ok(())
     }
@@ -764,7 +888,9 @@ impl Session {
     async fn unplug_camera(&mut self) -> anyhow::Result<()> {
         if let Some(camera) = self.camera.take() {
             // Unplugging joins PipeWire's thread, which is a blocking wait.
-            tokio::task::spawn_blocking(move || drop(camera)).await.context("the camera thread did not stop")?;
+            tokio::task::spawn_blocking(move || drop(camera))
+                .await
+                .context("the camera thread did not stop")?;
         }
         Ok(())
     }
@@ -781,8 +907,16 @@ impl Session {
     /// cannot be opened is logged and leaves the client without sound, not
     /// without a desktop.
     async fn start_audio(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
-        let (id, codec, format, bitrate) = (self.id, self.audio_codec, self.audio_format, self.audio_bitrate);
-        match tokio::task::spawn_blocking(move || Capture::start(id, codec, format, bitrate)).await.context("the audio thread did not start")? {
+        let (id, codec, format, bitrate) = (
+            self.id,
+            self.audio_codec,
+            self.audio_format,
+            self.audio_bitrate,
+        );
+        match tokio::task::spawn_blocking(move || Capture::start(id, codec, format, bitrate))
+            .await
+            .context("the audio thread did not start")?
+        {
             Ok(capture) => {
                 self.audio = Some(capture);
                 writer.send(&audio_begin()).await?;
@@ -796,7 +930,9 @@ impl Session {
     async fn stop_audio(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
         if let Some(capture) = self.audio.take() {
             // Closing joins PipeWire's thread, which is a blocking wait.
-            tokio::task::spawn_blocking(move || drop(capture)).await.context("the audio thread did not stop")?;
+            tokio::task::spawn_blocking(move || drop(capture))
+                .await
+                .context("the audio thread did not stop")?;
             writer.send(&audio_end()).await?;
             info!("client {}: audio stopped", self.id.0);
         }
@@ -810,7 +946,9 @@ impl Session {
         if self.audio.is_none() {
             return Ok(());
         }
-        let speaker = tokio::task::spawn_blocking(Lease::take).await.context("the speaker thread did not start")??;
+        let speaker = tokio::task::spawn_blocking(Lease::take)
+            .await
+            .context("the speaker thread did not start")??;
         let restarted = async {
             self.stop_audio(writer).await?;
             self.start_audio(writer).await
@@ -818,14 +956,18 @@ impl Session {
         .await;
         // The last hold, when the new capture did not start, joins the
         // speaker's thread.
-        tokio::task::spawn_blocking(move || drop(speaker)).await.context("the speaker thread did not stop")?;
+        tokio::task::spawn_blocking(move || drop(speaker))
+            .await
+            .context("the speaker thread did not stop")?;
         restarted
     }
 
     async fn handle(&mut self, message: ClientMsg, writer: &mut Writer) -> anyhow::Result<()> {
         match message {
             ClientMsg::SetPixelFormat(format) => {
-                format.check().map_err(|e| anyhow::anyhow!("the client's pixel format cannot be produced: {e}"))?;
+                format.check().map_err(|e| {
+                    anyhow::anyhow!("the client's pixel format cannot be produced: {e}")
+                })?;
                 debug!("client {}: pixel format {format:?}", self.id.0);
                 self.format = format;
             }
@@ -835,7 +977,8 @@ impl Session {
                 // Its first answer goes before anything else is sent, so that
                 // the client reads it first, and a client of another version
                 // is told this one's before the connection closes.
-                let listed = version::listed(&encodings).context("reading the protocol version the client lists")?;
+                let listed = version::listed(&encodings)
+                    .context("reading the protocol version the client lists")?;
                 if let Some(listed) = listed {
                     if !self.version_answered {
                         self.version_answered = true;
@@ -862,7 +1005,12 @@ impl Session {
                 }
                 let video = has(ENCODING_VIDEO);
                 if video && !self.use_video {
-                    info!("client {}: asked for video, H.264 by {} up to quality {}, walked by its lag", self.id.0, self.config.h264.name(), crate::rfb::QUALITY);
+                    info!(
+                        "client {}: asked for video, H.264 by {} up to quality {}, walked by its lag",
+                        self.id.0,
+                        self.config.h264.name(),
+                        crate::rfb::QUALITY
+                    );
                 }
                 if video && (!self.use_video || self.use_tiles) {
                     // The walk was the tiles picture's, where that was listed.
@@ -879,18 +1027,34 @@ impl Session {
                 }
                 self.use_video = video;
                 // Fatal beside the video: no client sends such a list.
-                let listed = TilesPicture::listed(&encodings).context("reading the tiles picture the client lists")?;
+                let listed = TilesPicture::listed(&encodings)
+                    .context("reading the tiles picture the client lists")?;
                 if let Some(picture) = listed {
                     let changed = !self.use_tiles || picture != self.tiles_picture;
                     if changed {
                         match picture {
-                            TilesPicture::Progressive => info!("client {}: asked for progressive tiles up to quality {}, walked by its lag", self.id.0, crate::rfb::QUALITY),
-                            TilesPicture::Held => info!("client {}: asked for tiles at quality {}, held there, H.264 by {}", self.id.0, crate::rfb::QUALITY, self.config.h264.name()),
-                            TilesPicture::Lossless => info!("client {}: asked for lossless tiles, their frames walked by its lag", self.id.0),
+                            TilesPicture::Progressive => info!(
+                                "client {}: asked for progressive tiles up to quality {}, walked by its lag",
+                                self.id.0,
+                                crate::rfb::QUALITY
+                            ),
+                            TilesPicture::Held => info!(
+                                "client {}: asked for tiles at quality {}, held there, H.264 by {}",
+                                self.id.0,
+                                crate::rfb::QUALITY,
+                                self.config.h264.name()
+                            ),
+                            TilesPicture::Lossless => info!(
+                                "client {}: asked for lossless tiles, their frames walked by its lag",
+                                self.id.0
+                            ),
                         }
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
-                        info!("client {}: the tiles picture is not captured: a capture is the video stream's", self.id.0);
+                        info!(
+                            "client {}: the tiles picture is not captured: a capture is the video stream's",
+                            self.id.0
+                        );
                     }
                     if !self.use_tiles {
                         self.tiles = None;
@@ -923,9 +1087,13 @@ impl Session {
                 }
                 self.use_tiles = listed.is_some();
                 if !self.use_video && !self.use_tiles && !self.use_zrle && !has(ENCODING_RAW) {
-                    warn!("client {}: lists neither video, tiles, ZRLE nor Raw; sending Raw", self.id.0);
+                    warn!(
+                        "client {}: lists neither video, tiles, ZRLE nor Raw; sending Raw",
+                        self.id.0
+                    );
                 }
-                let announced_continuous = !self.continuous_supported && has(ENCODING_CONTINUOUS_UPDATES);
+                let announced_continuous =
+                    !self.continuous_supported && has(ENCODING_CONTINUOUS_UPDATES);
                 self.continuous_supported |= has(ENCODING_CONTINUOUS_UPDATES);
                 self.fence_supported = has(ENCODING_FENCE);
                 if !self.eds_supported && has(ENCODING_EXTENDED_DESKTOP_SIZE) {
@@ -1024,7 +1192,11 @@ impl Session {
                 }
                 if self.clipboard.is_some() {
                     // The extension requires it of every SetEncodings listing it.
-                    writer.send(&msg::server_extended_cut_text(&clipboard::caps(&Caps::WLSHARE))).await?;
+                    writer
+                        .send(&msg::server_extended_cut_text(&clipboard::caps(
+                            &Caps::WLSHARE,
+                        )))
+                        .await?;
                 }
             }
             ClientMsg::FramebufferUpdateRequest { incremental, .. } => {
@@ -1038,9 +1210,22 @@ impl Session {
                     _ => incremental,
                 });
             }
-            ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key { client: self.id, keysym, down }),
-            ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer { client: self.id, buttons, x, y }),
-            ClientMsg::Scroll { dx, dy } => self.shared.command(Command::Scroll { client: self.id, dx, dy }),
+            ClientMsg::KeyEvent { down, keysym } => self.shared.command(Command::Key {
+                client: self.id,
+                keysym,
+                down,
+            }),
+            ClientMsg::PointerEvent { buttons, x, y } => self.shared.command(Command::Pointer {
+                client: self.id,
+                buttons,
+                x,
+                y,
+            }),
+            ClientMsg::Scroll { dx, dy } => self.shared.command(Command::Scroll {
+                client: self.id,
+                dx,
+                dy,
+            }),
             // Without the tiles picture there is no record of a cache to forget.
             // A client whose cache is gone holds nothing else to draw an update
             // on either, so the next is the picture whole, whether the request
@@ -1053,20 +1238,28 @@ impl Session {
                     self.seen = 0;
                 }
             }
-            ClientMsg::CutText(_) => debug!("client {}: latin-1 cut text, which is not spoken here; ignored", self.id.0),
+            ClientMsg::CutText(_) => debug!(
+                "client {}: latin-1 cut text, which is not spoken here; ignored",
+                self.id.0
+            ),
             ClientMsg::ExtendedCutText(body) => self.handle_clipboard(&body, writer).await?,
             ClientMsg::EnableContinuousUpdates { enable, .. } => {
                 self.continuous = enable && self.continuous_supported;
                 if !enable {
                     writer.send(&msg::end_of_continuous_updates()).await?;
                 }
-                debug!("client {}: continuous updates {}", self.id.0, if self.continuous { "on" } else { "off" });
+                debug!(
+                    "client {}: continuous updates {}",
+                    self.id.0,
+                    if self.continuous { "on" } else { "off" }
+                );
             }
             ClientMsg::Fence { flags, payload } => {
                 if flags & msg::FENCE_REQUEST != 0 {
                     // The client's own fence: nothing is reordered here, so every
                     // flag it asks for holds, and the echo is the whole answer.
-                    let echo = flags & (msg::FENCE_BLOCK_BEFORE | msg::FENCE_BLOCK_AFTER | msg::FENCE_SYNC_NEXT);
+                    let echo = flags
+                        & (msg::FENCE_BLOCK_BEFORE | msg::FENCE_BLOCK_AFTER | msg::FENCE_SYNC_NEXT);
                     writer.send(&msg::fence(echo, &payload)).await?;
                 } else {
                     self.fence_outstanding = false;
@@ -1078,15 +1271,26 @@ impl Session {
                             encoder.delivered(delivery.saturating_sub(self.walk.floor()));
                         }
                         if moved.is_some() {
-                            debug!("client {}: the frame before took {}ms to deliver", self.id.0, delivery.as_millis());
+                            debug!(
+                                "client {}: the frame before took {}ms to deliver",
+                                self.id.0,
+                                delivery.as_millis()
+                            );
                         }
                         self.follow_walk(moved);
                     }
                 }
             }
-            ClientMsg::SetDesktopSize { width, height, screens } => {
+            ClientMsg::SetDesktopSize {
+                width,
+                height,
+                screens,
+            } => {
                 if !self.eds_supported {
-                    warn!("client {}: SetDesktopSize without ExtendedDesktopSize; ignored", self.id.0);
+                    warn!(
+                        "client {}: SetDesktopSize without ExtendedDesktopSize; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
                 let current = {
@@ -1094,79 +1298,152 @@ impl Session {
                     (fb.width, fb.height)
                 };
                 if screens.len() != 1 || width == 0 || height == 0 {
-                    return self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_INVALID_LAYOUT, current).await;
+                    return self
+                        .send_eds(
+                            writer,
+                            msg::EDS_REASON_THIS_CLIENT,
+                            msg::EDS_STATUS_INVALID_LAYOUT,
+                            current,
+                        )
+                        .await;
                 }
                 if (width, height) == current {
-                    return self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_OK, current).await;
+                    return self
+                        .send_eds(
+                            writer,
+                            msg::EDS_REASON_THIS_CLIENT,
+                            msg::EDS_STATUS_OK,
+                            current,
+                        )
+                        .await;
                 }
-                self.shared.command(Command::Resize { client: self.id, width, height });
+                self.shared.command(Command::Resize {
+                    client: self.id,
+                    width,
+                    height,
+                });
             }
-            ClientMsg::ClientDensity { width, height, fixed } => {
+            ClientMsg::ClientDensity {
+                width,
+                height,
+                fixed,
+            } => {
                 if !self.density {
-                    debug!("client {}: a density declaration without the extension; ignored", self.id.0);
+                    debug!(
+                        "client {}: a density declaration without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
                 let scale = from_fixed(fixed);
-                info!("client {}: declares a display density of {scale:.2} for {width}x{height} pixels", self.id.0);
+                info!(
+                    "client {}: declares a display density of {scale:.2} for {width}x{height} pixels",
+                    self.id.0
+                );
                 if !(0.5..=8.0).contains(&scale) {
-                    warn!("client {}: density {scale:.2} is out of range; reporting the output as it is", self.id.0);
+                    warn!(
+                        "client {}: density {scale:.2} is out of range; reporting the output as it is",
+                        self.id.0
+                    );
                     return self.send_geometry(writer).await;
                 }
                 if width == 0 || height == 0 {
-                    warn!("client {}: a declaration of {width}x{height} pixels; reporting the output as it is", self.id.0);
+                    warn!(
+                        "client {}: a declaration of {width}x{height} pixels; reporting the output as it is",
+                        self.id.0
+                    );
                     return self.send_geometry(writer).await;
                 }
                 if !self.eds_supported {
                     // The resize could not be told to it, as a SetDesktopSize's
                     // could not.
-                    warn!("client {}: a density declaration without ExtendedDesktopSize; reporting the output as it is", self.id.0);
+                    warn!(
+                        "client {}: a density declaration without ExtendedDesktopSize; reporting the output as it is",
+                        self.id.0
+                    );
                     return self.send_geometry(writer).await;
                 }
-                self.shared.command(Command::Declare { client: self.id, width, height, scale });
+                self.shared.command(Command::Declare {
+                    client: self.id,
+                    width,
+                    height,
+                    scale,
+                });
             }
             ClientMsg::SelectOutput { id } => {
                 if !self.outputs {
-                    debug!("client {}: an output selection without the extension; ignored", self.id.0);
+                    debug!(
+                        "client {}: an output selection without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
                 info!("client {}: asks for output {id}", self.id.0);
-                self.shared.command(Command::SelectOutput { client: self.id, id });
+                self.shared.command(Command::SelectOutput {
+                    client: self.id,
+                    id,
+                });
             }
             ClientMsg::VirtualDisplays { count } => {
                 if !self.outputs {
-                    debug!("client {}: a virtual displays request without the extension; ignored", self.id.0);
+                    debug!(
+                        "client {}: a virtual displays request without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
-                info!("client {}: asks for {count} virtual display{}", self.id.0, if count == 1 { "" } else { "s" });
-                self.shared.command(Command::VirtualDisplays { client: self.id, count });
+                info!(
+                    "client {}: asks for {count} virtual display{}",
+                    self.id.0,
+                    if count == 1 { "" } else { "s" }
+                );
+                self.shared.command(Command::VirtualDisplays {
+                    client: self.id,
+                    count,
+                });
             }
             ClientMsg::AudioEnable => {
                 if !self.audio_supported {
-                    warn!("client {}: enables audio without the extension; ignored", self.id.0);
+                    warn!(
+                        "client {}: enables audio without the extension; ignored",
+                        self.id.0
+                    );
                 } else if self.audio.is_none() {
                     self.start_audio(writer).await?;
                 }
             }
             ClientMsg::AudioDisable => {
                 if !self.audio_supported {
-                    warn!("client {}: disables audio without the extension; ignored", self.id.0);
+                    warn!(
+                        "client {}: disables audio without the extension; ignored",
+                        self.id.0
+                    );
                 } else {
                     self.stop_audio(writer).await?;
                 }
             }
             ClientMsg::AudioFormat(format) => {
                 if !self.audio_supported {
-                    warn!("client {}: sets an audio format without the extension; ignored", self.id.0);
+                    warn!(
+                        "client {}: sets an audio format without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
-                debug!("client {}: wants audio as {:?} x{} at {} Hz", self.id.0, format.sample, format.channels, format.frequency);
+                debug!(
+                    "client {}: wants audio as {:?} x{} at {} Hz",
+                    self.id.0, format.sample, format.channels, format.frequency
+                );
                 self.audio_format = format;
                 // A format set while the stream runs restarts it in the new one.
                 self.restart_audio(writer).await?;
             }
             ClientMsg::AudioBitrate(bitrate) => {
                 if !self.audio_supported {
-                    warn!("client {}: sets an audio bitrate without the extension; ignored", self.id.0);
+                    warn!(
+                        "client {}: sets an audio bitrate without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
                 debug!("client {}: wants Opus at {bitrate} bit/s", self.id.0);
@@ -1179,7 +1456,10 @@ impl Session {
             }
             ClientMsg::CameraPlug(format) => {
                 if !self.camera_supported {
-                    warn!("client {}: plugs a camera without the extension; ignored", self.id.0);
+                    warn!(
+                        "client {}: plugs a camera without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
                 self.plug_camera(format).await?;
@@ -1188,11 +1468,17 @@ impl Session {
             ClientMsg::CameraSample { keyframe, data } => match &mut self.camera {
                 Some(camera) => camera.sample(data, keyframe),
                 // Samples already on the wire when the camera went.
-                None => debug!("client {}: a camera sample with no camera plugged; dropped", self.id.0),
+                None => debug!(
+                    "client {}: a camera sample with no camera plugged; dropped",
+                    self.id.0
+                ),
             },
             ClientMsg::MicrophonePlug => {
                 if !self.microphone_supported {
-                    warn!("client {}: plugs a microphone without the extension; ignored", self.id.0);
+                    warn!(
+                        "client {}: plugs a microphone without the extension; ignored",
+                        self.id.0
+                    );
                     return Ok(());
                 }
                 self.plug_microphone().await?;
@@ -1211,7 +1497,10 @@ impl Session {
                 match &self.microphone {
                     Some(microphone) => microphone.sample(&pcm),
                     // Samples already on the wire when the microphone went.
-                    None => debug!("client {}: microphone samples with no microphone plugged; dropped", self.id.0),
+                    None => debug!(
+                        "client {}: microphone samples with no microphone plugged; dropped",
+                        self.id.0
+                    ),
                 }
             }
         }
@@ -1231,7 +1520,8 @@ impl Session {
                         let fb = self.shared.desks[self.desk].framebuffer.lock().unwrap();
                         (fb.width, fb.height)
                     };
-                    self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, status, current).await?;
+                    self.send_eds(writer, msg::EDS_REASON_THIS_CLIENT, status, current)
+                        .await?;
                 }
             }
             Event::Outputs => {
@@ -1254,7 +1544,10 @@ impl Session {
     /// is dropped rather than the connection: it was framed, and is consumed.
     async fn handle_clipboard(&mut self, body: &[u8], writer: &mut Writer) -> anyhow::Result<()> {
         let Some(caps) = self.clipboard else {
-            debug!("client {}: an extended cut text without listing the extension; ignored", self.id.0);
+            debug!(
+                "client {}: an extended cut text without listing the extension; ignored",
+                self.id.0
+            );
             return Ok(());
         };
         let message = match clipboard::parse(body) {
@@ -1273,14 +1566,25 @@ impl Session {
             // what is not text; the desktop's is left as it is.
             ClipboardMessage::Notify { formats } => {
                 if formats & clipboard::FORMAT_TEXT != 0 && caps.takes(clipboard::ACTION_REQUEST) {
-                    writer.send(&msg::server_extended_cut_text(&clipboard::request())).await?;
+                    writer
+                        .send(&msg::server_extended_cut_text(&clipboard::request()))
+                        .await?;
                 }
             }
             ClipboardMessage::Provide { text: Some(text) } => {
-                debug!("client {}: {} bytes for the clipboard", self.id.0, text.len());
-                self.shared.command(Command::SetClipboard { client: self.id, text });
+                debug!(
+                    "client {}: {} bytes for the clipboard",
+                    self.id.0,
+                    text.len()
+                );
+                self.shared.command(Command::SetClipboard {
+                    client: self.id,
+                    text,
+                });
             }
-            ClipboardMessage::Provide { text: None } => debug!("client {}: a clipboard with no text; ignored", self.id.0),
+            ClipboardMessage::Provide { text: None } => {
+                debug!("client {}: a clipboard with no text; ignored", self.id.0)
+            }
             ClipboardMessage::Request { formats } => {
                 if formats & clipboard::FORMAT_TEXT != 0 && caps.takes(clipboard::ACTION_PROVIDE) {
                     let text = self.shared.clipboard();
@@ -1293,7 +1597,9 @@ impl Session {
             ClipboardMessage::Peek => {
                 if caps.takes(clipboard::ACTION_NOTIFY) {
                     let has_text = !self.shared.clipboard().is_empty();
-                    writer.send(&msg::server_extended_cut_text(&clipboard::notify(has_text))).await?;
+                    writer
+                        .send(&msg::server_extended_cut_text(&clipboard::notify(has_text)))
+                        .await?;
                 }
             }
         }
@@ -1303,14 +1609,22 @@ impl Session {
     /// Tell the client the desktop's clipboard changed: a notify, or — to a
     /// client that takes no notify — the text itself, if it takes that unasked.
     async fn announce_clipboard(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
-        let Some(caps) = self.clipboard else { return Ok(()) };
+        let Some(caps) = self.clipboard else {
+            return Ok(());
+        };
         let text = self.shared.clipboard();
         if caps.takes(clipboard::ACTION_NOTIFY) {
-            writer.send(&msg::server_extended_cut_text(&clipboard::notify(!text.is_empty()))).await?;
+            writer
+                .send(&msg::server_extended_cut_text(&clipboard::notify(
+                    !text.is_empty(),
+                )))
+                .await?;
         } else if caps.takes(clipboard::ACTION_PROVIDE)
             && caps.takes_text()
             && !text.is_empty()
-            && caps.text_size.is_some_and(|size| text.len() <= size as usize)
+            && caps
+                .text_size
+                .is_some_and(|size| text.len() <= size as usize)
             && let Ok(body) = clipboard::provide(&text)
         {
             writer.send(&msg::server_extended_cut_text(&body)).await?;
@@ -1320,23 +1634,50 @@ impl Session {
 
     async fn send_geometry(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
         let g = self.shared.desks[self.desk].geometry();
-        debug!("client {}: reporting {}x{} at scale {:.2}", self.id.0, g.width, g.height, g.scale);
-        writer.send(&output_scale(g.width, g.height, g.scale)).await?;
+        debug!(
+            "client {}: reporting {}x{} at scale {:.2}",
+            self.id.0, g.width, g.height, g.scale
+        );
+        writer
+            .send(&output_scale(g.width, g.height, g.scale))
+            .await?;
         Ok(())
     }
 
     async fn send_outputs(&mut self, writer: &mut Writer) -> anyhow::Result<()> {
         let displays = self.shared.displays();
         let active = displays.active[self.desk];
-        debug!("client {}: listing {} outputs, sharing id {active}", self.id.0, displays.entries.len());
-        writer.send(&output_list(active, self.shared.most_virtual_displays, &displays.entries)).await?;
+        debug!(
+            "client {}: listing {} outputs, sharing id {active}",
+            self.id.0,
+            displays.entries.len()
+        );
+        writer
+            .send(&output_list(
+                active,
+                self.shared.most_virtual_displays,
+                &displays.entries,
+            ))
+            .await?;
         Ok(())
     }
 
     /// One ExtendedDesktopSize rectangle as its own update.
-    async fn send_eds(&mut self, writer: &mut Writer, reason: u16, status: u16, size: (u16, u16)) -> anyhow::Result<()> {
+    async fn send_eds(
+        &mut self,
+        writer: &mut Writer,
+        reason: u16,
+        status: u16,
+        size: (u16, u16),
+    ) -> anyhow::Result<()> {
         let mut update = msg::update_header(1).to_vec();
-        update.extend_from_slice(&msg::extended_desktop_size_rect(reason, status, size.0, size.1, &[Screen::whole(size.0, size.1)]));
+        update.extend_from_slice(&msg::extended_desktop_size_rect(
+            reason,
+            status,
+            size.0,
+            size.1,
+            &[Screen::whole(size.0, size.1)],
+        ));
         writer.send(&update).await?;
         Ok(())
     }
@@ -1366,7 +1707,8 @@ impl Session {
         if self.announce_eds {
             self.announce_eds = false;
             let size = self.known_size;
-            self.send_eds(writer, msg::EDS_REASON_SERVER, msg::EDS_STATUS_OK, size).await?;
+            self.send_eds(writer, msg::EDS_REASON_SERVER, msg::EDS_STATUS_OK, size)
+                .await?;
         }
         if self.announce_audio {
             self.announce_audio = false;
@@ -1395,7 +1737,13 @@ impl Session {
 
         // A framebuffer with nothing in it ends the tiles picture's streams,
         // whose ends are owed now rather than with the picture that fills it.
-        if self.use_tiles && !self.shared.desks[self.desk].framebuffer.lock().unwrap().painted {
+        if self.use_tiles
+            && !self.shared.desks[self.desk]
+                .framebuffer
+                .lock()
+                .unwrap()
+                .painted
+        {
             if let Some(encoder) = &mut self.tiles {
                 encoder.forget();
             }
@@ -1443,15 +1791,27 @@ impl Session {
                         }
                         break fb;
                     }
-                    if self.tiles.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
+                    if self
+                        .tiles
+                        .as_ref()
+                        .is_some_and(|encoder| encoder.size() == (width, height))
+                    {
                         break fb;
                     }
                     drop(fb);
                     // Opening a VA-API device blocks, as coding does.
                     let coder = tokio::task::block_in_place(|| self.config.h264.coder())
-                        .with_context(|| format!("opening the H.264 encoder ({}) for the tiles picture", self.config.h264.name()))?;
-                    let mut encoder = TilesEncoder::new(width, height, self.tiles_picture, Box::new(coder))
-                        .with_context(|| format!("starting the tiles picture of a {width}x{height} desktop"))?;
+                        .with_context(|| {
+                            format!(
+                                "opening the H.264 encoder ({}) for the tiles picture",
+                                self.config.h264.name()
+                            )
+                        })?;
+                    let mut encoder =
+                        TilesEncoder::new(width, height, self.tiles_picture, Box::new(coder))
+                            .with_context(|| {
+                                format!("starting the tiles picture of a {width}x{height} desktop")
+                            })?;
                     let (quality, coarse) = self.tiles_pace();
                     encoder.set_pace(quality, coarse);
                     // The client keeps its cache of tiles through the new
@@ -1462,15 +1822,28 @@ impl Session {
                     self.tiles = Some(encoder);
                     continue;
                 }
-                if !self.use_video || !fb.painted || self.video.as_ref().is_some_and(|encoder| encoder.size() == (width, height)) {
+                if !self.use_video
+                    || !fb.painted
+                    || self
+                        .video
+                        .as_ref()
+                        .is_some_and(|encoder| encoder.size() == (width, height))
+                {
                     break fb;
                 }
                 drop(fb);
                 // Opening a VA-API device and an encoder on it blocks, as coding does.
                 let h264 = &self.config.h264;
                 let encoder = tokio::task::block_in_place(|| {
-                    let mut coder = h264.coder().with_context(|| format!("opening the H.264 encoder ({}) for the video stream", h264.name()))?;
-                    VideoEncoder::new(&mut coder, width, height).with_context(|| format!("starting the video stream of a {width}x{height} desktop"))
+                    let mut coder = h264.coder().with_context(|| {
+                        format!(
+                            "opening the H.264 encoder ({}) for the video stream",
+                            h264.name()
+                        )
+                    })?;
+                    VideoEncoder::new(&mut coder, width, height).with_context(|| {
+                        format!("starting the video stream of a {width}x{height} desktop")
+                    })
                 })?;
                 self.video = Some(encoder);
                 self.keyframe_owed = true;
@@ -1492,7 +1865,12 @@ impl Session {
             // The tiles picture owes what its tick looks for whether or not
             // anything changed.
             let now = self.tiles_origin.elapsed();
-            let ticking = self.use_tiles && self.tiles.as_ref().and_then(TilesEncoder::tick_at).is_some_and(|at| at <= now);
+            let ticking = self.use_tiles
+                && self
+                    .tiles
+                    .as_ref()
+                    .and_then(TilesEncoder::tick_at)
+                    .is_some_and(|at| at <= now);
             let damage = if full || starting {
                 None
             } else {
@@ -1510,14 +1888,25 @@ impl Session {
                 // Copied out of the framebuffer into the encoder's own picture,
                 // and compared there with what the client holds; coded once
                 // the lock is let go.
-                let read: Option<Vec<crate::rfb::Rect>> =
-                    damage.as_ref().map(|rects| rects.iter().map(|r| crate::rfb::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
+                let read: Option<Vec<crate::rfb::Rect>> = damage.as_ref().map(|rects| {
+                    rects
+                        .iter()
+                        .map(|r| crate::rfb::Rect {
+                            x: r.x,
+                            y: r.y,
+                            width: r.width,
+                            height: r.height,
+                        })
+                        .collect()
+                });
                 let encoder = self.tiles.as_mut().expect("made before the lock was kept");
                 encoder.set_scale(scale);
                 if full {
                     encoder.forget();
                 }
-                encoder.read(&fb.pixels, stride, read.as_deref(), now).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
+                encoder
+                    .read(&fb.pixels, stride, read.as_deref(), now)
+                    .with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
                 changed = None;
             } else if self.use_video {
                 // A video frame is the whole picture, of which the stream
@@ -1526,10 +1915,21 @@ impl Session {
                 // conversion, which a copy of the same pixels took as long
                 // as, and the frame is coded from the planes once it is let
                 // go.
-                let read: Option<Vec<crate::rfb::Rect>> =
-                    damage.as_ref().map(|rects| rects.iter().map(|r| crate::rfb::Rect { x: r.x, y: r.y, width: r.width, height: r.height }).collect());
+                let read: Option<Vec<crate::rfb::Rect>> = damage.as_ref().map(|rects| {
+                    rects
+                        .iter()
+                        .map(|r| crate::rfb::Rect {
+                            x: r.x,
+                            y: r.y,
+                            width: r.width,
+                            height: r.height,
+                        })
+                        .collect()
+                });
                 let encoder = self.video.as_mut().expect("made before the lock was kept");
-                encoder.read(&fb.pixels, stride, read.as_deref()).with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
+                encoder
+                    .read(&fb.pixels, stride, read.as_deref())
+                    .with_context(|| format!("reading a {}x{} framebuffer", fb.width, fb.height))?;
                 if self.config.capture_frames.is_some() {
                     // The capture is written after the lock is let go, from
                     // a copy kept for it: the rectangles that changed, and
@@ -1539,28 +1939,36 @@ impl Session {
                     self.scratch.resize(row_len * usize::from(fb.height), 0);
                     let whole = [Rect::whole(fb.width, fb.height)];
                     for rect in damage.as_deref().unwrap_or(&whole) {
-                        let right = (usize::from(rect.x) + usize::from(rect.width)).min(usize::from(fb.width));
-                        let bottom = (usize::from(rect.y) + usize::from(rect.height)).min(usize::from(fb.height));
+                        let right = (usize::from(rect.x) + usize::from(rect.width))
+                            .min(usize::from(fb.width));
+                        let bottom = (usize::from(rect.y) + usize::from(rect.height))
+                            .min(usize::from(fb.height));
                         let cols = usize::from(rect.x) * 4..right * 4;
                         if cols.is_empty() {
                             continue;
                         }
                         for row in usize::from(rect.y)..bottom {
-                            self.scratch[row * row_len..][cols.clone()].copy_from_slice(&fb.pixels[row * stride..][cols.clone()]);
+                            self.scratch[row * row_len..][cols.clone()]
+                                .copy_from_slice(&fb.pixels[row * stride..][cols.clone()]);
                         }
                     }
                 }
                 changed = read;
             } else {
                 let rects = damage.unwrap_or_else(|| vec![Rect::whole(fb.width, fb.height)]);
-                let rects = if rects.len() > MAX_RECTS { crate::framebuffer::merge(rects, 1) } else { rects };
+                let rects = if rects.len() > MAX_RECTS {
+                    crate::framebuffer::merge(rects, 1)
+                } else {
+                    rects
+                };
                 self.scratch.clear();
                 for rect in rects {
                     let offset = self.scratch.len();
                     let row_len = usize::from(rect.width) * 4;
                     for row in usize::from(rect.y)..usize::from(rect.y) + usize::from(rect.height) {
                         let start = row * stride + usize::from(rect.x) * 4;
-                        self.scratch.extend_from_slice(&fb.pixels[start..start + row_len]);
+                        self.scratch
+                            .extend_from_slice(&fb.pixels[start..start + row_len]);
                     }
                     pieces.push(Piece { rect, offset });
                 }
@@ -1570,7 +1978,9 @@ impl Session {
 
         if let Some(origin) = resized {
             let (reason, status) = match origin {
-                ResizeOrigin::Client(c) if c == self.id => (msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_OK),
+                ResizeOrigin::Client(c) if c == self.id => {
+                    (msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_OK)
+                }
                 ResizeOrigin::Client(_) => (msg::EDS_REASON_OTHER_CLIENT, msg::EDS_STATUS_OK),
                 ResizeOrigin::Server => (msg::EDS_REASON_SERVER, msg::EDS_STATUS_OK),
             };
@@ -1594,7 +2004,12 @@ impl Session {
             return self.send_tiles(writer, generation, answered).await;
         }
         self.out.clear();
-        self.out.extend_from_slice(&msg::update_header(if self.use_video { 1 } else { pieces.len() as u16 }));
+        self.out
+            .extend_from_slice(&msg::update_header(if self.use_video {
+                1
+            } else {
+                pieces.len() as u16
+            }));
         // Whether the update is a video frame, and if so whether it is an IDR,
         // which is no verdict about the link: it is the whole picture again,
         // slow by its nature.
@@ -1603,7 +2018,10 @@ impl Session {
                 // Nothing to send, and nothing changes hands: the damage stays
                 // unseen, the request pending and the IDR owed, for the frame
                 // the next change brings.
-                warn!("client {}: the H.264 encoder made no frame of the desktop; waiting for the next change", self.id.0);
+                warn!(
+                    "client {}: the H.264 encoder made no frame of the desktop; waiting for the next change",
+                    self.id.0
+                );
                 return Ok(());
             };
             Some(keyframe)
@@ -1613,7 +2031,10 @@ impl Session {
         };
         if self.fence_supported {
             self.fence_seq = self.fence_seq.wrapping_add(1);
-            self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
+            self.out.extend_from_slice(&msg::fence(
+                msg::FENCE_REQUEST,
+                &self.fence_seq.to_be_bytes(),
+            ));
             self.fence_outstanding = true;
         }
         let sent = Instant::now();
@@ -1629,7 +2050,11 @@ impl Session {
                 // How long the socket had no room for the frame, which the
                 // walk hears now or leaves to the fence.
                 let now = Instant::now();
-                let moved = self.walk.written(now.saturating_duration_since(sent), self.fence_supported, now);
+                let moved = self.walk.written(
+                    now.saturating_duration_since(sent),
+                    self.fence_supported,
+                    now,
+                );
                 self.follow_walk(moved);
             }
             if self.fence_supported {
@@ -1647,34 +2072,60 @@ impl Session {
     /// a capture is told; the stream knows what it read. Returns whether the
     /// frame was an IDR, or `None` when the encoder made no frame of it: `out`
     /// is left as it was, and so is the IDR owed.
-    fn encode_video(&mut self, full: bool, changed: Option<&[crate::rfb::Rect]>) -> anyhow::Result<Option<bool>> {
+    fn encode_video(
+        &mut self,
+        full: bool,
+        changed: Option<&[crate::rfb::Rect]>,
+    ) -> anyhow::Result<Option<bool>> {
         let (width, height) = self.known_size;
         let rect_at = self.out.len();
-        self.out.extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VIDEO));
-        let (encoder, out) = (self.video.as_mut().expect("made for the read"), &mut self.out);
+        self.out
+            .extend_from_slice(&msg::rect_header(0, 0, width, height, ENCODING_VIDEO));
+        let (encoder, out) = (
+            self.video.as_mut().expect("made for the read"),
+            &mut self.out,
+        );
         let keyframe = full || self.keyframe_owed;
         let quality = self.walk.quality();
         if let Some(dir) = &self.config.capture_frames {
             let capture = match &mut self.capture {
                 Some(capture) => capture,
                 None => {
-                    let millis = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                    let millis = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis());
                     let path = dir.join(format!("{millis}-client{}.wlcap", self.id.0));
-                    let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
-                    info!("client {}: capturing what the video encoder is handed into {}", self.id.0, path.display());
-                    let writer = wlcap::Writer::new(BufWriter::with_capacity(1 << 20, file)).context("beginning the capture")?;
+                    let file = File::create(&path)
+                        .with_context(|| format!("creating {}", path.display()))?;
+                    info!(
+                        "client {}: capturing what the video encoder is handed into {}",
+                        self.id.0,
+                        path.display()
+                    );
+                    let writer = wlcap::Writer::new(BufWriter::with_capacity(1 << 20, file))
+                        .context("beginning the capture")?;
                     self.capture.insert(writer)
                 }
             };
             // The frame as the encoder is handed it; what it says is what
             // the stream reads.
             let stride = usize::from(width) * 4;
-            tokio::task::block_in_place(|| capture.frame((width, height), quality, keyframe, changed, &self.scratch, stride))
-                .context("writing the capture")?;
+            tokio::task::block_in_place(|| {
+                capture.frame(
+                    (width, height),
+                    quality,
+                    keyframe,
+                    changed,
+                    &self.scratch,
+                    stride,
+                )
+            })
+            .context("writing the capture")?;
         }
         // Tens of milliseconds for a large desktop that changed all over, which
         // is the worker's to spend and not the runtime's to wait on.
-        let encoded = tokio::task::block_in_place(|| encoder.encode(keyframe, quality, out)).with_context(|| format!("encoding a {width}x{height} video frame"))?;
+        let encoded = tokio::task::block_in_place(|| encoder.encode(keyframe, quality, out))
+            .with_context(|| format!("encoding a {width}x{height} video frame"))?;
         if !encoded {
             self.out.truncate(rect_at);
             return Ok(None);
@@ -1688,13 +2139,18 @@ impl Session {
     /// slowed, or its interval has passed. The interval is the walk's as it
     /// stands now, not as it stood when the last frame went out.
     fn frame_at(&self) -> Option<Instant> {
-        if !(self.use_video || self.use_tiles) || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
+        if !(self.use_video || self.use_tiles)
+            || self.fence_outstanding
+            || !(self.continuous || self.pending.is_some())
+        {
             return None;
         }
         if !self.walk.slowed() {
             return None;
         }
-        self.frame_sent.map(|sent| sent + self.walk.interval()).filter(|at| Instant::now() < *at)
+        self.frame_sent
+            .map(|sent| sent + self.walk.interval())
+            .filter(|at| Instant::now() < *at)
     }
 
     /// Encode what the tiles picture owes and send it as one update, with its
@@ -1708,15 +2164,24 @@ impl Session {
     /// the quiet, its verdicts starting over at the first such
     /// ([`QualityWalk::settle`]), where one between a typist's keys leaves it
     /// where it was going. Any other is a verdict, a START among it.
-    async fn send_tiles(&mut self, writer: &mut Writer, generation: u64, answered: impl FnOnce(&mut Self)) -> anyhow::Result<()> {
+    async fn send_tiles(
+        &mut self,
+        writer: &mut Writer,
+        generation: u64,
+        answered: impl FnOnce(&mut Self),
+    ) -> anyhow::Result<()> {
         self.out.clear();
         self.out.extend_from_slice(&msg::update_header(0));
-        let (encoder, out) = (self.tiles.as_mut().expect("made for the read"), &mut self.out);
+        let (encoder, out) = (
+            self.tiles.as_mut().expect("made for the read"),
+            &mut self.out,
+        );
         let (width, height) = encoder.size();
         // Tens of milliseconds for a large desktop that changed all over,
         // which is the worker's to spend and not the runtime's to wait on.
-        let update = tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
-            .with_context(|| format!("encoding a {width}x{height} tiles picture"))?;
+        let update =
+            tokio::task::block_in_place(|| encoder.encode(self.tiles_origin.elapsed(), out))
+                .with_context(|| format!("encoding a {width}x{height} tiles picture"))?;
         self.seen = generation;
         if update.rects == 0 {
             answered(self);
@@ -1725,7 +2190,10 @@ impl Session {
         self.out[..4].copy_from_slice(&msg::update_header(update.rects));
         if self.fence_supported {
             self.fence_seq = self.fence_seq.wrapping_add(1);
-            self.out.extend_from_slice(&msg::fence(msg::FENCE_REQUEST, &self.fence_seq.to_be_bytes()));
+            self.out.extend_from_slice(&msg::fence(
+                msg::FENCE_REQUEST,
+                &self.fence_seq.to_be_bytes(),
+            ));
             self.fence_outstanding = true;
         }
         let sent = Instant::now();
@@ -1745,10 +2213,17 @@ impl Session {
         self.frame_sent = Some(sent);
         let now = Instant::now();
         if !self.fence_supported {
-            self.tiles.as_mut().expect("made for the read").delivered(now.saturating_duration_since(sent));
+            self.tiles
+                .as_mut()
+                .expect("made for the read")
+                .delivered(now.saturating_duration_since(sent));
         }
         if verdict {
-            let moved = self.walk.written(now.saturating_duration_since(sent), self.fence_supported, now);
+            let moved = self.walk.written(
+                now.saturating_duration_since(sent),
+                self.fence_supported,
+                now,
+            );
             self.follow_walk(moved);
         }
         if self.fence_supported {
@@ -1765,7 +2240,8 @@ impl Session {
     /// other: a tick due in the meantime woke the loop to find the update held,
     /// again and again until the turn came.
     fn tick_at(&self) -> Option<Instant> {
-        if !self.use_tiles || self.fence_outstanding || !(self.continuous || self.pending.is_some()) {
+        if !self.use_tiles || self.fence_outstanding || !(self.continuous || self.pending.is_some())
+        {
             return None;
         }
         let at = self.tiles_origin + self.tiles.as_ref()?.tick_at()?;
@@ -1783,7 +2259,10 @@ impl Session {
         };
         let slowed = self.walk.slowed();
         if slowed {
-            debug!("client {}: quality {}, at most one frame per {:?}", self.id.0, pace.quality, pace.interval);
+            debug!(
+                "client {}: quality {}, at most one frame per {:?}",
+                self.id.0, pace.quality, pace.interval
+            );
         } else {
             debug!("client {}: quality {}", self.id.0, pace.quality);
         }
@@ -1802,17 +2281,34 @@ impl Session {
     /// The damaged rectangles, each as ZRLE or — for a client that never listed
     /// it — Raw.
     fn encode_pieces(&mut self, pieces: &[Piece]) {
-        let encoding = if self.use_zrle { ENCODING_ZRLE } else { ENCODING_RAW };
+        let encoding = if self.use_zrle {
+            ENCODING_ZRLE
+        } else {
+            ENCODING_RAW
+        };
         for piece in pieces {
             let r = piece.rect;
-            self.out.extend_from_slice(&msg::rect_header(r.x, r.y, r.width, r.height, encoding));
+            self.out
+                .extend_from_slice(&msg::rect_header(r.x, r.y, r.width, r.height, encoding));
             let stride = usize::from(r.width) * 4;
             let pixels = &self.scratch[piece.offset..piece.offset + stride * usize::from(r.height)];
             match &mut self.zrle {
-                Some(zrle) if self.use_zrle => {
-                    zrle.encode_rect(pixels, stride, usize::from(r.width), usize::from(r.height), &self.format, &mut self.out)
-                }
-                _ => encode_raw_rect(pixels, stride, usize::from(r.width), usize::from(r.height), &self.format, &mut self.out),
+                Some(zrle) if self.use_zrle => zrle.encode_rect(
+                    pixels,
+                    stride,
+                    usize::from(r.width),
+                    usize::from(r.height),
+                    &self.format,
+                    &mut self.out,
+                ),
+                _ => encode_raw_rect(
+                    pixels,
+                    stride,
+                    usize::from(r.width),
+                    usize::from(r.height),
+                    &self.format,
+                    &mut self.out,
+                ),
             }
         }
     }
@@ -1863,13 +2359,24 @@ mod security_tests {
     fn the_offer_is_rsa_aes_or_none() {
         assert_eq!(Security::default().offered(), vec![msg::SECURITY_NONE]);
         let logins = [
-            Login::Pam { service: "wlshare".into(), account: "me".into() },
-            Login::Password { hash: "$argon2id$v=19$x".into() },
+            Login::Pam {
+                service: "wlshare".into(),
+                account: "me".into(),
+            },
+            Login::Password {
+                hash: "$argon2id$v=19$x".into(),
+            },
         ];
         for login in logins {
-            let rsa_aes = RsaAes { key: Arc::new(ServerKey::generate().unwrap()), login };
+            let rsa_aes = RsaAes {
+                key: Arc::new(ServerKey::generate().unwrap()),
+                login,
+            };
             assert_eq!(
-                Security { rsa_aes: Some(rsa_aes) }.offered(),
+                Security {
+                    rsa_aes: Some(rsa_aes)
+                }
+                .offered(),
                 vec![rsa_aes::SECURITY_RSA_AES_256, rsa_aes::SECURITY_RSA_AES_128]
             );
         }
@@ -1884,19 +2391,42 @@ mod output_tests {
     use wlshare_proto::outputs::OutputEntry;
 
     fn entry(id: u32, name: &str) -> OutputEntry {
-        OutputEntry { id, name: name.into(), width: 1920, height: 1080, scale: 1.0, headless: name.starts_with("HEADLESS-") }
+        OutputEntry {
+            id,
+            name: name.into(),
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+            headless: name.starts_with("HEADLESS-"),
+        }
     }
 
     /// A desktop on the monitor, the configured output not enabled.
     fn shared() -> Arc<Shared> {
         let (commands, _rx) = calloop::channel::channel();
-        let displays = Displays { active: [7, 0], entries: vec![entry(7, "Virtual-1")] };
-        Arc::new(Shared::new(Framebuffer::new(1, 1), Geometry { width: 1, height: 1, scale: 1.0 }, displays, commands, 0))
+        let displays = Displays {
+            active: [7, 0],
+            entries: vec![entry(7, "Virtual-1")],
+        };
+        Arc::new(Shared::new(
+            Framebuffer::new(1, 1),
+            Geometry {
+                width: 1,
+                height: 1,
+                scale: 1.0,
+            },
+            displays,
+            commands,
+            0,
+        ))
     }
 
     /// What the compositor thread does when the configured output appears.
     fn arrive(shared: &Shared) {
-        *shared.displays.lock().unwrap() = Displays { active: [9, 0], entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")] };
+        *shared.displays.lock().unwrap() = Displays {
+            active: [9, 0],
+            entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")],
+        };
         shared.emit(Event::Outputs);
     }
 
@@ -1904,7 +2434,10 @@ mod output_tests {
     /// compositor has and the desktop is not on is not the client's yet.
     #[test]
     fn an_output_listed_is_not_an_output_shared() {
-        let displays = Displays { active: [7, 9], entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")] };
+        let displays = Displays {
+            active: [7, 9],
+            entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")],
+        };
         assert!(displays.shares(FIRST, "Virtual-1"));
         assert!(!displays.shares(FIRST, "HEADLESS-1"));
         assert!(displays.shares(BESIDE, "HEADLESS-1"));
@@ -1917,14 +2450,28 @@ mod output_tests {
         let mut arrivals = shared.events.subscribe();
         let waiting = {
             let shared = shared.clone();
-            tokio::spawn(async move { output_shared(&shared, "HEADLESS-1", Duration::from_secs(30), &mut arrivals).await })
+            tokio::spawn(async move {
+                output_shared(
+                    &shared,
+                    "HEADLESS-1",
+                    Duration::from_secs(30),
+                    &mut arrivals,
+                )
+                .await
+            })
         };
         // Other news first, which is not the output arriving.
         shared.emit(Event::Clipboard);
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
         arrive(&shared);
-        assert_eq!(tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap(), Arrival::Shared);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), waiting)
+                .await
+                .unwrap()
+                .unwrap(),
+            Arrival::Shared
+        );
     }
 
     /// An output that arrived between the subscription and the wait is found
@@ -1934,7 +2481,16 @@ mod output_tests {
         let shared = shared();
         arrive(&shared);
         let mut arrivals = shared.events.subscribe();
-        assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_secs(30), &mut arrivals).await, Arrival::Shared);
+        assert_eq!(
+            output_shared(
+                &shared,
+                "HEADLESS-1",
+                Duration::from_secs(30),
+                &mut arrivals
+            )
+            .await,
+            Arrival::Shared
+        );
     }
 
     /// The configured output there and a client's choice elsewhere is no
@@ -1943,15 +2499,29 @@ mod output_tests {
     #[tokio::test]
     async fn an_output_a_client_left_keeps_nobody_waiting() {
         let shared = shared();
-        *shared.displays.lock().unwrap() = Displays { active: [7, 0], entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")] };
+        *shared.displays.lock().unwrap() = Displays {
+            active: [7, 0],
+            entries: vec![entry(9, "HEADLESS-1"), entry(7, "Virtual-1")],
+        };
         let mut arrivals = shared.events.subscribe();
-        assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_secs(30), &mut arrivals).await, Arrival::Elsewhere);
+        assert_eq!(
+            output_shared(
+                &shared,
+                "HEADLESS-1",
+                Duration::from_secs(30),
+                &mut arrivals
+            )
+            .await,
+            Arrival::Elsewhere
+        );
     }
 
     /// Both ends of a loopback connection: the client's, and the server's.
     async fn connection() -> (TcpStream, TcpStream) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
         let (server, _) = listener.accept().await.unwrap();
         (client, server)
     }
@@ -1959,9 +2529,15 @@ mod output_tests {
     #[tokio::test]
     async fn a_peer_that_left_is_noticed_and_one_that_is_there_is_not() {
         let (client, server) = connection().await;
-        assert!(tokio::time::timeout(Duration::from_millis(100), peer_closed(&server)).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), peer_closed(&server))
+                .await
+                .is_err()
+        );
         drop(client);
-        tokio::time::timeout(Duration::from_secs(5), peer_closed(&server)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), peer_closed(&server))
+            .await
+            .unwrap();
     }
 
     /// Bytes sent ahead are not a peer leaving, and are still there to read.
@@ -1969,7 +2545,11 @@ mod output_tests {
     async fn bytes_sent_ahead_are_left_for_the_session() {
         let (mut client, mut server) = connection().await;
         client.write_all(b"x").await.unwrap();
-        assert!(tokio::time::timeout(Duration::from_millis(100), peer_closed(&server)).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), peer_closed(&server))
+                .await
+                .is_err()
+        );
         let mut byte = [0u8; 1];
         server.read_exact(&mut byte).await.unwrap();
         assert_eq!(&byte, b"x");
@@ -1979,7 +2559,16 @@ mod output_tests {
     async fn the_wait_gives_up_on_an_output_that_never_comes() {
         let shared = shared();
         let mut arrivals = shared.events.subscribe();
-        assert_eq!(output_shared(&shared, "HEADLESS-1", Duration::from_millis(50), &mut arrivals).await, Arrival::Absent);
+        assert_eq!(
+            output_shared(
+                &shared,
+                "HEADLESS-1",
+                Duration::from_millis(50),
+                &mut arrivals
+            )
+            .await,
+            Arrival::Absent
+        );
     }
 }
 
@@ -1996,7 +2585,17 @@ mod pacing_tests {
     fn ticking() -> Session {
         let (w, h) = (256u16, 128u16);
         let (commands, _rx) = calloop::channel::channel();
-        let shared = Arc::new(Shared::new(Framebuffer::new(w, h), Geometry { width: w, height: h, scale: 1.0 }, Displays::default(), commands, 0));
+        let shared = Arc::new(Shared::new(
+            Framebuffer::new(w, h),
+            Geometry {
+                width: w,
+                height: h,
+                scale: 1.0,
+            },
+            Displays::default(),
+            commands,
+            0,
+        ));
         let h264 = Arc::new(crate::h264::Encoder::find(false).unwrap());
         let config = SessionConfig {
             security: Security::default(),
@@ -2008,13 +2607,30 @@ mod pacing_tests {
             capture_frames: None,
             h264: h264.clone(),
         };
-        let (events, frames) = (shared.events.subscribe(), shared.desks[FIRST].frame_tx.subscribe());
-        let mut session = Session::new(ClientId(1), FIRST, shared, Arc::new(config), events, frames, (w, h));
+        let (events, frames) = (
+            shared.events.subscribe(),
+            shared.desks[FIRST].frame_tx.subscribe(),
+        );
+        let mut session = Session::new(
+            ClientId(1),
+            FIRST,
+            shared,
+            Arc::new(config),
+            events,
+            frames,
+            (w, h),
+        );
         session.use_tiles = true;
         session.continuous = true;
-        let mut tiles = TilesEncoder::new(w, h, session.tiles_picture, Box::new(h264.coder().unwrap())).unwrap();
-        let pixels: Vec<u8> = (0..usize::from(w) * usize::from(h) * 4).map(|i| (i * 7 % 251) as u8).collect();
-        tiles.read(&pixels, usize::from(w) * 4, None, Duration::ZERO).unwrap();
+        let mut tiles =
+            TilesEncoder::new(w, h, session.tiles_picture, Box::new(h264.coder().unwrap()))
+                .unwrap();
+        let pixels: Vec<u8> = (0..usize::from(w) * usize::from(h) * 4)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect();
+        tiles
+            .read(&pixels, usize::from(w) * 4, None, Duration::ZERO)
+            .unwrap();
         tiles.encode(Duration::ZERO, &mut Vec::new()).unwrap();
         session.tiles = Some(tiles);
         session
@@ -2028,10 +2644,18 @@ mod pacing_tests {
         let mut session = ticking();
         session.seen = 3;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let socket = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let socket = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
         let (_, inner) = socket.into_split();
-        let mut writer = Writer { inner, sealer: None };
-        session.handle(ClientMsg::CacheEmpty, &mut writer).await.unwrap();
+        let mut writer = Writer {
+            inner,
+            sealer: None,
+        };
+        session
+            .handle(ClientMsg::CacheEmpty, &mut writer)
+            .await
+            .unwrap();
         assert_eq!(session.seen, 0, "the next update is whole");
     }
 
@@ -2042,8 +2666,18 @@ mod pacing_tests {
     #[test]
     fn a_tick_waits_for_a_held_frame() {
         let mut session = ticking();
-        let owed = session.tiles_origin + session.tiles.as_ref().unwrap().tick_at().expect("a tick owed");
-        assert_eq!(session.frame_at(), None, "no frame held on a link at full rate");
+        let owed = session.tiles_origin
+            + session
+                .tiles
+                .as_ref()
+                .unwrap()
+                .tick_at()
+                .expect("a tick owed");
+        assert_eq!(
+            session.frame_at(),
+            None,
+            "no frame held on a link at full rate"
+        );
         assert_eq!(session.tick_at(), Some(owed), "the tick when it is owed");
 
         let start = Instant::now();
@@ -2059,6 +2693,10 @@ mod pacing_tests {
         session.frame_sent = Some(owed);
         let held = session.frame_at().expect("the next frame held");
         assert!(held > owed);
-        assert_eq!(session.tick_at(), Some(held), "the tick at the held frame's turn");
+        assert_eq!(
+            session.tick_at(),
+            Some(held),
+            "the tick at the held frame's turn"
+        );
     }
 }

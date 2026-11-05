@@ -27,7 +27,14 @@ fn decode(bytes: &[u8]) -> (u8, u32, Vec<OutputEntry>) {
 }
 
 fn entry(id: u32, name: &str, width: u16, height: u16, scale: f64, headless: bool) -> OutputEntry {
-    OutputEntry { id, name: name.into(), width, height, scale, headless }
+    OutputEntry {
+        id,
+        name: name.into(),
+        width,
+        height,
+        scale,
+        headless,
+    }
 }
 
 #[test]
@@ -79,10 +86,23 @@ fn a_long_name_is_cut_at_a_character_boundary() {
 fn a_client_message_is_its_operation_and_one_u32() {
     assert_eq!(select_output(7), [0xE1, 0, 0, 0, 0, 0, 0, 7]);
     assert_eq!(virtual_displays(2), [0xE1, 1, 0, 0, 0, 0, 0, 2]);
-    assert_eq!(parse_client(&select_output(u32::MAX)), Ok(Some((ClientOutputs::Select { id: u32::MAX }, 8))));
-    assert_eq!(parse_client(&virtual_displays(1)), Ok(Some((ClientOutputs::VirtualDisplays { count: 1 }, 8))));
-    assert_eq!(parse_client(&[0xE1, 1, 0, 0, 0, 0, 0]), Ok(None), "a short message asks for more");
-    assert_eq!(parse_client(&[0xE1, 2, 0, 0, 0, 0, 0, 1]), Err(OutputsParseError::UnknownOperation(2)));
+    assert_eq!(
+        parse_client(&select_output(u32::MAX)),
+        Ok(Some((ClientOutputs::Select { id: u32::MAX }, 8)))
+    );
+    assert_eq!(
+        parse_client(&virtual_displays(1)),
+        Ok(Some((ClientOutputs::VirtualDisplays { count: 1 }, 8)))
+    );
+    assert_eq!(
+        parse_client(&[0xE1, 1, 0, 0, 0, 0, 0]),
+        Ok(None),
+        "a short message asks for more"
+    );
+    assert_eq!(
+        parse_client(&[0xE1, 2, 0, 0, 0, 0, 0, 1]),
+        Err(OutputsParseError::UnknownOperation(2))
+    );
 }
 
 /// The client's reading of a list, against the builder.
@@ -90,8 +110,29 @@ fn a_client_message_is_its_operation_and_one_u32() {
 fn the_headers_read_back_what_the_list_was_built_from() {
     let bytes = output_list(7, 2, &[entry(7, "HEADLESS-1", 1728, 1117, 1.5, true)]);
     let header = ListHeader::parse(bytes[..LIST_HEADER_LEN].try_into().unwrap());
-    assert_eq!(header, ListHeader { virtual_displays: 2, count: 1, active: 7 });
-    let entry = EntryHeader::parse(bytes[LIST_HEADER_LEN..LIST_HEADER_LEN + ENTRY_HEADER_LEN].try_into().unwrap());
-    assert_eq!(entry, EntryHeader { id: 7, width: 1728, height: 1117, fixed: 0x0001_8000, headless: true, name_len: 10 });
+    assert_eq!(
+        header,
+        ListHeader {
+            virtual_displays: 2,
+            count: 1,
+            active: 7
+        }
+    );
+    let entry = EntryHeader::parse(
+        bytes[LIST_HEADER_LEN..LIST_HEADER_LEN + ENTRY_HEADER_LEN]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(
+        entry,
+        EntryHeader {
+            id: 7,
+            width: 1728,
+            height: 1117,
+            fixed: 0x0001_8000,
+            headless: true,
+            name_len: 10
+        }
+    );
     assert_eq!(&bytes[LIST_HEADER_LEN + ENTRY_HEADER_LEN..], b"HEADLESS-1");
 }

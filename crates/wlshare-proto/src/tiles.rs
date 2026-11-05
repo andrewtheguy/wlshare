@@ -213,12 +213,14 @@ impl TilesPicture {
         if has(crate::ENCODING_VIDEO) {
             return Err(TilesListError::Both);
         }
-        Ok(Some(match (has(ENCODING_HELD), has(crate::ENCODING_LOSSLESS)) {
-            (true, true) => return Err(TilesListError::HeldAndLossless),
-            (true, false) => Self::Held,
-            (false, true) => Self::Lossless,
-            (false, false) => Self::Progressive,
-        }))
+        Ok(Some(
+            match (has(ENCODING_HELD), has(crate::ENCODING_LOSSLESS)) {
+                (true, true) => return Err(TilesListError::HeldAndLossless),
+                (true, false) => Self::Held,
+                (false, true) => Self::Lossless,
+                (false, false) => Self::Progressive,
+            },
+        ))
     }
 
     /// The list that asks for this picture: the encoding, and `WLSD` where it
@@ -246,7 +248,9 @@ pub enum TilesListError {
 /// Why a tiles rectangle's body is not one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
-    #[error("a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE and PLANAR")]
+    #[error(
+        "a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE and PLANAR"
+    )]
     UnknownKind(u8),
     #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
     Slot(u16),
@@ -337,29 +341,48 @@ impl TileHeader {
     /// of none or past [`crate::MAX_BODY`] bytes, or a cache slot past
     /// [`CACHE_SLOTS`], is an error.
     pub fn parse(buf: &[u8]) -> Result<Option<(Self, usize)>, TilesParseError> {
-        let Some(&kind) = buf.first() else { return Ok(None) };
+        let Some(&kind) = buf.first() else {
+            return Ok(None);
+        };
         let used = Self::len_of(kind)?;
         if buf.len() < used {
             return Ok(None);
         }
         let len = |at: usize| {
             let len = crate::u32_at(buf, at) as usize;
-            if len == 0 || len > crate::MAX_BODY { Err(TilesParseError::Length(len)) } else { Ok(len) }
+            if len == 0 || len > crate::MAX_BODY {
+                Err(TilesParseError::Length(len))
+            } else {
+                Ok(len)
+            }
         };
         let header = match kind {
             KIND_PNG => Self::Png { len: len(1)? },
-            KIND_START => Self::Start { stream: buf[1], len: len(2)? },
-            KIND_FRAME => Self::Frame { stream: buf[1], len: len(2)? },
+            KIND_START => Self::Start {
+                stream: buf[1],
+                len: len(2)?,
+            },
+            KIND_FRAME => Self::Frame {
+                stream: buf[1],
+                len: len(2)?,
+            },
             KIND_PROGRESSIVE => Self::Progressive { len: len(1)? },
             KIND_PLANAR => Self::Planar { len: len(1)? },
             KIND_STILL => Self::Still { len: len(1)? },
-            KIND_COPY => Self::Copy { x: u16::from_be_bytes([buf[1], buf[2]]), y: u16::from_be_bytes([buf[3], buf[4]]) },
+            KIND_COPY => Self::Copy {
+                x: u16::from_be_bytes([buf[1], buf[2]]),
+                y: u16::from_be_bytes([buf[3], buf[4]]),
+            },
             KIND_CACHED | KIND_STORE => {
                 let slot = u16::from_be_bytes([buf[1], buf[2]]);
                 if slot >= CACHE_SLOTS {
                     return Err(TilesParseError::Slot(slot));
                 }
-                if kind == KIND_CACHED { Self::Cached { slot } } else { Self::Store { slot } }
+                if kind == KIND_CACHED {
+                    Self::Cached { slot }
+                } else {
+                    Self::Store { slot }
+                }
             }
             _ => Self::End { stream: buf[1] },
         };

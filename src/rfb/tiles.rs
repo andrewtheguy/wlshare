@@ -121,7 +121,12 @@ pub enum TilesError {
     #[error("framing a planar bitmap: {0}")]
     Planar(std::io::Error),
     #[error("a {width}x{height} picture at a stride of {stride} does not fit in {bytes} bytes")]
-    Buffer { width: u16, height: u16, stride: usize, bytes: usize },
+    Buffer {
+        width: u16,
+        height: u16,
+        stride: usize,
+        bytes: usize,
+    },
     #[error("a rectangle of {0} bytes is over the {max}-byte ceiling", max = wlshare_proto::MAX_BODY)]
     TooLong(usize),
     #[error("an update of {0} rectangles is more than one can count")]
@@ -171,14 +176,24 @@ struct Area {
 impl Area {
     /// The whole of a `w`×`h` desktop.
     fn whole((w, h): (u16, u16)) -> Self {
-        Self { left: 0, top: 0, right: w - 1, bottom: h - 1 }
+        Self {
+            left: 0,
+            top: 0,
+            right: w - 1,
+            bottom: h - 1,
+        }
     }
 
     /// `r` on a `w`×`h` desktop, clipped to it; `None` for one with nothing inside.
     fn clipped(r: Rect, (w, h): (u16, u16)) -> Option<Self> {
         let right = (u32::from(r.x) + u32::from(r.width)).min(u32::from(w));
         let bottom = (u32::from(r.y) + u32::from(r.height)).min(u32::from(h));
-        (u32::from(r.x) < right && u32::from(r.y) < bottom).then(|| Self { left: r.x, top: r.y, right: (right - 1) as u16, bottom: (bottom - 1) as u16 })
+        (u32::from(r.x) < right && u32::from(r.y) < bottom).then(|| Self {
+            left: r.x,
+            top: r.y,
+            right: (right - 1) as u16,
+            bottom: (bottom - 1) as u16,
+        })
     }
 
     fn w(self) -> u16 {
@@ -190,17 +205,30 @@ impl Area {
     }
 
     fn intersect(self, other: Self) -> Option<Self> {
-        let r = Self { left: self.left.max(other.left), top: self.top.max(other.top), right: self.right.min(other.right), bottom: self.bottom.min(other.bottom) };
+        let r = Self {
+            left: self.left.max(other.left),
+            top: self.top.max(other.top),
+            right: self.right.min(other.right),
+            bottom: self.bottom.min(other.bottom),
+        };
         (r.left <= r.right && r.top <= r.bottom).then_some(r)
     }
 
     fn contains(self, other: Self) -> bool {
-        self.left <= other.left && self.top <= other.top && other.right <= self.right && other.bottom <= self.bottom
+        self.left <= other.left
+            && self.top <= other.top
+            && other.right <= self.right
+            && other.bottom <= self.bottom
     }
 
     /// This rectangle as a stream takes one, from `origin`'s top-left.
     fn within(self, origin: Self) -> Rect {
-        Rect { x: self.left - origin.left, y: self.top - origin.top, width: self.w(), height: self.h() }
+        Rect {
+            x: self.left - origin.left,
+            y: self.top - origin.top,
+            width: self.w(),
+            height: self.h(),
+        }
     }
 }
 
@@ -208,8 +236,16 @@ impl Area {
 fn tiles_of(area: Area) -> impl Iterator<Item = ((u16, u16), Area)> {
     (area.top / TILE..=area.bottom / TILE).flat_map(move |row| {
         (area.left / TILE..=area.right / TILE).map(move |col| {
-            let tile = Area { left: col * TILE, top: row * TILE, right: col.saturating_mul(TILE).saturating_add(TILE - 1), bottom: row.saturating_mul(TILE).saturating_add(TILE - 1) };
-            ((col, row), tile.intersect(area).expect("a tile the rectangle touches"))
+            let tile = Area {
+                left: col * TILE,
+                top: row * TILE,
+                right: col.saturating_mul(TILE).saturating_add(TILE - 1),
+                bottom: row.saturating_mul(TILE).saturating_add(TILE - 1),
+            };
+            (
+                (col, row),
+                tile.intersect(area).expect("a tile the rectangle touches"),
+            )
         })
     })
 }
@@ -225,7 +261,12 @@ struct CellBox {
 
 impl CellBox {
     fn of(cell: (u16, u16)) -> Self {
-        Self { c0: cell.0, r0: cell.1, c1: cell.0, r1: cell.1 }
+        Self {
+            c0: cell.0,
+            r0: cell.1,
+            c1: cell.0,
+            r1: cell.1,
+        }
     }
 
     fn area(&self) -> u32 {
@@ -233,7 +274,12 @@ impl CellBox {
     }
 
     fn union(&self, other: &Self) -> Self {
-        Self { c0: self.c0.min(other.c0), r0: self.r0.min(other.r0), c1: self.c1.max(other.c1), r1: self.r1.max(other.r1) }
+        Self {
+            c0: self.c0.min(other.c0),
+            r0: self.r0.min(other.r0),
+            c1: self.c1.max(other.c1),
+            r1: self.r1.max(other.r1),
+        }
     }
 
     fn overlaps(&self, other: &Self) -> bool {
@@ -251,7 +297,20 @@ impl CellBox {
         if left >= w || top >= h {
             return None;
         }
-        Some(Area { left, top, right: self.c1.saturating_mul(TILE).saturating_add(TILE - 1).min(w - 1), bottom: self.r1.saturating_mul(TILE).saturating_add(TILE - 1).min(h - 1) })
+        Some(Area {
+            left,
+            top,
+            right: self
+                .c1
+                .saturating_mul(TILE)
+                .saturating_add(TILE - 1)
+                .min(w - 1),
+            bottom: self
+                .r1
+                .saturating_mul(TILE)
+                .saturating_add(TILE - 1)
+                .min(h - 1),
+        })
     }
 }
 
@@ -325,9 +384,16 @@ impl Churn {
     fn observe(&mut self, key: (u16, u16), now: Duration) {
         let origin = *self.origin.get_or_insert(now);
         let slot = Self::slot(origin, now);
-        let cell = self.churn.entry(key).or_insert(ChurnCell { history: 0, last_slot: slot });
+        let cell = self.churn.entry(key).or_insert(ChurnCell {
+            history: 0,
+            last_slot: slot,
+        });
         let elapsed = slot.saturating_sub(cell.last_slot);
-        cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+        cell.history = if elapsed >= CHURN_WINDOW {
+            0
+        } else {
+            cell.history << elapsed
+        };
         cell.history |= 1;
         cell.last_slot = slot;
     }
@@ -340,7 +406,11 @@ impl Churn {
         let mut moving = Vec::new();
         self.churn.retain(|key, cell| {
             let elapsed = slot.saturating_sub(cell.last_slot);
-            cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+            cell.history = if elapsed >= CHURN_WINDOW {
+                0
+            } else {
+                cell.history << elapsed
+            };
             cell.last_slot = slot;
             if cell.history.count_ones() >= CHURN_MOVING {
                 moving.push(*key);
@@ -353,9 +423,15 @@ impl Churn {
 
     /// In how many of the last [`CHURN_WINDOW`] slots `key` changed, as of `now`.
     fn recent(&self, key: (u16, u16), now: Duration) -> u32 {
-        let (Some(origin), Some(cell)) = (self.origin, self.churn.get(&key)) else { return 0 };
+        let (Some(origin), Some(cell)) = (self.origin, self.churn.get(&key)) else {
+            return 0;
+        };
         let elapsed = Self::slot(origin, now).saturating_sub(cell.last_slot);
-        if elapsed >= CHURN_WINDOW { 0 } else { (cell.history << elapsed).count_ones() }
+        if elapsed >= CHURN_WINDOW {
+            0
+        } else {
+            (cell.history << elapsed).count_ones()
+        }
     }
 
     fn clear(&mut self) {
@@ -397,7 +473,12 @@ fn components(cells: &[(u16, u16)], least: u32) -> Vec<Component> {
         while let Some((c, r)) = stack.pop() {
             moving += 1;
             bbox = bbox.union(&CellBox::of((c, r)));
-            for next in [(c.wrapping_sub(1), r), (c + 1, r), (c, r.wrapping_sub(1)), (c, r + 1)] {
+            for next in [
+                (c.wrapping_sub(1), r),
+                (c + 1, r),
+                (c, r.wrapping_sub(1)),
+                (c, r + 1),
+            ] {
                 if remaining.contains(&next) && seen.insert(next) {
                     stack.push(next);
                 }
@@ -428,24 +509,36 @@ fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
     }
     while active != 0 {
         let overlapping = loop {
-            let Some(Reverse((i, j, gi, gj))) = overlaps.pop() else { break None };
+            let Some(Reverse((i, j, gi, gj))) = overlaps.pop() else {
+                break None;
+            };
             if current(&components, &generations, i, j, gi, gj) {
                 break Some((i, j));
             }
         };
         if let Some((i, j)) = overlapping {
-            let (left, right) = (components[i].expect("current"), components[j].expect("current"));
+            let (left, right) = (
+                components[i].expect("current"),
+                components[j].expect("current"),
+            );
             let merged = left.bbox.union(&right.bbox);
             let moving = left.moving + right.moving;
             let nested = merged == left.bbox || merged == right.bbox;
             if nested || merged.area() <= MERGE_WASTE * moving {
                 components[j] = None;
-                components[i] = Some(Component { bbox: merged, moving });
+                components[i] = Some(Component {
+                    bbox: merged,
+                    moving,
+                });
                 generations[i] += 1;
                 active -= 1;
                 queue_component(i, &components, &generations, &mut overlaps, &mut merges);
             } else {
-                let loser = if (right.moving, right.bbox.area()) < (left.moving, left.bbox.area()) { j } else { i };
+                let loser = if (right.moving, right.bbox.area()) < (left.moving, left.bbox.area()) {
+                    j
+                } else {
+                    i
+                };
                 components[loser] = None;
                 active -= 1;
             }
@@ -455,7 +548,9 @@ fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
             break;
         }
         let best = loop {
-            let Some(Reverse((_, i, j, gi, gj))) = merges.pop() else { break None };
+            let Some(Reverse((_, i, j, gi, gj))) = merges.pop() else {
+                break None;
+            };
             if current(&components, &generations, i, j, gi, gj) {
                 break Some((i, j));
             }
@@ -464,13 +559,22 @@ fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
             Some((i, j)) => {
                 let left = components[i].expect("current");
                 let right = components[j].take().expect("current");
-                components[i] = Some(Component { bbox: left.bbox.union(&right.bbox), moving: left.moving + right.moving });
+                components[i] = Some(Component {
+                    bbox: left.bbox.union(&right.bbox),
+                    moving: left.moving + right.moving,
+                });
                 generations[i] += 1;
                 active -= 1;
                 queue_component(i, &components, &generations, &mut overlaps, &mut merges);
             }
             None => {
-                let smallest = components.iter().enumerate().filter_map(|(i, c)| c.map(|c| (i, c))).min_by_key(|(_, c)| (c.moving, c.bbox.area())).map(|(i, _)| i).expect("more than max");
+                let smallest = components
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| c.map(|c| (i, c)))
+                    .min_by_key(|(_, c)| (c.moving, c.bbox.area()))
+                    .map(|(i, _)| i)
+                    .expect("more than max");
                 components[smallest] = None;
                 active -= 1;
             }
@@ -479,15 +583,35 @@ fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
     components.into_iter().flatten().map(|c| c.bbox).collect()
 }
 
-fn queue_component(at: usize, components: &[Option<Component>], generations: &[u32], overlaps: &mut OverlapQueue, merges: &mut MergeQueue) {
+fn queue_component(
+    at: usize,
+    components: &[Option<Component>],
+    generations: &[u32],
+    overlaps: &mut OverlapQueue,
+    merges: &mut MergeQueue,
+) {
     for other in 0..components.len() {
         if other != at && components[other].is_some() {
-            queue_pair(at.min(other), at.max(other), components, generations, overlaps, merges);
+            queue_pair(
+                at.min(other),
+                at.max(other),
+                components,
+                generations,
+                overlaps,
+                merges,
+            );
         }
     }
 }
 
-fn queue_pair(i: usize, j: usize, components: &[Option<Component>], generations: &[u32], overlaps: &mut OverlapQueue, merges: &mut MergeQueue) {
+fn queue_pair(
+    i: usize,
+    j: usize,
+    components: &[Option<Component>],
+    generations: &[u32],
+    overlaps: &mut OverlapQueue,
+    merges: &mut MergeQueue,
+) {
     let (left, right) = (components[i].expect("live"), components[j].expect("live"));
     if left.bbox.overlaps(&right.bbox) {
         overlaps.push(Reverse((i, j, generations[i], generations[j])));
@@ -495,19 +619,38 @@ fn queue_pair(i: usize, j: usize, components: &[Option<Component>], generations:
     }
     let merged = left.bbox.union(&right.bbox);
     if merged.area() <= MERGE_WASTE * (left.moving + right.moving) {
-        merges.push(Reverse((merged.area() - left.bbox.area() - right.bbox.area(), i, j, generations[i], generations[j])));
+        merges.push(Reverse((
+            merged.area() - left.bbox.area() - right.bbox.area(),
+            i,
+            j,
+            generations[i],
+            generations[j],
+        )));
     }
 }
 
-fn current(components: &[Option<Component>], generations: &[u32], i: usize, j: usize, gi: u32, gj: u32) -> bool {
-    components[i].is_some() && components[j].is_some() && generations[i] == gi && generations[j] == gj
+fn current(
+    components: &[Option<Component>],
+    generations: &[u32],
+    i: usize,
+    j: usize,
+    gi: u32,
+    gj: u32,
+) -> bool {
+    components[i].is_some()
+        && components[j].is_some()
+        && generations[i] == gi
+        && generations[j] == gj
 }
 
 // ── The pixels ───────────────────────────────────────────────────────────────
 
 /// Whether `area` of `a` and `b`, two `B, G, R, X` pictures, differ.
 fn differs(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, area: Area) -> bool {
-    let (from, to) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
+    let (from, to) = (
+        usize::from(area.left) * 4,
+        (usize::from(area.right) + 1) * 4,
+    );
     (area.top..=area.bottom).any(|y| {
         let (ra, rb) = (usize::from(y) * a_stride, usize::from(y) * b_stride);
         a[ra + from..ra + to] != b[rb + from..rb + to]
@@ -516,7 +659,10 @@ fn differs(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, area: Area) -> 
 
 /// Copy `area` of `from` into `to`, two `B, G, R, X` pictures.
 fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: Area) {
-    let (left, right) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
+    let (left, right) = (
+        usize::from(area.left) * 4,
+        (usize::from(area.right) + 1) * 4,
+    );
     for y in area.top..=area.bottom {
         let (rt, rf) = (usize::from(y) * to_stride, usize::from(y) * from_stride);
         to[rt + left..rt + right].copy_from_slice(&from[rf + left..rf + right]);
@@ -528,10 +674,17 @@ fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: 
 /// Its rows are put together and hashed at once: xxh3 fed a row at a time
 /// spent as long again on its buffering as on the hash.
 fn tile_key(pixels: &[u8], stride: usize, area: Area) -> (u64, bool) {
-    let (from, to) = (usize::from(area.left) * 4, (usize::from(area.right) + 1) * 4);
+    let (from, to) = (
+        usize::from(area.left) * 4,
+        (usize::from(area.right) + 1) * 4,
+    );
     let mut tile = [0u8; TILE as usize * TILE as usize * 4];
     let first = &pixels[usize::from(area.top) * stride + from..usize::from(area.top) * stride + to];
-    let mut flat = first.as_chunks::<4>().0.iter().all(|px| px == first.first_chunk::<4>().expect("a pixel"));
+    let mut flat = first
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|px| px == first.first_chunk::<4>().expect("a pixel"));
     for (y, line) in (area.top..=area.bottom).zip(tile.chunks_exact_mut(to - from)) {
         let row = &pixels[usize::from(y) * stride + from..usize::from(y) * stride + to];
         line.copy_from_slice(row);
@@ -545,7 +698,10 @@ fn crop_rgb(pixels: &[u8], stride: usize, area: Area, out: &mut Vec<u8>) {
     out.clear();
     for y in area.top..=area.bottom {
         let row = usize::from(y) * stride;
-        for px in pixels[row + usize::from(area.left) * 4..row + (usize::from(area.right) + 1) * 4].as_chunks::<4>().0 {
+        for px in pixels[row + usize::from(area.left) * 4..row + (usize::from(area.right) + 1) * 4]
+            .as_chunks::<4>()
+            .0
+        {
             out.extend_from_slice(&[px[2], px[1], px[0]]);
         }
     }
@@ -594,7 +750,13 @@ fn palette(rgb: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 /// have at most 256 colours — `indexed`, [`palette`]'s word on them — RGB with
 /// each row's filter chosen otherwise, at `png`'s fast compression. What the
 /// zDesk gateway codes its own tiles as.
-fn encode_png(w: u16, h: u16, rgb: &[u8], indexed: Option<(Vec<u8>, Vec<u8>)>, out: &mut Vec<u8>) -> Result<(), png::EncodingError> {
+fn encode_png(
+    w: u16,
+    h: u16,
+    rgb: &[u8],
+    indexed: Option<(Vec<u8>, Vec<u8>)>,
+    out: &mut Vec<u8>,
+) -> Result<(), png::EncodingError> {
     let mut encoder = png::Encoder::new(out, u32::from(w), u32::from(h));
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::Fast);
@@ -699,7 +861,12 @@ struct CopyRect {
 impl CopyRect {
     /// The source as a rectangle of the desktop.
     fn source(self) -> Area {
-        Area { left: self.src.0, top: self.src.1, right: self.src.0 + (self.dst.right - self.dst.left), bottom: self.src.1 + (self.dst.bottom - self.dst.top) }
+        Area {
+            left: self.src.0,
+            top: self.src.1,
+            right: self.src.0 + (self.dst.right - self.dst.left),
+            bottom: self.src.1 + (self.dst.bottom - self.dst.top),
+        }
     }
 }
 
@@ -730,7 +897,10 @@ fn filter_bit(hash: u64) -> usize {
 /// [`HASH_BASE`], the first the most significant, so that the next run's is
 /// this one's with a digit taken off the front and one put on the end.
 fn run_hash(pixels: &[u8], stride: usize, x: u16, y: u16) -> u64 {
-    (x..x + PROBE).fold(0, |hash, x| hash.wrapping_mul(HASH_BASE).wrapping_add(u64::from(pixel(pixels, stride, x, y))))
+    (x..x + PROBE).fold(0, |hash, x| {
+        hash.wrapping_mul(HASH_BASE)
+            .wrapping_add(u64::from(pixel(pixels, stride, x, y)))
+    })
 }
 
 // ── What the client keeps ────────────────────────────────────────────────────
@@ -800,7 +970,11 @@ impl Cache {
             Some(&slot) => slot,
             None if self.slots.len() < usize::from(CACHE_SLOTS) => self.slots.len() as u16,
             None => {
-                let &(used, slot) = self.by_use.iter().next().expect("a full cache has a least recently used slot");
+                let &(used, slot) = self
+                    .by_use
+                    .iter()
+                    .next()
+                    .expect("a full cache has a least recently used slot");
                 self.by_use.remove(&(used, slot));
                 let evicted = self.slots.remove(&slot).expect("the slot it keeps");
                 self.by_hash.remove(&evicted.hash);
@@ -810,7 +984,14 @@ impl Cache {
         if let Some(kept) = self.slots.get(&slot) {
             self.by_use.remove(&(kept.used, slot));
         }
-        self.slots.insert(slot, Kept { hash, settled, used: self.stamp });
+        self.slots.insert(
+            slot,
+            Kept {
+                hash,
+                settled,
+                used: self.stamp,
+            },
+        );
         self.by_hash.insert(hash, slot);
         self.by_use.insert((self.stamp, slot));
         slot
@@ -844,7 +1025,12 @@ impl Live {
     /// it is the stream's last frame from before it.
     fn unsent(&self) -> impl Iterator<Item = Area> + '_ {
         let Area { left, top, .. } = self.area;
-        self.pending.iter().map(move |r| Area { left: left + r.x, top: top + r.y, right: left + r.x + r.width - 1, bottom: top + r.y + r.height - 1 })
+        self.pending.iter().map(move |r| Area {
+            left: left + r.x,
+            top: top + r.y,
+            right: left + r.x + r.width - 1,
+            bottom: top + r.y + r.height - 1,
+        })
     }
 }
 
@@ -860,7 +1046,13 @@ impl Out<'_> {
     /// Begin a rectangle over `area` with `header`, its length yet to be
     /// filled in, and return where the header is.
     fn header(&mut self, area: Area, header: TileHeader) -> usize {
-        self.out.extend_from_slice(&crate::rfb::msg::rect_header(area.left, area.top, area.w(), area.h(), wlshare_proto::ENCODING_TILES));
+        self.out.extend_from_slice(&crate::rfb::msg::rect_header(
+            area.left,
+            area.top,
+            area.w(),
+            area.h(),
+            wlshare_proto::ENCODING_TILES,
+        ));
         let at = self.out.len();
         self.out.extend_from_slice(&header.to_bytes());
         self.count += 1;
@@ -972,7 +1164,12 @@ impl TilesEncoder {
     /// of the picture the client's list asks for: whether the dial walks, from
     /// wlshare's own as its ceiling. The client holds nothing
     /// of it yet.
-    pub fn new(width: u16, height: u16, picture: TilesPicture, coder: Box<dyn H264Coder>) -> Result<Self, TilesError> {
+    pub fn new(
+        width: u16,
+        height: u16,
+        picture: TilesPicture,
+        coder: Box<dyn H264Coder>,
+    ) -> Result<Self, TilesError> {
         if width == 0 || height == 0 {
             return Err(TilesError::Empty(width, height));
         }
@@ -1007,7 +1204,8 @@ impl TilesEncoder {
             scratch: Vec::new(),
             keys: HashMap::new(),
             picture,
-            progressive: (picture == TilesPicture::Progressive).then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
+            progressive: (picture == TilesPicture::Progressive)
+                .then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
             still_stream: None,
         };
         encoder.forget();
@@ -1056,7 +1254,8 @@ impl TilesEncoder {
             self.cache.unsettle();
         }
         if (picture == TilesPicture::Progressive) != self.progressive.is_some() {
-            self.progressive = (picture == TilesPicture::Progressive).then(|| progressive::Encoder::new(self.size.0, progressive::Tables::protocol()));
+            self.progressive = (picture == TilesPicture::Progressive)
+                .then(|| progressive::Encoder::new(self.size.0, progressive::Tables::protocol()));
         }
         self.picture = picture;
         self.forget();
@@ -1082,7 +1281,9 @@ impl TilesEncoder {
         self.copies.clear();
         self.restarting = true;
         self.still_stream = None;
-        self.unknown = tiles_of(Area::whole(self.size)).map(|(cell, _)| cell).collect();
+        self.unknown = tiles_of(Area::whole(self.size))
+            .map(|(cell, _)| cell)
+            .collect();
         if let Some(enc) = &mut self.progressive {
             enc.forget();
         }
@@ -1125,18 +1326,41 @@ impl TilesEncoder {
             return;
         }
         let mut seen = HashSet::new();
-        let (mirror, stride, size, cache, keys) = (&self.mirror, self.stride, self.size, &self.cache, &mut self.keys);
-        let cell_area = |cell: (u16, u16)| CellBox::of(cell).to_area(size).expect("a tile of the desktop");
+        let (mirror, stride, size, cache, keys) = (
+            &self.mirror,
+            self.stride,
+            self.size,
+            &self.cache,
+            &mut self.keys,
+        );
+        let cell_area = |cell: (u16, u16)| {
+            CellBox::of(cell)
+                .to_area(size)
+                .expect("a tile of the desktop")
+        };
         let jobs: Vec<progressive::Job> = stills
             .iter()
             .flat_map(|&area| tiles_of(area))
             .filter(|&(cell, part)| {
                 let whole = part.w() == TILE && part.h() == TILE && part == cell_area(cell);
-                seen.insert(cell) && !(whole && cache.find(keys.entry(cell).or_insert_with(|| tile_key(mirror, stride, part)).0).is_some())
+                seen.insert(cell)
+                    && !(whole
+                        && cache
+                            .find(
+                                keys.entry(cell)
+                                    .or_insert_with(|| tile_key(mirror, stride, part))
+                                    .0,
+                            )
+                            .is_some())
             })
             .map(|(cell, _)| {
                 let area = cell_area(cell);
-                progressive::Job { cell, at: usize::from(area.top) * stride + usize::from(area.left) * 4, w: usize::from(area.w()), h: usize::from(area.h()) }
+                progressive::Job {
+                    cell,
+                    at: usize::from(area.top) * stride + usize::from(area.left) * 4,
+                    w: usize::from(area.w()),
+                    h: usize::from(area.h()),
+                }
             })
             .collect();
         // A few tiles are coded as they are sent, on this thread: waking the
@@ -1145,7 +1369,13 @@ impl TilesEncoder {
             return;
         }
         let stage = self.first_stage();
-        self.progressive.as_mut().expect("progressive").precode(&jobs, &self.mirror, self.stride, stage, PROGRESSIVE_SLACK);
+        self.progressive.as_mut().expect("progressive").precode(
+            &jobs,
+            &self.mirror,
+            self.stride,
+            stage,
+            PROGRESSIVE_SLACK,
+        );
     }
 
     /// Send tile `cell` as a progressive tile: a first pass at
@@ -1154,7 +1384,13 @@ impl TilesEncoder {
     /// whole where that costs little more; or, settling, the upgrade
     /// to the stage after the one it stands at, a whole first pass where the
     /// client holds no coefficients of it. Owed the next stage until full.
-    fn progressive_tile(&mut self, cell: (u16, u16), pass: ProgressivePass, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
+    fn progressive_tile(
+        &mut self,
+        cell: (u16, u16),
+        pass: ProgressivePass,
+        now: Duration,
+        out: &mut Out,
+    ) -> Result<bool, TilesError> {
         let area = self.cell_area(cell);
         let at = usize::from(area.top) * self.stride + usize::from(area.left) * 4;
         let stage = self.first_stage();
@@ -1163,8 +1399,22 @@ impl TilesEncoder {
         let (w, h) = (usize::from(area.w()), usize::from(area.h()));
         let block = match (pass, enc.stage_of(cell)) {
             (ProgressivePass::Upgrade, Some(stage)) => enc.upgrade(cell, (stage + 1).min(full)),
-            (ProgressivePass::Upgrade, None) => Some(enc.first(cell, &self.mirror[at..], self.stride, w, h, full).block),
-            (ProgressivePass::First, _) => Some(enc.first_or_full(cell, &self.mirror[at..], self.stride, w, h, stage, PROGRESSIVE_SLACK).block),
+            (ProgressivePass::Upgrade, None) => Some(
+                enc.first(cell, &self.mirror[at..], self.stride, w, h, full)
+                    .block,
+            ),
+            (ProgressivePass::First, _) => Some(
+                enc.first_or_full(
+                    cell,
+                    &self.mirror[at..],
+                    self.stride,
+                    w,
+                    h,
+                    stage,
+                    PROGRESSIVE_SLACK,
+                )
+                .block,
+            ),
         };
         let settled = enc.stage_of(cell) == Some(full);
         if let Some(block) = block {
@@ -1207,24 +1457,56 @@ impl TilesEncoder {
     /// Where the damage moved pixels the client holds — a scroll, a window
     /// dragged — the rectangle they now fill is a copy of where they were
     /// ([`Self::find_copies`]), and none of its tiles is a still.
-    pub fn read(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>, now: Duration) -> Result<(), TilesError> {
+    pub fn read(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        changed: Option<&[Rect]>,
+        now: Duration,
+    ) -> Result<(), TilesError> {
         let (w, h) = self.size;
-        if stride < usize::from(w) * 4 || pixels.len() < (usize::from(h) - 1) * stride + usize::from(w) * 4 {
-            return Err(TilesError::Buffer { width: w, height: h, stride, bytes: pixels.len() });
+        if stride < usize::from(w) * 4
+            || pixels.len() < (usize::from(h) - 1) * stride + usize::from(w) * 4
+        {
+            return Err(TilesError::Buffer {
+                width: w,
+                height: h,
+                stride,
+                bytes: pixels.len(),
+            });
         }
         let whole = [Area::whole(self.size)];
         let areas: Vec<Area> = match changed.filter(|_| self.unknown.is_empty()) {
-            Some(rects) => rects.iter().filter_map(|r| Area::clipped(*r, self.size)).collect(),
+            Some(rects) => rects
+                .iter()
+                .filter_map(|r| Area::clipped(*r, self.size))
+                .collect(),
             None => whole.to_vec(),
         };
         // The tiles of each area that differ from the picture before any of
         // them, compared once: what copies are looked among, and what each
         // area's damage takes as changed.
-        let differ: Vec<HashSet<(u16, u16)>> = areas.iter().map(|area| tiles_of(*area).filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part)).map(|(cell, _)| cell).collect()).collect();
+        let differ: Vec<HashSet<(u16, u16)>> = areas
+            .iter()
+            .map(|area| {
+                tiles_of(*area)
+                    .filter(|(_, part)| differs(&self.mirror, self.stride, pixels, stride, *part))
+                    .map(|(cell, _)| cell)
+                    .collect()
+            })
+            .collect();
         let copies = self.find_copies(pixels, stride, &areas, &differ, now);
         if !copies.is_empty() {
             self.copied_at = Some(now);
-            self.copied_by = copies.iter().map(|copy| (i32::from(copy.src.0) - i32::from(copy.dst.left), i32::from(copy.src.1) - i32::from(copy.dst.top))).collect();
+            self.copied_by = copies
+                .iter()
+                .map(|copy| {
+                    (
+                        i32::from(copy.src.0) - i32::from(copy.dst.left),
+                        i32::from(copy.src.1) - i32::from(copy.dst.top),
+                    )
+                })
+                .collect();
             self.copied_by.dedup();
         }
         // A copy draws what the client holds of its source over every tile it
@@ -1273,20 +1555,39 @@ impl TilesEncoder {
     /// owed for, or the rectangle of a copy before it in the same read, since
     /// it is matched against the picture before any of them; nor does it draw
     /// over a tile a stream carries.
-    fn find_copies(&self, pixels: &[u8], stride: usize, areas: &[Area], differ: &[HashSet<(u16, u16)>], now: Duration) -> Vec<CopyRect> {
-        if !self.unknown.is_empty() || areas.iter().map(|area| tiles_of(*area).count()).sum::<usize>() < COPY_MIN_TILES {
+    fn find_copies(
+        &self,
+        pixels: &[u8],
+        stride: usize,
+        areas: &[Area],
+        differ: &[HashSet<(u16, u16)>],
+        now: Duration,
+    ) -> Vec<CopyRect> {
+        if !self.unknown.is_empty()
+            || areas
+                .iter()
+                .map(|area| tiles_of(*area).count())
+                .sum::<usize>()
+                < COPY_MIN_TILES
+        {
             return Vec::new();
         }
         let (old, old_stride) = (&self.mirror[..], self.stride);
         // A copy found within the churn's window: a scroll is on, and a tile
         // it changed that the search missed churns as a video's would. Left
         // out, two misses would leave the rest of the scroll nothing to find.
-        let scrolling = self.copied_at.is_some_and(|at| now.saturating_sub(at) < CHURN_SLOT * CHURN_WINDOW as u32);
+        let scrolling = self
+            .copied_at
+            .is_some_and(|at| now.saturating_sub(at) < CHURN_SLOT * CHURN_WINDOW as u32);
         let parts: Vec<(usize, Area)> = areas
             .iter()
             .enumerate()
             .flat_map(|(i, area)| tiles_of(*area).map(move |(cell, part)| (i, cell, part)))
-            .filter(|(i, cell, _)| !self.covered.contains(cell) && (scrolling || self.churn.recent(*cell, now) < COPY_CHURN) && differ[*i].contains(cell))
+            .filter(|(i, cell, _)| {
+                !self.covered.contains(cell)
+                    && (scrolling || self.churn.recent(*cell, now) < COPY_CHURN)
+                    && differ[*i].contains(cell)
+            })
             .map(|(i, _, part)| (i, part))
             .collect();
         if parts.len() < COPY_MIN_TILES {
@@ -1303,21 +1604,54 @@ impl TilesEncoder {
                 continue;
             }
             let x = part.left + (part.w() - PROBE) / 2;
-            let busy = |y: u16| (x + 1..x + PROBE).any(|at| pixel(pixels, stride, at, y) != pixel(pixels, stride, x, y));
+            let busy = |y: u16| {
+                (x + 1..x + PROBE)
+                    .any(|at| pixel(pixels, stride, at, y) != pixel(pixels, stride, x, y))
+            };
             let shift = (probes.len() % usize::from(MAX_SCAN_STEP)) as u16;
-            if let Some(y) = (0..4).map(|k| (part.top + part.h() * k / 4 + shift).min(part.bottom)).find(|y| busy(*y)) {
-                probes.push(Probe { x, y, area, hash: run_hash(pixels, stride, x, y) });
+            if let Some(y) = (0..4)
+                .map(|k| (part.top + part.h() * k / 4 + shift).min(part.bottom))
+                .find(|y| busy(*y))
+            {
+                probes.push(Probe {
+                    x,
+                    y,
+                    area,
+                    hash: run_hash(pixels, stride, x, y),
+                });
             }
         }
         // Within the damage, which what moved left too, and within reach of the
         // tiles looked among.
-        let union = |a: Area, b: Area| Area { left: a.left.min(b.left), top: a.top.min(b.top), right: a.right.max(b.right), bottom: a.bottom.max(b.bottom) };
+        let union = |a: Area, b: Area| Area {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        };
         let damage = areas.iter().copied().reduce(union).expect("some damage");
-        let looked = parts.iter().map(|(_, part)| *part).reduce(union).expect("some parts");
-        let reach = Area { left: looked.left.saturating_sub(COPY_REACH), top: looked.top.saturating_sub(COPY_REACH), right: looked.right.saturating_add(COPY_REACH), bottom: looked.bottom.saturating_add(COPY_REACH) };
-        let window = damage.intersect(reach).expect("the parts are in the damage");
-        let looked_at: u32 = parts.iter().map(|(_, part)| u32::from(part.w()) * u32::from(part.h())).sum();
-        if probes.is_empty() || window.w() < PROBE || u32::from(window.w()) * u32::from(window.h()) > COPY_WINDOW_RATIO * looked_at {
+        let looked = parts
+            .iter()
+            .map(|(_, part)| *part)
+            .reduce(union)
+            .expect("some parts");
+        let reach = Area {
+            left: looked.left.saturating_sub(COPY_REACH),
+            top: looked.top.saturating_sub(COPY_REACH),
+            right: looked.right.saturating_add(COPY_REACH),
+            bottom: looked.bottom.saturating_add(COPY_REACH),
+        };
+        let window = damage
+            .intersect(reach)
+            .expect("the parts are in the damage");
+        let looked_at: u32 = parts
+            .iter()
+            .map(|(_, part)| u32::from(part.w()) * u32::from(part.h()))
+            .sum();
+        if probes.is_empty()
+            || window.w() < PROBE
+            || u32::from(window.w()) * u32::from(window.h()) > COPY_WINDOW_RATIO * looked_at
+        {
             return Vec::new();
         }
         let step = (probes.len() / 8).clamp(1, usize::from(MAX_SCAN_STEP)) as u16;
@@ -1336,19 +1670,37 @@ impl TilesEncoder {
         let mut scan = |y: u16, hits: &mut [Vec<(i32, i32)>]| {
             let at = usize::from(y) * old_stride + usize::from(window.left) * 4;
             row.clear();
-            row.extend(old[at..at + usize::from(window.w()) * 4].as_chunks::<4>().0.iter().map(|px| u64::from(u32::from_le_bytes(*px))));
-            let mut hash = row[..usize::from(PROBE)].iter().fold(0u64, |hash, px| hash.wrapping_mul(HASH_BASE).wrapping_add(*px));
+            row.extend(
+                old[at..at + usize::from(window.w()) * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|px| u64::from(u32::from_le_bytes(*px))),
+            );
+            let mut hash = row[..usize::from(PROBE)].iter().fold(0u64, |hash, px| {
+                hash.wrapping_mul(HASH_BASE).wrapping_add(*px)
+            });
             let last = row.len() - usize::from(PROBE);
             for dx in 0..=last {
                 if dx > 0 {
                     // The run before, its first pixel dropped and the next taken on.
-                    hash = hash.wrapping_sub(row[dx - 1].wrapping_mul(first)).wrapping_mul(HASH_BASE).wrapping_add(row[dx + usize::from(PROBE) - 1]);
+                    hash = hash
+                        .wrapping_sub(row[dx - 1].wrapping_mul(first))
+                        .wrapping_mul(HASH_BASE)
+                        .wrapping_add(row[dx + usize::from(PROBE) - 1]);
                 }
                 let bit = filter_bit(hash);
                 if filter[bit / 64] & (1 << (bit % 64)) != 0 {
                     let x = window.left + dx as u16;
-                    for (probe, hits) in probes.iter().zip(hits.iter_mut()).filter(|(probe, hits)| probe.hash == hash && hits.len() <= MAX_PROBE_HITS) {
-                        let offset = (i32::from(x) - i32::from(probe.x), i32::from(y) - i32::from(probe.y));
+                    for (probe, hits) in probes
+                        .iter()
+                        .zip(hits.iter_mut())
+                        .filter(|(probe, hits)| probe.hash == hash && hits.len() <= MAX_PROBE_HITS)
+                    {
+                        let offset = (
+                            i32::from(x) - i32::from(probe.x),
+                            i32::from(y) - i32::from(probe.y),
+                        );
                         if offset != (0, 0) {
                             hits.push(offset);
                         }
@@ -1365,7 +1717,12 @@ impl TilesEncoder {
         // the ones a quarter as many as the most at least.
         let (w, h) = self.size;
         let matches = |probe: &Probe, (dx, dy): (i32, i32)| {
-            let (Ok(x), Ok(y)) = (u16::try_from(i32::from(probe.x) + dx), u16::try_from(i32::from(probe.y) + dy)) else { return false };
+            let (Ok(x), Ok(y)) = (
+                u16::try_from(i32::from(probe.x) + dx),
+                u16::try_from(i32::from(probe.y) + dy),
+            ) else {
+                return false;
+            };
             if u32::from(x) + u32::from(PROBE) > u32::from(w) || y >= h {
                 return false;
             }
@@ -1375,7 +1732,10 @@ impl TilesEncoder {
         };
         let tally = |hits: &[Vec<(i32, i32)>], tried: &HashSet<(i32, i32)>| {
             let mut found: HashMap<(i32, i32), usize> = HashMap::new();
-            for offsets in hits.iter().filter(|offsets| offsets.len() <= MAX_PROBE_HITS) {
+            for offsets in hits
+                .iter()
+                .filter(|offsets| offsets.len() <= MAX_PROBE_HITS)
+            {
                 for offset in offsets.iter().filter(|offset| !tried.contains(offset)) {
                     *found.entry(*offset).or_default() += 1;
                 }
@@ -1385,7 +1745,11 @@ impl TilesEncoder {
             // and its text, found at too many places to say anything, leaves
             // the scan too few runs that agree (measured: a terminal dragged
             // at 2880x1800 sent 2.2 to 3.9 times the bytes without).
-            for offset in self.copied_by.iter().filter(|offset| !tried.contains(offset)) {
+            for offset in self
+                .copied_by
+                .iter()
+                .filter(|offset| !tried.contains(offset))
+            {
                 *found.entry(*offset).or_default() = usize::MAX;
             }
             let mut found: Vec<((i32, i32), usize)> = found.into_iter().collect();
@@ -1397,7 +1761,15 @@ impl TilesEncoder {
                     // At an offset a copy was at, every probe found there
                     // counts, those found at many places too.
                     let known = self.copied_by.contains(&offset);
-                    (offset, (0..probes.len()).filter(|&i| (known || hits[i].len() <= MAX_PROBE_HITS) && matches(&probes[i], offset)).collect::<Vec<_>>())
+                    (
+                        offset,
+                        (0..probes.len())
+                            .filter(|&i| {
+                                (known || hits[i].len() <= MAX_PROBE_HITS)
+                                    && matches(&probes[i], offset)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
                 })
                 .filter(|(_, seeds)| seeds.len() >= 2)
                 .collect();
@@ -1408,7 +1780,11 @@ impl TilesEncoder {
             offsets
         };
         // Each offset grown from its probes, one not inside a copy already.
-        let pending: HashSet<(u16, u16)> = self.stills.iter().flat_map(|still| tiles_of(*still).map(|(cell, _)| cell)).collect();
+        let pending: HashSet<(u16, u16)> = self
+            .stills
+            .iter()
+            .flat_map(|still| tiles_of(*still).map(|(cell, _)| cell))
+            .collect();
         let grow_all = |offsets: Vec<((i32, i32), Vec<usize>)>| {
             let mut copies: Vec<CopyRect> = Vec::new();
             for (offset, seeds) in offsets {
@@ -1416,11 +1792,26 @@ impl TilesEncoder {
                     if copies.len() == MAX_COPIES {
                         return copies;
                     }
-                    let at = Area { left: probe.x, top: probe.y, right: probe.x, bottom: probe.y };
+                    let at = Area {
+                        left: probe.x,
+                        top: probe.y,
+                        right: probe.x,
+                        bottom: probe.y,
+                    };
                     if copies.iter().any(|copy| copy.dst.contains(at)) {
                         continue;
                     }
-                    let Some(dst) = self.grow(pixels, stride, areas[probe.area], offset, probe, &pending, &copies) else { continue };
+                    let Some(dst) = self.grow(
+                        pixels,
+                        stride,
+                        areas[probe.area],
+                        offset,
+                        probe,
+                        &pending,
+                        &copies,
+                    ) else {
+                        continue;
+                    };
                     if u32::from(dst.w()) * u32::from(dst.h()) < COPY_MIN_PIXELS {
                         continue;
                     }
@@ -1430,9 +1821,17 @@ impl TilesEncoder {
                     if !parts.iter().any(|(_, part)| dst.contains(*part)) {
                         continue;
                     }
-                    let src = ((i32::from(dst.left) + offset.0) as u16, (i32::from(dst.top) + offset.1) as u16);
-                    let copy = CopyRect { dst, src, owed: false };
-                    let owed = tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
+                    let src = (
+                        (i32::from(dst.left) + offset.0) as u16,
+                        (i32::from(dst.top) + offset.1) as u16,
+                    );
+                    let copy = CopyRect {
+                        dst,
+                        src,
+                        owed: false,
+                    };
+                    let owed =
+                        tiles_of(copy.source()).any(|(cell, _)| self.debts.contains_key(&cell));
                     copies.push(CopyRect { owed, ..copy });
                 }
             }
@@ -1467,7 +1866,16 @@ impl TilesEncoder {
     /// probe's own run is not the old picture's, a hash's collision, or is in
     /// a tile it may not touch.
     #[allow(clippy::too_many_arguments)]
-    fn grow(&self, pixels: &[u8], stride: usize, area: Area, (dx, dy): (i32, i32), probe: &Probe, pending: &HashSet<(u16, u16)>, copies: &[CopyRect]) -> Option<Area> {
+    fn grow(
+        &self,
+        pixels: &[u8],
+        stride: usize,
+        area: Area,
+        (dx, dy): (i32, i32),
+        probe: &Probe,
+        pending: &HashSet<(u16, u16)>,
+        copies: &[CopyRect],
+    ) -> Option<Area> {
         let (w, h) = self.size;
         let (old, old_stride) = (&self.mirror[..], self.stride);
         let from_x = |x: u16| u16::try_from(i32::from(x) + dx).ok().filter(|x| *x < w);
@@ -1476,20 +1884,47 @@ impl TilesEncoder {
         // no tile owed a still not yet sent, nothing an earlier copy draws.
         let drawable = |cell: (u16, u16)| !self.covered.contains(&cell);
         let readable = |cell: (u16, u16)| !self.covered.contains(&cell) && !pending.contains(&cell);
-        let clear = |source: Area| copies.iter().all(|copy| copy.dst.intersect(source).is_none());
-        let source = |dst: Area| {
-            let (Some(left), Some(top), Some(right), Some(bottom)) = (from_x(dst.left), from_y(dst.top), from_x(dst.right), from_y(dst.bottom)) else { return None };
-            Some(Area { left, top, right, bottom })
+        let clear = |source: Area| {
+            copies
+                .iter()
+                .all(|copy| copy.dst.intersect(source).is_none())
         };
-        let cells = |dst: Area, source: Area| tiles_of(dst).all(|(cell, _)| drawable(cell)) && tiles_of(source).all(|(cell, _)| readable(cell));
-        let fits = |dst: Area| source(dst).is_some_and(|source| cells(dst, source) && clear(source));
+        let source = |dst: Area| {
+            let (Some(left), Some(top), Some(right), Some(bottom)) = (
+                from_x(dst.left),
+                from_y(dst.top),
+                from_x(dst.right),
+                from_y(dst.bottom),
+            ) else {
+                return None;
+            };
+            Some(Area {
+                left,
+                top,
+                right,
+                bottom,
+            })
+        };
+        let cells = |dst: Area, source: Area| {
+            tiles_of(dst).all(|(cell, _)| drawable(cell))
+                && tiles_of(source).all(|(cell, _)| readable(cell))
+        };
+        let fits =
+            |dst: Area| source(dst).is_some_and(|source| cells(dst, source) && clear(source));
         // A row's tiles, and its source's, are those of every row of the same
         // band and the same band of the source: the last band's answer, for
         // the width it was asked for.
         let fitted = std::cell::Cell::new(None);
         let row = |y: u16, left: u16, right: u16| {
-            let dst = Area { left, top: y, right, bottom: y };
-            let Some(from) = source(dst) else { return false };
+            let dst = Area {
+                left,
+                top: y,
+                right,
+                bottom: y,
+            };
+            let Some(from) = source(dst) else {
+                return false;
+            };
             let key = (y / TILE, from.top / TILE, left, right);
             let fit = match fitted.get() {
                 Some((cached, fit)) if cached == key => fit,
@@ -1500,17 +1935,31 @@ impl TilesEncoder {
                 }
             };
             fit && clear(from) && {
-                let (oy, ol, or) = (from_y(y).expect("fits"), from_x(left).expect("fits"), from_x(right).expect("fits"));
-                let new = &pixels[usize::from(y) * stride + usize::from(left) * 4..usize::from(y) * stride + (usize::from(right) + 1) * 4];
-                let was = &old[usize::from(oy) * old_stride + usize::from(ol) * 4..usize::from(oy) * old_stride + (usize::from(or) + 1) * 4];
+                let (oy, ol, or) = (
+                    from_y(y).expect("fits"),
+                    from_x(left).expect("fits"),
+                    from_x(right).expect("fits"),
+                );
+                let new = &pixels[usize::from(y) * stride + usize::from(left) * 4
+                    ..usize::from(y) * stride + (usize::from(right) + 1) * 4];
+                let was = &old[usize::from(oy) * old_stride + usize::from(ol) * 4
+                    ..usize::from(oy) * old_stride + (usize::from(or) + 1) * 4];
                 new == was
             }
         };
         let column = |x: u16, top: u16, bottom: u16, sample: &[u16]| {
-            let dst = Area { left: x, top, right: x, bottom };
+            let dst = Area {
+                left: x,
+                top,
+                right: x,
+                bottom,
+            };
             fits(dst) && {
                 let ox = from_x(x).expect("fits");
-                sample.iter().all(|y| pixel(pixels, stride, x, *y) == pixel(old, old_stride, ox, from_y(*y).expect("fits")))
+                sample.iter().all(|y| {
+                    pixel(pixels, stride, x, *y)
+                        == pixel(old, old_stride, ox, from_y(*y).expect("fits"))
+                })
             }
         };
         let (x, y) = (probe.x, probe.y);
@@ -1528,7 +1977,10 @@ impl TilesEncoder {
             }
         };
         rows(&mut top, &mut bottom, left, right);
-        let sample: Vec<u16> = (top..=bottom).step_by(GROW_SAMPLE).chain([y, bottom]).collect();
+        let sample: Vec<u16> = (top..=bottom)
+            .step_by(GROW_SAMPLE)
+            .chain([y, bottom])
+            .collect();
         while left > area.left && column(left - 1, top, bottom, &sample) {
             left -= 1;
         }
@@ -1537,7 +1989,12 @@ impl TilesEncoder {
         }
         let (mut top, mut bottom) = (y, y);
         rows(&mut top, &mut bottom, left, right);
-        Some(Area { left, top, right, bottom })
+        Some(Area {
+            left,
+            top,
+            right,
+            bottom,
+        })
     }
 
     /// One rectangle of damage: into the picture, the streams told where it
@@ -1550,9 +2007,24 @@ impl TilesEncoder {
     /// The tiles that changed are `differ`, but where an area `before` it
     /// reached, which went into the picture first and is compared again.
     #[allow(clippy::too_many_arguments)]
-    fn damage(&mut self, pixels: &[u8], stride: usize, area: Area, differ: &HashSet<(u16, u16)>, before: &[Area], copies: &[CopyRect], now: Duration) {
+    fn damage(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        area: Area,
+        differ: &HashSet<(u16, u16)>,
+        before: &[Area],
+        copies: &[CopyRect],
+        now: Duration,
+    ) {
         let mut changed: HashSet<(u16, u16)> = tiles_of(area)
-            .filter(|(cell, part)| if before.iter().any(|b| b.intersect(*part).is_some()) { differs(&self.mirror, self.stride, pixels, stride, *part) } else { differ.contains(cell) })
+            .filter(|(cell, part)| {
+                if before.iter().any(|b| b.intersect(*part).is_some()) {
+                    differs(&self.mirror, self.stride, pixels, stride, *part)
+                } else {
+                    differ.contains(cell)
+                }
+            })
             .map(|(cell, _)| cell)
             .collect();
         if !changed.is_empty() {
@@ -1570,13 +2042,22 @@ impl TilesEncoder {
         // is in one still whole, which the cache keeps.
         let mut top = area.top;
         while top <= area.bottom {
-            let band = Area { top, bottom: (top / BAND_ROWS + 1).saturating_mul(BAND_ROWS).saturating_sub(1).min(area.bottom), ..area };
+            let band = Area {
+                top,
+                bottom: (top / BAND_ROWS + 1)
+                    .saturating_mul(BAND_ROWS)
+                    .saturating_sub(1)
+                    .min(area.bottom),
+                ..area
+            };
             top = band.bottom.saturating_add(1);
             blit(&mut self.mirror, self.stride, pixels, stride, band);
             // The runs of changed tiles, and of those the ones no stream carries.
             let (mut changes, mut runs): (Vec<Area>, Vec<Area>) = (Vec::new(), Vec::new());
             let extend = |runs: &mut Vec<Area>, part: Area| match runs.last_mut() {
-                Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => run.right = part.right,
+                Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => {
+                    run.right = part.right
+                }
                 _ => runs.push(part),
             };
             for (cell, part) in tiles_of(band) {
@@ -1588,7 +2069,9 @@ impl TilesEncoder {
                 }
                 // What a scroll uncovered, or a window moved off, is a still
                 // and not motion, or the band it keeps changing would stream.
-                if !copies.iter().any(|copy| copy.dst.intersect(part).is_some() || copy.source().intersect(part).is_some()) {
+                if !copies.iter().any(|copy| {
+                    copy.dst.intersect(part).is_some() || copy.source().intersect(part).is_some()
+                }) {
                     self.churn.observe(cell, now);
                 }
                 extend(&mut changes, part);
@@ -1597,7 +2080,10 @@ impl TilesEncoder {
                 }
             }
             for live in &mut self.live {
-                for part in changes.iter().filter_map(|change| live.area.intersect(*change)) {
+                for part in changes
+                    .iter()
+                    .filter_map(|change| live.area.intersect(*change))
+                {
                     live.dirty = true;
                     live.pending.push(part.within(live.area));
                 }
@@ -1621,12 +2107,22 @@ impl TilesEncoder {
         // Keys of the picture an encode that failed was coding, before
         // anything here can fail.
         self.keys.clear();
-        let mut out = Out { out, count: 0, keyframe: false };
+        let mut out = Out {
+            out,
+            count: 0,
+            keyframe: false,
+        };
         for (id, area) in std::mem::take(&mut self.ended) {
             out.end(id, area);
         }
         for copy in std::mem::take(&mut self.copies) {
-            out.header(copy.dst, TileHeader::Copy { x: copy.src.0, y: copy.src.1 });
+            out.header(
+                copy.dst,
+                TileHeader::Copy {
+                    x: copy.src.0,
+                    y: copy.src.1,
+                },
+            );
         }
         let stills = std::mem::take(&mut self.stills);
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
@@ -1644,7 +2140,11 @@ impl TilesEncoder {
             // tick alone between its updates would hold back the next, and
             // start the walk's verdicts over.
             let more = self.tick(now, &mut out)?;
-            self.next_tick = if more && self.quiet(now) { now } else { now + CLEANUP_TICK };
+            self.next_tick = if more && self.quiet(now) {
+                now
+            } else {
+                now + CLEANUP_TICK
+            };
         }
         self.settling = out.count > brought;
         // What the streams that ended here had not carried, after their ENDs.
@@ -1655,7 +2155,12 @@ impl TilesEncoder {
             self.keys.clear();
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
-        Ok(Update { rects, keyframe: out.keyframe, tick: brought == 0, stopped: brought == 0 && self.quiet(now) })
+        Ok(Update {
+            rects,
+            keyframe: out.keyframe,
+            tick: brought == 0,
+            stopped: brought == 0 && self.quiet(now),
+        })
     }
 
     /// How long the last update queued on its way: its fence's round trip
@@ -1702,7 +2207,9 @@ impl TilesEncoder {
 
     /// The pixel rectangle of a tile.
     fn cell_area(&self, cell: (u16, u16)) -> Area {
-        CellBox::of(cell).to_area(self.size).expect("a tile of the desktop")
+        CellBox::of(cell)
+            .to_area(self.size)
+            .expect("a tile of the desktop")
     }
 
     /// Send `area` of the picture, a run of tiles along one row, as a still:
@@ -1713,21 +2220,35 @@ impl TilesEncoder {
     /// coded around it ([`Self::coded`]). A PNG pays the debt of every tile it
     /// covers whole, and so does a draw.
     fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
-        debug_assert!(self.picture != TilesPicture::Lossless, "a lossless list's stills are packed together");
+        debug_assert!(
+            self.picture != TilesPicture::Lossless,
+            "a lossless list's stills are packed together"
+        );
         if self.progressive.is_some() {
             return self.progressive_still(area, now, out);
         }
         let tiles: Vec<StillTile> = tiles_of(area)
             .map(|(cell, part)| {
                 let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                (cell, part, whole.then(|| tile_key(&self.mirror, self.stride, part)))
+                (
+                    cell,
+                    part,
+                    whole.then(|| tile_key(&self.mirror, self.stride, part)),
+                )
             })
             .collect();
         // Every slot drawn from is touched before any of the run is coded:
         // the stores of the pieces coded ahead of a draw take the least
         // recently used slots, which the drawn one must not be among, or the
         // client would have written it over before the draw.
-        let hits: Vec<Option<u16>> = tiles.iter().map(|(_, _, key)| key.and_then(|(hash, _)| self.cache.find(hash)).filter(|(_, kept)| *kept).map(|(slot, _)| slot)).collect();
+        let hits: Vec<Option<u16>> = tiles
+            .iter()
+            .map(|(_, _, key)| {
+                key.and_then(|(hash, _)| self.cache.find(hash))
+                    .filter(|(_, kept)| *kept)
+                    .map(|(slot, _)| slot)
+            })
+            .collect();
         for slot in hits.iter().flatten() {
             self.cache.touch(*slot);
         }
@@ -1746,7 +2267,12 @@ impl TilesEncoder {
     /// Send `stills`, each a run of tiles along one row: on a lossless list
     /// packed together ([`Self::lossless_stills`]), on any other one at a
     /// time ([`Self::still`]), a walked list's first passes coded ahead.
-    fn stills(&mut self, stills: Vec<Area>, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    fn stills(
+        &mut self,
+        stills: Vec<Area>,
+        now: Duration,
+        out: &mut Out,
+    ) -> Result<(), TilesError> {
         if self.picture == TilesPicture::Lossless {
             let sent = self.lossless_stills(stills, now, out);
             if sent.is_err() {
@@ -1773,22 +2299,46 @@ impl TilesEncoder {
     /// every run coded on rayon's threads where there are two or more and
     /// two runs to code, the moving ones framed; and written in order, the
     /// still ones through the stream. Nothing is owed: every pixel goes exact.
-    fn lossless_stills(&mut self, stills: Vec<Area>, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    fn lossless_stills(
+        &mut self,
+        stills: Vec<Area>,
+        now: Duration,
+        out: &mut Out,
+    ) -> Result<(), TilesError> {
         enum Piece {
-            Run { area: Area, still: bool, stores: Vec<(Area, u16)> },
-            Cached { part: Area, slot: u16 },
+            Run {
+                area: Area,
+                still: bool,
+                stores: Vec<(Area, u16)>,
+            },
+            Cached {
+                part: Area,
+                slot: u16,
+            },
         }
         let mut plan = Vec::new();
         for area in stills {
             let tiles: Vec<StillTile> = tiles_of(area)
                 .map(|(cell, part)| {
-                    let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                    (cell, part, whole.then(|| tile_key(&self.mirror, self.stride, part)))
+                    let whole =
+                        part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
+                    (
+                        cell,
+                        part,
+                        whole.then(|| tile_key(&self.mirror, self.stride, part)),
+                    )
                 })
                 .collect();
             // Every slot drawn from is touched before any of the run is
             // stored, as a held list's are.
-            let hits: Vec<Option<u16>> = tiles.iter().map(|(_, _, key)| key.and_then(|(hash, _)| self.cache.find(hash)).filter(|(_, kept)| *kept).map(|(slot, _)| slot)).collect();
+            let hits: Vec<Option<u16>> = tiles
+                .iter()
+                .map(|(_, _, key)| {
+                    key.and_then(|(hash, _)| self.cache.find(hash))
+                        .filter(|(_, kept)| *kept)
+                        .map(|(slot, _)| slot)
+                })
+                .collect();
             for slot in hits.iter().flatten() {
                 self.cache.touch(*slot);
             }
@@ -1801,7 +2351,14 @@ impl TilesEncoder {
                         Some((hash, false)) => Some((*part, cache.store(*hash, true))),
                         _ => None,
                     });
-                    plan.push(Piece::Run { area: Area { right: last.1.right, ..first.1 }, still: !moving(first.0), stores: stores.collect() });
+                    plan.push(Piece::Run {
+                        area: Area {
+                            right: last.1.right,
+                            ..first.1
+                        },
+                        still: !moving(first.0),
+                        stores: stores.collect(),
+                    });
                 }
             };
             let mut run = 0;
@@ -1809,7 +2366,10 @@ impl TilesEncoder {
                 let Some(slot) = hit else { continue };
                 run_of(&tiles[run..i], &mut plan);
                 run = i + 1;
-                plan.push(Piece::Cached { part: tiles[i].1, slot });
+                plan.push(Piece::Cached {
+                    part: tiles[i].1,
+                    slot,
+                });
             }
             run_of(&tiles[run..], &mut plan);
         }
@@ -1817,26 +2377,53 @@ impl TilesEncoder {
         // A moving run's body, framed, or a still one's bitmap, for the stream.
         let code = |&(area, still): &(Area, bool)| {
             let pixels = &mirror[usize::from(area.top) * stride + usize::from(area.left) * 4..];
-            if still { planar::bitmap(pixels, stride, area.w(), area.h()) } else { planar::pack(pixels, stride, area.w(), area.h()) }
+            if still {
+                planar::bitmap(pixels, stride, area.w(), area.h())
+            } else {
+                planar::pack(pixels, stride, area.w(), area.h())
+            }
         };
-        let runs: Vec<(Area, bool)> = plan.iter().filter_map(|piece| if let Piece::Run { area, still, .. } = piece { Some((*area, *still)) } else { None }).collect();
-        let coded: Vec<std::io::Result<Vec<u8>>> = if runs.len() >= 2 && rayon::current_num_threads() >= 2 {
-            runs.par_iter().map(code).collect()
-        } else {
-            runs.iter().map(code).collect()
-        };
+        let runs: Vec<(Area, bool)> = plan
+            .iter()
+            .filter_map(|piece| {
+                if let Piece::Run { area, still, .. } = piece {
+                    Some((*area, *still))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let coded: Vec<std::io::Result<Vec<u8>>> =
+            if runs.len() >= 2 && rayon::current_num_threads() >= 2 {
+                runs.par_iter().map(code).collect()
+            } else {
+                runs.iter().map(code).collect()
+            };
         let mut coded = coded.into_iter();
         for piece in plan {
             match piece {
-                Piece::Run { area, still, stores } => {
-                    let coded = coded.next().expect("a body for every run").map_err(TilesError::Planar)?;
+                Piece::Run {
+                    area,
+                    still,
+                    stores,
+                } => {
+                    let coded = coded
+                        .next()
+                        .expect("a body for every run")
+                        .map_err(TilesError::Planar)?;
                     let from = out.out.len();
-                    let header = if still { TileHeader::Still { len: 0 } } else { TileHeader::Planar { len: 0 } };
+                    let header = if still {
+                        TileHeader::Still { len: 0 }
+                    } else {
+                        TileHeader::Planar { len: 0 }
+                    };
                     let at = out.header(area, header);
                     if still {
                         let stream = match &mut self.still_stream {
                             Some(stream) => stream,
-                            None => self.still_stream.insert(planar::StillStream::new().map_err(TilesError::Planar)?),
+                            None => self
+                                .still_stream
+                                .insert(planar::StillStream::new().map_err(TilesError::Planar)?),
                         };
                         stream.push(&coded, out.out).map_err(TilesError::Planar)?;
                     } else {
@@ -1858,18 +2445,34 @@ impl TilesEncoder {
     /// The progressive still of a run: each tile a first pass, a whole tile
     /// the client's cache keeps a draw of its slot, which leaves the client
     /// holding its pixels and no coefficients.
-    fn progressive_still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    fn progressive_still(
+        &mut self,
+        area: Area,
+        now: Duration,
+        out: &mut Out,
+    ) -> Result<(), TilesError> {
         let tiles: Vec<StillTile> = tiles_of(area)
             .map(|(cell, part)| {
                 let whole = part.w() == TILE && part.h() == TILE && part == self.cell_area(cell);
-                (cell, part, whole.then(|| self.keys.remove(&cell).unwrap_or_else(|| tile_key(&self.mirror, self.stride, part))))
+                (
+                    cell,
+                    part,
+                    whole.then(|| {
+                        self.keys
+                            .remove(&cell)
+                            .unwrap_or_else(|| tile_key(&self.mirror, self.stride, part))
+                    }),
+                )
             })
             .collect();
         for (cell, part, key) in tiles {
             if let Some((slot, kept)) = key.and_then(|(hash, _)| self.cache.find(hash)) {
                 self.cache.touch(slot);
                 out.header(part, TileHeader::Cached { slot });
-                self.progressive.as_mut().expect("progressive").forget_tile(cell);
+                self.progressive
+                    .as_mut()
+                    .expect("progressive")
+                    .forget_tile(cell);
                 if kept {
                     self.debts.remove(&cell);
                 } else {
@@ -1890,13 +2493,24 @@ impl TilesEncoder {
     /// tile's key, as one PNG, and store every whole tile of it that is not
     /// one colour in the client's cache, after it.
     fn coded(&mut self, tiles: &[StillTile], out: &mut Out) -> Result<(), TilesError> {
-        let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else { return Ok(()) };
-        let area = Area { right: last.1.right, ..first.1 };
+        let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else {
+            return Ok(());
+        };
+        let area = Area {
+            right: last.1.right,
+            ..first.1
+        };
         let from = out.out.len();
         crop_rgb(&self.mirror, self.stride, area, &mut self.scratch);
         let header = TileHeader::Png { len: 0 };
         let at = out.header(area, header);
-        if let Err(e) = encode_png(area.w(), area.h(), &self.scratch, palette(&self.scratch), out.out) {
+        if let Err(e) = encode_png(
+            area.w(),
+            area.h(),
+            &self.scratch,
+            palette(&self.scratch),
+            out.out,
+        ) {
             out.out.truncate(from);
             out.count -= 1;
             return Err(e.into());
@@ -1929,13 +2543,29 @@ impl TilesEncoder {
             let from = out.out.len();
             // Whether the rectangle was begun, which a failed read never does.
             let mut headed = false;
-            let header = if live.started { TileHeader::Frame { stream: live.id, len: 0 } } else { TileHeader::Start { stream: live.id, len: 0 } };
+            let header = if live.started {
+                TileHeader::Frame {
+                    stream: live.id,
+                    len: 0,
+                }
+            } else {
+                TileHeader::Start {
+                    stream: live.id,
+                    len: 0,
+                }
+            };
 
-            let coded = live.stream.read_bgrx(&self.mirror[at..], stride, Some(&live.pending)).and_then(|()| {
-                headed = true;
-                let header_at = out.header(live.area, header);
-                Ok((live.stream.encode(!live.started, self.ceiling, out.out)?, header_at))
-            });
+            let coded = live
+                .stream
+                .read_bgrx(&self.mirror[at..], stride, Some(&live.pending))
+                .and_then(|()| {
+                    headed = true;
+                    let header_at = out.header(live.area, header);
+                    Ok((
+                        live.stream.encode(!live.started, self.ceiling, out.out)?,
+                        header_at,
+                    ))
+                });
             match coded {
                 Ok((true, header_at)) => {
                     out.length(from, header_at, header)?;
@@ -1970,11 +2600,24 @@ impl TilesEncoder {
     }
 
     fn cover(&mut self) {
-        self.covered = self.live.iter().flat_map(|live| live.cells.iter().copied()).collect();
+        self.covered = self
+            .live
+            .iter()
+            .flat_map(|live| live.cells.iter().copied())
+            .collect();
     }
 
-    fn retune(&mut self, moving: &[(u16, u16)], now: Duration, out: &mut Out) -> Result<(), TilesError> {
-        if !self.live.is_empty() && self.retuned_at.is_some_and(|at| now.saturating_sub(at) < RETUNE) {
+    fn retune(
+        &mut self,
+        moving: &[(u16, u16)],
+        now: Duration,
+        out: &mut Out,
+    ) -> Result<(), TilesError> {
+        if !self.live.is_empty()
+            && self
+                .retuned_at
+                .is_some_and(|at| now.saturating_sub(at) < RETUNE)
+        {
             return Ok(());
         }
         self.retuned_at = Some(now);
@@ -1982,18 +2625,29 @@ impl TilesEncoder {
             return Ok(());
         }
         let worthy = components(moving, self.stream_cells);
-        let busy: HashSet<(u16, u16)> = moving.iter().copied().filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell))).collect();
+        let busy: HashSet<(u16, u16)> = moving
+            .iter()
+            .copied()
+            .filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell)))
+            .collect();
         for live in &mut self.live {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
                 live.moving_at = now;
             }
         }
         let size = self.size;
-        let wanted: Vec<Area> = merge(worthy, MAX_STREAMS).into_iter().filter_map(|bbox| bbox.to_area(size)).collect();
-        let (mut next, mut old): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live).into_iter().partition(|live| {
-            let mut touched = wanted.iter().filter(|area| live.area.intersect(**area).is_some());
-            touched.clone().next().is_some() && touched.all(|area| live.area.contains(*area))
-        });
+        let wanted: Vec<Area> = merge(worthy, MAX_STREAMS)
+            .into_iter()
+            .filter_map(|bbox| bbox.to_area(size))
+            .collect();
+        let (mut next, mut old): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live)
+            .into_iter()
+            .partition(|live| {
+                let mut touched = wanted
+                    .iter()
+                    .filter(|area| live.area.intersect(**area).is_some());
+                touched.clone().next().is_some() && touched.all(|area| live.area.contains(*area))
+            });
         for live in &mut next {
             live.moving_at = now;
         }
@@ -2009,13 +2663,17 @@ impl TilesEncoder {
                     }
                     unsent.extend(live.unsent());
                 }
-                let id = (0..=u8::MAX).find(|id| !next.iter().chain(&old).any(|live| live.id == *id)).expect("at most a few streams live");
+                let id = (0..=u8::MAX)
+                    .find(|id| !next.iter().chain(&old).any(|live| live.id == *id))
+                    .expect("at most a few streams live");
                 next.push(self.build(id, area, now)?);
             }
         }
         for live in old {
             let idle = now.saturating_sub(live.moving_at) >= STREAM_IDLE;
-            let overlaps = next.iter().any(|kept| kept.area.intersect(live.area).is_some());
+            let overlaps = next
+                .iter()
+                .any(|kept| kept.area.intersect(live.area).is_some());
             if !idle && !overlaps && next.len() < MAX_STREAMS {
                 next.push(live);
             } else {
@@ -2038,7 +2696,11 @@ impl TilesEncoder {
             let mut runs: Vec<Area> = Vec::new();
             for (_, part) in tiles_of(*area).filter(|(cell, _)| !self.covered.contains(cell)) {
                 match runs.last_mut() {
-                    Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => run.right = part.right,
+                    Some(run)
+                        if run.top == part.top && run.right.checked_add(1) == Some(part.left) =>
+                    {
+                        run.right = part.right
+                    }
                     _ => runs.push(part),
                 }
             }
@@ -2048,12 +2710,25 @@ impl TilesEncoder {
 
     /// A stream of the region coder over `area`, every tile of it owed from now.
     fn build(&mut self, id: u8, area: Area, now: Duration) -> Result<Live, TilesError> {
-        let stream = self.coder.open(area.w(), area.h()).map_err(TilesError::Region)?;
+        let stream = self
+            .coder
+            .open(area.w(), area.h())
+            .map_err(TilesError::Region)?;
         let cells: Vec<(u16, u16)> = tiles_of(area).map(|(cell, _)| cell).collect();
         for cell in &cells {
             self.debts.insert(*cell, now);
         }
-        Ok(Live { id, area, cells, stream, pending: Vec::new(), dirty: true, started: false, carried: false, moving_at: now })
+        Ok(Live {
+            id,
+            area,
+            cells,
+            stream,
+            pending: Vec::new(),
+            dirty: true,
+            started: false,
+            carried: false,
+            moving_at: now,
+        })
     }
 
     /// The streams whose motion stopped ended, and the tiles still for
@@ -2069,7 +2744,10 @@ impl TilesEncoder {
     /// that was ready.
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
         let mut unsent = Vec::new();
-        for live in self.live.extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE) {
+        for live in self
+            .live
+            .extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE)
+        {
             if live.started {
                 out.end(live.id, live.area);
             }
@@ -2081,10 +2759,22 @@ impl TilesEncoder {
             return Ok(false);
         }
 
-        let mut ready: Vec<((u16, u16), Duration)> = self.debts.iter().filter(|(cell, at)| !self.covered.contains(*cell) && now.saturating_sub(**at) >= CLEANUP_IDLE).map(|(cell, at)| (*cell, *at)).collect();
+        let mut ready: Vec<((u16, u16), Duration)> = self
+            .debts
+            .iter()
+            .filter(|(cell, at)| {
+                !self.covered.contains(*cell) && now.saturating_sub(**at) >= CLEANUP_IDLE
+            })
+            .map(|(cell, at)| (*cell, *at))
+            .collect();
         // The coarsest progressive tiles first, so the picture is refined
         // all over a stage at a time, as the host's is; then the longest owed.
-        let stage = |cell: (u16, u16)| self.progressive.as_ref().and_then(|enc| enc.stage_of(cell)).unwrap_or(0);
+        let stage = |cell: (u16, u16)| {
+            self.progressive
+                .as_ref()
+                .and_then(|enc| enc.stage_of(cell))
+                .unwrap_or(0)
+        };
         ready.sort_unstable_by_key(|&(cell, at)| (stage(cell), at, cell.1, cell.0));
         let mut more = ready.len() > SETTLE_TILES;
         ready.truncate(SETTLE_TILES);
@@ -2130,7 +2820,8 @@ impl TilesEncoder {
                             more = true;
                             break 'runs;
                         }
-                        let settled = self.progressive_tile(cell, ProgressivePass::Upgrade, now, out)?;
+                        let settled =
+                            self.progressive_tile(cell, ProgressivePass::Upgrade, now, out)?;
                         more |= !settled;
                         if settled
                             && part == self.cell_area(cell)
@@ -2173,7 +2864,15 @@ mod tests {
             let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
             let (kind, data) = (&png[at + 4..at + 8], &png[at + 8..at + 8 + len]);
             match kind {
-                b"IHDR" => ihdr = Some((u32::from_be_bytes(data[0..4].try_into().unwrap()), u32::from_be_bytes(data[4..8].try_into().unwrap()), data[8], data[9], data[12])),
+                b"IHDR" => {
+                    ihdr = Some((
+                        u32::from_be_bytes(data[0..4].try_into().unwrap()),
+                        u32::from_be_bytes(data[4..8].try_into().unwrap()),
+                        data[8],
+                        data[9],
+                        data[12],
+                    ))
+                }
                 b"PLTE" => palette = data.to_vec(),
                 b"IDAT" => idat.extend_from_slice(data),
                 b"IEND" => break,
@@ -2189,17 +2888,31 @@ mod tests {
             other => panic!("colour type {other}"),
         };
         let mut raw = Vec::new();
-        flate2::read::ZlibDecoder::new(&idat[..]).read_to_end(&mut raw).unwrap();
+        flate2::read::ZlibDecoder::new(&idat[..])
+            .read_to_end(&mut raw)
+            .unwrap();
         let line = w as usize * bpp;
-        assert_eq!(raw.len(), (line + 1) * h as usize, "every row and its filter");
+        assert_eq!(
+            raw.len(),
+            (line + 1) * h as usize,
+            "every row and its filter"
+        );
         let mut rows: Vec<u8> = Vec::with_capacity(line * h as usize);
         for y in 0..h as usize {
             let filter = raw[y * (line + 1)];
             for x in 0..line {
                 let byte = raw[y * (line + 1) + 1 + x];
-                let a = if x >= bpp { rows[y * line + x - bpp] } else { 0 };
+                let a = if x >= bpp {
+                    rows[y * line + x - bpp]
+                } else {
+                    0
+                };
                 let b = if y > 0 { rows[(y - 1) * line + x] } else { 0 };
-                let c = if x >= bpp && y > 0 { rows[(y - 1) * line + x - bpp] } else { 0 };
+                let c = if x >= bpp && y > 0 {
+                    rows[(y - 1) * line + x - bpp]
+                } else {
+                    0
+                };
                 let predicted = match filter {
                     0 => 0,
                     1 => a,
@@ -2207,7 +2920,11 @@ mod tests {
                     3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
                     4 => {
                         let p = i16::from(a) + i16::from(b) - i16::from(c);
-                        let (pa, pb, pc) = ((p - i16::from(a)).abs(), (p - i16::from(b)).abs(), (p - i16::from(c)).abs());
+                        let (pa, pb, pc) = (
+                            (p - i16::from(a)).abs(),
+                            (p - i16::from(b)).abs(),
+                            (p - i16::from(c)).abs(),
+                        );
                         if pa <= pb && pa <= pc {
                             a
                         } else if pb <= pc {
@@ -2221,7 +2938,13 @@ mod tests {
                 rows.push(byte.wrapping_add(predicted));
             }
         }
-        let rgb = if colour == 3 { rows.iter().flat_map(|&i| palette[usize::from(i) * 3..][..3].to_vec()).collect() } else { rows };
+        let rgb = if colour == 3 {
+            rows.iter()
+                .flat_map(|&i| palette[usize::from(i) * 3..][..3].to_vec())
+                .collect()
+        } else {
+            rows
+        };
         (w, h, rgb)
     }
 
@@ -2257,7 +2980,26 @@ mod tests {
 
     impl Page {
         fn new(w: u16, h: u16) -> Self {
-            Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), decoder: Default::default(), progressives: 0, planars: 0, stills: Default::default(), still_count: 0, still_starts: 0, pngs: 0, starts: 0, frames: 0, ends: 0, copies: 0, cached: 0, stored: 0, bytes: 0 }
+            Self {
+                w: usize::from(w),
+                canvas: vec![0; usize::from(w) * usize::from(h) * 4],
+                streams: HashMap::new(),
+                slots: HashMap::new(),
+                decoder: Default::default(),
+                progressives: 0,
+                planars: 0,
+                stills: Default::default(),
+                still_count: 0,
+                still_starts: 0,
+                pngs: 0,
+                starts: 0,
+                frames: 0,
+                ends: 0,
+                copies: 0,
+                cached: 0,
+                stored: 0,
+                bytes: 0,
+            }
         }
 
         /// Packed RGB drawn at the rectangle.
@@ -2266,7 +3008,11 @@ mod tests {
                 for col in 0..usize::from(w) {
                     let at = ((usize::from(y) + row) * self.w + usize::from(x) + col) * 4;
                     let from = (row * usize::from(w) + col) * 3;
-                    self.canvas[at..at + 3].copy_from_slice(&[rgb[from + 2], rgb[from + 1], rgb[from]]);
+                    self.canvas[at..at + 3].copy_from_slice(&[
+                        rgb[from + 2],
+                        rgb[from + 1],
+                        rgb[from],
+                    ]);
                 }
             }
         }
@@ -2276,44 +3022,77 @@ mod tests {
             let mut wire = crate::rfb::msg::update_header(count).to_vec();
             wire.extend_from_slice(rects);
             self.bytes += rects.len();
-            let (ServerMsg::Update(rects), used) = client::parse(&wire).unwrap().expect("a whole update") else { panic!("an update") };
+            let (ServerMsg::Update(rects), used) =
+                client::parse(&wire).unwrap().expect("a whole update")
+            else {
+                panic!("an update")
+            };
             assert_eq!(used, wire.len(), "the update is its rectangles");
             for rect in rects {
-                let RectBody::Tiles(body) = rect.body else { panic!("a tiles rectangle") };
+                let RectBody::Tiles(body) = rect.body else {
+                    panic!("a tiles rectangle")
+                };
                 let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
                 match body {
                     TileBody::Png(png) => {
                         self.pngs += 1;
                         let (pw, ph, rgb) = read_png(&png);
-                        assert_eq!((pw, ph), (u32::from(w), u32::from(h)), "a PNG of the rectangle");
+                        assert_eq!(
+                            (pw, ph),
+                            (u32::from(w), u32::from(h)),
+                            "a PNG of the rectangle"
+                        );
                         self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Start { stream, frame } => {
                         self.starts += 1;
-                        assert!(!self.streams.contains_key(&stream), "stream {stream} started while live");
+                        assert!(
+                            !self.streams.contains_key(&stream),
+                            "stream {stream} started while live"
+                        );
                         assert_eq!(frame[0], Fake::KEYFRAME, "a stream starts at its keyframe");
                         self.streams.insert(stream, (x, y, w, h));
                         self.region(stream, &frame);
                     }
                     TileBody::Frame { stream, frame } => {
                         self.frames += 1;
-                        assert_eq!(self.streams.get(&stream), Some(&(x, y, w, h)), "a frame of a stream live over its rectangle");
+                        assert_eq!(
+                            self.streams.get(&stream),
+                            Some(&(x, y, w, h)),
+                            "a frame of a stream live over its rectangle"
+                        );
                         assert_eq!(frame[0], Fake::FRAME, "a keyframe after the start");
                         self.region(stream, &frame);
                     }
                     TileBody::End { stream } => {
                         self.ends += 1;
-                        assert_eq!(self.streams.remove(&stream), Some((x, y, w, h)), "the end of a stream live over its rectangle");
+                        assert_eq!(
+                            self.streams.remove(&stream),
+                            Some((x, y, w, h)),
+                            "the end of a stream live over its rectangle"
+                        );
                     }
-                    TileBody::Copy { x: from_x, y: from_y } => {
+                    TileBody::Copy {
+                        x: from_x,
+                        y: from_y,
+                    } => {
                         self.copies += 1;
                         let line = usize::from(w) * 4;
-                        assert!(usize::from(from_x) * 4 + line <= self.w * 4 && (usize::from(from_y) + usize::from(h)) * self.w * 4 <= self.canvas.len(), "a copy from inside the desktop");
+                        assert!(
+                            usize::from(from_x) * 4 + line <= self.w * 4
+                                && (usize::from(from_y) + usize::from(h)) * self.w * 4
+                                    <= self.canvas.len(),
+                            "a copy from inside the desktop"
+                        );
                         // Copied out first, so a source the rectangle overlaps is read whole.
-                        let source: Vec<u8> = (0..usize::from(h)).flat_map(|row| {
-                            let at = ((usize::from(from_y) + row) * self.w + usize::from(from_x)) * 4;
-                            self.canvas[at..at + line].to_vec()
-                        }).collect();
+                        let source: Vec<u8> = (0..usize::from(h))
+                            .flat_map(|row| {
+                                let at = ((usize::from(from_y) + row) * self.w
+                                    + usize::from(from_x))
+                                    * 4;
+                                self.canvas[at..at + line].to_vec()
+                            })
+                            .collect();
                         for (row, pixels) in source.chunks_exact(line).enumerate() {
                             let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
                             self.canvas[at..at + line].copy_from_slice(pixels);
@@ -2321,15 +3100,27 @@ mod tests {
                     }
                     TileBody::Store { slot } => {
                         self.stored += 1;
-                        assert!((w, h) == (TILE, TILE) && x % TILE == 0 && y % TILE == 0, "a store of one tile on the grid, not {w}x{h}+{x}+{y}");
+                        assert!(
+                            (w, h) == (TILE, TILE) && x % TILE == 0 && y % TILE == 0,
+                            "a store of one tile on the grid, not {w}x{h}+{x}+{y}"
+                        );
                         let line = usize::from(TILE) * 4;
-                        let tile: Vec<u8> = (0..usize::from(TILE)).flat_map(|row| self.canvas[((usize::from(y) + row) * self.w + usize::from(x)) * 4..][..line].to_vec()).collect();
+                        let tile: Vec<u8> = (0..usize::from(TILE))
+                            .flat_map(|row| {
+                                self.canvas
+                                    [((usize::from(y) + row) * self.w + usize::from(x)) * 4..]
+                                    [..line]
+                                    .to_vec()
+                            })
+                            .collect();
                         self.slots.insert(slot, tile);
                     }
                     TileBody::Cached { slot } => {
                         self.cached += 1;
                         assert_eq!((w, h), (TILE, TILE), "a cached draw of one tile");
-                        let tile = self.slots.get(&slot).unwrap_or_else(|| panic!("slot {slot} drawn from before it was stored"));
+                        let tile = self.slots.get(&slot).unwrap_or_else(|| {
+                            panic!("slot {slot} drawn from before it was stored")
+                        });
                         let line = usize::from(TILE) * 4;
                         for (row, pixels) in tile.chunks_exact(line).enumerate() {
                             let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
@@ -2338,25 +3129,42 @@ mod tests {
                     }
                     TileBody::Planar(body) => {
                         self.planars += 1;
-                        let rgb = super::planar::decoder::unpack(&body, usize::from(w), usize::from(h)).expect("a planar body of the rectangle");
+                        let rgb =
+                            super::planar::decoder::unpack(&body, usize::from(w), usize::from(h))
+                                .expect("a planar body of the rectangle");
                         self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Still(body) => {
                         self.still_count += 1;
-                        self.still_starts += usize::from(body.starts_with(&super::planar::decoder::ZSTD_MAGIC));
-                        let rgb = self.stills.unpack(&body, usize::from(w), usize::from(h)).expect("the still stream's bitmap of the rectangle");
+                        self.still_starts +=
+                            usize::from(body.starts_with(&super::planar::decoder::ZSTD_MAGIC));
+                        let rgb = self
+                            .stills
+                            .unpack(&body, usize::from(w), usize::from(h))
+                            .expect("the still stream's bitmap of the rectangle");
                         self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Progressive(block) => {
                         self.progressives += 1;
-                        let cell = wlshare_proto::progressive::tile_of(&block).expect("a tile block");
-                        assert!(x == cell.0 * TILE && y == cell.1 * TILE && w <= TILE && h <= TILE, "the block's tile is the rectangle's: {cell:?} at {w}x{h}+{x}+{y}");
-                        let shown = self.decoder.decode(&wlshare_proto::progressive::stream(0, &[(x, y, w, h)], &[&block]));
-                        let [(_, tile)] = &shown[..] else { panic!("one tile") };
+                        let cell =
+                            wlshare_proto::progressive::tile_of(&block).expect("a tile block");
+                        assert!(
+                            x == cell.0 * TILE && y == cell.1 * TILE && w <= TILE && h <= TILE,
+                            "the block's tile is the rectangle's: {cell:?} at {w}x{h}+{x}+{y}"
+                        );
+                        let shown = self.decoder.decode(&wlshare_proto::progressive::stream(
+                            0,
+                            &[(x, y, w, h)],
+                            &[&block],
+                        ));
+                        let [(_, tile)] = &shown[..] else {
+                            panic!("one tile")
+                        };
                         let line = usize::from(w) * 4;
                         for row in 0..usize::from(h) {
                             let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
-                            self.canvas[at..at + line].copy_from_slice(&tile[row * usize::from(TILE) * 4..][..line]);
+                            self.canvas[at..at + line]
+                                .copy_from_slice(&tile[row * usize::from(TILE) * 4..][..line]);
                         }
                     }
                 }
@@ -2366,7 +3174,11 @@ mod tests {
         fn region(&mut self, stream: u8, frame: &[u8]) {
             let (x, y, w, h) = self.streams[&stream];
             let line = usize::from(w) * 4;
-            assert_eq!(frame.len(), 1 + line * usize::from(h), "a fake frame is the region's pixels");
+            assert_eq!(
+                frame.len(),
+                1 + line * usize::from(h),
+                "a fake frame is the region's pixels"
+            );
             for (row, pixels) in frame[1..].chunks_exact(line).enumerate() {
                 let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
                 self.canvas[at..at + line].copy_from_slice(pixels);
@@ -2375,19 +3187,44 @@ mod tests {
 
         /// How many pixels differ from `pixels` in B, G or R.
         fn off(&self, pixels: &[u8]) -> usize {
-            self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).filter(|(a, b)| a[..3] != b[..3]).count()
+            self.canvas
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(pixels.as_chunks::<4>().0)
+                .filter(|(a, b)| a[..3] != b[..3])
+                .count()
         }
 
         /// How close the page is to `pixels`, the PSNR over B, G and R.
         fn psnr(&self, pixels: &[u8]) -> f64 {
-            let se: f64 = self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).flat_map(|(a, b)| a[..3].iter().zip(&b[..3])).map(|(a, b)| f64::from(a.abs_diff(*b)).powi(2)).sum();
-            if se == 0.0 { f64::INFINITY } else { 10.0 * (255.0f64.powi(2) * (self.canvas.len() / 4 * 3) as f64 / se).log10() }
+            let se: f64 = self
+                .canvas
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(pixels.as_chunks::<4>().0)
+                .flat_map(|(a, b)| a[..3].iter().zip(&b[..3]))
+                .map(|(a, b)| f64::from(a.abs_diff(*b)).powi(2))
+                .sum();
+            if se == 0.0 {
+                f64::INFINITY
+            } else {
+                10.0 * (255.0f64.powi(2) * (self.canvas.len() / 4 * 3) as f64 / se).log10()
+            }
         }
 
         /// How far the page is from `pixels`: the sum over every sample of B,
         /// G and R of how much it differs.
         fn distance(&self, pixels: &[u8]) -> u64 {
-            self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).flat_map(|(a, b)| a[..3].iter().zip(&b[..3])).map(|(a, b)| u64::from(a.abs_diff(*b))).sum()
+            self.canvas
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(pixels.as_chunks::<4>().0)
+                .flat_map(|(a, b)| a[..3].iter().zip(&b[..3]))
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum()
         }
     }
 
@@ -2410,7 +3247,9 @@ mod tests {
         let fill = noise(rect.width, rect.height, n);
         for row in 0..usize::from(rect.height) {
             let at = ((usize::from(rect.y) + row) * usize::from(w) + usize::from(rect.x)) * 4;
-            pixels[at..at + usize::from(rect.width) * 4].copy_from_slice(&fill[row * usize::from(rect.width) * 4..][..usize::from(rect.width) * 4]);
+            pixels[at..at + usize::from(rect.width) * 4].copy_from_slice(
+                &fill[row * usize::from(rect.width) * 4..][..usize::from(rect.width) * 4],
+            );
         }
     }
 
@@ -2419,8 +3258,13 @@ mod tests {
     fn glyphs(pixels: &mut [u8], w: u16, rect: Rect) {
         for row in 0..usize::from(rect.height) {
             for col in 0..usize::from(rect.width) {
-                let at = ((usize::from(rect.y) + row) * usize::from(w) + usize::from(rect.x) + col) * 4;
-                let v = if (col * 7 + row * 13) % 11 < 2 && row % 12 < 9 { 0 } else { 255 };
+                let at =
+                    ((usize::from(rect.y) + row) * usize::from(w) + usize::from(rect.x) + col) * 4;
+                let v = if (col * 7 + row * 13) % 11 < 2 && row % 12 < 9 {
+                    0
+                } else {
+                    255
+                };
                 pixels[at..at + 4].copy_from_slice(&[v, v, v, 0]);
             }
         }
@@ -2448,8 +3292,28 @@ mod tests {
     /// A desktop a progressive tile settles close to: a soft gradient with
     /// text over it.
     fn soft(w: u16, h: u16, seed: u32) -> Vec<u8> {
-        let mut pixels: Vec<u8> = (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).flat_map(move |x| [(x / 2 + seed as usize) as u8, (y / 2) as u8, ((x + y) / 4) as u8, 0])).collect();
-        glyphs(&mut pixels, w, Rect { x: 16, y: 8, width: w - 32, height: h / 2 });
+        let mut pixels: Vec<u8> = (0..usize::from(h))
+            .flat_map(|y| {
+                (0..usize::from(w)).flat_map(move |x| {
+                    [
+                        (x / 2 + seed as usize) as u8,
+                        (y / 2) as u8,
+                        ((x + y) / 4) as u8,
+                        0,
+                    ]
+                })
+            })
+            .collect();
+        glyphs(
+            &mut pixels,
+            w,
+            Rect {
+                x: 16,
+                y: 8,
+                width: w - 32,
+                height: h / 2,
+            },
+        );
         pixels
     }
 
@@ -2469,7 +3333,11 @@ mod tests {
         const FRAME: u8 = 0xDE;
 
         fn coder() -> Box<dyn H264Coder> {
-            Box::new(Self { refuse: false, fail_after: None, fail_read_after: None })
+            Box::new(Self {
+                refuse: false,
+                fail_after: None,
+                fail_read_after: None,
+            })
         }
     }
 
@@ -2489,36 +3357,69 @@ mod tests {
                 return Err("the device is gone".into());
             }
             let (w, h) = (usize::from(width), usize::from(height));
-            Ok(Box::new(FakeStream { w, h, picture: vec![0; w * h * 4], filled: false, frames: 0, fail_after: self.fail_after, fail_read_after: self.fail_read_after }))
+            Ok(Box::new(FakeStream {
+                w,
+                h,
+                picture: vec![0; w * h * 4],
+                filled: false,
+                frames: 0,
+                fail_after: self.fail_after,
+                fail_read_after: self.fail_read_after,
+            }))
         }
     }
 
     impl H264Stream for FakeStream {
-
-        fn read_bgrx(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
-            if self.fail_read_after.is_some_and(|after| self.frames >= after) {
+        fn read_bgrx(
+            &mut self,
+            pixels: &[u8],
+            stride: usize,
+            changed: Option<&[Rect]>,
+        ) -> Result<(), H264Error> {
+            if self
+                .fail_read_after
+                .is_some_and(|after| self.frames >= after)
+            {
                 return Err("the upload failed".into());
             }
-            let whole = [Rect { x: 0, y: 0, width: self.w as u16, height: self.h as u16 }];
+            let whole = [Rect {
+                x: 0,
+                y: 0,
+                width: self.w as u16,
+                height: self.h as u16,
+            }];
             let rects = match changed {
                 Some(rects) if self.filled => rects,
                 _ => &whole,
             };
             for r in rects {
                 for row in 0..usize::from(r.height) {
-                    let (to, from) = (((usize::from(r.y) + row) * self.w + usize::from(r.x)) * 4, (usize::from(r.y) + row) * stride + usize::from(r.x) * 4);
-                    self.picture[to..to + usize::from(r.width) * 4].copy_from_slice(&pixels[from..from + usize::from(r.width) * 4]);
+                    let (to, from) = (
+                        ((usize::from(r.y) + row) * self.w + usize::from(r.x)) * 4,
+                        (usize::from(r.y) + row) * stride + usize::from(r.x) * 4,
+                    );
+                    self.picture[to..to + usize::from(r.width) * 4]
+                        .copy_from_slice(&pixels[from..from + usize::from(r.width) * 4]);
                 }
             }
             self.filled = true;
             Ok(())
         }
 
-        fn encode(&mut self, keyframe: bool, _quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+        fn encode(
+            &mut self,
+            keyframe: bool,
+            _quality: u8,
+            out: &mut Vec<u8>,
+        ) -> Result<bool, H264Error> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
                 return Err("the encoder hung".into());
             }
-            out.push(if keyframe || self.frames == 0 { Fake::KEYFRAME } else { Fake::FRAME });
+            out.push(if keyframe || self.frames == 0 {
+                Fake::KEYFRAME
+            } else {
+                Fake::FRAME
+            });
             out.extend(self.picture.iter().map(|sample| sample & !1));
             self.frames += 1;
             Ok(true)
@@ -2526,12 +3427,24 @@ mod tests {
     }
 
     /// Read and encode, and draw what came out.
-    fn step(encoder: &mut TilesEncoder, page: &mut Page, pixels: &[u8], changed: Option<&[Rect]>, now: Duration) -> u16 {
+    fn step(
+        encoder: &mut TilesEncoder,
+        page: &mut Page,
+        pixels: &[u8],
+        changed: Option<&[Rect]>,
+        now: Duration,
+    ) -> u16 {
         update(encoder, page, pixels, changed, now).rects
     }
 
     /// Read and encode, and draw what came out, and say what the update was.
-    fn update(encoder: &mut TilesEncoder, page: &mut Page, pixels: &[u8], changed: Option<&[Rect]>, now: Duration) -> Update {
+    fn update(
+        encoder: &mut TilesEncoder,
+        page: &mut Page,
+        pixels: &[u8],
+        changed: Option<&[Rect]>,
+        now: Duration,
+    ) -> Update {
         let stride = usize::from(encoder.size().0) * 4;
         encoder.read(pixels, stride, changed, now).unwrap();
         let mut out = Vec::new();
@@ -2565,18 +3478,64 @@ mod tests {
         // The last band, rows 128–149, one flat colour, which a palette holds;
         // the two above it noise, which none does.
         for row in 128..usize::from(h) {
-            pixels[row * usize::from(w) * 4..][..usize::from(w) * 4].copy_from_slice(&[10, 20, 30, 0].repeat(usize::from(w)));
+            pixels[row * usize::from(w) * 4..][..usize::from(w) * 4]
+                .copy_from_slice(&[10, 20, 30, 0].repeat(usize::from(w)));
         }
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        let first = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 5, y: 5, width: 1, height: 1 }]), ms(0));
-        assert_eq!((first.rects, page.pngs, page.stored), (9, 3, 6), "the whole picture in three bands, whatever the read was told, and its six whole tiles stored");
-        assert!(first.keyframe, "a picture sent whole crosses the link as a keyframe");
+        let first = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 5,
+                y: 5,
+                width: 1,
+                height: 1,
+            }]),
+            ms(0),
+        );
+        assert_eq!(
+            (first.rects, page.pngs, page.stored),
+            (9, 3, 6),
+            "the whole picture in three bands, whatever the read was told, and its six whole tiles stored"
+        );
+        assert!(
+            first.keyframe,
+            "a picture sent whole crosses the link as a keyframe"
+        );
         assert_eq!(page.off(&pixels), 0);
-        assert!(encoder.tick_at().is_none(), "a picture sent lossless owes nothing");
-        paint(&mut pixels, w, Rect { x: 70, y: 70, width: 10, height: 10 }, 9);
-        let next = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 70, y: 70, width: 10, height: 10 }]), ms(100));
-        assert!(next.rects == 1 && !next.keyframe, "a tile that changed is no keyframe: {next:?}");
+        assert!(
+            encoder.tick_at().is_none(),
+            "a picture sent lossless owes nothing"
+        );
+        paint(
+            &mut pixels,
+            w,
+            Rect {
+                x: 70,
+                y: 70,
+                width: 10,
+                height: 10,
+            },
+            9,
+        );
+        let next = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 70,
+                y: 70,
+                width: 10,
+                height: 10,
+            }]),
+            ms(100),
+        );
+        assert!(
+            next.rects == 1 && !next.keyframe,
+            "a tile that changed is no keyframe: {next:?}"
+        );
     }
 
     /// A first pass below the full stage is owed its upgrades once still;
@@ -2592,15 +3551,37 @@ mod tests {
         assert!(!encoder.owed());
 
         encoder.set_pace(30, false);
-        let busy = Rect { x: 64, y: 0, width: 64, height: 64 };
+        let busy = Rect {
+            x: 64,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
         paint(&mut pixels, w, busy, 13);
         let sent = page.progressives;
-        let first = update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
-        assert_eq!((page.progressives - sent, first.keyframe), (1, false), "one tile that changed, no keyframe");
-        assert!(encoder.owed() && encoder.tick_at().is_some(), "a first pass below the full stage is owed");
+        let first = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[busy]),
+            now + ms(100),
+        );
+        assert_eq!(
+            (page.progressives - sent, first.keyframe),
+            (1, false),
+            "one tile that changed, no keyframe"
+        );
+        assert!(
+            encoder.owed() && encoder.tick_at().is_some(),
+            "a first pass below the full stage is owed"
+        );
         let coarse = page.distance(&pixels);
         let now = settle(&mut encoder, &mut page, now + ms(100));
-        assert!(page.distance(&pixels) < coarse, "finer once upgraded: {} from {coarse}", page.distance(&pixels));
+        assert!(
+            page.distance(&pixels) < coarse,
+            "finer once upgraded: {} from {coarse}",
+            page.distance(&pixels)
+        );
         assert!(!encoder.owed());
 
         // Coarse: the upgrades wait.
@@ -2611,14 +3592,21 @@ mod tests {
         let sent = page.progressives;
         let mut out = Vec::new();
         for at in [1000, 1750] {
-            assert_eq!(encoder.encode(changed + ms(at), &mut out).unwrap().rects, 0, "nothing is paid while coarse and lately changed");
+            assert_eq!(
+                encoder.encode(changed + ms(at), &mut out).unwrap().rects,
+                0,
+                "nothing is paid while coarse and lately changed"
+            );
         }
         assert!(encoder.owed(), "the debt stands");
         // Quiet long enough, it is paid though the walk is still coarse: a
         // still desktop tells the walk nothing that would lift it.
         let paid_at = settle(&mut encoder, &mut page, changed + ms(1750));
         assert!(paid_at >= changed + COARSE_QUIET, "paid at {paid_at:?}");
-        assert!(page.progressives > sent, "upgraded while coarse, once quiet");
+        assert!(
+            page.progressives > sent,
+            "upgraded while coarse, once quiet"
+        );
         assert!(!encoder.owed());
     }
 
@@ -2634,26 +3622,53 @@ mod tests {
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
         assert!(first.keyframe, "the first picture is one");
-        assert_eq!((page.progressives, page.pngs), (8, 0), "every tile a progressive tile");
+        assert_eq!(
+            (page.progressives, page.pngs),
+            (8, 0),
+            "every tile a progressive tile"
+        );
         settle(&mut encoder, &mut page, ms(0));
         assert!(!encoder.owed(), "settled at full");
-        assert!(page.psnr(&pixels) > 40.0, "settled close: {:.1} dB", page.psnr(&pixels));
+        assert!(
+            page.psnr(&pixels) > 40.0,
+            "settled close: {:.1} dB",
+            page.psnr(&pixels)
+        );
 
         // Moving: no stream, every frame progressive tiles.
         encoder.set_pace(40, false);
-        let busy = Rect { x: 64, y: 0, width: 128, height: 64 };
+        let busy = Rect {
+            x: 64,
+            y: 0,
+            width: 128,
+            height: 64,
+        };
         for n in 0..12 {
             paint(&mut pixels, w, busy, n);
-            step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100 + 50 * u64::from(n)));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[busy]),
+                ms(100 + 50 * u64::from(n)),
+            );
         }
-        assert_eq!((page.starts, page.pngs), (0, 0), "no stream, no still but progressive");
+        assert_eq!(
+            (page.starts, page.pngs),
+            (0, 0),
+            "no stream, no still but progressive"
+        );
         assert!(encoder.owed(), "below the ceiling, owed the stages after");
         encoder.set_pace(80, false);
         pixels = soft(w, h, 3);
         step(&mut encoder, &mut page, &pixels, None, ms(1000));
         settle(&mut encoder, &mut page, ms(1000));
         assert!(!encoder.owed());
-        assert!(page.psnr(&pixels) > 40.0, "settled close again: {:.1} dB", page.psnr(&pixels));
+        assert!(
+            page.psnr(&pixels) > 40.0,
+            "settled close again: {:.1} dB",
+            page.psnr(&pixels)
+        );
     }
 
     /// A lossless list is sent planar bitmaps alone, still or moving: what
@@ -2668,19 +3683,45 @@ mod tests {
         let mut page = Page::new(w, h);
         let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
         assert!(first.keyframe, "the first picture is one");
-        assert_eq!((page.still_count, page.planars, page.pngs, page.progressives), (3, 0, 0, 0), "the whole picture in three bands of still runs");
+        assert_eq!(
+            (page.still_count, page.planars, page.pngs, page.progressives),
+            (3, 0, 0, 0),
+            "the whole picture in three bands of still runs"
+        );
         assert_eq!(page.still_starts, 1, "one stream");
         assert_eq!(page.off(&pixels), 0, "exact");
-        assert!(!encoder.owed() && encoder.tick_at().is_none(), "a lossless picture owes nothing");
+        assert!(
+            !encoder.owed() && encoder.tick_at().is_none(),
+            "a lossless picture owes nothing"
+        );
 
-        let busy = Rect { x: 64, y: 0, width: 128, height: 64 };
+        let busy = Rect {
+            x: 64,
+            y: 0,
+            width: 128,
+            height: 64,
+        };
         for n in 0..20 {
             paint(&mut pixels, w, busy, n);
-            step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(100 + 50 * u64::from(n)));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[busy]),
+                ms(100 + 50 * u64::from(n)),
+            );
             assert_eq!(page.off(&pixels), 0, "every frame exact");
         }
-        assert_eq!((page.starts, page.pngs, page.progressives), (0, 0, 0), "no H.264 stream: what moves is planar too");
-        assert!(page.planars > 0 && page.still_count > 3, "what moves framed alone, once it has moved a while, {} of them, and still before", page.planars);
+        assert_eq!(
+            (page.starts, page.pngs, page.progressives),
+            (0, 0, 0),
+            "no H.264 stream: what moves is planar too"
+        );
+        assert!(
+            page.planars > 0 && page.still_count > 3,
+            "what moves framed alone, once it has moved a while, {} of them, and still before",
+            page.planars
+        );
         assert_eq!(page.still_starts, 1, "one still stream throughout");
         assert!(!encoder.owed(), "nothing owed while it moves either");
         let (planars, stills, cached) = (page.planars, page.still_count, page.cached);
@@ -2688,7 +3729,10 @@ mod tests {
         paint(&mut pixels, w, busy, 0);
         step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(2000));
         assert_eq!(page.off(&pixels), 0);
-        assert!(page.cached > cached && page.planars == planars && page.still_count == stills, "a tile shown before is a slot drawn");
+        assert!(
+            page.cached > cached && page.planars == planars && page.still_count == stills,
+            "a tile shown before is a slot drawn"
+        );
     }
 
     /// The still stream starts over wherever the picture does, and wherever
@@ -2701,13 +3745,25 @@ mod tests {
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &soft(w, h, 0), None, ms(0));
         step(&mut encoder, &mut page, &soft(w, h, 1), None, ms(1000));
-        assert_eq!((page.still_count, page.still_starts), (2, 1), "the stream continued");
+        assert_eq!(
+            (page.still_count, page.still_starts),
+            (2, 1),
+            "the stream continued"
+        );
         encoder.forget();
         step(&mut encoder, &mut page, &soft(w, h, 2), None, ms(2000));
-        assert_eq!((page.still_count, page.still_starts), (3, 2), "the picture started over, and the stream with it");
+        assert_eq!(
+            (page.still_count, page.still_starts),
+            (3, 2),
+            "the picture started over, and the stream with it"
+        );
         encoder.forget_cache();
         step(&mut encoder, &mut page, &soft(w, h, 3), None, ms(3000));
-        assert_eq!((page.still_count, page.still_starts), (4, 3), "the cache gone, and the stream with it");
+        assert_eq!(
+            (page.still_count, page.still_starts),
+            (4, 3),
+            "the cache gone, and the stream with it"
+        );
         assert_eq!(page.off(&soft(w, h, 3)), 0);
     }
 
@@ -2723,10 +3779,25 @@ mod tests {
         settle(&mut encoder, &mut page, ms(0));
         encoder.set_picture(lossless());
         step(&mut encoder, &mut page, &pixels, None, ms(5000));
-        assert_eq!((page.cached, page.still_count), (0, 1), "nothing a walked list stored is drawn on a lossless one");
+        assert_eq!(
+            (page.cached, page.still_count),
+            (0, 1),
+            "nothing a walked list stored is drawn on a lossless one"
+        );
         assert_eq!(page.off(&pixels), 0, "the picture exact");
         same_tile(&mut pixels, w, (0, 0), (64, 0));
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(5100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 64,
+                y: 0,
+                width: 64,
+                height: 64,
+            }]),
+            ms(5100),
+        );
         assert_eq!(page.cached, 1, "a slot stored lossless is drawn");
         assert_eq!(page.off(&pixels), 0);
     }
@@ -2738,9 +3809,26 @@ mod tests {
         let document = noise(w, 3 * h, 21);
         let mut encoder = TilesEncoder::new(w, h, lossless(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         let pixels = scrolled(&document, w, 40, h);
-        update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            ms(100),
+        );
         assert_eq!(page.copies, 1);
         assert_eq!(page.off(&pixels), 0, "the page exact");
         assert!(!encoder.owed(), "a copy of lossless pixels owes nothing");
@@ -2756,22 +3844,46 @@ mod tests {
         let document = noise(w, 3 * h, 21);
         let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         let now = settle(&mut encoder, &mut page, ms(0));
         assert!(!encoder.owed());
         let pixels = scrolled(&document, w, 24, h);
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now + ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            now + ms(100),
+        );
         assert_eq!(page.copies, 1, "scrolled as a copy");
         // The tiles the copy draws whole are settled; the strip it uncovered,
         // the last row of tiles, is owed its upgrades.
-        assert!(encoder.debts.keys().all(|&(_, row)| row == 3), "owed {:?}", encoder.debts.keys().collect::<Vec<_>>());
+        assert!(
+            encoder.debts.keys().all(|&(_, row)| row == 3),
+            "owed {:?}",
+            encoder.debts.keys().collect::<Vec<_>>()
+        );
         settle(&mut encoder, &mut page, now + ms(200));
         let mut fresh = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut sent = Page::new(w, h);
         step(&mut fresh, &mut sent, &pixels, None, ms(0));
         settle(&mut fresh, &mut sent, ms(0));
         let (scrolled_db, fresh_db) = (page.psnr(&pixels), sent.psnr(&pixels));
-        assert!(scrolled_db > fresh_db - 0.5, "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}");
+        assert!(
+            scrolled_db > fresh_db - 0.5,
+            "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}"
+        );
     }
 
     /// A page scrolled below the ceiling is copies of tiles owed their
@@ -2786,11 +3898,28 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         encoder.set_pace(30, false);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         let mut pixels = Vec::new();
         for (n, top) in [24, 48, 72, 96].into_iter().enumerate() {
             pixels = scrolled(&document, w, top, h);
-            step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100 * (n as u64 + 1)));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                }]),
+                ms(100 * (n as u64 + 1)),
+            );
         }
         assert_eq!(page.copies, 4, "scrolled as copies");
         encoder.set_pace(80, false);
@@ -2801,7 +3930,10 @@ mod tests {
         step(&mut fresh, &mut sent, &pixels, None, ms(0));
         settle(&mut fresh, &mut sent, ms(0));
         let (scrolled_db, fresh_db) = (page.psnr(&pixels), sent.psnr(&pixels));
-        assert!(scrolled_db > fresh_db - 0.5, "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}");
+        assert!(
+            scrolled_db > fresh_db - 0.5,
+            "the scrolled page settled at {scrolled_db:.1} dB, a fresh one at {fresh_db:.1}"
+        );
     }
 
     /// A tile shown again is a draw of its cache slot, which leaves the
@@ -2819,12 +3951,36 @@ mod tests {
         settle(&mut encoder, &mut page, ms(1000));
         let cached = page.cached;
         step(&mut encoder, &mut page, &a, None, ms(2000));
-        assert!(page.cached > cached, "the first picture again, from the cache");
+        assert!(
+            page.cached > cached,
+            "the first picture again, from the cache"
+        );
         settle(&mut encoder, &mut page, ms(2000));
         assert!(page.psnr(&a) > 40.0, "{:.1} dB", page.psnr(&a));
         let mut c = a.clone();
-        paint(&mut c, w, Rect { x: 0, y: 0, width: 64, height: 64 }, 4);
-        step(&mut encoder, &mut page, &c, Some(&[Rect { x: 0, y: 0, width: 64, height: 64 }]), ms(3000));
+        paint(
+            &mut c,
+            w,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            4,
+        );
+        step(
+            &mut encoder,
+            &mut page,
+            &c,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            }]),
+            ms(3000),
+        );
         settle(&mut encoder, &mut page, ms(3000));
         assert!(!encoder.owed());
         assert!(page.psnr(&c) > 30.0, "{:.1} dB", page.psnr(&c));
@@ -2845,7 +4001,11 @@ mod tests {
         settle(&mut encoder, &mut page, ms(1000));
         let (cached, progressives) = (page.cached, page.progressives);
         step(&mut encoder, &mut page, &a, None, ms(2000));
-        assert_eq!((page.cached - cached, page.progressives - progressives), (8, 0), "every tile from the cache");
+        assert_eq!(
+            (page.cached - cached, page.progressives - progressives),
+            (8, 0),
+            "every tile from the cache"
+        );
         assert!(!encoder.owed(), "kept settled");
     }
 
@@ -2862,13 +4022,24 @@ mod tests {
         let mut page = Page::new(w, h);
         encoder.set_pace(20, false);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let row = Rect { x: 0, y: 0, width: w, height: 64 };
+        let row = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: 64,
+        };
         paint(&mut pixels, w, row, 17);
         step(&mut encoder, &mut page, &pixels, Some(&[row]), ms(300));
-        assert_eq!(encoder.debts.len(), 256, "every tile owed, the top row from later");
+        assert_eq!(
+            encoder.debts.len(),
+            256,
+            "every tile owed, the top row from later"
+        );
         // The top row's tiles owed from the read that changed them, which no
         // tick has upgraded since.
-        let top = |encoder: &TilesEncoder| (0..16).all(|col| encoder.debts.get(&(col, 0)) == Some(&ms(300)));
+        let top = |encoder: &TilesEncoder| {
+            (0..16).all(|col| encoder.debts.get(&(col, 0)) == Some(&ms(300)))
+        };
 
         // Each tick's bytes, and the tiles it sent, its fence back in `took`.
         let tick = |encoder: &mut TilesEncoder, page: &mut Page, took: Duration| {
@@ -2885,22 +4056,37 @@ mod tests {
         let (at, first, tiles) = tick(&mut encoder, &mut page, Duration::ZERO);
         assert!(at >= CLEANUP_IDLE, "the first owed once still: {at:?}");
         let tile = first / tiles;
-        assert!(first >= SETTLE_BYTES_LEAST && first < SETTLE_BYTES_LEAST + 2 * tile, "{first} bytes, {tiles} tiles");
+        assert!(
+            first >= SETTLE_BYTES_LEAST && first < SETTLE_BYTES_LEAST + 2 * tile,
+            "{first} bytes, {tiles} tiles"
+        );
         assert!(top(&encoder), "the oldest first");
         let (_, quick, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
-        assert!(quick >= 2 * SETTLE_BYTES_LEAST && quick < 2 * SETTLE_BYTES_LEAST + 2 * tile, "twice after a quick one: {quick}");
+        assert!(
+            quick >= 2 * SETTLE_BYTES_LEAST && quick < 2 * SETTLE_BYTES_LEAST + 2 * tile,
+            "twice after a quick one: {quick}"
+        );
         let (_, late, _) = tick(&mut encoder, &mut page, Duration::ZERO);
-        assert!(late >= SETTLE_BYTES_LEAST && late < SETTLE_BYTES_LEAST + 2 * tile, "half after a late one: {late}");
+        assert!(
+            late >= SETTLE_BYTES_LEAST && late < SETTLE_BYTES_LEAST + 2 * tile,
+            "half after a late one: {late}"
+        );
         assert!(top(&encoder), "the oldest first");
         // Twice that after a quick one, until the walk steps down: then the
         // least again.
         encoder.set_pace(10, false);
         let (_, stepped, _) = tick(&mut encoder, &mut page, Duration::ZERO);
-        assert!(stepped >= SETTLE_BYTES_LEAST && stepped < SETTLE_BYTES_LEAST + 2 * tile, "the least after a step down: {stepped}");
+        assert!(
+            stepped >= SETTLE_BYTES_LEAST && stepped < SETTLE_BYTES_LEAST + 2 * tile,
+            "the least after a step down: {stepped}"
+        );
         // At the ceiling, the most.
         encoder.set_pace(90, false);
         let (at, most, _) = tick(&mut encoder, &mut page, SETTLE_LATE);
-        assert!(most >= SETTLE_BYTES && most < SETTLE_BYTES + 2 * tile, "at the ceiling: {most}");
+        assert!(
+            most >= SETTLE_BYTES && most < SETTLE_BYTES + 2 * tile,
+            "at the ceiling: {most}"
+        );
         settle(&mut encoder, &mut page, at);
         assert!(!encoder.owed());
     }
@@ -2914,22 +4100,56 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let whole = [Rect { x: 0, y: 0, width: w, height: h }];
-        assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&whole), ms(100)), 0, "a redraw of what the client holds");
-        paint(&mut pixels, w, Rect { x: 70, y: 70, width: 10, height: 10 }, 9);
+        let whole = [Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        }];
+        assert_eq!(
+            step(&mut encoder, &mut page, &pixels, Some(&whole), ms(100)),
+            0,
+            "a redraw of what the client holds"
+        );
+        paint(
+            &mut pixels,
+            w,
+            Rect {
+                x: 70,
+                y: 70,
+                width: 10,
+                height: 10,
+            },
+            9,
+        );
         let bytes = page.bytes;
-        assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&whole), ms(200)), 2, "one tile changed: its PNG and its store");
-        assert!(page.bytes - bytes < 64 * 64 * 3 + 200, "more than one tile was sent");
+        assert_eq!(
+            step(&mut encoder, &mut page, &pixels, Some(&whole), ms(200)),
+            2,
+            "one tile changed: its PNG and its store"
+        );
+        assert!(
+            page.bytes - bytes < 64 * 64 * 3 + 200,
+            "more than one tile was sent"
+        );
         assert_eq!(page.off(&pixels), 0);
         // The framebuffer's rows may be farther apart than the picture's.
         let stride = usize::from(w) * 4 + 64;
         let mut wide = vec![0xEE; stride * usize::from(h)];
         for row in 0..usize::from(h) {
-            wide[row * stride..][..usize::from(w) * 4].copy_from_slice(&pixels[row * usize::from(w) * 4..][..usize::from(w) * 4]);
+            wide[row * stride..][..usize::from(w) * 4]
+                .copy_from_slice(&pixels[row * usize::from(w) * 4..][..usize::from(w) * 4]);
         }
         encoder.read(&wide, stride, Some(&whole), ms(300)).unwrap();
-        assert_eq!(encoder.encode(ms(300), &mut Vec::new()).unwrap().rects, 0, "the same picture at another stride");
-        assert!(matches!(encoder.read(&wide[..100], stride, None, ms(400)), Err(TilesError::Buffer { .. })));
+        assert_eq!(
+            encoder.encode(ms(300), &mut Vec::new()).unwrap().rects,
+            0,
+            "the same picture at another stride"
+        );
+        assert!(matches!(
+            encoder.read(&wide[..100], stride, None, ms(400)),
+            Err(TilesError::Buffer { .. })
+        ));
     }
 
     /// What moves becomes a stream of its own, told only its damage, which
@@ -2944,15 +4164,33 @@ mod tests {
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let pngs = page.pngs;
         // A 192×128 video, every 50 ms for two seconds.
-        let video = Rect { x: 128, y: 64, width: 192, height: 128 };
+        let video = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
         for n in 1..=40u32 {
             paint(&mut pixels, w, video, 100 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                ms(u64::from(n) * 50),
+            );
         }
         assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
         assert!(page.frames > 20, "{} frames of it", page.frames);
-        assert!(page.pngs - pngs <= 16, "{} PNGs while it moved", page.pngs - pngs);
-        assert!(encoder.owed() && encoder.tick_at().is_some(), "a live stream owes its end");
+        assert!(
+            page.pngs - pngs <= 16,
+            "{} PNGs while it moved",
+            page.pngs - pngs
+        );
+        assert!(
+            encoder.owed() && encoder.tick_at().is_some(),
+            "a live stream owes its end"
+        );
         assert!(page.off(&pixels) > 0, "a stream's picture is not lossless");
         settle(&mut encoder, &mut page, ms(2000));
         assert_eq!(page.ends, 1, "the stream ended");
@@ -2966,7 +4204,10 @@ mod tests {
     /// four times a widget's tiles streams as at 1.
     #[test]
     fn a_stream_needs_an_area_of_the_layout() {
-        assert_eq!([0.5, 1.0, 1.25, 1.5, 2.0, 3.0].map(stream_cells), [5, 5, 8, 12, 20, 45]);
+        assert_eq!(
+            [0.5, 1.0, 1.25, 1.5, 2.0, 3.0].map(stream_cells),
+            [5, 5, 8, 12, 20, 45]
+        );
         let (w, h) = (640u16, 384u16);
         let spin = |scale: f64, moving: Rect| {
             let mut pixels = noise(w, h, 4);
@@ -2977,15 +4218,35 @@ mod tests {
             let mut lossless = true;
             for n in 1..=40u32 {
                 paint(&mut pixels, w, moving, 500 + n);
-                step(&mut encoder, &mut page, &pixels, Some(&[moving]), ms(u64::from(n) * 50));
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[moving]),
+                    ms(u64::from(n) * 50),
+                );
                 lossless &= page.off(&pixels) == 0;
             }
             (page.starts, lossless)
         };
-        let spinner = Rect { x: 96, y: 96, width: 160, height: 160 };
+        let spinner = Rect {
+            x: 96,
+            y: 96,
+            width: 160,
+            height: 160,
+        };
         assert_eq!(spin(1.0, spinner).0, 1, "9 tiles at 1 stream");
-        assert_eq!(spin(2.0, spinner), (0, true), "9 tiles at 2 are stills, lossless throughout");
-        let video = Rect { x: 128, y: 64, width: 384, height: 256 };
+        assert_eq!(
+            spin(2.0, spinner),
+            (0, true),
+            "9 tiles at 2 are stills, lossless throughout"
+        );
+        let video = Rect {
+            x: 128,
+            y: 64,
+            width: 384,
+            height: 256,
+        };
         assert_eq!(spin(2.0, video).0, 1, "24 tiles at 2 stream");
     }
 
@@ -2999,10 +4260,21 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let video = Rect { x: 128, y: 64, width: 192, height: 128 };
+        let video = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
         for n in 1..=40u32 {
             paint(&mut pixels, w, video, 300 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                ms(u64::from(n) * 50),
+            );
         }
         assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
         // Its motion last seen at 1.8 s. A tile of it redrawn twice once that
@@ -3010,19 +4282,48 @@ mod tests {
         // ceiling from then; then one change under it in the round that ends
         // it, idle, before any frame of it carries the change, and before its
         // tiles are owed their stills.
-        let now_and_then = Rect { x: 128, y: 64, width: 64, height: 64 };
+        let now_and_then = Rect {
+            x: 128,
+            y: 64,
+            width: 64,
+            height: 64,
+        };
         for (n, at) in [(1, 2600), (2, 2750)] {
             paint(&mut pixels, w, now_and_then, 900 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[now_and_then]), ms(at));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[now_and_then]),
+                ms(at),
+            );
         }
         assert_eq!(page.ends, 0, "the stream still live");
-        let change = Rect { x: 256, y: 128, width: 64, height: 64 };
+        let change = Rect {
+            x: 256,
+            y: 128,
+            width: 64,
+            height: 64,
+        };
         paint(&mut pixels, w, change, 999);
         step(&mut encoder, &mut page, &pixels, Some(&[change]), ms(3100));
         assert_eq!(page.ends, 1, "the stream ended");
-        let row = |y: usize| (y * usize::from(w) + usize::from(change.x)) * 4..(y * usize::from(w) + usize::from(change.x + change.width)) * 4;
-        let held = (usize::from(change.y)..usize::from(change.y + change.height)).all(|y| page.canvas[row(y)].as_chunks::<4>().0.iter().zip(pixels[row(y)].as_chunks::<4>().0).all(|(a, b)| a[..3] == b[..3]));
-        assert!(held, "the change is held lossless, not the stream's last frame");
+        let row = |y: usize| {
+            (y * usize::from(w) + usize::from(change.x)) * 4
+                ..(y * usize::from(w) + usize::from(change.x + change.width)) * 4
+        };
+        let held = (usize::from(change.y)..usize::from(change.y + change.height)).all(|y| {
+            page.canvas[row(y)]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(pixels[row(y)].as_chunks::<4>().0)
+                .all(|(a, b)| a[..3] == b[..3])
+        });
+        assert!(
+            held,
+            "the change is held lossless, not the stream's last frame"
+        );
     }
 
     /// A stream's START is no keyframe: a region's IDR is the load a desktop
@@ -3035,14 +4336,28 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let video = Rect { x: 0, y: 0, width: 192, height: 128 };
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 192,
+            height: 128,
+        };
         for n in 1..=12u32 {
             paint(&mut pixels, w, video, 500 + n);
             let made = page.starts;
-            let one = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            let one = update(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                ms(u64::from(n) * 50),
+            );
             assert!(!one.keyframe, "frame {n}, a START among it or not: {one:?}");
             if page.starts > made {
-                assert!(one.rects > 0 && !one.tick, "the START is what the read brought: {one:?}");
+                assert!(
+                    one.rects > 0 && !one.tick,
+                    "the START is what the read brought: {one:?}"
+                );
             }
         }
         assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
@@ -3064,31 +4379,67 @@ mod tests {
         assert!(first.keyframe && !first.tick, "{first:?}");
         let now = settle(&mut encoder, &mut page, ms(0));
         encoder.set_pace(30, false);
-        let busy = Rect { x: 64, y: 0, width: 64, height: 64 };
+        let busy = Rect {
+            x: 64,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
         paint(&mut pixels, w, busy, 22);
-        let lossy = update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
-        assert!(lossy.rects == 2 && !lossy.tick, "what the read brought, and its store: {lossy:?}");
+        let lossy = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[busy]),
+            now + ms(100),
+        );
+        assert!(
+            lossy.rects == 2 && !lossy.tick,
+            "what the read brought, and its store: {lossy:?}"
+        );
         // The read the session makes with nothing changed, as it does at a
         // tick, until the debt is old enough to be paid.
         let paid = loop {
-            let at = encoder.tick_at().expect("a first pass below the full stage is owed");
+            let at = encoder
+                .tick_at()
+                .expect("a first pass below the full stage is owed");
             let paid = update(&mut encoder, &mut page, &pixels, Some(&[]), at);
             if paid.rects > 0 {
                 break paid;
             }
             assert!(paid.tick);
         };
-        assert!(paid.rects > 0 && paid.tick && paid.stopped, "the debt, an upgrade, the desktop stopped: {paid:?}");
+        assert!(
+            paid.rects > 0 && paid.tick && paid.stopped,
+            "the debt, an upgrade, the desktop stopped: {paid:?}"
+        );
         let now = settle(&mut encoder, &mut page, now + ms(100));
         assert!(!encoder.owed());
 
         // A tick between a typist's keys: the first key's debt, paid while
         // the second's change is under half a second old.
-        let other = Rect { x: 192, y: 64, width: 64, height: 64 };
+        let other = Rect {
+            x: 192,
+            y: 64,
+            width: 64,
+            height: 64,
+        };
         paint(&mut pixels, w, busy, 25);
-        update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
+        update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[busy]),
+            now + ms(100),
+        );
         paint(&mut pixels, w, other, 26);
-        update(&mut encoder, &mut page, &pixels, Some(&[other]), now + ms(500));
+        update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[other]),
+            now + ms(500),
+        );
         let between = loop {
             let at = encoder.tick_at().expect("owed");
             let paid = update(&mut encoder, &mut page, &pixels, Some(&[]), at);
@@ -3096,16 +4447,28 @@ mod tests {
                 break paid;
             }
         };
-        assert!(between.tick && !between.stopped, "the tick's alone, the desktop not stopped: {between:?}");
+        assert!(
+            between.tick && !between.stopped,
+            "the tick's alone, the desktop not stopped: {between:?}"
+        );
         let now = settle(&mut encoder, &mut page, now + ms(600));
 
         // A change read at the tick's time is the read's, debts and all.
         paint(&mut pixels, w, busy, 23);
-        update(&mut encoder, &mut page, &pixels, Some(&[busy]), now + ms(100));
+        update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[busy]),
+            now + ms(100),
+        );
         let at = encoder.tick_at().expect("owed again");
         paint(&mut pixels, w, other, 24);
         let both = update(&mut encoder, &mut page, &pixels, Some(&[other]), at);
-        assert!(both.rects > 0 && !both.tick, "a change and the tick: {both:?}");
+        assert!(
+            both.rects > 0 && !both.tick,
+            "a change and the tick: {both:?}"
+        );
     }
 
     /// A new walk ends every live stream before the picture starts over.
@@ -3116,10 +4479,21 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 192,
+        };
         for n in 1..=12u32 {
             paint(&mut pixels, w, video, 700 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                ms(u64::from(n) * 50),
+            );
         }
         assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
         encoder.set_picture(progressive());
@@ -3138,14 +4512,29 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 192,
+        };
         for n in 1..=12u32 {
             paint(&mut pixels, w, video, 300 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                ms(u64::from(n) * 50),
+            );
         }
         assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
         let frames = page.frames;
-        assert_eq!(step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(650)), 0, "a redraw of the stream's pixels was sent");
+        assert_eq!(
+            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(650)),
+            0,
+            "a redraw of the stream's pixels was sent"
+        );
         assert_eq!(page.frames, frames);
     }
 
@@ -3159,19 +4548,42 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 192,
+        };
         for n in 1..=20u32 {
             paint(&mut pixels, w, video, 200 + n);
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(u64::from(n) * 50));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                ms(u64::from(n) * 50),
+            );
         }
         assert_eq!((page.starts, page.ends), (1, 0));
         encoder.forget();
-        assert_eq!(encoder.tick_at(), Some(Duration::ZERO), "the ends are owed at once, read or no read");
+        assert_eq!(
+            encoder.tick_at(),
+            Some(Duration::ZERO),
+            "the ends are owed at once, read or no read"
+        );
         let (pngs, cached) = (page.pngs, page.cached);
         step(&mut encoder, &mut page, &pixels, None, ms(1100));
         assert_eq!(page.ends, 1, "the stream ended");
-        assert_eq!(page.pngs - pngs, 3, "the three bands the stream crossed as PNG");
-        assert_eq!(page.cached - cached, 20, "every other tile from its slot, the last band whole");
+        assert_eq!(
+            page.pngs - pngs,
+            3,
+            "the three bands the stream crossed as PNG"
+        );
+        assert_eq!(
+            page.cached - cached,
+            20,
+            "every other tile from its slot, the last band whole"
+        );
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed(), "a picture sent whole owes nothing");
     }
@@ -3197,18 +4609,50 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        assert_eq!(page.stored, 8, "every whole tile of the first picture stored");
+        assert_eq!(
+            page.stored, 8,
+            "every whole tile of the first picture stored"
+        );
 
-        let text = Rect { x: 64, y: 0, width: 64, height: 64 };
+        let text = Rect {
+            x: 64,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
         glyphs(&mut pixels, w, text);
         let (pngs, stored) = (page.pngs, page.stored);
         step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
-        assert_eq!((page.pngs - pngs, page.stored - stored, page.cached), (1, 1, 0), "a tile of text: a PNG, stored");
+        assert_eq!(
+            (page.pngs - pngs, page.stored - stored, page.cached),
+            (1, 1, 0),
+            "a tile of text: a PNG, stored"
+        );
 
         same_tile(&mut pixels, w, (64, 0), (192, 64));
         let (pngs, stored) = (page.pngs, page.stored);
-        let shown = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 192, y: 64, width: 64, height: 64 }]), ms(200));
-        assert_eq!((shown.rects, page.pngs - pngs, page.stored - stored, page.cached), (1, 0, 0, 1), "the same text elsewhere: drawn from the cache, no still, nothing stored");
+        let shown = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 192,
+                y: 64,
+                width: 64,
+                height: 64,
+            }]),
+            ms(200),
+        );
+        assert_eq!(
+            (
+                shown.rects,
+                page.pngs - pngs,
+                page.stored - stored,
+                page.cached
+            ),
+            (1, 0, 0, 1),
+            "the same text elsewhere: drawn from the cache, no still, nothing stored"
+        );
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed(), "a tile stored lossless is owed nothing");
 
@@ -3218,17 +4662,30 @@ mod tests {
         glyphs(&mut pixels, w, text);
         let pngs = page.pngs;
         step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(400));
-        assert_eq!((page.pngs - pngs, page.cached), (0, 2), "shown a third time, from the cache again");
+        assert_eq!(
+            (page.pngs - pngs, page.cached),
+            (0, 2),
+            "shown a third time, from the cache again"
+        );
         assert_eq!(page.off(&pixels), 0);
 
         // A tile the damage covers in part is a still of that part, which
         // the cache neither keeps nor draws: the client's tile is not whole
         // in it.
-        let part = Rect { x: 200, y: 70, width: 10, height: 10 };
+        let part = Rect {
+            x: 200,
+            y: 70,
+            width: 10,
+            height: 10,
+        };
         paint(&mut pixels, w, part, 33);
         let (pngs, stored) = (page.pngs, page.stored);
         step(&mut encoder, &mut page, &pixels, Some(&[part]), ms(500));
-        assert_eq!((page.pngs - pngs, page.stored - stored, page.cached), (1, 0, 2), "a part of a tile: a PNG of it, not stored");
+        assert_eq!(
+            (page.pngs - pngs, page.stored - stored, page.cached),
+            (1, 0, 2),
+            "a part of a tile: a PNG of it, not stored"
+        );
         assert_eq!(page.off(&pixels), 0);
     }
 
@@ -3242,15 +4699,40 @@ mod tests {
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         assert_eq!(page.stored, 2);
-        let flat = Rect { x: 0, y: 0, width: 64, height: 64 };
+        let flat = Rect {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
         for row in 0..64 {
-            pixels[row * usize::from(w) * 4..][..64 * 4].copy_from_slice(&[10, 20, 30, 0].repeat(64));
+            pixels[row * usize::from(w) * 4..][..64 * 4]
+                .copy_from_slice(&[10, 20, 30, 0].repeat(64));
         }
         step(&mut encoder, &mut page, &pixels, Some(&[flat]), ms(100));
-        assert_eq!((page.pngs, page.stored), (2, 2), "the flat tile's PNG, and no store");
+        assert_eq!(
+            (page.pngs, page.stored),
+            (2, 2),
+            "the flat tile's PNG, and no store"
+        );
         same_tile(&mut pixels, w, (0, 0), (64, 0));
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(200));
-        assert_eq!((page.pngs, page.stored, page.cached), (3, 2, 0), "the same flat tile elsewhere: a PNG again, and no cache");
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 64,
+                y: 0,
+                width: 64,
+                height: 64,
+            }]),
+            ms(200),
+        );
+        assert_eq!(
+            (page.pngs, page.stored, page.cached),
+            (3, 2, 0),
+            "the same flat tile elsewhere: a PNG again, and no cache"
+        );
         assert_eq!(page.off(&pixels), 0);
     }
 
@@ -3268,14 +4750,44 @@ mod tests {
         let now = settle(&mut encoder, &mut page, ms(0));
 
         encoder.set_pace(30, false);
-        let text = Rect { x: 64, y: 0, width: 64, height: 64 };
+        let text = Rect {
+            x: 64,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
         glyphs(&mut pixels, w, text);
         let (stored, cached) = (page.stored, page.cached);
-        step(&mut encoder, &mut page, &pixels, Some(&[text]), now + ms(100));
-        assert_eq!((page.stored - stored, page.cached - cached), (1, 0), "a first pass at the dial, stored");
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[text]),
+            now + ms(100),
+        );
+        assert_eq!(
+            (page.stored - stored, page.cached - cached),
+            (1, 0),
+            "a first pass at the dial, stored"
+        );
         same_tile(&mut pixels, w, (64, 0), (192, 64));
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 192, y: 64, width: 64, height: 64 }]), now + ms(200));
-        assert_eq!(page.cached - cached, 1, "the same text elsewhere, below the full stage: drawn from the cache");
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 192,
+                y: 64,
+                width: 64,
+                height: 64,
+            }]),
+            now + ms(200),
+        );
+        assert_eq!(
+            page.cached - cached,
+            1,
+            "the same text elsewhere, below the full stage: drawn from the cache"
+        );
         assert!(encoder.owed(), "both tiles are owed the full stage");
         let coarse = page.distance(&pixels);
 
@@ -3289,9 +4801,23 @@ mod tests {
         encoder.set_pace(30, false);
         same_tile(&mut pixels, w, (64, 0), (0, 64));
         let cached = page.cached;
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 64, width: 64, height: 64 }]), now + ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 64,
+                width: 64,
+                height: 64,
+            }]),
+            now + ms(100),
+        );
         assert_eq!(page.cached - cached, 1);
-        assert!(!encoder.owed(), "a tile drawn from a settled slot is owed nothing");
+        assert!(
+            !encoder.owed(),
+            "a tile drawn from a settled slot is owed nothing"
+        );
     }
 
     /// A picture that starts over keeps the cache, as the client does: what
@@ -3305,24 +4831,55 @@ mod tests {
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let text = Rect { x: 0, y: 0, width: 64, height: 64 };
+        let text = Rect {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
         glyphs(&mut pixels, w, text);
         step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
         assert_eq!((page.pngs, page.stored, page.cached), (2, 3, 0));
         encoder.forget();
         step(&mut encoder, &mut page, &pixels, None, ms(200));
-        assert_eq!((page.pngs, page.stored, page.cached), (2, 3, 2), "the picture again, whole, every tile from its slot");
+        assert_eq!(
+            (page.pngs, page.stored, page.cached),
+            (2, 3, 2),
+            "the picture again, whole, every tile from its slot"
+        );
         assert_eq!(page.off(&pixels), 0);
-        assert!(!encoder.owed(), "drawn from slots stored lossless, owed nothing");
+        assert!(
+            !encoder.owed(),
+            "drawn from slots stored lossless, owed nothing"
+        );
 
         encoder.forget_cache();
         encoder.forget();
         page.slots.clear();
         step(&mut encoder, &mut page, &pixels, None, ms(300));
-        assert_eq!((page.pngs, page.stored, page.cached), (3, 5, 2), "the cache gone: the picture as a still, every whole tile stored anew");
+        assert_eq!(
+            (page.pngs, page.stored, page.cached),
+            (3, 5, 2),
+            "the cache gone: the picture as a still, every whole tile stored anew"
+        );
         same_tile(&mut pixels, w, (0, 0), (64, 0));
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(400));
-        assert_eq!((page.pngs, page.cached), (3, 3), "and from then on the cache serves again");
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 64,
+                y: 0,
+                width: 64,
+                height: 64,
+            }]),
+            ms(400),
+        );
+        assert_eq!(
+            (page.pngs, page.cached),
+            (3, 3),
+            "and from then on the cache serves again"
+        );
         assert_eq!(page.off(&pixels), 0);
     }
 
@@ -3353,7 +4910,11 @@ mod tests {
         let mut bigger = Page::new(wide, h);
         bigger.slots = std::mem::take(&mut page.slots);
         step(&mut grown, &mut bigger, &resized, None, ms(100));
-        assert_eq!((bigger.pngs, bigger.cached, bigger.stored), (1, 2, 1), "two tiles from their slots, the new one a still, stored");
+        assert_eq!(
+            (bigger.pngs, bigger.cached, bigger.stored),
+            (1, 2, 1),
+            "two tiles from their slots, the new one a still, stored"
+        );
         assert_eq!(bigger.off(&resized), 0);
     }
 
@@ -3374,13 +4935,27 @@ mod tests {
 
         encoder.set_picture(held());
         step(&mut encoder, &mut page, &pixels, None, ms(5000));
-        assert_eq!(page.cached, 0, "nothing a walked list stored is drawn on a held one");
+        assert_eq!(
+            page.cached, 0,
+            "nothing a walked list stored is drawn on a held one"
+        );
         assert_eq!(page.off(&pixels), 0, "the picture lossless");
         assert_eq!(page.stored - stored, 2, "and stored again, lossless");
         assert_eq!(page.slots.len(), 2, "in the slots they were in");
 
         same_tile(&mut pixels, w, (0, 0), (64, 0));
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 64, y: 0, width: 64, height: 64 }]), ms(5100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 64,
+                y: 0,
+                width: 64,
+                height: 64,
+            }]),
+            ms(5100),
+        );
         assert_eq!(page.cached, 1, "a lossless slot is drawn on a held list");
         assert_eq!(page.off(&pixels), 0);
     }
@@ -3393,7 +4968,10 @@ mod tests {
         let mut pixels = vec![0xE0; w * usize::from(rows) * usize::from(TILE) * 4];
         for i in 0..usize::from(cols) * usize::from(rows) {
             let (col, row) = (i % usize::from(cols), i / usize::from(cols));
-            let (x, y) = (col * usize::from(TILE) + i % 64, row * usize::from(TILE) + (i / 64) % 64);
+            let (x, y) = (
+                col * usize::from(TILE) + i % 64,
+                row * usize::from(TILE) + (i / 64) % 64,
+            );
             pixels[(y * w + x) * 4..][..4].copy_from_slice(&[(i / 4096) as u8 + 1, 7, 9, 0]);
         }
         pixels
@@ -3416,17 +4994,43 @@ mod tests {
         assert_eq!(page.stored, usize::from(cols) * usize::from(rows));
         // The second row painted over: 63 tiles new, which take 63 slots, and
         // the last the first tile's old content, in the slot they would take first.
-        let second = Rect { x: 0, y: TILE, width: w, height: TILE };
-        let old: Vec<u8> = (0..usize::from(TILE)).flat_map(|row| pixels[((usize::from(TILE) + row) * usize::from(w)) * 4..][..usize::from(TILE) * 4].to_vec()).collect();
-        paint(&mut pixels, w, Rect { width: w - TILE, ..second }, 71);
+        let second = Rect {
+            x: 0,
+            y: TILE,
+            width: w,
+            height: TILE,
+        };
+        let old: Vec<u8> = (0..usize::from(TILE))
+            .flat_map(|row| {
+                pixels[((usize::from(TILE) + row) * usize::from(w)) * 4..][..usize::from(TILE) * 4]
+                    .to_vec()
+            })
+            .collect();
+        paint(
+            &mut pixels,
+            w,
+            Rect {
+                width: w - TILE,
+                ..second
+            },
+            71,
+        );
         for (row, line) in old.chunks_exact(usize::from(TILE) * 4).enumerate() {
             let at = ((usize::from(TILE) + row) * usize::from(w) + usize::from(w - TILE)) * 4;
             pixels[at..at + line.len()].copy_from_slice(line);
         }
         let (pngs, stored) = (page.pngs, page.stored);
         step(&mut encoder, &mut page, &pixels, Some(&[second]), ms(100));
-        assert_eq!((page.pngs - pngs, page.stored - stored, page.cached), (1, 63, 1), "63 tiles stored and the last drawn from its slot");
-        assert_eq!(page.off(&pixels), 0, "the drawn tile is what the slot held when it was named");
+        assert_eq!(
+            (page.pngs - pngs, page.stored - stored, page.cached),
+            (1, 63, 1),
+            "63 tiles stored and the last drawn from its slot"
+        );
+        assert_eq!(
+            page.off(&pixels),
+            0,
+            "the drawn tile is what the slot held when it was named"
+        );
     }
 
     /// The record of the cache fills its slots in order, keeps a tile stored
@@ -3443,7 +5047,11 @@ mod tests {
         assert_eq!(cache.find(5), Some((5, false)), "as it was last stored");
         cache.touch(0);
         cache.touch(1);
-        assert_eq!(cache.store(1_000_000, true), 2, "slot 2 is the least recently used");
+        assert_eq!(
+            cache.store(1_000_000, true),
+            2,
+            "slot 2 is the least recently used"
+        );
         assert_eq!(cache.find(2), None, "the tile it kept is forgotten");
         assert_eq!(cache.find(1_000_000), Some((2, true)));
         assert_eq!(cache.store(1_000_001, true), 3);
@@ -3455,8 +5063,19 @@ mod tests {
 
     /// Play a video in the corner for `frames` frames of 50 ms from `from`,
     /// until an encode fails, and return its error.
-    fn play_to_failure(encoder: &mut TilesEncoder, page: &mut Page, pixels: &mut [u8], w: u16, frames: u32) -> Option<TilesError> {
-        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+    fn play_to_failure(
+        encoder: &mut TilesEncoder,
+        page: &mut Page,
+        pixels: &mut [u8],
+        w: u16,
+        frames: u32,
+    ) -> Option<TilesError> {
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 192,
+        };
         let stride = usize::from(w) * 4;
         for n in 1..=frames {
             paint(pixels, w, video, 500 + n);
@@ -3478,7 +5097,17 @@ mod tests {
     fn a_region_coder_that_refuses_fails_the_encode() {
         let (w, h) = (512u16, 256u16);
         let mut pixels = noise(w, h, 7);
-        let mut encoder = TilesEncoder::new(w, h, held(), Box::new(Fake { refuse: true, fail_after: None, fail_read_after: None })).unwrap();
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
         let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 20);
@@ -3491,14 +5120,35 @@ mod tests {
     #[test]
     fn a_region_stream_that_fails_fails_the_encode() {
         let (w, h) = (512u16, 256u16);
-        for (seed, fake) in [(8, Fake { refuse: false, fail_after: Some(4), fail_read_after: None }), (10, Fake { refuse: false, fail_after: None, fail_read_after: Some(4) })] {
+        for (seed, fake) in [
+            (
+                8,
+                Fake {
+                    refuse: false,
+                    fail_after: Some(4),
+                    fail_read_after: None,
+                },
+            ),
+            (
+                10,
+                Fake {
+                    refuse: false,
+                    fail_after: None,
+                    fail_read_after: Some(4),
+                },
+            ),
+        ] {
             let mut pixels = noise(w, h, seed);
             let mut encoder = TilesEncoder::new(w, h, held(), Box::new(fake)).unwrap();
             let mut page = Page::new(w, h);
             step(&mut encoder, &mut page, &pixels, None, ms(0));
             let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 40);
             assert!(matches!(failed, Some(TilesError::Region(_))), "{failed:?}");
-            assert_eq!((page.starts, page.frames, page.ends), (1, 3, 0), "the stream's four frames, then the failure");
+            assert_eq!(
+                (page.starts, page.frames, page.ends),
+                (1, 3, 0),
+                "the stream's four frames, then the failure"
+            );
         }
     }
 
@@ -3517,14 +5167,39 @@ mod tests {
         let document = noise(w, 3 * h, 21);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         let whole = page.bytes;
         let pixels = scrolled(&document, w, 40, h);
-        let scroll = update(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
-        assert_eq!((page.copies, page.pngs), (1, 4 + 1), "a copy, and the band the rows uncovered are in, a still");
+        let scroll = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            ms(100),
+        );
+        assert_eq!(
+            (page.copies, page.pngs),
+            (1, 4 + 1),
+            "a copy, and the band the rows uncovered are in, a still"
+        );
         assert!(!scroll.keyframe);
         assert_eq!(page.off(&pixels), 0, "the page lossless");
-        assert!(page.bytes - whole < whole / 3, "{} bytes for a scroll, {whole} for the picture", page.bytes - whole);
+        assert!(
+            page.bytes - whole < whole / 3,
+            "{} bytes for a scroll, {whole} for the picture",
+            page.bytes - whole
+        );
         assert!(!encoder.owed(), "a copy of lossless pixels owes nothing");
     }
 
@@ -3536,15 +5211,52 @@ mod tests {
         let document = noise(w, 4 * h, 22);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
-        let tops = (1..=12).map(|n| n * 24).chain((0..12).rev().map(|n| n * 24));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
+        let tops = (1..=12)
+            .map(|n| n * 24)
+            .chain((0..12).rev().map(|n| n * 24));
         for (n, top) in tops.enumerate() {
             let pixels = scrolled(&document, w, top, h);
             let copies = page.copies;
-            step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(50 * (n as u64 + 1)));
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                }]),
+                ms(50 * (n as u64 + 1)),
+            );
             assert_eq!(page.copies, copies + 1, "a copy at row {top}");
-            let bad: Vec<usize> = (0..usize::from(h)).filter(|y| page.canvas[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4].as_chunks::<4>().0.iter().zip(pixels[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4].as_chunks::<4>().0).any(|(a, b)| a[..3] != b[..3])).collect();
-            assert_eq!(page.off(&pixels), 0, "the page lossless at row {top}: rows {bad:?} pngs {}", page.pngs);
+            let bad: Vec<usize> = (0..usize::from(h))
+                .filter(|y| {
+                    page.canvas[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(
+                            pixels[y * usize::from(w) * 4..(y + 1) * usize::from(w) * 4]
+                                .as_chunks::<4>()
+                                .0,
+                        )
+                        .any(|(a, b)| a[..3] != b[..3])
+                })
+                .collect();
+            assert_eq!(
+                page.off(&pixels),
+                0,
+                "the page lossless at row {top}: rows {bad:?} pngs {}",
+                page.pngs
+            );
         }
         assert_eq!(page.starts, 0, "no stream");
     }
@@ -3555,13 +5267,23 @@ mod tests {
     fn a_window_dragged_is_a_copy() {
         let (w, h) = (384u16, 256u16);
         let mut desktop = vec![0; usize::from(w) * usize::from(h) * 4];
-        glyphs(&mut desktop, w, Rect { x: 0, y: 0, width: w, height: h });
+        glyphs(
+            &mut desktop,
+            w,
+            Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            },
+        );
         let window = noise(160, 112, 23);
         let place = |at: (u16, u16)| {
             let mut pixels = desktop.clone();
             for row in 0..112 {
                 let to = ((usize::from(at.1) + row) * usize::from(w) + usize::from(at.0)) * 4;
-                pixels[to..to + 160 * 4].copy_from_slice(&window[row * 160 * 4..(row + 1) * 160 * 4]);
+                pixels[to..to + 160 * 4]
+                    .copy_from_slice(&window[row * 160 * 4..(row + 1) * 160 * 4]);
             }
             pixels
         };
@@ -3569,7 +5291,12 @@ mod tests {
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
         let pixels = place((110, 90));
-        let moved = Rect { x: 40, y: 30, width: 160 + 70, height: 112 + 60 };
+        let moved = Rect {
+            x: 40,
+            y: 30,
+            width: 160 + 70,
+            height: 112 + 60,
+        };
         step(&mut encoder, &mut page, &pixels, Some(&[moved]), ms(100));
         assert_eq!(page.copies, 1, "the window");
         assert_eq!(page.off(&pixels), 0);
@@ -3587,8 +5314,13 @@ mod tests {
             let mut pixels = desktop.clone();
             for row in 0..128 {
                 for col in 0..192 {
-                    let v = if (col % 8 < 3) ^ (row % 6 < 2) { 40 } else { 220 };
-                    let to = ((usize::from(at.1) + row) * usize::from(w) + usize::from(at.0) + col) * 4;
+                    let v = if (col % 8 < 3) ^ (row % 6 < 2) {
+                        40
+                    } else {
+                        220
+                    };
+                    let to =
+                        ((usize::from(at.1) + row) * usize::from(w) + usize::from(at.0) + col) * 4;
                     pixels[to..to + 4].copy_from_slice(&[v, v, v, 0]);
                 }
             }
@@ -3600,7 +5332,12 @@ mod tests {
             step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
             encoder.copied_by = copied_by;
             let pixels = place((110, 90));
-            let moved = Rect { x: 40, y: 30, width: 192 + 70, height: 128 + 60 };
+            let moved = Rect {
+                x: 40,
+                y: 30,
+                width: 192 + 70,
+                height: 128 + 60,
+            };
             step(&mut encoder, &mut page, &pixels, Some(&[moved]), ms(100));
             assert_eq!(page.off(&pixels), 0);
             page.copies
@@ -3618,10 +5355,23 @@ mod tests {
         let document = noise(w, 3 * h, 24);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         let stride = usize::from(w) * 4;
-        let all = [Rect { x: 0, y: 0, width: w, height: h }];
-        encoder.read(&scrolled(&document, w, 40, h), stride, Some(&all), ms(100)).unwrap();
+        let all = [Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        }];
+        encoder
+            .read(&scrolled(&document, w, 40, h), stride, Some(&all), ms(100))
+            .unwrap();
         let pixels = scrolled(&document, w, 100, h);
         encoder.read(&pixels, stride, Some(&all), ms(110)).unwrap();
         let mut out = Vec::new();
@@ -3634,7 +5384,18 @@ mod tests {
     /// A picture with no edge that repeats, which a scroll's copy finds at
     /// one offset alone: three smooth ramps, one of them a product.
     fn ramps(w: u16, h: u16) -> Vec<u8> {
-        (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).flat_map(move |x| [((x + 2 * y) / 3 % 256) as u8, (x * y / 40 % 256) as u8, ((3 * x + y) / 5 % 256) as u8, 0])).collect()
+        (0..usize::from(h))
+            .flat_map(|y| {
+                (0..usize::from(w)).flat_map(move |x| {
+                    [
+                        ((x + 2 * y) / 3 % 256) as u8,
+                        (x * y / 40 % 256) as u8,
+                        ((3 * x + y) / 5 % 256) as u8,
+                        0,
+                    ]
+                })
+            })
+            .collect()
     }
 
     /// On a walked list a copy from a settled source is settled: only the
@@ -3645,16 +5406,37 @@ mod tests {
         let document = ramps(w, 3 * h);
         let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
         assert!(!encoder.owed(), "the first picture, settled, owes nothing");
         let pixels = scrolled(&document, w, 40, h);
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            now,
+        );
         assert_eq!(page.copies, 1);
         // 40 rows uncovered, all in the last row of tiles.
         let mut owed: Vec<_> = encoder.debts.keys().copied().collect();
         owed.sort_unstable();
-        assert_eq!(owed, [(0, 3), (1, 3), (2, 3), (3, 3)], "the uncovered strip alone is owed");
+        assert_eq!(
+            owed,
+            [(0, 3), (1, 3), (2, 3), (3, 3)],
+            "the uncovered strip alone is owed"
+        );
         let sent = page.progressives;
         settle(&mut encoder, &mut page, now);
         assert!(page.progressives > sent, "the uncovered strip sent");
@@ -3669,13 +5451,30 @@ mod tests {
     fn a_scroll_the_search_missed_is_looked_for_again() {
         let (w, h) = (256u16, 512u16);
         let document = noise(w, 4 * h, 34);
-        let whole = [Rect { x: 0, y: 0, width: w, height: h }];
+        let whole = [Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        }];
         let scroll = |recently: bool| {
             let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
             let mut page = Page::new(w, h);
-            step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+            step(
+                &mut encoder,
+                &mut page,
+                &scrolled(&document, w, 0, h),
+                None,
+                ms(0),
+            );
             let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
-            step(&mut encoder, &mut page, &scrolled(&document, w, 24, h), Some(&whole), now);
+            step(
+                &mut encoder,
+                &mut page,
+                &scrolled(&document, w, 24, h),
+                Some(&whole),
+                now,
+            );
             assert_eq!(page.copies, 1, "the first scroll a copy");
             for (cell, _) in tiles_of(Area::whole((w, h))) {
                 encoder.churn.observe(cell, now + ms(100));
@@ -3684,7 +5483,13 @@ mod tests {
             if !recently {
                 encoder.copied_at = None;
             }
-            step(&mut encoder, &mut page, &scrolled(&document, w, 48, h), Some(&whole), now + ms(300));
+            step(
+                &mut encoder,
+                &mut page,
+                &scrolled(&document, w, 48, h),
+                Some(&whole),
+                now + ms(300),
+            );
             page.copies
         };
         assert_eq!(scroll(true), 2, "looked among while scrolling");
@@ -3705,17 +5510,30 @@ mod tests {
         let mut old = noise(w, h, 35);
         let mut new = noise(w, h, 36);
         for y in 0..usize::from(h) - 24 {
-            new[y * line + 64 * 4..(y + 1) * line].copy_from_slice(&old[(y + 24) * line + 64 * 4..(y + 25) * line]);
+            new[y * line + 64 * 4..(y + 1) * line]
+                .copy_from_slice(&old[(y + 24) * line + 64 * 4..(y + 25) * line]);
         }
         for top in [0, 64] {
             let at = |y: usize| y * line + 24 * 4;
-            old[at(top + 100)..at(top + 100) + 16 * 4].copy_from_slice(&new[at(top)..at(top) + 16 * 4]);
+            old[at(top + 100)..at(top + 100) + 16 * 4]
+                .copy_from_slice(&new[at(top)..at(top) + 16 * 4]);
         }
         let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &old, None, ms(0));
         let now = settle(&mut encoder, &mut page, ms(0)) + ms(100);
-        step(&mut encoder, &mut page, &new, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), now);
+        step(
+            &mut encoder,
+            &mut page,
+            &new,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            now,
+        );
         assert_eq!(page.copies, 1, "the scroll a copy");
     }
 
@@ -3729,29 +5547,61 @@ mod tests {
         let page_at = |pixels: &mut [u8], top: usize| {
             for row in 0..usize::from(h) {
                 let to = (row * usize::from(w) + 256) * 4;
-                pixels[to..to + 256 * 4].copy_from_slice(&document[(top + row) * 256 * 4..(top + row + 1) * 256 * 4]);
+                pixels[to..to + 256 * 4]
+                    .copy_from_slice(&document[(top + row) * 256 * 4..(top + row + 1) * 256 * 4]);
             }
         };
         page_at(&mut pixels, 0);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let video = Rect { x: 0, y: 0, width: 256, height: 192 };
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 256,
+            height: 192,
+        };
         let outside = |page: &Page, pixels: &[u8]| {
-            (0..usize::from(h)).flat_map(|y| (0..usize::from(w)).map(move |x| (x, y))).filter(|(x, y)| *x >= 256 || *y >= 192).filter(|(x, y)| page.canvas[(y * usize::from(w) + x) * 4..][..3] != pixels[(y * usize::from(w) + x) * 4..][..3]).count()
+            (0..usize::from(h))
+                .flat_map(|y| (0..usize::from(w)).map(move |x| (x, y)))
+                .filter(|(x, y)| *x >= 256 || *y >= 192)
+                .filter(|(x, y)| {
+                    page.canvas[(y * usize::from(w) + x) * 4..][..3]
+                        != pixels[(y * usize::from(w) + x) * 4..][..3]
+                })
+                .count()
         };
         for n in 1..=20u32 {
             paint(&mut pixels, w, video, 600 + n);
             let mut damage = vec![video];
             if n > 12 {
                 page_at(&mut pixels, (n as usize - 12) * 24);
-                damage.push(Rect { x: 256, y: 0, width: 256, height: h });
+                damage.push(Rect {
+                    x: 256,
+                    y: 0,
+                    width: 256,
+                    height: h,
+                });
             }
-            step(&mut encoder, &mut page, &pixels, Some(&damage), ms(u64::from(n) * 50));
-            assert_eq!(outside(&page, &pixels), 0, "the page lossless outside the stream at frame {n}");
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&damage),
+                ms(u64::from(n) * 50),
+            );
+            assert_eq!(
+                outside(&page, &pixels),
+                0,
+                "the page lossless outside the stream at frame {n}"
+            );
         }
         assert_eq!(page.starts, 1, "the video streams");
-        assert!(page.copies >= 8, "the page beside it scrolls by copies: {}", page.copies);
+        assert!(
+            page.copies >= 8,
+            "the page beside it scrolls by copies: {}",
+            page.copies
+        );
     }
 
     /// A copy draws what the client holds of its source, so where that is lossy
@@ -3765,11 +5615,18 @@ mod tests {
         let mut document = noise(w, 3 * h, 30);
         let line = usize::from(w) * 4;
         for row in 64..256 {
-            document[row * line..(row + 1) * line].copy_from_slice(&[0x81, 0x81, 0x81, 0].repeat(usize::from(w)));
+            document[row * line..(row + 1) * line]
+                .copy_from_slice(&[0x81, 0x81, 0x81, 0].repeat(usize::from(w)));
         }
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &scrolled(&document, w, 0, h), None, ms(0));
+        step(
+            &mut encoder,
+            &mut page,
+            &scrolled(&document, w, 0, h),
+            None,
+            ms(0),
+        );
         // The third row of tiles as a stream leaves it: lossy, and owed.
         for row in 128..192 {
             for sample in &mut page.canvas[row * line..(row + 1) * line] {
@@ -3782,9 +5639,23 @@ mod tests {
         // Scrolled 64 rows: the grey moves up a row of tiles, and the second row
         // of tiles, grey before and after, is drawn from the lossy third.
         let pixels = scrolled(&document, w, 64, h);
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            ms(100),
+        );
         assert_eq!(page.copies, 1);
-        assert!((0..4).all(|col| encoder.debts.contains_key(&(col, 1))), "the tiles the copy drew that did not change are owed");
+        assert!(
+            (0..4).all(|col| encoder.debts.contains_key(&(col, 1))),
+            "the tiles the copy drew that did not change are owed"
+        );
         settle(&mut encoder, &mut page, ms(100));
         assert_eq!(page.off(&pixels), 0, "the page lossless once settled");
     }
@@ -3797,7 +5668,18 @@ mod tests {
         let mut page = Page::new(w, h);
         step(&mut encoder, &mut page, &noise(w, h, 28), None, ms(0));
         let pixels = noise(w, h, 29);
-        step(&mut encoder, &mut page, &pixels, Some(&[Rect { x: 0, y: 0, width: w, height: h }]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            ms(100),
+        );
         assert_eq!(page.copies, 0);
         assert_eq!(page.off(&pixels), 0);
     }

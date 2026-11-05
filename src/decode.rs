@@ -68,7 +68,11 @@ impl Decoder {
         unsafe {
             let codec = ff::avcodec_find_decoder(ff::AVCodecID::AV_CODEC_ID_H264);
             anyhow::ensure!(!codec.is_null(), "this libavcodec has no H.264 decoder");
-            let decoder = Self { context: ff::avcodec_alloc_context3(codec), packet: ff::av_packet_alloc(), frame: ff::av_frame_alloc() };
+            let decoder = Self {
+                context: ff::avcodec_alloc_context3(codec),
+                packet: ff::av_packet_alloc(),
+                frame: ff::av_frame_alloc(),
+            };
             anyhow::ensure!(
                 !decoder.context.is_null() && !decoder.packet.is_null() && !decoder.frame.is_null(),
                 "libavcodec could not allocate an H.264 decoder"
@@ -78,7 +82,10 @@ impl Decoder {
             if qps {
                 (*decoder.context).export_side_data |= ff::AV_CODEC_EXPORT_DATA_VIDEO_ENC_PARAMS;
             }
-            check(ff::avcodec_open2(decoder.context, codec, ptr::null_mut()), "opening the H.264 decoder")?;
+            check(
+                ff::avcodec_open2(decoder.context, codec, ptr::null_mut()),
+                "opening the H.264 decoder",
+            )?;
             Ok(decoder)
         }
     }
@@ -88,7 +95,8 @@ impl Decoder {
     /// returned; a unit that completed none returns `None`. An error is a unit
     /// the decoder could not take, after which the stream wants a keyframe.
     pub fn decode(&mut self, unit: &[u8], out: &mut Vec<u8>) -> anyhow::Result<Option<Picture>> {
-        let len = i32::try_from(unit.len()).map_err(|_| anyhow::anyhow!("an access unit of {} bytes", unit.len()))?;
+        let len = i32::try_from(unit.len())
+            .map_err(|_| anyhow::anyhow!("an access unit of {} bytes", unit.len()))?;
         // SAFETY: `av_new_packet` allocates `len` bytes plus the input padding
         // libavcodec reads past the end, and the copy stays inside the first
         // `len`. The frame's planes are read only inside the geometry and line
@@ -148,14 +156,26 @@ impl Decoder {
             let sent = ff::avcodec_send_packet(self.context, self.packet);
             ff::av_packet_unref(self.packet);
             check(sent, "decoding an access unit")?;
-            check(ff::avcodec_receive_frame(self.context, self.frame), "receiving a picture")?;
-            let side = ff::av_frame_get_side_data(self.frame, ff::AVFrameSideDataType::AV_FRAME_DATA_VIDEO_ENC_PARAMS);
-            anyhow::ensure!(!side.is_null(), "the decoder said no quantizer of the picture");
+            check(
+                ff::avcodec_receive_frame(self.context, self.frame),
+                "receiving a picture",
+            )?;
+            let side = ff::av_frame_get_side_data(
+                self.frame,
+                ff::AVFrameSideDataType::AV_FRAME_DATA_VIDEO_ENC_PARAMS,
+            );
+            anyhow::ensure!(
+                !side.is_null(),
+                "the decoder said no quantizer of the picture"
+            );
             let mut qps = Vec::new();
             {
                 let params = &*((*side).data as *const Params);
                 for block in 0..params.nb_blocks as usize {
-                    let at = (*side).data.add(params.blocks_offset + block * params.block_size) as *const Block;
+                    let at = (*side)
+                        .data
+                        .add(params.blocks_offset + block * params.block_size)
+                        as *const Block;
                     qps.push(params.qp + (*at).delta_qp);
                 }
             }
@@ -173,16 +193,26 @@ impl Decoder {
             let frame = &*self.frame;
             let format = frame.format;
             anyhow::ensure!(
-                format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as i32 || format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32,
+                format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as i32
+                    || format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32,
                 "the decoder produced pixel format {format}, not 4:2:0"
             );
-            let picture = Picture { width: usize::try_from(frame.width)?, height: usize::try_from(frame.height)? };
+            let picture = Picture {
+                width: usize::try_from(frame.width)?,
+                height: usize::try_from(frame.height)?,
+            };
             let (cw, ch) = picture.chroma();
             out.clear();
             out.reserve(picture.bytes());
-            for (plane, (width, height)) in [(picture.width, picture.height), (cw, ch), (cw, ch)].into_iter().enumerate() {
+            for (plane, (width, height)) in [(picture.width, picture.height), (cw, ch), (cw, ch)]
+                .into_iter()
+                .enumerate()
+            {
                 let stride = usize::try_from(frame.linesize[plane])?;
-                anyhow::ensure!(stride >= width, "plane {plane} has lines of {stride} bytes for a width of {width}");
+                anyhow::ensure!(
+                    stride >= width,
+                    "plane {plane} has lines of {stride} bytes for a width of {width}"
+                );
                 for row in 0..height {
                     let line = frame.data[plane].add(row * stride);
                     out.extend_from_slice(std::slice::from_raw_parts(line, width));
@@ -213,7 +243,9 @@ fn check(code: i32, what: &str) -> anyhow::Result<()> {
     // SAFETY: the buffer is its stated length, and av_strerror terminates it.
     let message = unsafe {
         ff::av_strerror(code, text.as_mut_ptr(), text.len());
-        std::ffi::CStr::from_ptr(text.as_ptr()).to_string_lossy().into_owned()
+        std::ffi::CStr::from_ptr(text.as_ptr())
+            .to_string_lossy()
+            .into_owned()
     };
     anyhow::bail!("{what}: {message} ({code})")
 }
@@ -251,11 +283,22 @@ mod tests {
             let mut options = ptr::null_mut();
             // Baseline, which is what a browser sends and which cannot be
             // lossless, at a quantizer low enough to compare within a tolerance.
-            for (key, value) in [("profile", "baseline"), ("tune", "zerolatency"), ("qp", "10")] {
-                let (key, value) = (std::ffi::CString::new(key).unwrap(), std::ffi::CString::new(value).unwrap());
+            for (key, value) in [
+                ("profile", "baseline"),
+                ("tune", "zerolatency"),
+                ("qp", "10"),
+            ] {
+                let (key, value) = (
+                    std::ffi::CString::new(key).unwrap(),
+                    std::ffi::CString::new(value).unwrap(),
+                );
                 ff::av_dict_set(&mut options, key.as_ptr(), value.as_ptr(), 0);
             }
-            check(ff::avcodec_open2(context, codec, &mut options), "opening libx264").unwrap();
+            check(
+                ff::avcodec_open2(context, codec, &mut options),
+                "opening libx264",
+            )
+            .unwrap();
             ff::av_dict_free(&mut options);
 
             let mut frame = ff::av_frame_alloc();
@@ -271,17 +314,24 @@ mod tests {
                     break;
                 }
                 check(got, "receiving a packet").unwrap();
-                units.push(std::slice::from_raw_parts((*packet).data, (*packet).size as usize).to_vec());
+                units.push(
+                    std::slice::from_raw_parts((*packet).data, (*packet).size as usize).to_vec(),
+                );
                 ff::av_packet_unref(packet);
             };
             for index in 0..frames {
                 check(ff::av_frame_make_writable(frame), "a writable frame").unwrap();
                 for plane in 0..3 {
-                    let (w, h) = if plane == 0 { (WIDTH, HEIGHT) } else { (WIDTH / 2, HEIGHT / 2) };
+                    let (w, h) = if plane == 0 {
+                        (WIDTH, HEIGHT)
+                    } else {
+                        (WIDTH / 2, HEIGHT / 2)
+                    };
                     let stride = (*frame).linesize[plane] as usize;
                     for y in 0..h {
                         for x in 0..w {
-                            *(*frame).data[plane].add(y * stride + x) = if plane == 0 { luma(x, y) } else { 128 };
+                            *(*frame).data[plane].add(y * stride + x) =
+                                if plane == 0 { luma(x, y) } else { 128 };
                         }
                     }
                 }
@@ -289,7 +339,11 @@ mod tests {
                 check(ff::avcodec_send_frame(context, frame), "encoding a frame").unwrap();
                 drain(&mut units);
             }
-            check(ff::avcodec_send_frame(context, ptr::null()), "flushing the encoder").unwrap();
+            check(
+                ff::avcodec_send_frame(context, ptr::null()),
+                "flushing the encoder",
+            )
+            .unwrap();
             drain(&mut units);
             ff::av_packet_free(&mut packet);
             ff::av_frame_free(&mut frame);
@@ -305,18 +359,34 @@ mod tests {
         let mut decoder = Decoder::new().unwrap();
         let mut out = Vec::new();
         for unit in &units {
-            let picture = decoder.decode(unit, &mut out).unwrap().expect("a picture for every unit");
-            assert_eq!(picture, Picture { width: WIDTH, height: HEIGHT });
+            let picture = decoder
+                .decode(unit, &mut out)
+                .unwrap()
+                .expect("a picture for every unit");
+            assert_eq!(
+                picture,
+                Picture {
+                    width: WIDTH,
+                    height: HEIGHT
+                }
+            );
             assert_eq!(out.len(), picture.bytes());
             // Lossy, but at qp 10 a smooth ramp comes back within a few levels,
             // and a plane copied with the wrong stride or offset would not.
             for y in 0..HEIGHT {
                 for x in 0..WIDTH {
                     let got = out[y * WIDTH + x];
-                    assert!(got.abs_diff(luma(x, y)) <= 8, "luma at {x},{y}: {got}, not {}", luma(x, y));
+                    assert!(
+                        got.abs_diff(luma(x, y)) <= 8,
+                        "luma at {x},{y}: {got}, not {}",
+                        luma(x, y)
+                    );
                 }
             }
-            assert!(out[WIDTH * HEIGHT..].iter().all(|&c| c.abs_diff(128) <= 4), "flat chroma");
+            assert!(
+                out[WIDTH * HEIGHT..].iter().all(|&c| c.abs_diff(128) <= 4),
+                "flat chroma"
+            );
         }
     }
 
@@ -330,12 +400,21 @@ mod tests {
         let mut out = Vec::new();
         let _ = decoder.decode(&units[1], &mut out);
         let picture = decoder.decode(&units[0], &mut out).unwrap();
-        assert_eq!(picture, Some(Picture { width: WIDTH, height: HEIGHT }));
+        assert_eq!(
+            picture,
+            Some(Picture {
+                width: WIDTH,
+                height: HEIGHT
+            })
+        );
     }
 
     #[test]
     fn an_odd_picture_rounds_its_chroma_up() {
-        let picture = Picture { width: 5, height: 3 };
+        let picture = Picture {
+            width: 5,
+            height: 3,
+        };
         assert_eq!(picture.chroma(), (3, 2));
         assert_eq!(picture.bytes(), 15 + 2 * 6);
     }
