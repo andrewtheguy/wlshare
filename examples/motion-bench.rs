@@ -72,7 +72,9 @@
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
 //! `tiles_bytes`, `png`, `planar`, `still`, `h264`, `streams` (live), `copies`, `tick_us` and
-//! `tick_bytes`, a tick's what the ticks since the frame before cost.
+//! `tick_bytes`, a tick's what the ticks since the frame before cost; and
+//! after the last frame one object per tick of the tail, `tick` true, with
+//! `ms`, `tick_us`, `tick_bytes`, `png` and `h264`.
 //!
 //! **`check`** holds the tiles to what a picture that stops owes, on any
 //! capture and on the `still` ones above all, which are for this and no
@@ -928,6 +930,18 @@ fn bench(
         tiles.tail_tick_bytes = tiles.tail_tick_bytes.max(sent.bytes());
         tiles.sent.add(&sent);
         ended = at;
+        if let Some(frames) = frames.as_deref_mut() {
+            writeln!(
+                frames,
+                "{{\"capture\":{},\"tick\":true,\"ms\":{},\"tick_us\":{},\"tick_bytes\":{},\"png\":{},\"h264\":{}}}",
+                json(&name),
+                (at - first_at.expect("set")).as_millis(),
+                cost.as_micros(),
+                sent.bytes(),
+                sent.png,
+                sent.video,
+            )?;
+        }
     }
     tiles.cpu += tiles.tail_cpu;
     tiles.settled = run.tiles.encoder.tick_at().is_none();

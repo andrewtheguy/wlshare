@@ -156,6 +156,10 @@ until the walked picture's streams went.
 
 ## The settle
 
+The held list's settle has since been paced to the link rather than sent as
+fast as it takes it ([below](#the-settles-pace)); the walked list's is as
+measured here.
+
 Measured 2026-10-27 on the same VM in the same way, the tiles alone against
 the build above, its settle 40 tiles a tick, once a tick sends the 320 tiles
 owed longest at most, the oldest runs first until 256 KiB have gone, and 40
@@ -183,6 +187,53 @@ the next scroll changed them again. There the link is short of bytes, and
 256 KiB a tick is 8 Mbit/s that the next update waits behind, which the
 bench, with no link, does not show, so below the ceiling the settle keeps
 40 tiles a tick and sends the same bytes.
+
+## The settle's pace
+
+Measured 2026-11-04 on the desktop machine (bytes alone, which hang on no
+processor), `motion-bench --libx264 --frames` over the kept captures, the
+tiles' bytes in buckets of 250 ms with the tail's ticks laid one per 250 ms,
+against main at `0c71561`. On a held list the dial is always the ceiling, so
+the settle sent 256 KiB a fence back to back once the desktop was quiet, at
+whatever the link would take; and a change too large for a region yet went
+as the desktop whole in PNG: a picture that starts over, and every frame of
+a video until the churn said moving, 400 ms, five updates of 1.9 MB in half
+a second on the 1080p video where its keyframe is 0.2 MB. The link saw the
+stream at 12 Mbit/s and then 188 for a quarter of a second. What a user
+asked for was a flat link over fewer bytes: an update carries at most 256
+KiB of stills where nothing moved and a change past that is a region from
+its first frame, and the settle keeps to the pace, the most the picture sent
+over a second since something was last owed, never a tick on the heels of
+the last ([architecture](architecture.md#the-tiles-encoding)). The busiest
+quarter second of each capture, and the stream's rate while it moved:
+
+| Capture | Stream | Busiest 250 ms before | After |
+|---|---:|---:|---:|
+| video-1920x1080 | 12.4 Mbit/s | 188 Mbit/s | 50 Mbit/s |
+| video-2880x1800@2 | 27.3 | 183 | 60 |
+| window-1920x1080 | 6.5 | 29 | 29 |
+| window-2880x1800@2 | 9.8 | 41 | 37 |
+| browser-1920x1080 | — | 11 | 11 |
+| uncover-1920x1080 | — | 15 | 24 |
+| still-1920x1080 | — | 8.5 | 8.5 |
+| still-2880x1800@2 | — | 19 | 37 |
+| still-3840x2160@2 | — | 28 | 48 |
+
+The video's bursts are gone: its first frame is a region, not five updates
+of PNG, and it sent 34 MB where it sent 42, the PNG beside the stream 5.3 MB
+where it was 13.9. What is left at 50 and 60 is the stream itself with a
+region started again after an idle second, and the mixed session's busiest
+quarter second is a scroll, 45 Mbit/s of copies and the strips they
+uncover, which the rule leaves alone. The settle after the video is the same
+0.84 MB in 14 ticks apart where it was 6 back to back. A page of text that
+starts over is within an update's stills at 1080p and unchanged; at
+2880x1800@2 and above it is past them, and the still captures' two keyframes
+a tenth of a second apart start over twice, the second before the first's
+region has settled, so each pays the stills and the keyframe again: 0.75 MB
+at 3840x2160@2 where the whole picture as PNG was 0.79, twice. A window
+uncovered on a page of text goes the same way at its end, 24 where it was
+15. Those are a page of text's one-off costs, a keyframe at the dial on top
+of the stills it then settles, where the user's choice is the flat link.
 
 ## The walk's verdicts
 

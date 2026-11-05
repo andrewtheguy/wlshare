@@ -76,20 +76,39 @@
 //! else libx264 (`src/h264/x264.rs`). A coder that refuses a stream, or
 //! fails one midway, fails the encode: a region has no other codec.
 //!
+//! **A change past an update's stills goes as video.** On a held list an
+//! update carries at most [`SETTLE_BYTES`] of stills where the read moved
+//! nothing: a change past that is a region over the box around the whole of
+//! it, its START in the same update after the stills, which ends as any
+//! region once nothing in it has moved for a second, every tile of it owed
+//! its still ([`TilesEncoder::held_stills`]). A picture that
+//! starts over — an encoder's first, or one a client asks for whole
+//! ([`TilesEncoder::forget`]) — goes whole at once, in bands of 64 rows, or
+//! as that region where it is past the budget, as the first frames of a
+//! video are, their region from the first frame rather than once the churn
+//! says moving; from
+//! then on a band is sent as the runs of its changed tiles along each row.
+//! What a scroll or a drag uncovers is stills whatever its size, and so is
+//! the rest where the coder refuses the stream or every stream is taken.
+//!
 //! **It settles.** Every tile a stream carried is owed a PNG, and every
 //! progressive tile below the full stage its next upgrade, once it has been
 //! still for half a second, looked for every quarter of a second
 //! ([`TilesEncoder::tick_at`]), the coarsest and longest owed first, at most
-//! 320 tiles at a time and 256 KiB at the ceiling; below it, where the link
+//! 320 tiles at a time. On a held list a look keeps to the link's pace, the
+//! most the picture was found sending over a second since something was
+//! last owed: its share of the look's interval, 32 KiB to 256 KiB, the looks
+//! sooner than a quarter of a second where the pace has 256 KiB going in
+//! less, and never one on the heels of the last
+//! ([`TilesEncoder::paced_budget`]), so a desktop that stops settles at the
+//! rate its motion had of the link and never faster. On a walked list the
+//! look follows the walk: 256 KiB at the ceiling; below it, where the link
 //! is short of bytes, 8 KiB while the desktop moves and what the link was
 //! found to take once it is still, a look cut short owed again at the next
 //! update's turn ([`TilesEncoder::delivered`]) — and sent after the stream's
 //! END, so a
 //! desktop that stops is lossless on a held list and at the full stage on a
-//! walked one. A picture that
-//! starts over — an encoder's first, or one a client asks for whole
-//! ([`TilesEncoder::forget`]) — goes whole at once, in bands of 64 rows; from
-//! then on a band is sent as the runs of its changed tiles along each row.
+//! walked one.
 //!
 //! The measurements these rules were chosen by are the daemon crate's
 //! `examples/motion-bench.rs`, which plays the kept captures through this
@@ -98,7 +117,7 @@
 //! slow link.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -346,10 +365,13 @@ pub const CLEANUP_TICK: Duration = Duration::from_millis(250);
 const COARSE_QUIET: Duration = Duration::from_millis(2000);
 /// The most tiles a tick codes.
 const SETTLE_TILES: usize = 320;
-/// The bytes after which a tick sends no more while the walk stands at the
-/// ceiling, and at most below it, where what it may send on a quiet desktop
-/// walks between this and [`SETTLE_BYTES_LEAST`] on how long the updates
-/// that carried a settle took to cross ([`TilesEncoder::delivered`]).
+/// The bytes after which a tick sends no more while a walked list's walk
+/// stands at the ceiling, and at most below it, where what it may send on a
+/// quiet desktop walks between this and [`SETTLE_BYTES_LEAST`] on how long
+/// the updates that carried a settle took to cross
+/// ([`TilesEncoder::delivered`]); the most a held list's tick sends at any
+/// pace; and the stills a held list's update carries at once where nothing
+/// moved, a change past it going as video ([`TilesEncoder::held_stills`]).
 const SETTLE_BYTES: usize = 256 * 1024;
 /// The fewest bytes a tick may send before it stops, and what it starts at:
 /// 13 ms of a 5 Mbit/s link.
@@ -360,6 +382,16 @@ const SETTLE_QUICK: Duration = Duration::from_millis(30);
 /// An update that took this long or more to cross queued on the link: the
 /// next tick sends half as much.
 const SETTLE_LATE: Duration = Duration::from_millis(60);
+/// How far back the updates go whose bytes are what the link has been
+/// carrying, which a held list's settle keeps to ([`TilesEncoder::pace`]).
+const PACE_WINDOW: Duration = Duration::from_millis(1000);
+/// The fewest bytes a held list's tick sends, whatever the pace: 1 Mbit/s
+/// at a tick a quarter of a second, so what little motion owes is paid
+/// within a tick or two.
+const SETTLE_FLOOR: usize = 32 * 1024;
+/// The least time between two of a held list's ticks, where the pace would
+/// have one of [`SETTLE_BYTES`] sooner than [`CLEANUP_TICK`].
+const SETTLE_TICK_LEAST: Duration = Duration::from_millis(50);
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
@@ -1130,6 +1162,13 @@ pub struct TilesEncoder {
     /// whose crossing moves it.
     settle_bytes: usize,
     settling: bool,
+    /// The updates of the last [`PACE_WINDOW`]: when each went, its bytes,
+    /// and whether it was a tick's alone.
+    sent: VecDeque<(Duration, usize, bool)>,
+    /// A held list's pace, in bytes a second: the most the link was found
+    /// carrying since something was last owed, which the settle keeps to;
+    /// zero while nothing is.
+    pace: usize,
     /// wlshare's dial: what the streams are coded at, and the finest the walk
     /// asks for.
     ceiling: u8,
@@ -1195,6 +1234,8 @@ impl TilesEncoder {
             next_tick: Duration::ZERO,
             settle_bytes: SETTLE_BYTES_LEAST,
             settling: false,
+            sent: VecDeque::new(),
+            pace: 0,
             ceiling: crate::rfb::QUALITY,
             quality: crate::rfb::QUALITY,
             coarse: false,
@@ -1280,6 +1321,7 @@ impl TilesEncoder {
         self.stills.clear();
         self.copies.clear();
         self.restarting = true;
+        self.pace = 0;
         self.still_stream = None;
         self.unknown = tiles_of(Area::whole(self.size))
             .map(|(cell, _)| cell)
@@ -2107,6 +2149,7 @@ impl TilesEncoder {
         // Keys of the picture an encode that failed was coding, before
         // anything here can fail.
         self.keys.clear();
+        let from = out.len();
         let mut out = Out {
             out,
             count: 0,
@@ -2115,6 +2158,7 @@ impl TilesEncoder {
         for (id, area) in std::mem::take(&mut self.ended) {
             out.end(id, area);
         }
+        let moved = !self.copies.is_empty();
         for copy in std::mem::take(&mut self.copies) {
             out.header(
                 copy.dst,
@@ -2128,31 +2172,61 @@ impl TilesEncoder {
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
             out.keyframe = true;
         }
-        self.stills(stills, now, &mut out)?;
-        if std::mem::take(&mut self.read) {
+        let mut owed_round = false;
+        if self.picture == TilesPicture::Held {
+            owed_round = self.held_stills(stills, moved, now, &mut out)?;
+        } else {
+            self.stills(stills, now, &mut out)?;
+        }
+        if std::mem::take(&mut self.read) || owed_round {
             self.round(now, &mut out)?;
         }
         let brought = out.count;
         if now >= self.next_tick {
-            // On a quiet desktop a tick its budget cut short is owed again at
-            // the next update's turn, which waits for this one's fence: the
-            // settle goes as fast as the link takes it. While it moves, a
-            // tick alone between its updates would hold back the next, and
-            // start the walk's verdicts over.
             let more = self.tick(now, &mut out)?;
-            self.next_tick = if more && self.quiet(now) {
+            self.next_tick = if self.picture == TilesPicture::Held {
+                // A held list's settle keeps to its pace: never a tick on the
+                // heels of the last, however much is owed.
+                now + self.tick_interval()
+            } else if more && self.quiet(now) {
+                // On a quiet desktop a tick its budget cut short is owed again at
+                // the next update's turn, which waits for this one's fence: the
+                // settle goes as fast as the link takes it. While it moves, a
+                // tick alone between its updates would hold back the next, and
+                // start the walk's verdicts over.
                 now
             } else {
                 now + CLEANUP_TICK
             };
         }
         self.settling = out.count > brought;
-        // What the streams that ended here had not carried, after their ENDs.
+        // What the streams that ended here had not carried, after their ENDs;
+        // a region it is more than an update's stills for started at once.
         let stills = std::mem::take(&mut self.stills);
-        self.stills(stills, now, &mut out)?;
+        if self.picture == TilesPicture::Held {
+            if self.held_stills(stills, moved, now, &mut out)? {
+                self.round(now, &mut out)?;
+            }
+        } else {
+            self.stills(stills, now, &mut out)?;
+        }
         if let Some(enc) = &mut self.progressive {
             enc.drop_ready();
             self.keys.clear();
+        }
+        let bytes = out.out.len() - from;
+        if bytes > 0 {
+            self.sent.push_back((now, bytes, brought == 0));
+        }
+        while self
+            .sent
+            .front()
+            .is_some_and(|(at, _, _)| *at + PACE_WINDOW <= now)
+        {
+            self.sent.pop_front();
+        }
+        if !self.owed() {
+            self.pace = 0;
         }
         let rects = u16::try_from(out.count).map_err(|_| TilesError::TooMany(out.count))?;
         Ok(Update {
@@ -2731,11 +2805,125 @@ impl TilesEncoder {
         })
     }
 
+    /// A held list's `stills`, each a run of tiles along one row, at most
+    /// [`SETTLE_BYTES`] of them as stills in one update where the read `moved`
+    /// nothing: a change past that goes as video whole, a region over the
+    /// box around all of it ([`Self::build`]), its START a keyframe at the
+    /// dial in this update after the stills, carried on by its frames while
+    /// it keeps changing and ended when nothing in it has moved for a second,
+    /// as any region; every tile of the box owed its still from now, which
+    /// the settle pays at the link's pace ([`Self::paced_budget`]) once the
+    /// stream is over, the cache's from their slots — among them the stills
+    /// this update carried, which the frame draws over and which filled
+    /// their slots. So the client has the whole of a change at once, lossy:
+    /// a picture that starts over, and the first frames of a video, which
+    /// went as the desktop whole in PNG until its region formed, 1.9 MB an
+    /// update on a 1080p video frame against the 0.2 of its keyframe, and
+    /// here are its region from the first frame, the frames after it the
+    /// stream's own. Where the read moved pixels the stills are what a scroll
+    /// or a drag uncovered, which the list promises lossless, and a stream
+    /// for every strip would be a coder opened an update: they all go as
+    /// stills; and so does the rest where the coder refuses the stream or
+    /// every stream is taken. Whether a region was added, whose START is owed
+    /// a round ([`Self::round`]).
+    fn held_stills(
+        &mut self,
+        stills: Vec<Area>,
+        moved: bool,
+        now: Duration,
+        out: &mut Out,
+    ) -> Result<bool, TilesError> {
+        self.precode(&stills);
+        let from = out.out.len();
+        let mut rest: Vec<Area> = Vec::new();
+        for area in &stills {
+            if moved || out.out.len() - from < SETTLE_BYTES || self.live.len() >= MAX_STREAMS {
+                self.still(*area, now, out)?;
+            } else {
+                rest.push(*area);
+            }
+        }
+        if rest.is_empty() {
+            return Ok(false);
+        }
+        let around = stills.iter().fold(stills[0], |a, b| Area {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        });
+        let id = (0..=u8::MAX)
+            .find(|id| !self.live.iter().any(|live| live.id == *id))
+            .expect("at most a few streams live");
+        match self.build(id, around, now) {
+            Ok(live) => {
+                self.live.push(live);
+                self.cover();
+                Ok(true)
+            }
+            Err(_) => {
+                for area in rest {
+                    self.still(area, now, out)?;
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    /// What the link has been carrying, in bytes a second: the updates of the
+    /// last [`PACE_WINDOW`].
+    fn carrying(&self) -> usize {
+        let bytes: usize = self.sent.iter().map(|(_, bytes, _)| bytes).sum();
+        bytes * 1000 / PACE_WINDOW.as_millis() as usize
+    }
+
+    /// The bytes of the reads' updates within `within` of `now`: what the
+    /// desktop's own changes have had of the link, which a tick fills up to
+    /// the pace and no further.
+    fn brought_within(&self, now: Duration, within: Duration) -> usize {
+        self.sent
+            .iter()
+            .filter(|(at, _, tick)| !tick && *at + within > now)
+            .map(|(_, bytes, _)| bytes)
+            .sum()
+    }
+
+    /// How far apart a held list's ticks come: [`CLEANUP_TICK`], or as soon
+    /// as the pace has [`SETTLE_BYTES`] going where that is sooner, down to
+    /// [`SETTLE_TICK_LEAST`].
+    fn tick_interval(&self) -> Duration {
+        if self.pace == 0 {
+            return CLEANUP_TICK;
+        }
+        Duration::from_secs_f64(SETTLE_BYTES as f64 / self.pace as f64)
+            .clamp(SETTLE_TICK_LEAST, CLEANUP_TICK)
+    }
+
+    /// The bytes a held list's tick may send: the pace's share of the tick's
+    /// interval, less what the reads sent in it, between [`SETTLE_FLOOR`] and
+    /// [`SETTLE_BYTES`]. The pace is the most the link was found carrying
+    /// since something was last owed — a stream's frames, a picture's
+    /// keyframe, the ticks themselves — so a desktop that stops settles at the
+    /// rate its motion had of the link, and never faster: the link sees no
+    /// more than it did a moment before, where a settle at whatever the link
+    /// took was 15 times the stream's rate on a 1080p video. While the desktop
+    /// moves the reads have the pace, and the tick its floor.
+    fn paced_budget(&mut self, now: Duration) -> usize {
+        self.pace = self.pace.max(self.carrying());
+        let interval = self.tick_interval();
+        let share = (self.pace as f64 * interval.as_secs_f64()) as usize;
+        share
+            .saturating_sub(self.brought_within(now, interval))
+            .clamp(SETTLE_FLOOR, SETTLE_BYTES)
+    }
+
     /// The streams whose motion stopped ended, and the tiles still for
     /// [`CLEANUP_IDLE`] settled — a PNG, or a progressive tile's next
     /// upgrade — as runs along a row, the oldest
-    /// runs first until [`SETTLE_BYTES`] are sent while the walk stands at
-    /// the ceiling; below it [`SETTLE_BYTES_LEAST`] while the desktop moves,
+    /// runs first until the tick's bytes are sent: on a held list its pace's
+    /// share ([`Self::paced_budget`]); on a walked one [`SETTLE_BYTES`] while
+    /// the walk stands at
+    /// the ceiling, below it [`SETTLE_BYTES_LEAST`] while the desktop moves,
     /// and once it is quiet the bytes the link was found to take
     /// ([`Self::delivered`]); of the [`SETTLE_TILES`]
     /// longest owed — none while the walk is
@@ -2797,7 +2985,9 @@ impl TilesEncoder {
         // it the link is short of bytes, for the motion itself while the
         // desktop moves: the least; once it is quiet, what the link was found
         // to take.
-        let budget = if self.quality >= self.ceiling {
+        let budget = if self.picture == TilesPicture::Held {
+            self.paced_budget(now)
+        } else if self.quality >= self.ceiling {
             SETTLE_BYTES
         } else if self.quiet(now) {
             self.settle_bytes
@@ -3469,8 +3659,27 @@ mod tests {
         now
     }
 
-    /// A first picture goes whole as PNG, a band at a time, lossless; a palette
-    /// where a band has few colours and RGB where it has many, both read back.
+    /// The first picture of a held list, at 0, and the settle after it where
+    /// it was more than an update's stills and went as video first; lossless
+    /// either way. When it was.
+    fn begin(encoder: &mut TilesEncoder, page: &mut Page, pixels: &[u8]) -> Duration {
+        let first = update(encoder, page, pixels, None, ms(0));
+        assert!(
+            first.keyframe,
+            "a picture sent whole crosses the link as a keyframe"
+        );
+        let at = settle(encoder, page, ms(0));
+        assert_eq!(
+            page.off(pixels),
+            0,
+            "the first picture lossless, at once or settled"
+        );
+        at
+    }
+
+    /// A first picture within an update's stills goes whole as PNG, a band at a
+    /// time, lossless; a palette where a band has few colours and RGB where it
+    /// has many, both read back.
     #[test]
     fn a_first_picture_is_sent_lossless_in_bands() {
         let (w, h) = (200u16, 150u16);
@@ -4091,6 +4300,248 @@ mod tests {
         assert!(!encoder.owed());
     }
 
+    /// A change of more than an update's stills where nothing moved — the
+    /// first picture of a desktop of noise — goes as video: the stills up to
+    /// the budget and one run over, then a region over the box around the
+    /// rest, its START in the same update, every tile of the box owed; the
+    /// stream ends once nothing in it has moved for a second, and the settle
+    /// pays them at the pace, a tick at a time never on the heels of the
+    /// last, none past its bytes, until the picture is lossless and every
+    /// whole tile stored.
+    #[test]
+    fn a_change_past_the_stills_goes_as_video_and_settles_at_the_pace() {
+        let (w, h) = (640u16, 384u16);
+        let pixels = noise(w, h, 71);
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let mut out = Vec::new();
+        encoder
+            .read(&pixels, usize::from(w) * 4, None, ms(0))
+            .unwrap();
+        let first = encoder.encode(ms(0), &mut out).unwrap();
+        // The stills, then the region's START over the box around the rows
+        // they did not reach.
+        let mut wire = crate::rfb::msg::update_header(first.rects).to_vec();
+        wire.extend_from_slice(&out);
+        let Some((ServerMsg::Update(rects), _)) = client::parse(&wire).unwrap() else {
+            panic!("an update")
+        };
+        let start = rects.last().expect("rectangles");
+        assert!(
+            matches!(
+                start.body,
+                RectBody::Tiles(TileBody::Start { stream: 0, .. })
+            ),
+            "the region's START last"
+        );
+        assert!(
+            rects[..rects.len() - 1].iter().all(|rect| matches!(
+                rect.body,
+                RectBody::Tiles(TileBody::Png(_) | TileBody::Store { .. })
+            )),
+            "the stills ahead of it"
+        );
+        assert_eq!(
+            (start.x, start.y, start.width, start.height),
+            (0, 0, w, h),
+            "the box around the whole change, the stills' rows too"
+        );
+        page.draw(first.rects, &out);
+        assert!(first.keyframe, "a picture sent whole is a keyframe");
+        let stills: usize = page.bytes;
+        assert!(
+            page.pngs >= 2 && page.pngs <= 3,
+            "the stills up to the budget, a row's run each: {} PNGs",
+            page.pngs
+        );
+        assert!(page.off(&pixels) > 0, "the rest a frame of video, lossy");
+        assert_eq!(page.streams.len(), 1, "the region live");
+        assert!(encoder.owed(), "every tile of the box owed its still");
+        let whole = usize::from(w / TILE) * usize::from(h / TILE);
+        assert!(
+            page.stored < whole,
+            "{} of {whole} stored so far",
+            page.stored
+        );
+
+        // The settle: ticks apart, none past its bytes and a run.
+        let mut last: Option<Duration> = None;
+        let mut largest = 0;
+        while let Some(at) = encoder.tick_at() {
+            if let Some(last) = last {
+                assert!(
+                    at >= last + SETTLE_TICK_LEAST,
+                    "a tick on the heels of the last: {last:?} then {at:?}"
+                );
+            }
+            out.clear();
+            let tick = encoder.encode(at, &mut out).unwrap();
+            let before = page.bytes;
+            page.draw(tick.rects, &out);
+            largest = largest.max(page.bytes - before);
+            last = Some(at);
+            assert!(at < ms(60_000), "never settled");
+        }
+        let run = (stills / 2).max(1);
+        assert!(
+            largest <= SETTLE_BYTES + run,
+            "a tick of {largest} bytes, past {SETTLE_BYTES} and a run of {run}"
+        );
+        assert_eq!(page.off(&pixels), 0, "the picture settled lossless");
+        assert_eq!(page.stored, whole, "every whole tile stored");
+        assert_eq!(
+            (page.starts, page.ends, page.frames),
+            (1, 1, 0),
+            "the region, ended idle, carried no frame after its start"
+        );
+        assert!(
+            last.unwrap() >= STREAM_IDLE,
+            "settled after the region's idle second: {last:?}"
+        );
+    }
+
+    /// The frames of a video before its region forms by churn: the first
+    /// frame past an update's stills is its region, and the frames after
+    /// it go as the stream's own, no still of them, where they went as the
+    /// desktop whole in PNG until the churn said moving.
+    #[test]
+    fn a_video_that_starts_is_a_region_from_its_first_frame() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![0; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        assert_eq!(page.starts, 0, "a black desktop within an update's stills");
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        for n in 1..=8u32 {
+            paint(&mut pixels, w, whole, 300 + n);
+            let (pngs, frames) = (page.pngs, page.frames);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[whole]),
+                t0 + ms(u64::from(n) * 50),
+            );
+            if n == 1 {
+                assert_eq!(
+                    page.starts, 1,
+                    "the first frame past the stills is a region"
+                );
+                assert!(
+                    page.pngs > pngs,
+                    "with the stills up to the budget ahead of it"
+                );
+            } else {
+                assert_eq!(
+                    (page.starts, page.frames - frames, page.pngs - pngs),
+                    (1, 1, 0),
+                    "frame {n}: the stream's own, no still"
+                );
+            }
+        }
+        settle(&mut encoder, &mut page, t0 + ms(400));
+        assert_eq!(page.off(&pixels), 0, "settled lossless");
+    }
+
+    /// A held list's tick keeps to the pace: the most the link was found
+    /// carrying over a second since something was last owed, a tick's share
+    /// of its interval less what the reads sent in it, never under the floor
+    /// nor over the most a tick sends, and the ticks sooner where the pace has
+    /// that much going in less than a quarter of a second.
+    #[test]
+    fn a_held_tick_keeps_to_the_pace() {
+        let mut encoder = TilesEncoder::new(64, 64, held(), Fake::coder()).unwrap();
+        encoder.debts.insert((0, 0), ms(0));
+        assert_eq!(encoder.tick_interval(), CLEANUP_TICK, "no pace yet");
+        assert_eq!(
+            encoder.paced_budget(ms(1000)),
+            SETTLE_FLOOR,
+            "nothing carried: the floor"
+        );
+
+        // 10 KiB in the last second: a share under the floor.
+        encoder.sent.push_back((ms(900), 10 * 1024, false));
+        assert_eq!(encoder.paced_budget(ms(1000)), SETTLE_FLOOR);
+        assert_eq!(encoder.pace, 10 * 1024);
+
+        // A stream at 2 MB a second: the ticks every 131 ms, the full budget
+        // once the reads' own bytes are out of the interval, and nothing
+        // beyond the floor while they are in it.
+        encoder.sent.clear();
+        encoder.sent.push_back((ms(950), 2_000_000, false));
+        assert_eq!(
+            encoder.paced_budget(ms(1000)),
+            SETTLE_FLOOR,
+            "the reads have the pace"
+        );
+        assert_eq!(encoder.pace, 2_000_000);
+        let interval = encoder.tick_interval();
+        assert_eq!(interval, Duration::from_secs_f64(SETTLE_BYTES as f64 / 2e6));
+        encoder.sent.clear();
+        assert_eq!(
+            encoder.paced_budget(ms(1200)),
+            SETTLE_BYTES,
+            "the full budget once the reads are out of the interval, the pace kept"
+        );
+
+        // The pace is the most found: a slower second does not lower it; a
+        // faster one raises it, and the interval shortens to its least.
+        encoder.sent.push_back((ms(1300), 100_000, false));
+        encoder.paced_budget(ms(1400));
+        assert_eq!(encoder.pace, 2_000_000);
+        encoder.sent.push_back((ms(1300), 20_000_000, false));
+        encoder.paced_budget(ms(1400));
+        assert_eq!(encoder.pace, 20_100_000);
+        assert_eq!(encoder.tick_interval(), SETTLE_TICK_LEAST);
+
+        // Paid off, the pace is forgotten with the next encode.
+        encoder.debts.clear();
+        encoder.encode(ms(1500), &mut Vec::new()).unwrap();
+        assert_eq!(encoder.pace, 0, "nothing owed: no pace");
+    }
+
+    /// A scroll of a page of noise uncovers more than an update's stills, and
+    /// they all go as stills: what a scroll uncovers the list promises
+    /// lossless, and a stream a strip would be a coder opened an update.
+    #[test]
+    fn a_scroll_past_the_stills_stays_stills() {
+        let (w, h) = (1024u16, 512u16);
+        let document = noise(w, 3 * h, 72);
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &scrolled(&document, w, 0, h));
+        let starts = page.starts;
+        let pixels = scrolled(&document, w, 128, h);
+        let before = page.bytes;
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            t0 + ms(100),
+        );
+        assert_eq!(page.copies, 1, "the scroll a copy");
+        assert!(
+            page.bytes - before > SETTLE_BYTES,
+            "two rows of noise uncovered: {} bytes",
+            page.bytes - before
+        );
+        assert_eq!(page.starts, starts, "no stream for them");
+        assert_eq!(page.off(&pixels), 0, "lossless at once");
+        assert!(!encoder.owed());
+    }
+
     /// The damage is compared with what the client holds: a redraw of the same
     /// pixels sends nothing, and one tile that changed is one PNG of it.
     #[test]
@@ -4099,7 +4550,7 @@ mod tests {
         let mut pixels = noise(w, h, 2);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let whole = [Rect {
             x: 0,
             y: 0,
@@ -4107,7 +4558,7 @@ mod tests {
             height: h,
         }];
         assert_eq!(
-            step(&mut encoder, &mut page, &pixels, Some(&whole), ms(100)),
+            step(&mut encoder, &mut page, &pixels, Some(&whole), t0 + ms(100)),
             0,
             "a redraw of what the client holds"
         );
@@ -4124,7 +4575,7 @@ mod tests {
         );
         let bytes = page.bytes;
         assert_eq!(
-            step(&mut encoder, &mut page, &pixels, Some(&whole), ms(200)),
+            step(&mut encoder, &mut page, &pixels, Some(&whole), t0 + ms(200)),
             2,
             "one tile changed: its PNG and its store"
         );
@@ -4140,14 +4591,16 @@ mod tests {
             wide[row * stride..][..usize::from(w) * 4]
                 .copy_from_slice(&pixels[row * usize::from(w) * 4..][..usize::from(w) * 4]);
         }
-        encoder.read(&wide, stride, Some(&whole), ms(300)).unwrap();
+        encoder
+            .read(&wide, stride, Some(&whole), t0 + ms(300))
+            .unwrap();
         assert_eq!(
-            encoder.encode(ms(300), &mut Vec::new()).unwrap().rects,
+            encoder.encode(t0 + ms(300), &mut Vec::new()).unwrap().rects,
             0,
             "the same picture at another stride"
         );
         assert!(matches!(
-            encoder.read(&wide[..100], stride, None, ms(400)),
+            encoder.read(&wide[..100], stride, None, t0 + ms(400)),
             Err(TilesError::Buffer { .. })
         ));
     }
@@ -4161,7 +4614,7 @@ mod tests {
         let mut pixels = noise(w, h, 3);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let pngs = page.pngs;
         // A 192×128 video, every 50 ms for two seconds.
         let video = Rect {
@@ -4177,10 +4630,14 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[video]),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
         }
-        assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 1),
+            "one stream live, after the first picture's"
+        );
         assert!(page.frames > 20, "{} frames of it", page.frames);
         assert!(
             page.pngs - pngs <= 16,
@@ -4192,8 +4649,8 @@ mod tests {
             "a live stream owes its end"
         );
         assert!(page.off(&pixels) > 0, "a stream's picture is not lossless");
-        settle(&mut encoder, &mut page, ms(2000));
-        assert_eq!(page.ends, 1, "the stream ended");
+        settle(&mut encoder, &mut page, t0 + ms(2000));
+        assert_eq!(page.ends, 2, "the stream ended");
         assert_eq!(page.off(&pixels), 0, "the picture settled lossless");
         assert!(page.streams.is_empty());
     }
@@ -4214,7 +4671,7 @@ mod tests {
             let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
             encoder.set_scale(scale);
             let mut page = Page::new(w, h);
-            step(&mut encoder, &mut page, &pixels, None, ms(0));
+            let t0 = begin(&mut encoder, &mut page, &pixels);
             let mut lossless = true;
             for n in 1..=40u32 {
                 paint(&mut pixels, w, moving, 500 + n);
@@ -4223,11 +4680,12 @@ mod tests {
                     &mut page,
                     &pixels,
                     Some(&[moving]),
-                    ms(u64::from(n) * 50),
+                    t0 + ms(u64::from(n) * 50),
                 );
                 lossless &= page.off(&pixels) == 0;
             }
-            (page.starts, lossless)
+            // Less the first picture's one frame of video.
+            (page.starts - 1, lossless)
         };
         let spinner = Rect {
             x: 96,
@@ -4259,7 +4717,7 @@ mod tests {
         let mut pixels = noise(w, h, 5);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let video = Rect {
             x: 128,
             y: 64,
@@ -4273,10 +4731,14 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[video]),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
         }
-        assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 1),
+            "one stream live, after the first picture's"
+        );
         // Its motion last seen at 1.8 s. A tile of it redrawn twice once that
         // stopped, which is no motion but is carried, its tiles owed the
         // ceiling from then; then one change under it in the round that ends
@@ -4295,10 +4757,10 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[now_and_then]),
-                ms(at),
+                t0 + ms(at),
             );
         }
-        assert_eq!(page.ends, 0, "the stream still live");
+        assert_eq!(page.ends, 1, "the stream still live");
         let change = Rect {
             x: 256,
             y: 128,
@@ -4306,8 +4768,14 @@ mod tests {
             height: 64,
         };
         paint(&mut pixels, w, change, 999);
-        step(&mut encoder, &mut page, &pixels, Some(&[change]), ms(3100));
-        assert_eq!(page.ends, 1, "the stream ended");
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[change]),
+            t0 + ms(3100),
+        );
+        assert_eq!(page.ends, 2, "the stream ended");
         let row = |y: usize| {
             (y * usize::from(w) + usize::from(change.x)) * 4
                 ..(y * usize::from(w) + usize::from(change.x + change.width)) * 4
@@ -4335,7 +4803,7 @@ mod tests {
         let mut pixels = noise(w, h, 7);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let video = Rect {
             x: 0,
             y: 0,
@@ -4350,7 +4818,7 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[video]),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
             assert!(!one.keyframe, "frame {n}, a START among it or not: {one:?}");
             if page.starts > made {
@@ -4360,7 +4828,11 @@ mod tests {
                 );
             }
         }
-        assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 1),
+            "a stream live, after the first picture's"
+        );
     }
 
     /// An update is the tick's when all it sends is what the desktop
@@ -4478,7 +4950,7 @@ mod tests {
         let mut pixels = noise(w, h, 31);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let video = Rect {
             x: 0,
             y: 0,
@@ -4492,14 +4964,24 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[video]),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
         }
-        assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 1),
+            "a stream live, after the first picture's"
+        );
         encoder.set_picture(progressive());
-        let whole = update(&mut encoder, &mut page, &pixels, Some(&[video]), ms(700));
+        let whole = update(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[video]),
+            t0 + ms(700),
+        );
         assert!(whole.keyframe, "the picture starts over: {whole:?}");
-        assert_eq!(page.ends, 1, "the live stream ended");
+        assert_eq!(page.ends, 2, "the live stream ended");
         assert!(page.streams.is_empty());
     }
 
@@ -4511,7 +4993,7 @@ mod tests {
         let mut pixels = noise(w, h, 5);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let video = Rect {
             x: 0,
             y: 0,
@@ -4525,13 +5007,23 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[video]),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
         }
-        assert_eq!((page.starts, page.ends), (1, 0), "a stream, live");
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 1),
+            "a stream live, after the first picture's"
+        );
         let frames = page.frames;
         assert_eq!(
-            step(&mut encoder, &mut page, &pixels, Some(&[video]), ms(650)),
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                t0 + ms(650)
+            ),
             0,
             "a redraw of the stream's pixels was sent"
         );
@@ -4547,7 +5039,7 @@ mod tests {
         let mut pixels = noise(w, h, 4);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let video = Rect {
             x: 0,
             y: 0,
@@ -4561,10 +5053,10 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&[video]),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
         }
-        assert_eq!((page.starts, page.ends), (1, 0));
+        assert_eq!((page.starts, page.ends), (2, 1));
         encoder.forget();
         assert_eq!(
             encoder.tick_at(),
@@ -4572,8 +5064,12 @@ mod tests {
             "the ends are owed at once, read or no read"
         );
         let (pngs, cached) = (page.pngs, page.cached);
-        step(&mut encoder, &mut page, &pixels, None, ms(1100));
-        assert_eq!(page.ends, 1, "the stream ended");
+        step(&mut encoder, &mut page, &pixels, None, t0 + ms(1100));
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 2),
+            "the stream ended, and the picture again within an update's stills"
+        );
         assert_eq!(
             page.pngs - pngs,
             3,
@@ -4608,7 +5104,7 @@ mod tests {
         let mut pixels = noise(w, h, 31);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         assert_eq!(
             page.stored, 8,
             "every whole tile of the first picture stored"
@@ -4622,7 +5118,13 @@ mod tests {
         };
         glyphs(&mut pixels, w, text);
         let (pngs, stored) = (page.pngs, page.stored);
-        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[text]),
+            t0 + ms(100),
+        );
         assert_eq!(
             (page.pngs - pngs, page.stored - stored, page.cached),
             (1, 1, 0),
@@ -4641,7 +5143,7 @@ mod tests {
                 width: 64,
                 height: 64,
             }]),
-            ms(200),
+            t0 + ms(200),
         );
         assert_eq!(
             (
@@ -4658,10 +5160,22 @@ mod tests {
 
         // Painted over and shown again: the slot still has it.
         paint(&mut pixels, w, text, 32);
-        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(300));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[text]),
+            t0 + ms(300),
+        );
         glyphs(&mut pixels, w, text);
         let pngs = page.pngs;
-        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(400));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[text]),
+            t0 + ms(400),
+        );
         assert_eq!(
             (page.pngs - pngs, page.cached),
             (0, 2),
@@ -4680,7 +5194,13 @@ mod tests {
         };
         paint(&mut pixels, w, part, 33);
         let (pngs, stored) = (page.pngs, page.stored);
-        step(&mut encoder, &mut page, &pixels, Some(&[part]), ms(500));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[part]),
+            t0 + ms(500),
+        );
         assert_eq!(
             (page.pngs - pngs, page.stored - stored, page.cached),
             (1, 0, 2),
@@ -4697,7 +5217,7 @@ mod tests {
         let mut pixels = noise(w, h, 41);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         assert_eq!(page.stored, 2);
         let flat = Rect {
             x: 0,
@@ -4709,7 +5229,13 @@ mod tests {
             pixels[row * usize::from(w) * 4..][..64 * 4]
                 .copy_from_slice(&[10, 20, 30, 0].repeat(64));
         }
-        step(&mut encoder, &mut page, &pixels, Some(&[flat]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[flat]),
+            t0 + ms(100),
+        );
         assert_eq!(
             (page.pngs, page.stored),
             (2, 2),
@@ -4726,7 +5252,7 @@ mod tests {
                 width: 64,
                 height: 64,
             }]),
-            ms(200),
+            t0 + ms(200),
         );
         assert_eq!(
             (page.pngs, page.stored, page.cached),
@@ -4830,7 +5356,7 @@ mod tests {
         let mut pixels = noise(w, h, 61);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let text = Rect {
             x: 0,
             y: 0,
@@ -4838,10 +5364,16 @@ mod tests {
             height: 64,
         };
         glyphs(&mut pixels, w, text);
-        step(&mut encoder, &mut page, &pixels, Some(&[text]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[text]),
+            t0 + ms(100),
+        );
         assert_eq!((page.pngs, page.stored, page.cached), (2, 3, 0));
         encoder.forget();
-        step(&mut encoder, &mut page, &pixels, None, ms(200));
+        step(&mut encoder, &mut page, &pixels, None, t0 + ms(200));
         assert_eq!(
             (page.pngs, page.stored, page.cached),
             (2, 3, 2),
@@ -4856,7 +5388,7 @@ mod tests {
         encoder.forget_cache();
         encoder.forget();
         page.slots.clear();
-        step(&mut encoder, &mut page, &pixels, None, ms(300));
+        step(&mut encoder, &mut page, &pixels, None, t0 + ms(300));
         assert_eq!(
             (page.pngs, page.stored, page.cached),
             (3, 5, 2),
@@ -4873,7 +5405,7 @@ mod tests {
                 width: 64,
                 height: 64,
             }]),
-            ms(400),
+            t0 + ms(400),
         );
         assert_eq!(
             (page.pngs, page.cached),
@@ -4892,7 +5424,7 @@ mod tests {
         let pixels = noise(w, h, 62);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         assert_eq!(page.stored, 2);
 
         // The same two tiles, swapped, beside a third that is new.
@@ -4909,7 +5441,7 @@ mod tests {
         grown.keep_cache(encoder);
         let mut bigger = Page::new(wide, h);
         bigger.slots = std::mem::take(&mut page.slots);
-        step(&mut grown, &mut bigger, &resized, None, ms(100));
+        step(&mut grown, &mut bigger, &resized, None, t0 + ms(100));
         assert_eq!(
             (bigger.pngs, bigger.cached, bigger.stored),
             (1, 2, 1),
@@ -4988,10 +5520,25 @@ mod tests {
         let (cols, rows) = (64u16, 65u16);
         let (w, h) = (cols * TILE, rows * TILE);
         let mut pixels = dots(cols, rows);
-        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        // More than an update's stills, which would go as video; the coder
+        // refuses, so the picture goes as stills, every tile stored in order.
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
-        assert_eq!(page.stored, usize::from(cols) * usize::from(rows));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        assert_eq!(
+            (page.starts, page.stored),
+            (0, usize::from(cols) * usize::from(rows))
+        );
         // The second row painted over: 63 tiles new, which take 63 slots, and
         // the last the first tile's old content, in the slot they would take first.
         let second = Rect {
@@ -5020,7 +5567,13 @@ mod tests {
             pixels[at..at + line.len()].copy_from_slice(line);
         }
         let (pngs, stored) = (page.pngs, page.stored);
-        step(&mut encoder, &mut page, &pixels, Some(&[second]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[second]),
+            t0 + ms(100),
+        );
         assert_eq!(
             (page.pngs - pngs, page.stored - stored, page.cached),
             (1, 63, 1),
@@ -5069,6 +5622,7 @@ mod tests {
         pixels: &mut [u8],
         w: u16,
         frames: u32,
+        from: Duration,
     ) -> Option<TilesError> {
         let video = Rect {
             x: 0,
@@ -5079,7 +5633,7 @@ mod tests {
         let stride = usize::from(w) * 4;
         for n in 1..=frames {
             paint(pixels, w, video, 500 + n);
-            let now = ms(u64::from(n) * 50);
+            let now = from + ms(u64::from(n) * 50);
             encoder.read(pixels, stride, Some(&[video]), now).unwrap();
             let mut out = Vec::new();
             match encoder.encode(now, &mut out) {
@@ -5109,8 +5663,12 @@ mod tests {
         )
         .unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
-        let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 20);
+        let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert!(
+            first.keyframe && page.starts == 0 && page.pngs > 0 && page.off(&pixels) == 0,
+            "a first picture the coder refuses goes as stills, lossless at once: {first:?}"
+        );
+        let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 20, ms(0));
         assert!(matches!(failed, Some(TilesError::Region(_))), "{failed:?}");
         assert_eq!(page.starts, 0, "no stream started");
     }
@@ -5141,13 +5699,13 @@ mod tests {
             let mut pixels = noise(w, h, seed);
             let mut encoder = TilesEncoder::new(w, h, held(), Box::new(fake)).unwrap();
             let mut page = Page::new(w, h);
-            step(&mut encoder, &mut page, &pixels, None, ms(0));
-            let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 40);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            let failed = play_to_failure(&mut encoder, &mut page, &mut pixels, w, 40, t0);
             assert!(matches!(failed, Some(TilesError::Region(_))), "{failed:?}");
             assert_eq!(
                 (page.starts, page.frames, page.ends),
-                (1, 3, 0),
-                "the stream's four frames, then the failure"
+                (2, 3, 1),
+                "the stream's four frames after the first picture's, then the failure"
             );
         }
     }
@@ -5167,13 +5725,7 @@ mod tests {
         let document = noise(w, 3 * h, 21);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(
-            &mut encoder,
-            &mut page,
-            &scrolled(&document, w, 0, h),
-            None,
-            ms(0),
-        );
+        let t0 = begin(&mut encoder, &mut page, &scrolled(&document, w, 0, h));
         let whole = page.bytes;
         let pixels = scrolled(&document, w, 40, h);
         let scroll = update(
@@ -5186,7 +5738,7 @@ mod tests {
                 width: w,
                 height: h,
             }]),
-            ms(100),
+            t0 + ms(100),
         );
         assert_eq!(
             (page.copies, page.pngs),
@@ -5211,13 +5763,7 @@ mod tests {
         let document = noise(w, 4 * h, 22);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(
-            &mut encoder,
-            &mut page,
-            &scrolled(&document, w, 0, h),
-            None,
-            ms(0),
-        );
+        let t0 = begin(&mut encoder, &mut page, &scrolled(&document, w, 0, h));
         let tops = (1..=12)
             .map(|n| n * 24)
             .chain((0..12).rev().map(|n| n * 24));
@@ -5234,7 +5780,7 @@ mod tests {
                     width: w,
                     height: h,
                 }]),
-                ms(50 * (n as u64 + 1)),
+                t0 + ms(50 * (n as u64 + 1)),
             );
             assert_eq!(page.copies, copies + 1, "a copy at row {top}");
             let bad: Vec<usize> = (0..usize::from(h))
@@ -5289,7 +5835,7 @@ mod tests {
         };
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &place((40, 30)), None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &place((40, 30)));
         let pixels = place((110, 90));
         let moved = Rect {
             x: 40,
@@ -5297,7 +5843,13 @@ mod tests {
             width: 160 + 70,
             height: 112 + 60,
         };
-        step(&mut encoder, &mut page, &pixels, Some(&[moved]), ms(100));
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[moved]),
+            t0 + ms(100),
+        );
         assert_eq!(page.copies, 1, "the window");
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed());
@@ -5355,13 +5907,7 @@ mod tests {
         let document = noise(w, 3 * h, 24);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(
-            &mut encoder,
-            &mut page,
-            &scrolled(&document, w, 0, h),
-            None,
-            ms(0),
-        );
+        let t0 = begin(&mut encoder, &mut page, &scrolled(&document, w, 0, h));
         let stride = usize::from(w) * 4;
         let all = [Rect {
             x: 0,
@@ -5370,12 +5916,19 @@ mod tests {
             height: h,
         }];
         encoder
-            .read(&scrolled(&document, w, 40, h), stride, Some(&all), ms(100))
+            .read(
+                &scrolled(&document, w, 40, h),
+                stride,
+                Some(&all),
+                t0 + ms(100),
+            )
             .unwrap();
         let pixels = scrolled(&document, w, 100, h);
-        encoder.read(&pixels, stride, Some(&all), ms(110)).unwrap();
+        encoder
+            .read(&pixels, stride, Some(&all), t0 + ms(110))
+            .unwrap();
         let mut out = Vec::new();
-        let update = encoder.encode(ms(110), &mut out).unwrap();
+        let update = encoder.encode(t0 + ms(110), &mut out).unwrap();
         page.draw(update.rects, &out);
         assert_eq!(page.copies, 2, "both scrolls");
         assert_eq!(page.off(&pixels), 0, "the page lossless");
@@ -5554,7 +6107,7 @@ mod tests {
         page_at(&mut pixels, 0);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &pixels);
         let video = Rect {
             x: 0,
             y: 0,
@@ -5588,7 +6141,7 @@ mod tests {
                 &mut page,
                 &pixels,
                 Some(&damage),
-                ms(u64::from(n) * 50),
+                t0 + ms(u64::from(n) * 50),
             );
             assert_eq!(
                 outside(&page, &pixels),
@@ -5596,7 +6149,10 @@ mod tests {
                 "the page lossless outside the stream at frame {n}"
             );
         }
-        assert_eq!(page.starts, 1, "the video streams");
+        assert_eq!(
+            page.starts, 2,
+            "the video streams, after the first picture's frame"
+        );
         assert!(
             page.copies >= 8,
             "the page beside it scrolls by copies: {}",

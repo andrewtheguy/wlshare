@@ -717,9 +717,30 @@ the picture.
   run of them, cut where the tile rows meet into bands of at most 64 rows,
   one image, so that a tile the damage covers is in one still whole. A picture that
   starts over — the encoding newly listed, a new size, a non-incremental
-  request — goes the same way at once, whole, where Motion streamed it first
-  and sent every tile as a still after it anyway: on a link with room that stream
-  is work for nothing. The PNG is the gateway's tile coder: a palette
+  request — goes the same way at once, whole. On a held list an update
+  carries at most 256 KiB of stills where the read moved nothing: a change
+  past that goes as video, a region over the box around the whole of it, its
+  START a keyframe at the dial in the same update after the stills, carried
+  on by its frames while it keeps changing and ended once nothing in it has
+  moved for a second, as any region, every tile of it owed its still, which
+  the settle pays at the link's pace, below, the cache's from their slots —
+  the stills the update carried among them, which the frame draws over and
+  which filled their slots. A whole desktop that starts over within the
+  budget — a page of text at 1080p is 0.24 MB — is lossless at once as
+  before; one past it is lossy for the second its region lives and then
+  settles. The first frames of a video are the same change: they went as
+  the desktop whole in PNG until the churn said moving, 1.9 MB an update on
+  a 1080p video frame against the 0.2 of its keyframe, 15 times the rate its
+  stream then carried, the one spike a link carrying the stream saw, and now
+  they are its region from the first frame, the frames after it the
+  stream's own ([measured](tiles-performance.md#the-settles-pace)). Where
+  the read moved pixels the stills are what a scroll or a drag uncovered,
+  which the list promises lossless, and a stream for every strip would be a
+  coder opened an update, so they all go as stills; and so does the rest
+  where the coder refuses the stream or every stream is taken. Motion
+  streamed its first picture and sent every tile as a still after it, which
+  here is the point rather than the waste: fewer bytes at once, not fewer
+  bytes. The PNG is the gateway's tile coder: a palette
   unfiltered where the pixels have at most 256 colours, RGB with each row's
   filter chosen otherwise, at `png`'s fast compression.
 - **What moved is a copy.** Where a read changed enough tiles that no
@@ -779,7 +800,9 @@ the picture.
   what it is told to and draws only what it is told, so the record decides
   everything and the two agree by construction. A picture that starts over
   keeps the record, as the client keeps its slots, so the whole picture is a
-  draw of a slot for every tile of it a slot still keeps: an output switched
+  draw of a slot for every tile of it a slot still keeps, once the region a
+  held list streams it as where it is more than an update's stills has
+  ended: an output switched
   back to, a new size — the record handed to the encoder made for it — or
   another dial. A tile a walked list stored is the full stage's at best,
   short of the lossless pixels a held or a lossless list is owed, so neither
@@ -982,7 +1005,21 @@ the picture.
   second, each look an update that waits for a request and the fence as any
   other: the 320 tiles owed longest at most, as runs along a row, the
   coarsest stage first, then the oldest, until the look's bytes have gone —
-  an upgrade is no change, so a tile's next stage is ready at once. While
+  an upgrade is no change, so a tile's next stage is ready at once. On a
+  held list the look's bytes keep to the link's pace: the most the picture
+  was found sending over any one second since something was last owed — a
+  region's frames, a picture's stills, the looks themselves — the look's
+  share of its interval less what the reads sent in it, from 32 KiB to
+  256 KiB, and the looks come sooner than a quarter of a second, down to
+  every 50 ms, where the pace has 256 KiB going in less than that; never
+  one on the heels of the last, however much is owed. So a desktop that
+  stops settles at the rate its motion had of the link, and never faster,
+  where a settle at whatever the link would take was a burst of 256 KiB a
+  round trip until it was done, and a change that went as video settles at
+  the rate its region set; the link sees no more than it did a
+  moment before, and what the picture pays for that is the time to
+  lossless ([measured](tiles-performance.md#the-settles-pace)). On a
+  walked list the look's bytes follow the walk: while
   the walk is at the ceiling those are 256 KiB. Below it, where the link is
   short of bytes, they are 8 KiB while the desktop moves; once it has been
   still for half a second, what the link was found to take: twice the last
@@ -998,7 +1035,7 @@ the picture.
   ([measured](tiles-performance.md#adapting-to-the-link)). None is sent
   while the walk is slowed until the desktop has been still for two
   seconds. So a desktop that stops is lossless on the page on a held list and
-  at the full stage on a walked one, at 4K within 4.3 s held where it took
+  at the full stage on a walked one, at 4K within 2.3 s walked where it took
   13 ([measured](tiles-performance.md#the-settle)), and once it is
   nothing more is sent.
 - **Rounds as any other.** Each update ends with its fence, and one is in
