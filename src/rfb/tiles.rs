@@ -2815,7 +2815,8 @@ impl TilesEncoder {
     /// A held list's `stills`, each a run of tiles along one row, at most
     /// [`HELD_BYTES`] of them as stills in one update where the read `moved`
     /// nothing: a change past that goes as video whole, a region over the
-    /// box around all of it ([`Self::build`]), its START a keyframe at the
+    /// box around all of it in whole tiles ([`Self::build`]), its START a
+    /// keyframe at the
     /// dial in this update after the stills, carried on by its frames while
     /// it keeps changing and ended when nothing in it has moved for a second,
     /// as any region; every tile of the box owed its still from now, which
@@ -2855,12 +2856,23 @@ impl TilesEncoder {
         if rest.is_empty() {
             return Ok(false);
         }
+        // The box in whole tiles: a region's cells are covered whole, and a
+        // change in the rest of a tile a pixel-aligned box cut would be
+        // neither still nor frame while the stream lives.
         let around = stills.iter().fold(stills[0], |a, b| Area {
             left: a.left.min(b.left),
             top: a.top.min(b.top),
             right: a.right.max(b.right),
             bottom: a.bottom.max(b.bottom),
         });
+        let around = CellBox {
+            c0: around.left / TILE,
+            r0: around.top / TILE,
+            c1: around.right / TILE,
+            r1: around.bottom / TILE,
+        }
+        .to_area(self.size)
+        .expect("tiles of the desktop");
         let id = (0..=u8::MAX)
             .find(|id| !self.live.iter().any(|live| live.id == *id))
             .expect("at most a few streams live");
@@ -4527,6 +4539,63 @@ mod tests {
         );
         settle(&mut encoder, &mut page, t0 + ms(550));
         assert_eq!(page.off(&whole), 0, "settled lossless");
+    }
+
+    /// A change past the stills that ends partway through a row of tiles is
+    /// a region over whole tiles: its cells are covered whole, so a change
+    /// in the rest of an edge tile must be the region's frame, or it would
+    /// be neither still nor frame while the stream lives.
+    #[test]
+    fn a_region_past_the_stills_is_whole_tiles() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![0; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // All but the bottom half of the last row of tiles.
+        let most = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h - TILE / 2,
+        };
+        paint(&mut pixels, w, most, 600);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[most]),
+            t0 + ms(100),
+        );
+        assert_eq!(page.starts, 1, "past the stills: a region");
+        assert_eq!(
+            encoder.live[0].area,
+            Area::whole(encoder.size),
+            "over whole tiles, the last row's bottom half too"
+        );
+        // A change in that bottom half: the region's frame.
+        let strip = Rect {
+            x: 0,
+            y: h - TILE / 2,
+            width: w,
+            height: TILE / 2,
+        };
+        paint(&mut pixels, w, strip, 601);
+        let (frames, pngs) = (page.frames, page.pngs);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[strip]),
+            t0 + ms(150),
+        );
+        assert_eq!(
+            (page.frames - frames, page.pngs - pngs),
+            (1, 0),
+            "the strip a frame of the stream"
+        );
+        settle(&mut encoder, &mut page, t0 + ms(150));
+        assert_eq!(page.off(&pixels), 0, "settled lossless");
     }
 
     /// A held list's tick keeps to the pace: the most the link was found

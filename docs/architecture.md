@@ -719,7 +719,7 @@ the picture.
   starts over — the encoding newly listed, a new size, a non-incremental
   request — goes the same way at once, whole. On a held list an update
   carries at most 128 KiB of stills where the read moved nothing: a change
-  past that goes as video, a region over the box around the whole of it, its
+  past that goes as video, a region over the box of whole tiles around all of it, its
   START a keyframe at the dial in the same update after the stills — a
   region live within the box ended, its tiles the new one's, so no two
   regions share a tile — carried
