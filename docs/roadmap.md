@@ -1,7 +1,9 @@
 # Roadmap
 
 Work that is planned but not started. Once something here is done, its design
-moves to [`architecture.md`](architecture.md) and it comes off this list.
+moves to [`architecture.md`](architecture.md) and it comes off this list. What
+a section puts *under consideration* is not planned: it is held back by what
+it costs, which it says, until that is settled.
 
 ## Text's colour on the whole-desktop stream
 
@@ -103,3 +105,108 @@ performance](tiles-performance.md#progressive-tiles).
   host's does, or a moving region carried by prediction, as the walked
   tiles' H.264 regions did before progressive tiles took their place (a 4K
   window at 5 Mbit/s at 17 frames a second where these have 7).
+
+## Lossless tiles
+
+What is left of the lossless picture, every tile that changed a planar bitmap
+([On a lossless list, every tile planar](architecture.md#the-tiles-encoding)).
+It is for a desktop client on a LAN, never a phone or a tablet, so a client
+decoder that takes more memory or more of the processor than RDP's planar
+codec is no cost against it. Where the desktop is still it is already a
+quarter of the held picture's bytes; where it moves it is 6 to 12 times them,
+nearly all of its 15 GB over the samples
+([measured](tiles-performance.md#lossless-tiles)). Of the encoder's time over
+a video at 1920x1080 (lab1, 2026-11-05, `perf`), the moving frames' zstd is
+about half, its match search and its entropy coding each a quarter, the planar
+coder 29%, comparing the tiles 17% and the cache's hashes 6%. Each item is
+measured as the lossless tiles were: `motion-bench --tiles-only --lossless`
+over the samples on lab1, against [Lossless
+tiles](tiles-performance.md#lossless-tiles).
+
+### Planned
+
+#### The moving frames' zstd, faster
+
+A frame where the desktop moves is its literals' entropy coding more than its
+matches, so the fast strategy may step over most of the places it would look
+for one, if the literals are still Huffman coded: a level below 1 is that step
+without them, which is why those levels gave a video back almost nothing. With
+the literals forced on (`ZSTD_c_literalCompressionMode`) and a step of 8
+(`targetLength` under the fast strategy), at 1920x1080 a video took 1,500 ms
+of the processor to 1,282, a walk 2,382 to 2,077 and the mixed session 26.5 s
+to 23.6, for 0.1 to 0.2% more bytes; a window 4% less; the stills, which go
+through the still stream, nothing. The still stream keeps its parameters: on a
+page of text the step costs matches, 3 to 4% more bytes at a step of 2. It
+needs the zstd crate's `experimental` feature, which libzstd built from
+zstd-sys's own source, as it already is, carries; the client reads the same
+zstd.
+
+#### The still stream's table
+
+The 1 MiB window was chosen with a 4096-entry table, where 8 MiB took no more
+off; a table that small forgets a match from more than a few thousand places
+back whatever the window holds, so the window may not have been what limited
+it. Offline, over the 1920x1080 samples with no copies or cache, a table of
+2^17 halved what a stream per tile row carried of a browser (3.2 MB to 1.6)
+for an eighth more of the zstd's time. To be measured on the encoder itself, a
+larger table and then the window again.
+
+### Under consideration
+
+Held back by the host's processor.
+
+#### JPEG-LS by CharLS for the moving runs
+
+Its cost is what holds it back: 10 to 14 times planar's processor on the host
+for about half of planar's bytes where the desktop moves. Planar predicts each
+byte from the pixel above alone, codes red, green and blue apart with no
+transform between them, and leaves the entropy coding to zstd: a weak
+predictor and no context. JPEG-LS is a codec built for lossless pictures, as
+FLAC is for sound: a predictor from the pixels left, above and above-left, a
+reversible colour transform, and Golomb-Rice coding by context, which is the
+most there is to take off where the desktop moves. CharLS is its library, in
+Debian and Ubuntu as `libcharls-dev`, linked from the system as libx264 and
+libva are. By CharLS 2.4, over the runs the encoder codes, a row of tiles at a
+time, on one thread, each decoded again exact: with its HP1 colour transform a
+video 0.55 of planar's bytes, a walk and a window 0.56, the mixed session 0.62
+over every run, still or moving; without a transform 0.69. A run starts over
+what JPEG-LS has learned of its contexts, which a whole frame does not
+(ffmpeg's encoder, the video's frames whole, came to 0.44). A video at
+1920x1080 is 74 ms a frame on one thread where planar and its frame take 7,
+and its decoding 58 ms in native code; and where the desktop is a page or a
+terminal it is 1.5 to 2.4 times planar's bytes, which zstd's matches of what
+repeats take off. So it would be chosen run by run, a moving picture JPEG-LS
+and the rest planar, by how little planar's segments took off: a video's
+bitmaps 0.8 of their planes, a page's 0.15. It leaves RDP's planar codec, the
+one a Windows host draws its lossless pipeline with, so the page needs a
+decoder of its own (CharLS in WebAssembly) beside its RDP compositor's, and
+the protocol a body kind for it, `PROTOCOL_VERSION` with it. A run is coded on
+any thread, as a planar one is, so an update's wait is its largest run's. It
+is planned only once the host's processor at the frame rate is settled, a
+faster coder or fewer of the runs; then the page's decoding in WebAssembly,
+measured on testdesktop2's Chrome, and a cut between the two codecs that loses
+nothing where the desktop is a page.
+
+The other lossless codecs, over the 120 frames of the 1920x1080 video whole
+against planar's 149 MB, by ffmpeg on one thread: FFV1 78 to 81 MB, JPEG XL at
+effort 1 89, x264 lossless at 4:4:4 101 to 118 (its prediction from the frame
+before 8% of that), lossless WebP 106, PNG 125. FFV1 took as long as ffmpeg's
+JPEG-LS for a fifth more bytes, and x264 at ultrafast a quarter of the time
+for 1.8 times them.
+
+### Measured and set aside
+
+So not tried again as they were.
+
+- **The planes as they are.** A bitmap goes as its planes untouched where
+  the planes' segments come to more, which would have thrown away the rows'
+  differences on a video; over the samples no bitmap did.
+- **A larger table, window or level for the moving frames.** A table of
+  2^16, a 1 MiB window or level 3: 1% fewer bytes at most, for 1.7 to 5
+  times the zstd's time.
+- **The frame before, by zstd.** A zstd stream for each tile row, each
+  bitmap matched against the rows' last, with a 2 MiB window and a table of
+  2^17 to 2^19: 1 to 3% off a video, a walk or a window, for 3 to 5 times
+  the zstd's time. A decoded video's frames are close but seldom byte for
+  byte the same, which only a prediction that codes the difference, as a
+  video codec's does, takes off.
