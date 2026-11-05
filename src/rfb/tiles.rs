@@ -2831,8 +2831,10 @@ impl TilesEncoder {
     /// or a drag uncovered, which the list promises lossless, and a stream
     /// for every strip would be a coder opened an update: they all go as
     /// stills; and so does the rest where the coder refuses the stream or
-    /// every stream is taken. Whether a region was added, whose START is owed
-    /// a round ([`Self::round`]).
+    /// every stream is taken. A region live within the box is ended and the
+    /// new one carries its tiles on, as a retune's does ([`Self::retune`]):
+    /// no two regions over one tile. Whether a region was added, whose START
+    /// is owed a round ([`Self::round`]).
     fn held_stills(
         &mut self,
         stills: Vec<Area>,
@@ -2864,8 +2866,19 @@ impl TilesEncoder {
             .expect("at most a few streams live");
         match self.build(id, around, now) {
             Ok(live) => {
+                let mut unsent = Vec::new();
+                for old in self
+                    .live
+                    .extract_if(.., |old| old.area.intersect(around).is_some())
+                {
+                    if old.started {
+                        out.end(old.id, old.area);
+                    }
+                    unsent.extend(old.unsent());
+                }
                 self.live.push(live);
                 self.cover();
+                self.owe(&unsent);
                 Ok(true)
             }
             Err(_) => {
@@ -4454,6 +4467,66 @@ mod tests {
         }
         settle(&mut encoder, &mut page, t0 + ms(400));
         assert_eq!(page.off(&pixels), 0, "settled lossless");
+    }
+
+    /// A change past the stills around a region already live takes the
+    /// region over, as a retune does: the live one ended, the new one over
+    /// the box, no two live regions over one tile.
+    #[test]
+    fn a_change_past_the_stills_around_a_live_region_takes_it_over() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![0; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let video = Rect {
+            x: 192,
+            y: 64,
+            width: 256,
+            height: 192,
+        };
+        for n in 1..=10u32 {
+            paint(&mut pixels, w, video, 500 + n);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                t0 + ms(u64::from(n) * 50),
+            );
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "the video's region live");
+        let before = encoder.live[0].area;
+        let whole = noise(w, h, 73);
+        step(
+            &mut encoder,
+            &mut page,
+            &whole,
+            Some(&[Rect {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+            }]),
+            t0 + ms(550),
+        );
+        assert_eq!(
+            (page.starts, page.ends),
+            (2, 1),
+            "the video's region ended, the box around the change started"
+        );
+        assert_eq!(encoder.live.len(), 1, "one region live");
+        assert_eq!(
+            encoder.live[0].area,
+            Area::whole(encoder.size),
+            "over the whole change"
+        );
+        assert!(
+            encoder.live[0].area.intersect(before).is_some(),
+            "the video within it"
+        );
+        settle(&mut encoder, &mut page, t0 + ms(550));
+        assert_eq!(page.off(&whole), 0, "settled lossless");
     }
 
     /// A held list's tick keeps to the pace: the most the link was found

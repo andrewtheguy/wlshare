@@ -249,11 +249,12 @@ these captures show: it binds where the pace is below what a tick of
 32 KiB every 250 ms needs, 1 Mbit/s, and nothing here carries so little, so
 it is a figure for a slow link, and a real one. The budget binds twice over,
 as the PNG a frame may carry while a change grows and as the most a tick
-sends. At 128 KiB the busiest quarter second fell on eight captures of ten,
-the table's last column, and the videos and the windows sent less, 1.3 and
-3.9 MB less on the 1080p video and the 2880x1800@2 window. What rose is a
-page of text at 1080p, 236 kB of PNG, which is then past the stills and
-starts as a region, 364 kB and 15 Mbit/s where it was 8.5 and lossless at
+sends. At 128 KiB against 256 the busiest quarter second fell on seven
+captures of ten, the table's last two columns, rose on two and was the
+mixed session's scroll on the one left, and the videos and the windows sent
+less, 1.3 and 3.9 MB less on the 1080p video and the 2880x1800@2 window.
+What rose is a page of text at 1080p, 236 kB of PNG, which is then past the
+stills and starts as a region, 364 kB and 15 Mbit/s where it was 8.5 and lossless at
 once, and the browser's restarts with it; 256 KiB was the least of the
 three that kept a 1080p page of text one update of PNG. At 512 KiB the
 videos' busiest quarter second rose to 81 and 85 Mbit/s, half a megabyte of
@@ -261,10 +262,6 @@ PNG a frame while a change grows and a settle's tick of 585 kB beside the
 stream, and the 4K page of text started over in one update of 1 MB. The
 budget is 128 KiB: the flatter link over the 1080p page of text lossless at
 once, which was the user's choice.
-
-MB. 256
-KiB stays, the 1080p page of text lossless at once over the flatter link
-128 would give the rest.
 
 ## The walk's verdicts
 

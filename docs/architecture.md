@@ -720,7 +720,9 @@ the picture.
   request — goes the same way at once, whole. On a held list an update
   carries at most 128 KiB of stills where the read moved nothing: a change
   past that goes as video, a region over the box around the whole of it, its
-  START a keyframe at the dial in the same update after the stills, carried
+  START a keyframe at the dial in the same update after the stills — a
+  region live within the box ended, its tiles the new one's, so no two
+  regions share a tile — carried
   on by its frames while it keeps changing and ended once nothing in it has
   moved for a second, as any region, every tile of it owed its still, which
   the settle pays at the link's pace, below, the cache's from their slots —
