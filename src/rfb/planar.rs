@@ -28,17 +28,22 @@
 //! repeats and a photograph's skewed bytes, which the frame takes a further
 //! 1.5 to 10 times off, and more where a rectangle repeats itself. Where it
 //! is still, each is the still stream's, one zstd stream across the
-//! session flushed at each bitmap, with a 1 MiB window: a page, a terminal
-//! or a menu shown again is matched against what it already carried, a
-//! third to three fifths more off. It is state both ends keep, coded in
-//! order and started over together. Its parameters are level 1's fast
-//! strategy with a smaller table and longer matches ([`zstd_parameters`]):
+//! session flushed at each bitmap, with an 8 MiB window and a larger table
+//! than a frame's: a page, a terminal or a menu shown again is matched
+//! against what it already carried, a half to seven eighths more off. It is
+//! state both ends keep, coded in order and started over together. Its
+//! parameters are level 1's fast strategy with a smaller table and longer
+//! matches ([`zstd_parameters`]):
 //! a moving picture's frames are the literals' entropy coding more than its
 //! matches, and these coded a video's nearly twice as fast as level 1 for
 //! 1.67 times off the planes against 1.69, a page of text 4.9 times against
 //! 5.2. Levels below 1, which code no literal, gave a moving picture back
 //! almost nothing over the planes, and above it cost twice the time for a
-//! percent.
+//! percent. A frame of its own also steps over most of the places the fast
+//! strategy would look for a match, its literals still Huffman coded
+//! ([`compressor`]): what a level below 1 does, but for the literals,
+//! a sixth off a moving picture's processor for under half a percent more
+//! bytes, where the still stream, a page's matches, keeps every look.
 //!
 //! Its tests decode with a reader written here from the specifications,
 //! which shares nothing with the encoder, the zstd by ruzstd-decompress, a
@@ -51,8 +56,10 @@
 use std::cell::RefCell;
 use std::io;
 
-/// The zstd parameters a bitmap is framed with: the fast strategy, a
-/// 128 KiB window, a 4096-entry table and matches of 7 bytes or more.
+/// The zstd parameters a bitmap is coded with: the fast strategy, a
+/// 128 KiB window, a 4096-entry table and matches of 7 bytes or more, a
+/// match looked for at every place. A frame of its own steps further
+/// ([`compressor`]); the still stream's window is its own ([`StillStream`]).
 fn zstd_parameters() -> [zstd::zstd_safe::CParameter; 7] {
     use zstd::zstd_safe::{CParameter, Strategy};
     [
@@ -66,12 +73,22 @@ fn zstd_parameters() -> [zstd::zstd_safe::CParameter; 7] {
     ]
 }
 
-/// A zstd context set to [`zstd_parameters`].
+/// How far the fast strategy steps past a place it found no match at, in a
+/// frame of its own: 8 bytes, with the literals Huffman coded still.
+const FRAME_STEP: u32 = 8;
+
+/// A zstd context for a frame of its own: [`zstd_parameters`], stepping
+/// [`FRAME_STEP`] past a place with no match. A step is what a level below
+/// 1 takes, and zstd then codes no literal unless told to, which a moving
+/// picture's frame is mostly made of.
 fn compressor() -> io::Result<zstd::bulk::Compressor<'static>> {
+    use zstd::zstd_safe::{CParameter, ParamSwitch};
     let mut zstd = zstd::bulk::Compressor::new(1)?;
     for parameter in zstd_parameters() {
         zstd.set_parameter(parameter)?;
     }
+    zstd.set_parameter(CParameter::TargetLength(FRAME_STEP))?;
+    zstd.set_parameter(CParameter::LiteralCompressionMode(ParamSwitch::Enable))?;
     Ok(zstd)
 }
 
@@ -130,17 +147,26 @@ pub fn bitmap(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8
     })
 }
 
-/// The still stream's window: 1 MiB, which a desktop of pages, a terminal
-/// or a menu shown again is found in. 8 MiB took no more off.
-const STILL_WINDOW_LOG: u32 = 20;
+/// The still stream's window: 8 MiB, the most a STILL's frame may have, which
+/// a desktop of pages, a terminal or a menu shown again is found in.
+const STILL_WINDOW_LOG: u32 = 23;
+
+/// The still stream's table: 65536 entries, 256 KiB, where a frame's has 4096.
+/// A table that small forgets a match from more than a few thousand places
+/// back whatever the window holds, which is why 8 MiB first took no more off
+/// than 1; with this one it takes almost half off what 1 MiB left of the
+/// browser's stills. A table twice as large took under 1% more.
+const STILL_TABLE_LOG: u32 = 16;
 
 /// The still stream: one zstd stream across every
 /// [`wlshare_proto::tiles::KIND_STILL`] rectangle of a session, each body its
 /// bytes through a flush after the rectangle's bitmap, so that a page, a
 /// terminal or a menu shown again is matched against what the stream already
-/// carried. The parameters are a body's own ([`zstd_parameters`]) but the
-/// window, a mebibyte. Coded in order, on the encoder's thread; made anew
-/// where it starts over, its first body a new frame.
+/// carried. The parameters are [`zstd_parameters`], a match looked for at
+/// every place, as text's matches need (a step of 2 cost a page of text 3 to
+/// 4% more bytes), but the window ([`STILL_WINDOW_LOG`]) and the table
+/// ([`STILL_TABLE_LOG`]). Coded in order, on the encoder's thread; made
+/// anew where it starts over, its first body a new frame.
 pub struct StillStream {
     zstd: zstd::zstd_safe::CCtx<'static>,
 }
@@ -155,10 +181,13 @@ impl StillStream {
         for parameter in zstd_parameters() {
             set(&mut zstd, parameter)?;
         }
-        set(
-            &mut zstd,
+        for parameter in [
             zstd::zstd_safe::CParameter::WindowLog(STILL_WINDOW_LOG),
-        )?;
+            zstd::zstd_safe::CParameter::HashLog(STILL_TABLE_LOG),
+            zstd::zstd_safe::CParameter::ChainLog(STILL_TABLE_LOG),
+        ] {
+            set(&mut zstd, parameter)?;
+        }
         Ok(Self { zstd })
     }
 
@@ -515,7 +544,7 @@ mod tests {
         }
         let flat = packed(1920, 64, |_, _| [40, 50, 60]);
         assert!(
-            flat.len() < 256,
+            flat.len() < 512,
             "a flat run of tiles is {} bytes",
             flat.len()
         );

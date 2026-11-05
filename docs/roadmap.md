@@ -112,44 +112,17 @@ What is left of the lossless picture, every tile that changed a planar bitmap
 ([On a lossless list, every tile planar](architecture.md#the-tiles-encoding)).
 It is for a desktop client on a LAN, never a phone or a tablet, so a client
 decoder that takes more memory or more of the processor than RDP's planar
-codec is no cost against it. Where the desktop is still it is already a
-quarter of the held picture's bytes; where it moves it is 6 to 12 times them,
+codec is no cost against it. Where the desktop is still it is already
+about a ninth of the held picture's bytes or less; where it moves it is 6 to 12 times them,
 nearly all of its 15 GB over the samples
 ([measured](tiles-performance.md#lossless-tiles)). Of the encoder's time over
-a video at 1920x1080 (lab1, 2026-11-05, `perf`), the moving frames' zstd is
-about half, its match search and its entropy coding each a quarter, the planar
-coder 29%, comparing the tiles 17% and the cache's hashes 6%. Each item is
-measured as the lossless tiles were: `motion-bench --tiles-only --lossless`
+a video at 1920x1080 (lab1, 2026-11-05, `perf`, before the moving frames'
+zstd stepped past what it found no match at), that zstd was about half, its
+match search and its entropy coding each a quarter, the planar coder 29%,
+comparing the tiles 17% and the cache's hashes 6%. Each item is measured as
+the lossless tiles were: `motion-bench --tiles-only --lossless`
 over the samples on lab1, against [Lossless
 tiles](tiles-performance.md#lossless-tiles).
-
-### Planned
-
-#### The moving frames' zstd, faster
-
-A frame where the desktop moves is its literals' entropy coding more than its
-matches, so the fast strategy may step over most of the places it would look
-for one, if the literals are still Huffman coded: a level below 1 is that step
-without them, which is why those levels gave a video back almost nothing. With
-the literals forced on (`ZSTD_c_literalCompressionMode`) and a step of 8
-(`targetLength` under the fast strategy), at 1920x1080 a video took 1,500 ms
-of the processor to 1,282, a walk 2,382 to 2,077 and the mixed session 26.5 s
-to 23.6, for 0.1 to 0.2% more bytes; a window 4% less; the stills, which go
-through the still stream, nothing. The still stream keeps its parameters: on a
-page of text the step costs matches, 3 to 4% more bytes at a step of 2. It
-needs the zstd crate's `experimental` feature, which libzstd built from
-zstd-sys's own source, as it already is, carries; the client reads the same
-zstd.
-
-#### The still stream's table
-
-The 1 MiB window was chosen with a 4096-entry table, where 8 MiB took no more
-off; a table that small forgets a match from more than a few thousand places
-back whatever the window holds, so the window may not have been what limited
-it. Offline, over the 1920x1080 samples with no copies or cache, a table of
-2^17 halved what a stream per tile row carried of a browser (3.2 MB to 1.6)
-for an eighth more of the zstd's time. To be measured on the encoder itself, a
-larger table and then the window again.
 
 ### Under consideration
 
