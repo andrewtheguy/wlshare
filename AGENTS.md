@@ -59,6 +59,10 @@
   none; testdesktop2
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
   the hardware's is run for real.
+- The lossless tiles (`WLSL`: every changed tile planar, no H.264 stream)
+  are not meant for a mobile client. Nothing in them accommodates a phone or
+  a tablet, not its decoder's speed, its memory, its screen or its link, and
+  a change to them weighs none of those.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland
   session it shares; packages are built only in Docker, by
   `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the
