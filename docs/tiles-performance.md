@@ -156,6 +156,10 @@ until the walked picture's streams went.
 
 ## The settle
 
+The held list's settle has since been paced to the link rather than sent as
+fast as it takes it ([below](#the-settles-pace)); the walked list's is as
+measured here.
+
 Measured 2026-10-27 on the same VM in the same way, the tiles alone against
 the build above, its settle 40 tiles a tick, once a tick sends the 320 tiles
 owed longest at most, the oldest runs first until 256 KiB have gone, and 40
@@ -183,6 +187,81 @@ the next scroll changed them again. There the link is short of bytes, and
 256 KiB a tick is 8 Mbit/s that the next update waits behind, which the
 bench, with no link, does not show, so below the ceiling the settle keeps
 40 tiles a tick and sends the same bytes.
+
+## The settle's pace
+
+Measured 2026-11-04 on the desktop machine (bytes alone, which hang on no
+processor), `motion-bench --libx264 --frames` over the kept captures, the
+tiles' bytes in buckets of 250 ms, a tick's at its own time and the ticks
+between two frames spread over the gap between them, against main at
+`0c71561`. On a held list the dial is always the ceiling, so
+the settle sent 256 KiB a fence back to back once the desktop was quiet, at
+whatever the link would take; and a change too large for a region yet went
+as the desktop whole in PNG: a picture that starts over, and every frame of
+a video until the churn said moving, 400 ms, five updates of 1.9 MB in half
+a second on the 1080p video where its keyframe is 0.2 MB. The link saw the
+stream at 12 Mbit/s and then 188 for a quarter of a second. What a user
+asked for was a flat link over fewer bytes: an update carries at most 256
+KiB of stills where nothing moved and a change past that is a region from
+its first frame, and the settle keeps to the pace, the most the picture sent
+over a second since something was last owed, never a tick on the heels of
+the last ([architecture](architecture.md#the-tiles-encoding)). The stills
+an update carries, which is also the most a tick sends, was 256 KiB at
+first and is 128, below. The busiest quarter second of each capture, and
+the stream's rate while it moved:
+
+| Capture | Stream | Busiest 250 ms before | At 256 KiB | At 128 KiB |
+|---|---:|---:|---:|---:|
+| video-1920x1080 | 12.4 Mbit/s | 188 Mbit/s | 37 Mbit/s | 32 Mbit/s |
+| video-2880x1800@2 | 27.3 | 183 | 60 | 56 |
+| window-1920x1080 | 6.5 | 29 | 29 | 25 |
+| window-2880x1800@2 | 9.8 | 41 | 37 | 22 |
+| browser-1920x1080 | — | 11 | 11 | 15 |
+| uncover-1920x1080 | — | 15 | 17 | 12 |
+| still-1920x1080 | — | 8.5 | 8.5 | 15 |
+| still-2880x1800@2 | — | 19 | 37 | 29 |
+| still-3840x2160@2 | — | 28 | 48 | 40 |
+| mixed-1920x1080 | — | 45 | 45 | 45 |
+
+The video's bursts are gone: its first frame is a region, not five updates
+of PNG, and the 1080p video sent 35 MB where it sent 57, its PNG 5.8 MB
+where it was 29. What is left, 32 and 56, is a change growing under an
+update's stills while the churn has yet to call it moving, up to the
+budget of PNG a frame at 25 frames a second for a third of a second before
+it is a region, beside the stream at 2880x1800@2; and the mixed session's
+busiest quarter second is a scroll, 45 Mbit/s of copies and the strips they
+uncover, which the rule leaves alone. The settle after the video is the same
+0.84 MB in ticks apart where it was back to back. A page of text that
+starts over is past an update's stills at every size now, and the still
+captures' two keyframes a tenth of a second apart start over twice, the
+second before the first's region has settled, so each pays the stills and
+the keyframe again: 0.63 MB at 3840x2160@2 where the whole picture as PNG
+was 0.79, twice, and 0.36 MB at 1080p where it was 0.24 and lossless at
+once. A window uncovered on a page of text starts the same way, 12 where
+it was 15. Those are a page of text's one-off costs, a keyframe at the dial
+on top of the stills it then settles, where the user's choice is the flat
+link.
+
+The two constants were swept the same day, the same way, the rest held:
+the stills an update carries, 256 KiB, against 128 and 512; and the floor
+a tick keeps to, 32 KiB, against 16, 64 and 128. The floor changed nothing
+these captures show: it binds where the pace is below what a tick of
+32 KiB every 250 ms needs, 1 Mbit/s, and nothing here carries so little, so
+it is a figure for a slow link, and a real one. The budget binds twice over,
+as the PNG a frame may carry while a change grows and as the most a tick
+sends. At 128 KiB against 256 the busiest quarter second fell on seven
+captures of ten, the table's last two columns, rose on two and was the
+mixed session's scroll on the one left, and the videos and the windows sent
+less, 1.3 and 3.9 MB less on the 1080p video and the 2880x1800@2 window.
+What rose is a page of text at 1080p, 236 kB of PNG, which is then past the
+stills and starts as a region, 364 kB and 15 Mbit/s where it was 8.5 and lossless at
+once, and the browser's restarts with it; 256 KiB was the least of the
+three that kept a 1080p page of text one update of PNG. At 512 KiB the
+videos' busiest quarter second rose to 81 and 85 Mbit/s, half a megabyte of
+PNG a frame while a change grows and a settle's tick of 585 kB beside the
+stream, and the 4K page of text started over in one update of 1 MB. The
+budget is 128 KiB: the flatter link over the 1080p page of text lossless at
+once, which was the user's choice.
 
 ## The walk's verdicts
 
