@@ -77,7 +77,7 @@
 //! fails one midway, fails the encode: a region has no other codec.
 //!
 //! **A change past an update's stills goes as video.** On a held list an
-//! update carries at most [`SETTLE_BYTES`] of stills where the read moved
+//! update carries at most [`HELD_BYTES`] of stills where the read moved
 //! nothing: a change past that is a region over the box around the whole of
 //! it, its START in the same update after the stills, which ends as any
 //! region once nothing in it has moved for a second, every tile of it owed
@@ -97,8 +97,8 @@
 //! ([`TilesEncoder::tick_at`]), the coarsest and longest owed first, at most
 //! 320 tiles at a time. On a held list a look keeps to the link's pace, the
 //! most the picture was found sending over a second since something was
-//! last owed: its share of the look's interval, 32 KiB to 256 KiB, the looks
-//! sooner than a quarter of a second where the pace has 256 KiB going in
+//! last owed: its share of the look's interval, 32 KiB to 128 KiB, the looks
+//! sooner than a quarter of a second where the pace has 128 KiB going in
 //! less, and never one on the heels of the last
 //! ([`TilesEncoder::paced_budget`]), so a desktop that stops settles at the
 //! rate its motion had of the link and never faster. On a walked list the
@@ -369,10 +369,17 @@ const SETTLE_TILES: usize = 320;
 /// stands at the ceiling, and at most below it, where what it may send on a
 /// quiet desktop walks between this and [`SETTLE_BYTES_LEAST`] on how long
 /// the updates that carried a settle took to cross
-/// ([`TilesEncoder::delivered`]); the most a held list's tick sends at any
-/// pace; and the stills a held list's update carries at once where nothing
-/// moved, a change past it going as video ([`TilesEncoder::held_stills`]).
+/// ([`TilesEncoder::delivered`]).
 const SETTLE_BYTES: usize = 256 * 1024;
+/// A held list's bytes: the stills an update carries at once where nothing
+/// moved, a change past it going as video ([`TilesEncoder::held_stills`]),
+/// and the most its tick sends at any pace. The least of the three measured
+/// — 128, 256 and 512 KiB — that flattens what the link sees: a change
+/// growing under it is this much PNG a frame until the churn calls it
+/// moving, at 25 frames a second 26 Mbit/s where 256 KiB was 52; its one
+/// cost a page of text at 1080p, 230 KiB of PNG, which starts as a region
+/// rather than lossless at once (measured in `docs/tiles-performance.md`).
+const HELD_BYTES: usize = 128 * 1024;
 /// The fewest bytes a tick may send before it stops, and what it starts at:
 /// 13 ms of a 5 Mbit/s link.
 const SETTLE_BYTES_LEAST: usize = 8 * 1024;
@@ -390,7 +397,7 @@ const PACE_WINDOW: Duration = Duration::from_millis(1000);
 /// within a tick or two.
 const SETTLE_FLOOR: usize = 32 * 1024;
 /// The least time between two of a held list's ticks, where the pace would
-/// have one of [`SETTLE_BYTES`] sooner than [`CLEANUP_TICK`].
+/// have one of [`HELD_BYTES`] sooner than [`CLEANUP_TICK`].
 const SETTLE_TICK_LEAST: Duration = Duration::from_millis(50);
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
@@ -2806,7 +2813,7 @@ impl TilesEncoder {
     }
 
     /// A held list's `stills`, each a run of tiles along one row, at most
-    /// [`SETTLE_BYTES`] of them as stills in one update where the read `moved`
+    /// [`HELD_BYTES`] of them as stills in one update where the read `moved`
     /// nothing: a change past that goes as video whole, a region over the
     /// box around all of it ([`Self::build`]), its START a keyframe at the
     /// dial in this update after the stills, carried on by its frames while
@@ -2837,7 +2844,7 @@ impl TilesEncoder {
         let from = out.out.len();
         let mut rest: Vec<Area> = Vec::new();
         for area in &stills {
-            if moved || out.out.len() - from < SETTLE_BYTES || self.live.len() >= MAX_STREAMS {
+            if moved || out.out.len() - from < HELD_BYTES || self.live.len() >= MAX_STREAMS {
                 self.still(*area, now, out)?;
             } else {
                 rest.push(*area);
@@ -2889,19 +2896,19 @@ impl TilesEncoder {
     }
 
     /// How far apart a held list's ticks come: [`CLEANUP_TICK`], or as soon
-    /// as the pace has [`SETTLE_BYTES`] going where that is sooner, down to
+    /// as the pace has [`HELD_BYTES`] going where that is sooner, down to
     /// [`SETTLE_TICK_LEAST`].
     fn tick_interval(&self) -> Duration {
         if self.pace == 0 {
             return CLEANUP_TICK;
         }
-        Duration::from_secs_f64(SETTLE_BYTES as f64 / self.pace as f64)
+        Duration::from_secs_f64(HELD_BYTES as f64 / self.pace as f64)
             .clamp(SETTLE_TICK_LEAST, CLEANUP_TICK)
     }
 
     /// The bytes a held list's tick may send: the pace's share of the tick's
     /// interval, less what the reads sent in it, between [`SETTLE_FLOOR`] and
-    /// [`SETTLE_BYTES`]. The pace is the most the link was found carrying
+    /// [`HELD_BYTES`]. The pace is the most the link was found carrying
     /// since something was last owed — a stream's frames, a picture's
     /// keyframe, the ticks themselves — so a desktop that stops settles at the
     /// rate its motion had of the link, and never faster: the link sees no
@@ -2914,7 +2921,7 @@ impl TilesEncoder {
         let share = (self.pace as f64 * interval.as_secs_f64()) as usize;
         share
             .saturating_sub(self.brought_within(now, interval))
-            .clamp(SETTLE_FLOOR, SETTLE_BYTES)
+            .clamp(SETTLE_FLOOR, HELD_BYTES)
     }
 
     /// The streams whose motion stopped ended, and the tiles still for
@@ -4384,8 +4391,8 @@ mod tests {
         }
         let run = (stills / 2).max(1);
         assert!(
-            largest <= SETTLE_BYTES + run,
-            "a tick of {largest} bytes, past {SETTLE_BYTES} and a run of {run}"
+            largest <= HELD_BYTES + run,
+            "a tick of {largest} bytes, past {HELD_BYTES} and a run of {run}"
         );
         assert_eq!(page.off(&pixels), 0, "the picture settled lossless");
         assert_eq!(page.stored, whole, "every whole tile stored");
@@ -4470,7 +4477,7 @@ mod tests {
         assert_eq!(encoder.paced_budget(ms(1000)), SETTLE_FLOOR);
         assert_eq!(encoder.pace, 10 * 1024);
 
-        // A stream at 2 MB a second: the ticks every 131 ms, the full budget
+        // A stream at 2 MB a second: the ticks every 66 ms, the full budget
         // once the reads' own bytes are out of the interval, and nothing
         // beyond the floor while they are in it.
         encoder.sent.clear();
@@ -4482,11 +4489,11 @@ mod tests {
         );
         assert_eq!(encoder.pace, 2_000_000);
         let interval = encoder.tick_interval();
-        assert_eq!(interval, Duration::from_secs_f64(SETTLE_BYTES as f64 / 2e6));
+        assert_eq!(interval, Duration::from_secs_f64(HELD_BYTES as f64 / 2e6));
         encoder.sent.clear();
         assert_eq!(
             encoder.paced_budget(ms(1200)),
-            SETTLE_BYTES,
+            HELD_BYTES,
             "the full budget once the reads are out of the interval, the pace kept"
         );
 
@@ -4533,7 +4540,7 @@ mod tests {
         );
         assert_eq!(page.copies, 1, "the scroll a copy");
         assert!(
-            page.bytes - before > SETTLE_BYTES,
+            page.bytes - before > HELD_BYTES,
             "two rows of noise uncovered: {} bytes",
             page.bytes - before
         );
@@ -5044,7 +5051,7 @@ mod tests {
             x: 0,
             y: 0,
             width: 256,
-            height: 192,
+            height: 128,
         };
         for n in 1..=20u32 {
             paint(&mut pixels, w, video, 200 + n);
@@ -5072,13 +5079,13 @@ mod tests {
         );
         assert_eq!(
             page.pngs - pngs,
-            3,
-            "the three bands the stream crossed as PNG"
+            2,
+            "the two bands the stream crossed as PNG"
         );
         assert_eq!(
             page.cached - cached,
-            20,
-            "every other tile from its slot, the last band whole"
+            24,
+            "every other tile from its slot, the last two bands whole"
         );
         assert_eq!(page.off(&pixels), 0);
         assert!(!encoder.owed(), "a picture sent whole owes nothing");
@@ -6222,7 +6229,7 @@ mod tests {
         let (w, h) = (256u16, 256u16);
         let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
         let mut page = Page::new(w, h);
-        step(&mut encoder, &mut page, &noise(w, h, 28), None, ms(0));
+        let t0 = begin(&mut encoder, &mut page, &noise(w, h, 28));
         let pixels = noise(w, h, 29);
         step(
             &mut encoder,
@@ -6234,9 +6241,10 @@ mod tests {
                 width: w,
                 height: h,
             }]),
-            ms(100),
+            t0 + ms(100),
         );
         assert_eq!(page.copies, 0);
+        settle(&mut encoder, &mut page, t0 + ms(100));
         assert_eq!(page.off(&pixels), 0);
     }
 }

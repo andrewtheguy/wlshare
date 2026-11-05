@@ -718,7 +718,7 @@ the picture.
   one image, so that a tile the damage covers is in one still whole. A picture that
   starts over — the encoding newly listed, a new size, a non-incremental
   request — goes the same way at once, whole. On a held list an update
-  carries at most 256 KiB of stills where the read moved nothing: a change
+  carries at most 128 KiB of stills where the read moved nothing: a change
   past that goes as video, a region over the box around the whole of it, its
   START a keyframe at the dial in the same update after the stills, carried
   on by its frames while it keeps changing and ended once nothing in it has
@@ -726,9 +726,12 @@ the picture.
   the settle pays at the link's pace, below, the cache's from their slots —
   the stills the update carried among them, which the frame draws over and
   which filled their slots. A whole desktop that starts over within the
-  budget — a page of text at 1080p is 0.24 MB — is lossless at once as
-  before; one past it is lossy for the second its region lives and then
-  settles. The first frames of a video are the same change: they went as
+  budget is lossless at once as before; one past it — a page of text at
+  1080p is 0.24 MB — is lossy for the second its region lives and then
+  settles. The budget is the PNG a frame may carry while a change grows
+  under it, before the churn calls it moving: 128 KiB is the least of the
+  three measured that flattens what the link sees, at the cost of that page
+  of text. The first frames of a video are the same change: they went as
   the desktop whole in PNG until the churn said moving, 1.9 MB an update on
   a 1080p video frame against the 0.2 of its keyframe, 15 times the rate its
   stream then carried, the one spike a link carrying the stream saw, and now
@@ -1010,8 +1013,8 @@ the picture.
   was found sending over any one second since something was last owed — a
   region's frames, a picture's stills, the looks themselves — the look's
   share of its interval less what the reads sent in it, from 32 KiB to
-  256 KiB, and the looks come sooner than a quarter of a second, down to
-  every 50 ms, where the pace has 256 KiB going in less than that; never
+  128 KiB, and the looks come sooner than a quarter of a second, down to
+  every 50 ms, where the pace has 128 KiB going in less than that; never
   one on the heels of the last, however much is owed. So a desktop that
   stops settles at the rate its motion had of the link, and never faster,
   where a settle at whatever the link would take was a burst of 256 KiB a
