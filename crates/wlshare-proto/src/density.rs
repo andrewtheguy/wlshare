@@ -77,20 +77,37 @@ impl Density {
         if buf.len() < DENSITY_LEN {
             return None;
         }
-        Some((Self { width: crate::u16_at(buf, 2), height: crate::u16_at(buf, 4), fixed: crate::u32_at(buf, 6) }, DENSITY_LEN))
+        Some((
+            Self {
+                width: crate::u16_at(buf, 2),
+                height: crate::u16_at(buf, 4),
+                fixed: crate::u32_at(buf, 6),
+            },
+            DENSITY_LEN,
+        ))
     }
 }
 
 /// Server → client `OutputScale`: the framebuffer's size in pixels and the scale
 /// it is drawn at.
 pub fn output_scale(width: u16, height: u16, scale: f64) -> [u8; DENSITY_LEN] {
-    Density { width, height, fixed: to_fixed(scale) }.to_bytes()
+    Density {
+        width,
+        height,
+        fixed: to_fixed(scale),
+    }
+    .to_bytes()
 }
 
 /// Client → server `ClientDensity`: the size in pixels the client wants, and the
 /// scale it wants them drawn at.
 pub fn client_density(width: u16, height: u16, scale: f64) -> [u8; DENSITY_LEN] {
-    Density { width, height, fixed: to_fixed(scale) }.to_bytes()
+    Density {
+        width,
+        height,
+        fixed: to_fixed(scale),
+    }
+    .to_bytes()
 }
 
 #[cfg(test)]

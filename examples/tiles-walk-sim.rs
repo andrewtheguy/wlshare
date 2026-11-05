@@ -71,9 +71,9 @@ use std::time::{Duration, Instant};
 
 use wlshare_proto::tiles::{TileHeader, TilesPicture};
 
+use crate::rfb::Rect;
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::tiles::TilesEncoder;
-use crate::rfb::Rect;
 use crate::walk::QualityWalk;
 use sim::{Desk, Error, Gateway, Source, json, millis, pct};
 
@@ -104,7 +104,10 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// The processor time the process has taken, on all of its threads.
 fn process_cpu() -> Duration {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `ts` is a valid `timespec` for the call to write.
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
     assert_eq!(rc, 0, "the process's processor clock");
@@ -126,7 +129,10 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len } | TileHeader::Progressive { len } | TileHeader::Planar { len } | TileHeader::Still { len } => {
+            TileHeader::Png { len }
+            | TileHeader::Progressive { len }
+            | TileHeader::Planar { len }
+            | TileHeader::Still { len } => {
                 stills += len;
                 len
             }
@@ -134,7 +140,10 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
                 streams += len;
                 len
             }
-            TileHeader::End { .. } | TileHeader::Copy { .. } | TileHeader::Cached { .. } | TileHeader::Store { .. } => 0,
+            TileHeader::End { .. }
+            | TileHeader::Copy { .. }
+            | TileHeader::Cached { .. }
+            | TileHeader::Store { .. } => 0,
         };
         at += RECT_HEADER + used + body;
     }
@@ -153,8 +162,16 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len } | TileHeader::Start { len, .. } | TileHeader::Frame { len, .. } | TileHeader::Progressive { len } | TileHeader::Planar { len } | TileHeader::Still { len } => len,
-            TileHeader::End { .. } | TileHeader::Copy { .. } | TileHeader::Cached { .. } | TileHeader::Store { .. } => 0,
+            TileHeader::Png { len }
+            | TileHeader::Start { len, .. }
+            | TileHeader::Frame { len, .. }
+            | TileHeader::Progressive { len }
+            | TileHeader::Planar { len }
+            | TileHeader::Still { len } => len,
+            TileHeader::End { .. }
+            | TileHeader::Copy { .. }
+            | TileHeader::Cached { .. }
+            | TileHeader::Store { .. } => 0,
         };
         let bytes = RECT_HEADER + used + body;
         records.push((bytes + if at == 0 { FRAMING } else { 0 }, body));
@@ -198,10 +215,18 @@ impl Passes {
             t.0 += 1;
             t.1 += block.len() as u64;
         };
-        match (u16::from_le_bytes([block[0], block[1]]), block.get(13), block.get(14)) {
-            (wlshare_proto::progressive::WBT_TILE_FIRST, Some(flags), _) if flags & 1 == 1 => tally(&mut self.differences),
+        match (
+            u16::from_le_bytes([block[0], block[1]]),
+            block.get(13),
+            block.get(14),
+        ) {
+            (wlshare_proto::progressive::WBT_TILE_FIRST, Some(flags), _) if flags & 1 == 1 => {
+                tally(&mut self.differences)
+            }
             (wlshare_proto::progressive::WBT_TILE_FIRST, _, Some(0xFF)) => tally(&mut self.whole),
-            (wlshare_proto::progressive::WBT_TILE_FIRST, _, Some(&stage)) => tally(&mut self.first[usize::from(stage).min(2)]),
+            (wlshare_proto::progressive::WBT_TILE_FIRST, _, Some(&stage)) => {
+                tally(&mut self.first[usize::from(stage).min(2)])
+            }
             _ => tally(&mut self.upgrades),
         }
     }
@@ -209,7 +234,14 @@ impl Passes {
 
 impl Page {
     fn new(w: u16, h: u16) -> Self {
-        Self { w: usize::from(w), canvas: vec![0; usize::from(w) * usize::from(h) * 4], streams: HashMap::new(), slots: HashMap::new(), planes: Vec::new(), stills: Default::default() }
+        Self {
+            w: usize::from(w),
+            canvas: vec![0; usize::from(w) * usize::from(h) * 4],
+            streams: HashMap::new(),
+            slots: HashMap::new(),
+            planes: Vec::new(),
+            stills: Default::default(),
+        }
     }
 
     /// `B, G, R, X` rows `line` pixels apart drawn at the rectangle.
@@ -222,17 +254,29 @@ impl Page {
     }
 
     fn rgb(rgb: &[u8]) -> Vec<u8> {
-        rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[2], p[1], p[0], 0]).collect()
+        rgb.as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0], 0])
+            .collect()
     }
 
-    fn draw(&mut self, count: u16, rects: &[u8], encoder: &mut TilesEncoder, passes: &mut Passes) -> Result<(), Error> {
+    fn draw(
+        &mut self,
+        count: u16,
+        rects: &[u8],
+        encoder: &mut TilesEncoder,
+        passes: &mut Passes,
+    ) -> Result<(), Error> {
         let mut wire = crate::rfb::msg::update_header(count).to_vec();
         wire.extend_from_slice(rects);
         let Some((ServerMsg::Update(rects), _)) = client::parse(&wire)? else {
             return Err("an update the client cannot read".into());
         };
         for rect in rects {
-            let RectBody::Tiles(body) = rect.body else { return Err("a rectangle not of the tiles".into()) };
+            let RectBody::Tiles(body) = rect.body else {
+                return Err("a rectangle not of the tiles".into());
+            };
             let place = (rect.x, rect.y, rect.width, rect.height);
             let (w, h) = (usize::from(rect.width), usize::from(rect.height));
             match body {
@@ -254,7 +298,8 @@ impl Page {
                     self.paste(place, &Self::rgb(&rgb), w);
                 }
                 TileBody::Progressive(block) => {
-                    let cell = wlshare_proto::progressive::tile_of(&block).ok_or("a progressive body that is no tile block")?;
+                    let cell = wlshare_proto::progressive::tile_of(&block)
+                        .ok_or("a progressive body that is no tile block")?;
                     // A tile something later in the update drew over is
                     // held no more; what drew over it is pasted in its turn.
                     if let Some(shown) = encoder.progressive_shown(cell) {
@@ -263,7 +308,10 @@ impl Page {
                     passes.add(&block);
                 }
                 TileBody::Start { stream, frame } => {
-                    self.streams.insert(stream, (place, decode::Decoder::new().map_err(|e| format!("{e:#}"))?));
+                    self.streams.insert(
+                        stream,
+                        (place, decode::Decoder::new().map_err(|e| format!("{e:#}"))?),
+                    );
                     self.region(stream, &frame)?;
                 }
                 TileBody::Frame { stream, frame } => self.region(stream, &frame)?,
@@ -272,18 +320,31 @@ impl Page {
                 }
                 TileBody::Copy { x, y } => {
                     let line = w * 4;
-                    let source: Vec<u8> = (0..h).flat_map(|row| {
-                        let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
-                        self.canvas[at..at + line].to_vec()
-                    }).collect();
+                    let source: Vec<u8> = (0..h)
+                        .flat_map(|row| {
+                            let at = ((usize::from(y) + row) * self.w + usize::from(x)) * 4;
+                            self.canvas[at..at + line].to_vec()
+                        })
+                        .collect();
                     self.paste(place, &source, w);
                 }
                 TileBody::Store { slot } => {
-                    let tile: Vec<u8> = (0..h).flat_map(|row| self.canvas[((usize::from(rect.y) + row) * self.w + usize::from(rect.x)) * 4..][..w * 4].to_vec()).collect();
+                    let tile: Vec<u8> = (0..h)
+                        .flat_map(|row| {
+                            self.canvas
+                                [((usize::from(rect.y) + row) * self.w + usize::from(rect.x)) * 4..]
+                                [..w * 4]
+                                .to_vec()
+                        })
+                        .collect();
                     self.slots.insert(slot, tile);
                 }
                 TileBody::Cached { slot } => {
-                    let tile = self.slots.get(&slot).ok_or("a slot drawn before it was stored")?.clone();
+                    let tile = self
+                        .slots
+                        .get(&slot)
+                        .ok_or("a slot drawn before it was stored")?
+                        .clone();
                     self.paste(place, &tile, w);
                 }
             }
@@ -294,9 +355,17 @@ impl Page {
     /// A frame of a stream, decoded and drawn over its rectangle: BT.601 at
     /// studio swing, as the stream's VUI says.
     fn region(&mut self, stream: u8, frame: &[u8]) -> Result<(), Error> {
-        let (place, decoder) = self.streams.get_mut(&stream).ok_or("a frame of no live stream")?;
+        let (place, decoder) = self
+            .streams
+            .get_mut(&stream)
+            .ok_or("a frame of no live stream")?;
         let place = *place;
-        let Some(picture) = decoder.decode(frame, &mut self.planes).map_err(|e| format!("{e:#}"))? else { return Ok(()) };
+        let Some(picture) = decoder
+            .decode(frame, &mut self.planes)
+            .map_err(|e| format!("{e:#}"))?
+        else {
+            return Ok(());
+        };
         let (pw, ph) = (picture.width, picture.height);
         let (cw, ch) = picture.chroma();
         let (y, rest) = self.planes.split_at(pw * ph);
@@ -305,7 +374,10 @@ impl Page {
         for row in 0..ph {
             for col in 0..pw {
                 let l = 1.164 * (f32::from(y[row * pw + col]) - 16.0);
-                let (cb, cr) = (f32::from(u[row / 2 * cw + col / 2]) - 128.0, f32::from(v[row / 2 * cw + col / 2]) - 128.0);
+                let (cb, cr) = (
+                    f32::from(u[row / 2 * cw + col / 2]) - 128.0,
+                    f32::from(v[row / 2 * cw + col / 2]) - 128.0,
+                );
                 let at = (row * pw + col) * 4;
                 bgrx[at] = (l + 2.017 * cb).round().clamp(0.0, 255.0) as u8;
                 bgrx[at + 1] = (l - 0.392 * cb - 0.813 * cr).round().clamp(0.0, 255.0) as u8;
@@ -318,19 +390,35 @@ impl Page {
 
     /// The mean squared error over B, G and R from `pixels`.
     fn mse(&self, pixels: &[u8]) -> f64 {
-        let sum: u64 = self.canvas.as_chunks::<4>().0.iter().zip(pixels.as_chunks::<4>().0).map(|(a, b)| (0..3).map(|i| u64::from(a[i].abs_diff(b[i])).pow(2)).sum::<u64>()).sum();
+        let sum: u64 = self
+            .canvas
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pixels.as_chunks::<4>().0)
+            .map(|(a, b)| {
+                (0..3)
+                    .map(|i| u64::from(a[i].abs_diff(b[i])).pow(2))
+                    .sum::<u64>()
+            })
+            .sum();
         sum as f64 / (self.canvas.len() / 4 * 3) as f64
     }
 }
 
 fn psnr(mse: f64) -> f64 {
-    if mse == 0.0 { 99.0 } else { (10.0 * (255.0f64.powi(2) / mse).log10()).min(99.0) }
+    if mse == 0.0 {
+        99.0
+    } else {
+        (10.0 * (255.0f64.powi(2) / mse).log10()).min(99.0)
+    }
 }
 
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
-    let (mut hop, mut picture, mut libx264, mut encode_ms) = (1.0, TilesPicture::Progressive, false, None::<f64>);
+    let (mut hop, mut picture, mut libx264, mut encode_ms) =
+        (1.0, TilesPicture::Progressive, false, None::<f64>);
     let (mut rtt, mut paint, mut jitter) = (40.0, 5.0, 0.0);
     let ceiling = rfb::QUALITY;
     let mut timeline = None;
@@ -364,7 +452,11 @@ fn main() -> Result<(), Error> {
     let name = sim::run_name(&paths);
     let link_json = sim::rates_json(&rates);
     let mut source = Source::new(paths);
-    let mut gateway = Gateway::new(rates, Duration::from_secs_f64(rtt / 1e3), Duration::from_secs_f64(hop / 1e3));
+    let mut gateway = Gateway::new(
+        rates,
+        Duration::from_secs_f64(rtt / 1e3),
+        Duration::from_secs_f64(hop / 1e3),
+    );
     let paint = Duration::from_secs_f64(paint / 1e3);
     let mut jitter = sim::jitter(jitter);
 
@@ -392,7 +484,8 @@ fn main() -> Result<(), Error> {
     // When each change of the desktop the client has not seen yet was made,
     // and how long each one took to be painted.
     let (mut unshown, mut shown) = (Vec::new(), Vec::new());
-    let (mut frames, mut ticks, mut keyframes, mut bytes, mut moves, mut downs) = (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
+    let (mut frames, mut ticks, mut keyframes, mut bytes, mut moves, mut downs) =
+        (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
     let mut motion_frames = 0u32;
     // The last update was the tick's alone with the desktop stopped, as the
     // session keeps it.
@@ -405,7 +498,9 @@ fn main() -> Result<(), Error> {
             dirty = true;
             whole |= d.keyframe;
             damage = match (damage, &d.changed) {
-                (Some(mut all), Some(rects)) if desk.as_ref().is_some_and(|desk| desk.size == d.size) => {
+                (Some(mut all), Some(rects))
+                    if desk.as_ref().is_some_and(|desk| desk.size == d.size) =>
+                {
                     all.extend_from_slice(rects);
                     Some(all)
                 }
@@ -421,7 +516,10 @@ fn main() -> Result<(), Error> {
         };
         let next = source.next_at()?;
         if !dirty {
-            let tick_at = encoder.as_ref().and_then(TilesEncoder::tick_at).map(|at| at.max(earliest));
+            let tick_at = encoder
+                .as_ref()
+                .and_then(TilesEncoder::tick_at)
+                .map(|at| at.max(earliest));
             match (tick_at, next) {
                 (Some(at), next) if next.is_none_or(|next| at < next) => now = at,
                 (_, Some(next)) => {
@@ -460,7 +558,8 @@ fn main() -> Result<(), Error> {
         let update = encoder.encode(now, &mut out)?;
         let cpu = process_cpu() - cpu_started;
         encoder_cpu += cpu;
-        let encode = encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
+        let encode =
+            encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
         dirty = false;
         damage = Some(Vec::new());
         whole = false;
@@ -487,7 +586,11 @@ fn main() -> Result<(), Error> {
         let delivery = back - sent;
         let verdict = !update.keyframe && !update.tick;
         let latency = painted.saturating_sub(d.at);
-        shown.extend(unshown.drain(..).map(|at: Duration| (painted - at).as_secs_f64() * 1e3));
+        shown.extend(
+            unshown
+                .drain(..)
+                .map(|at: Duration| (painted - at).as_secs_f64() * 1e3),
+        );
         frames += 1;
         bytes += size;
         keyframes += u32::from(update.keyframe);
@@ -503,9 +606,17 @@ fn main() -> Result<(), Error> {
         let moved = walk.fenced(delivery, verdict, base + now);
         encoder.delivered(delivery.saturating_sub(walk.floor()));
         if let Some(t) = &mut timeline {
-            let kind = if update.keyframe { "key" } else if update.tick { "tick" } else { "frame" };
+            let kind = if update.keyframe {
+                "key"
+            } else if update.tick {
+                "tick"
+            } else {
+                "frame"
+            };
             let (stills, streams) = split(&out)?;
-            let moved_to = moved.map_or_else(String::new, |moved| format!(",\"moved_to\":{}", moved.quality));
+            let moved_to = moved.map_or_else(String::new, |moved| {
+                format!(",\"moved_to\":{}", moved.quality)
+            });
             writeln!(
                 t,
                 "{{\"t_ms\":{:.1},\"kind\":\"{kind}\",\"quality\":{coded_at},\"interval_ms\":{:.0},\"bytes\":{size},\"stills\":{stills},\"streams\":{streams},\"encode_ms\":{:.1},\"cpu_ms\":{:.1},\"delivery_ms\":{:.1},\"latency_ms\":{:.1},\"psnr_db\":{close:.2}{moved_to}}}",
@@ -556,8 +667,15 @@ fn main() -> Result<(), Error> {
         encoder_cpu.as_secs_f64() / span * 100.0,
     );
     if picture == TilesPicture::Progressive {
-        let Passes { first: [f25, f50, f75], whole, differences, upgrades } = passes;
-        eprintln!("progressive tiles, count and bytes: first at 25 {f25:?}, first at 50 {f50:?}, first at 75 {f75:?}, whole {whole:?}, differences {differences:?}, upgrades {upgrades:?}");
+        let Passes {
+            first: [f25, f50, f75],
+            whole,
+            differences,
+            upgrades,
+        } = passes;
+        eprintln!(
+            "progressive tiles, count and bytes: first at 25 {f25:?}, first at 50 {f50:?}, first at 75 {f75:?}, whole {whole:?}, differences {differences:?}, upgrades {upgrades:?}"
+        );
     }
     Ok(())
 }

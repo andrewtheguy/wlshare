@@ -46,7 +46,10 @@ use crate::shared::ClientId;
 /// What the node offers and every start names: mono at Opus's own rate, which is
 /// what a browser's speech encoder decodes to, so the zDesk gateway resamples
 /// nothing.
-pub const FORMAT: MicrophoneFormat = MicrophoneFormat { channels: 1, frequency: 48_000 };
+pub const FORMAT: MicrophoneFormat = MicrophoneFormat {
+    channels: 1,
+    frequency: 48_000,
+};
 /// How long PipeWire may take to take the node before a plug is refused.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 /// Audio held back before the node plays, after a start or after running dry.
@@ -88,7 +91,12 @@ impl Microphone {
             .name(format!("microphone-{}", client.0))
             .spawn(move || run(client, thread_jitter, quit_rx, signal_tx, ready_tx))
             .context("spawning the microphone thread")?;
-        let mut microphone = Self { quit, thread: Some(thread), jitter, signals };
+        let mut microphone = Self {
+            quit,
+            thread: Some(thread),
+            jitter,
+            signals,
+        };
         match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(microphone),
             Ok(Err(e)) => {
@@ -130,7 +138,9 @@ impl Drop for Microphone {
         }
         let dropped = self.jitter.lock().unwrap().dropped;
         if dropped > 0 {
-            debug!("microphone: {dropped} byte(s) of audio arrived faster than the desktop recorded them and were dropped");
+            debug!(
+                "microphone: {dropped} byte(s) of audio arrived faster than the desktop recorded them and were dropped"
+            );
         }
     }
 }
@@ -191,7 +201,11 @@ impl Jitter {
         if !self.playing && self.queue.len() >= self.prefill {
             self.playing = true;
         }
-        let taken = if self.playing { self.queue.len().min(out.len()) } else { 0 };
+        let taken = if self.playing {
+            self.queue.len().min(out.len())
+        } else {
+            0
+        };
         for (slot, byte) in out.iter_mut().zip(self.queue.drain(..taken)) {
             *slot = byte;
         }
@@ -223,8 +237,14 @@ fn run(
         };
     }
     pw::init();
-    let mainloop = up!(pw::main_loop::MainLoopRc::new(None), "creating PipeWire's loop");
-    let context = up!(pw::context::ContextRc::new(&mainloop, None), "creating PipeWire's context");
+    let mainloop = up!(
+        pw::main_loop::MainLoopRc::new(None),
+        "creating PipeWire's loop"
+    );
+    let context = up!(
+        pw::context::ContextRc::new(&mainloop, None),
+        "creating PipeWire's context"
+    );
     let core = up!(context.connect_rc(None), "connecting to PipeWire");
 
     let mut props = pw::properties::properties! {
@@ -237,10 +257,19 @@ fn run(
         // host's own in an application's list of them.
         *pw::keys::NODE_DESCRIPTION => "wlshare remote microphone",
     };
-    props.insert(*pw::keys::NODE_NAME, format!("wlshare-microphone-{}", client.0));
+    props.insert(
+        *pw::keys::NODE_NAME,
+        format!("wlshare-microphone-{}", client.0),
+    );
     let frames = FORMAT.frequency * LATENCY_MS / 1000;
-    props.insert(*pw::keys::NODE_LATENCY, format!("{frames}/{}", FORMAT.frequency));
-    let stream = up!(pw::stream::StreamBox::new(&core, "wlshare microphone", props), "creating the microphone stream");
+    props.insert(
+        *pw::keys::NODE_LATENCY,
+        format!("{frames}/{}", FORMAT.frequency),
+    );
+    let stream = up!(
+        pw::stream::StreamBox::new(&core, "wlshare microphone", props),
+        "creating the microphone stream"
+    );
 
     let state_jitter = jitter.clone();
     let frame_bytes = FORMAT.frame_bytes();
@@ -261,23 +290,41 @@ fn run(
                 jitter.set_streaming(streaming);
                 drop(jitter);
                 if streaming {
-                    info!("client {}: an application is recording from the microphone", client.0);
+                    info!(
+                        "client {}: an application is recording from the microphone",
+                        client.0
+                    );
                 } else {
-                    info!("client {}: nothing records from the microphone any more", client.0);
+                    info!(
+                        "client {}: nothing records from the microphone any more",
+                        client.0
+                    );
                 }
-                let _ = signals.send(if streaming { Signal::Start } else { Signal::Stop });
+                let _ = signals.send(if streaming {
+                    Signal::Start
+                } else {
+                    Signal::Stop
+                });
             })
             // On this microphone's own loop thread, not the graph's real-time one.
             .process(move |stream, _| {
-                let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                let Some(mut buffer) = stream.dequeue_buffer() else {
+                    return;
+                };
                 let requested = usize::try_from(buffer.requested()).unwrap_or(usize::MAX);
-                let Some(data) = buffer.datas_mut().first_mut() else { return };
+                let Some(data) = buffer.datas_mut().first_mut() else {
+                    return;
+                };
                 let written = match data.data() {
                     Some(bytes) => {
                         let room = bytes.len() / frame_bytes;
                         // The graph says how many frames this cycle wants when it
                         // knows; otherwise the buffer is filled.
-                        let frames = if requested == 0 { room } else { requested.min(room) };
+                        let frames = if requested == 0 {
+                            room
+                        } else {
+                            requested.min(room)
+                        };
                         let n = frames * frame_bytes;
                         jitter.lock().unwrap().fill(&mut bytes[..n]);
                         n
@@ -306,7 +353,10 @@ fn run(
         properties: info.into(),
     };
     let pod = up!(
-        spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(object)),
+        spa::pod::serialize::PodSerializer::serialize(
+            std::io::Cursor::new(Vec::new()),
+            &spa::pod::Value::Object(object)
+        ),
         "serializing the microphone format"
     )
     .0
@@ -387,7 +437,10 @@ mod tests {
         jitter.push(&frames(20, 3));
         let mut out = vec![1; 960];
         jitter.fill(&mut out);
-        assert!(out.iter().all(|&b| b == 0), "one sample after running dry is not a prefill");
+        assert!(
+            out.iter().all(|&b| b == 0),
+            "one sample after running dry is not a prefill"
+        );
     }
 
     /// A burst past the ceiling keeps the newest audio.

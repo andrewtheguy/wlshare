@@ -372,14 +372,21 @@ impl QualityWalk {
 
     /// Where the walk stands.
     pub fn pace(&self) -> Pace {
-        Pace { quality: self.quality, interval: self.interval() }
+        Pace {
+            quality: self.quality,
+            interval: self.interval(),
+        }
     }
 
     /// The link's own round trip: the least delivery of the last
     /// [`BASELINE_WINDOW`], of which the rest of a delivery is queueing;
     /// zero before one, or on a walk that is not lag-aware.
     pub fn floor(&self) -> Duration {
-        self.recent.iter().map(|(_, delivery)| *delivery).min().unwrap_or_default()
+        self.recent
+            .iter()
+            .map(|(_, delivery)| *delivery)
+            .min()
+            .unwrap_or_default()
     }
 
     /// A frame's fence came back `delivery` after the frame was written.
@@ -393,7 +400,11 @@ impl QualityWalk {
         if !self.lag_aware {
             return None;
         }
-        while self.recent.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) > BASELINE_WINDOW) {
+        while self
+            .recent
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > BASELINE_WINDOW)
+        {
             self.recent.pop_front();
         }
         self.recent.push_back((now, delivery));
@@ -438,7 +449,13 @@ impl QualityWalk {
         if behind {
             self.clear = None;
         } else if lag <= LAG_CLEAR {
-            self.clear = Some(self.clear.map_or((now, 1, queued), |(since, count, most)| (since, count + 1, most.zip(queued).map(|(most, queued)| most.max(queued)))));
+            self.clear = Some(self.clear.map_or((now, 1, queued), |(since, count, most)| {
+                (
+                    since,
+                    count + 1,
+                    most.zip(queued).map(|(most, queued)| most.max(queued)),
+                )
+            }));
         } else if let Some((_, _, most)) = &mut self.clear {
             // Between the two thresholds a frame neither counts nor ends the
             // run: not evidence of room, not evidence against it either. It
@@ -449,7 +466,9 @@ impl QualityWalk {
         // the next sooner.
         let climbing = self.climbed_at.is_some()
             && self.climbed_at == self.changed_at
-            && self.clear.is_some_and(|(.., most)| most.is_some_and(|most| most <= LAG_IDLE));
+            && self
+                .clear
+                .is_some_and(|(.., most)| most.is_some_and(|most| most <= LAG_IDLE));
         let span = if climbing { CLIMB_SPAN } else { CLEAR_SPAN };
         // Walking back a step up the link refused does not wait out the full
         // cooldown: the refusal is in the next few frames, and every one is queue.
@@ -458,7 +477,11 @@ impl QualityWalk {
         // A link far behind is looked at again sooner after a step down, every
         // frame coded over it being that much more queue; not after a settle,
         // whose frames carry the lag of its one large picture.
-        let cooldown = if behind && self.reclaimed.is_some_and(|(_, at)| self.changed_at == Some(at)) {
+        let cooldown = if behind
+            && self
+                .reclaimed
+                .is_some_and(|(_, at)| self.changed_at == Some(at))
+        {
             REFUSAL_COOLDOWN
         } else if behind && lag >= LAG_HEAVY && self.stepped_on.is_some() {
             HEAVY_COOLDOWN
@@ -474,14 +497,19 @@ impl QualityWalk {
         let moved = if behind && self.verdicts.count_ones() >= BEHIND_FRAMES {
             // The queue the last step left behind is still draining: the step
             // was enough, and the verdicts wait for the lag to stop falling.
-            if self.stepped_on.is_some_and(|on| lag + on / DRAIN_FRACTION < on) {
+            if self
+                .stepped_on
+                .is_some_and(|on| lag + on / DRAIN_FRACTION < on)
+            {
                 // Looked at again a cooldown from now, against the lag as it is.
                 self.stepped_on = Some(lag);
                 self.changed_at = Some(now);
                 return None;
             }
             self.give_up(lag, now, since.is_some_and(|since| since < ADJUST_COOLDOWN))
-        } else if self.clear.is_some_and(|(since, count, _)| count >= CLEAR_FRAMES && now.saturating_duration_since(since) >= span) {
+        } else if self.clear.is_some_and(|(since, count, _)| {
+            count >= CLEAR_FRAMES && now.saturating_duration_since(since) >= span
+        }) {
             self.take_back(now)
         } else {
             return None;
@@ -537,7 +565,10 @@ impl QualityWalk {
         };
         let mut moved = false;
         let on_floor = self.quality <= self.floor;
-        if let Some((from, _)) = self.reclaimed.filter(|(_, at)| now.saturating_duration_since(*at) <= REFUSAL_WINDOW) {
+        if let Some((from, _)) = self
+            .reclaimed
+            .filter(|(_, at)| now.saturating_duration_since(*at) <= REFUSAL_WINDOW)
+        {
             // A step up the link refused: back to the quality it bore, and the
             // walk may come halfway back up towards the one it would not take.
             // A link that is still behind there steps down from it as usual.
@@ -548,7 +579,10 @@ impl QualityWalk {
                 moved = true;
             }
         } else if !on_floor {
-            self.quality = self.quality.saturating_sub(STEP_DOWN * steps).max(self.floor);
+            self.quality = self
+                .quality
+                .saturating_sub(STEP_DOWN * steps)
+                .max(self.floor);
             moved = true;
         }
         if (on_floor || (steps == 3 && !soon)) && self.slow < SLOW_MAX {
@@ -572,17 +606,27 @@ impl QualityWalk {
             self.climbed_at = Some(now);
             return true;
         }
-        if self.refused.is_some_and(|(_, at)| now.saturating_duration_since(at) >= REFUSAL_HOLD) {
+        if self
+            .refused
+            .is_some_and(|(_, at)| now.saturating_duration_since(at) >= REFUSAL_HOLD)
+        {
             self.refused = None;
         }
-        let ceiling = self.refused.map_or(self.ceiling, |(cap, _)| cap).min(self.ceiling);
+        let ceiling = self
+            .refused
+            .map_or(self.ceiling, |(cap, _)| cap)
+            .min(self.ceiling);
         let wanted = self.quality.saturating_add(self.reclaim).min(ceiling);
         if wanted <= self.quality {
             return false;
         }
         // A step the refusal cut short is the last of its run: the probe past the
         // refused quality, once the hold is over, starts small again.
-        self.reclaim = if wanted == ceiling && ceiling < self.ceiling { STEP_UP } else { self.reclaim.saturating_mul(2).min(STEP_UP_MAX) };
+        self.reclaim = if wanted == ceiling && ceiling < self.ceiling {
+            STEP_UP
+        } else {
+            self.reclaim.saturating_mul(2).min(STEP_UP_MAX)
+        };
         self.reclaimed = Some((self.quality, now));
         self.quality = wanted;
         self.stepped_on = None;
@@ -624,7 +668,11 @@ mod tests {
 
     /// `count` frames 33 ms apart from `at` whose push did not block and whose
     /// window is not behind: the last move, and when they ended.
-    fn clear_pushes(walk: &mut QualityWalk, count: u32, mut at: Instant) -> (Option<Pace>, Instant) {
+    fn clear_pushes(
+        walk: &mut QualityWalk,
+        count: u32,
+        mut at: Instant,
+    ) -> (Option<Pace>, Instant) {
         let mut moved = None;
         for _ in 0..count {
             at += 33 * MS;
@@ -655,7 +703,13 @@ mod tests {
         let mut walk = QualityWalk::new(30, CAPTURE, false);
         let (moved, _) = clear_pushes(&mut walk, CLEAR_RUN * 4, start);
         assert_eq!(moved, None);
-        assert_eq!(walk.pace(), Pace { quality: 30, interval: CAPTURE });
+        assert_eq!(
+            walk.pace(),
+            Pace {
+                quality: 30,
+                interval: CAPTURE
+            }
+        );
         assert_eq!(walk.ceiling(), 30);
     }
 
@@ -667,12 +721,27 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(u8::MAX, start);
         assert_eq!(walk.ceiling(), QUALITY_MAX);
-        assert_eq!(walk.pace(), Pace { quality: QUALITY_MAX, interval: CAPTURE });
+        assert_eq!(
+            walk.pace(),
+            Pace {
+                quality: QUALITY_MAX,
+                interval: CAPTURE
+            }
+        );
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(QUALITY_MAX - STEP_DOWN));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(QUALITY_MAX - STEP_DOWN)
+        );
         let bottom = QualityWalk::new(0, CAPTURE, true);
         assert_eq!(bottom.ceiling(), QUALITY_MIN);
-        assert_eq!(bottom.pace(), Pace { quality: QUALITY_MIN, interval: CAPTURE });
+        assert_eq!(
+            bottom.pace(),
+            Pace {
+                quality: QUALITY_MIN,
+                interval: CAPTURE
+            }
+        );
     }
 
     /// A ceiling under the floor starts in the frame-rate handoff: a link behind
@@ -684,10 +753,22 @@ mod tests {
         let ceiling = QUALITY_FLOOR / 2;
         let mut walk = walk(ceiling, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start), Some(Pace { quality: ceiling, interval: CAPTURE * 2 }));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start),
+            Some(Pace {
+                quality: ceiling,
+                interval: CAPTURE * 2
+            })
+        );
         let later = start + ADJUST_COOLDOWN;
         walk.fenced(140 * MS, true, later);
-        assert_eq!(walk.fenced(140 * MS, true, later), Some(Pace { quality: ceiling, interval: CAPTURE * 4 }));
+        assert_eq!(
+            walk.fenced(140 * MS, true, later),
+            Some(Pace {
+                quality: ceiling,
+                interval: CAPTURE * 4
+            })
+        );
         let mut at = later + ADJUST_COOLDOWN;
         let mut seen = Vec::new();
         for _ in 0..6 {
@@ -695,7 +776,19 @@ mod tests {
             seen.extend(moved);
             at = then + ADJUST_COOLDOWN;
         }
-        assert_eq!(seen, [Pace { quality: ceiling, interval: CAPTURE * 2 }, Pace { quality: ceiling, interval: CAPTURE }]);
+        assert_eq!(
+            seen,
+            [
+                Pace {
+                    quality: ceiling,
+                    interval: CAPTURE * 2
+                },
+                Pace {
+                    quality: ceiling,
+                    interval: CAPTURE
+                }
+            ]
+        );
     }
 
     #[test]
@@ -703,17 +796,46 @@ mod tests {
         let start = Instant::now();
         // Two steps above the floor, so the walk reaches it in three.
         let mut walk = walk(QUALITY_FLOOR + 2 * STEP_DOWN + 5, start);
-        assert_eq!(walk.fenced(140 * MS, true, start), None, "one slow frame is not a verdict");
-        assert_eq!(walk.fenced(140 * MS, true, start), Some(Pace { quality: QUALITY_FLOOR + STEP_DOWN + 5, interval: CAPTURE }));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start),
+            None,
+            "one slow frame is not a verdict"
+        );
+        assert_eq!(
+            walk.fenced(140 * MS, true, start),
+            Some(Pace {
+                quality: QUALITY_FLOOR + STEP_DOWN + 5,
+                interval: CAPTURE
+            })
+        );
         for _ in 0..4 {
-            assert_eq!(walk.fenced(140 * MS, true, start + 500 * MS), None, "inside the cooldown");
+            assert_eq!(
+                walk.fenced(140 * MS, true, start + 500 * MS),
+                None,
+                "inside the cooldown"
+            );
         }
-        assert_eq!(walk.fenced(140 * MS, true, start + 1100 * MS).map(|pace| pace.quality), Some(QUALITY_FLOOR + 5));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start + 1100 * MS)
+                .map(|pace| pace.quality),
+            Some(QUALITY_FLOOR + 5)
+        );
         walk.fenced(140 * MS, true, start + 2200 * MS);
-        assert_eq!(walk.fenced(140 * MS, true, start + 2200 * MS).map(|pace| pace.quality), Some(QUALITY_FLOOR), "stops at the floor");
+        assert_eq!(
+            walk.fenced(140 * MS, true, start + 2200 * MS)
+                .map(|pace| pace.quality),
+            Some(QUALITY_FLOOR),
+            "stops at the floor"
+        );
         // On the floor, the frames go: doubled once per verdict, to the limit.
         walk.fenced(140 * MS, true, start + 3300 * MS);
-        assert_eq!(walk.fenced(140 * MS, true, start + 3300 * MS), Some(Pace { quality: QUALITY_FLOOR, interval: CAPTURE * 2 }));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start + 3300 * MS),
+            Some(Pace {
+                quality: QUALITY_FLOOR,
+                interval: CAPTURE * 2
+            })
+        );
         assert!(walk.slowed());
         for i in 2..=u32::from(SLOW_MAX) + 1 {
             let at = start + (2200 + 1100 * i) * MS;
@@ -723,7 +845,11 @@ mod tests {
         assert_eq!(walk.interval(), CAPTURE * 8);
         let at = start + 20_000 * MS;
         walk.fenced(140 * MS, true, at);
-        assert_eq!(walk.fenced(140 * MS, true, at), None, "nothing left to give");
+        assert_eq!(
+            walk.fenced(140 * MS, true, at),
+            None,
+            "nothing left to give"
+        );
         assert_eq!(walk.quality(), QUALITY_FLOOR);
     }
 
@@ -735,11 +861,21 @@ mod tests {
         let start = Instant::now();
         let mut walk = QualityWalk::new(40, CAPTURE, false);
         assert_eq!(walk.observe(BEHIND_BLOCK, Duration::ZERO, start), None);
-        assert_eq!(walk.observe(BEHIND_BLOCK, Duration::ZERO, start), Some(Pace { quality: 30, interval: CAPTURE }));
+        assert_eq!(
+            walk.observe(BEHIND_BLOCK, Duration::ZERO, start),
+            Some(Pace {
+                quality: 30,
+                interval: CAPTURE
+            })
+        );
         assert_eq!(walk.observe(BEHIND_BLOCK, Duration::ZERO, start), None);
         assert_eq!(walk.observe(BEHIND_BLOCK, Duration::ZERO, start), None);
         let later = start + ADJUST_COOLDOWN;
-        assert_eq!(walk.observe(BEHIND_BLOCK, Duration::ZERO, later).map(|pace| pace.quality), Some(20));
+        assert_eq!(
+            walk.observe(BEHIND_BLOCK, Duration::ZERO, later)
+                .map(|pace| pace.quality),
+            Some(20)
+        );
         let mut at = later + ADJUST_COOLDOWN;
         let mut seen = Vec::new();
         for _ in 0..6 {
@@ -747,7 +883,11 @@ mod tests {
             seen.extend(moved.map(|pace| pace.quality));
             at = then + ADJUST_COOLDOWN;
         }
-        assert_eq!(seen, [23, 29, 40], "the link recovered past the quality that was asked for");
+        assert_eq!(
+            seen,
+            [23, 29, 40],
+            "the link recovered past the quality that was asked for"
+        );
     }
 
     #[test]
@@ -755,15 +895,33 @@ mod tests {
         let start = Instant::now();
         let mut heavy = walk(90, start);
         heavy.fenced(40 * MS + LAG_HEAVY, true, start);
-        assert_eq!(heavy.fenced(40 * MS + LAG_HEAVY, true, start), Some(Pace { quality: 70, interval: CAPTURE }));
+        assert_eq!(
+            heavy.fenced(40 * MS + LAG_HEAVY, true, start),
+            Some(Pace {
+                quality: 70,
+                interval: CAPTURE
+            })
+        );
         let mut severe = walk(90, start);
         severe.fenced(40 * MS + LAG_SEVERE, true, start);
-        assert_eq!(severe.fenced(40 * MS + LAG_SEVERE, true, start), Some(Pace { quality: 60, interval: CAPTURE * 2 }));
+        assert_eq!(
+            severe.fenced(40 * MS + LAG_SEVERE, true, start),
+            Some(Pace {
+                quality: 60,
+                interval: CAPTURE * 2
+            })
+        );
         // The push blocking that long is the same verdict, on a walk that is
         // not lag-aware too.
         let mut blocked = QualityWalk::new(90, CAPTURE, false);
         blocked.observe(LAG_SEVERE, Duration::ZERO, start);
-        assert_eq!(blocked.observe(LAG_SEVERE, Duration::ZERO, start), Some(Pace { quality: 60, interval: CAPTURE * 2 }));
+        assert_eq!(
+            blocked.observe(LAG_SEVERE, Duration::ZERO, start),
+            Some(Pace {
+                quality: 60,
+                interval: CAPTURE * 2
+            })
+        );
     }
 
     /// A link heavily behind is looked at again after [`HEAVY_COOLDOWN`] rather
@@ -774,20 +932,54 @@ mod tests {
         let start = Instant::now();
         let mut heavy = walk(90, start);
         heavy.fenced(40 * MS + LAG_HEAVY, true, start);
-        assert_eq!(heavy.fenced(40 * MS + LAG_HEAVY, true, start).map(|pace| pace.quality), Some(70));
+        assert_eq!(
+            heavy
+                .fenced(40 * MS + LAG_HEAVY, true, start)
+                .map(|pace| pace.quality),
+            Some(70)
+        );
         let soon = start + HEAVY_COOLDOWN;
-        assert_eq!(heavy.fenced(40 * MS + LAG_SEVERE, true, soon - MS), None, "a look inside the cooldown");
-        assert_eq!(heavy.fenced(40 * MS + LAG_SEVERE, true, soon), Some(Pace { quality: 40, interval: CAPTURE }));
+        assert_eq!(
+            heavy.fenced(40 * MS + LAG_SEVERE, true, soon - MS),
+            None,
+            "a look inside the cooldown"
+        );
+        assert_eq!(
+            heavy.fenced(40 * MS + LAG_SEVERE, true, soon),
+            Some(Pace {
+                quality: 40,
+                interval: CAPTURE
+            })
+        );
         // A full cooldown on, severe lag halves the frames as well.
         let later = soon + ADJUST_COOLDOWN;
         heavy.fenced(40 * MS + LAG_SEVERE, true, later);
-        assert_eq!(heavy.fenced(40 * MS + LAG_SEVERE, true, later), Some(Pace { quality: QUALITY_FLOOR, interval: CAPTURE * 2 }));
+        assert_eq!(
+            heavy.fenced(40 * MS + LAG_SEVERE, true, later),
+            Some(Pace {
+                quality: QUALITY_FLOOR,
+                interval: CAPTURE * 2
+            })
+        );
 
         let mut behind = walk(90, start);
         behind.fenced(40 * MS + LAG_BEHIND, true, start);
-        assert_eq!(behind.fenced(40 * MS + LAG_BEHIND, true, start).map(|pace| pace.quality), Some(80));
-        assert_eq!(behind.fenced(40 * MS + LAG_BEHIND, true, start + HEAVY_COOLDOWN), None);
-        assert_eq!(behind.fenced(40 * MS + LAG_BEHIND, true, start + ADJUST_COOLDOWN).map(|pace| pace.quality), Some(70));
+        assert_eq!(
+            behind
+                .fenced(40 * MS + LAG_BEHIND, true, start)
+                .map(|pace| pace.quality),
+            Some(80)
+        );
+        assert_eq!(
+            behind.fenced(40 * MS + LAG_BEHIND, true, start + HEAVY_COOLDOWN),
+            None
+        );
+        assert_eq!(
+            behind
+                .fenced(40 * MS + LAG_BEHIND, true, start + ADJUST_COOLDOWN)
+                .map(|pace| pace.quality),
+            Some(70)
+        );
     }
 
     #[test]
@@ -795,7 +987,10 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(60, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(50)
+        );
         let mut at = start + ADJUST_COOLDOWN;
         let mut seen = Vec::new();
         for _ in 0..6 {
@@ -817,14 +1012,38 @@ mod tests {
             walk.fenced(140 * MS, true, at);
             walk.fenced(140 * MS, true, at);
         }
-        assert_eq!(walk.pace(), Pace { quality: QUALITY_FLOOR, interval: CAPTURE * 4 });
+        assert_eq!(
+            walk.pace(),
+            Pace {
+                quality: QUALITY_FLOOR,
+                interval: CAPTURE * 4
+            }
+        );
         let at = start + ADJUST_COOLDOWN * 4;
         let (moved, at) = clear(&mut walk, CLEAR_RUN, at);
-        assert_eq!(moved, Some(Pace { quality: QUALITY_FLOOR, interval: CAPTURE * 2 }));
+        assert_eq!(
+            moved,
+            Some(Pace {
+                quality: QUALITY_FLOOR,
+                interval: CAPTURE * 2
+            })
+        );
         let (moved, at) = clear(&mut walk, CLEAR_RUN, at + ADJUST_COOLDOWN);
-        assert_eq!(moved, Some(Pace { quality: QUALITY_FLOOR, interval: CAPTURE }));
+        assert_eq!(
+            moved,
+            Some(Pace {
+                quality: QUALITY_FLOOR,
+                interval: CAPTURE
+            })
+        );
         let (moved, _) = clear(&mut walk, CLEAR_RUN, at + ADJUST_COOLDOWN);
-        assert_eq!(moved, Some(Pace { quality: QUALITY_FLOOR + STEP_UP, interval: CAPTURE }));
+        assert_eq!(
+            moved,
+            Some(Pace {
+                quality: QUALITY_FLOOR + STEP_UP,
+                interval: CAPTURE
+            })
+        );
     }
 
     #[test]
@@ -847,7 +1066,10 @@ mod tests {
         // and the walk goes back to the 63 the link bore.
         at = then + ADJUST_COOLDOWN;
         walk.fenced(140 * MS, true, at);
-        assert_eq!(walk.fenced(140 * MS, true, at).map(|pace| pace.quality), Some(63));
+        assert_eq!(
+            walk.fenced(140 * MS, true, at).map(|pace| pace.quality),
+            Some(63)
+        );
         assert_eq!(walk.refused.map(|(cap, _)| cap), Some(66));
         // Back up to 66, halfway, and no further, however clear the link — five
         // spells, well inside the hold.
@@ -871,7 +1093,11 @@ mod tests {
         let mut walk = walk(90, start);
         assert_eq!(walk.fenced(140 * MS, true, start), None);
         assert_eq!(walk.fenced(40 * MS, true, start + 33 * MS), None);
-        assert_eq!(walk.fenced(140 * MS, true, start + 66 * MS).map(|pace| pace.quality), Some(80));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start + 66 * MS)
+                .map(|pace| pace.quality),
+            Some(80)
+        );
         // But one behind frame four ago is forgotten.
         let mut once = self::walk(90, start);
         once.fenced(140 * MS, true, start);
@@ -886,7 +1112,11 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(90, start);
         walk.fenced(40 * MS + LAG_SEVERE, true, start);
-        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, start).map(|pace| pace.quality), Some(60));
+        assert_eq!(
+            walk.fenced(40 * MS + LAG_SEVERE, true, start)
+                .map(|pace| pace.quality),
+            Some(60)
+        );
         // Still well behind a second later, but a third less than it was.
         let draining = 40 * MS + LAG_SEVERE * 2 / 3;
         let at = start + ADJUST_COOLDOWN;
@@ -894,7 +1124,10 @@ mod tests {
         assert_eq!(walk.fenced(draining, true, at), None);
         // Then the drain stalls: the same lag a second on is a step.
         let at = at + ADJUST_COOLDOWN;
-        assert_eq!(walk.fenced(draining, true, at).map(|pace| pace.quality), Some(40));
+        assert_eq!(
+            walk.fenced(draining, true, at).map(|pace| pace.quality),
+            Some(40)
+        );
     }
 
     #[test]
@@ -902,14 +1135,20 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(90, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(80));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(80)
+        );
         let (moved, at) = clear(&mut walk, CLEAR_RUN, start + ADJUST_COOLDOWN);
         assert_eq!(moved.map(|pace| pace.quality), Some(83));
         // Behind within the ordinary cooldown of that step: walked back anyway,
         // to where the step came from.
         let soon = at + REFUSAL_COOLDOWN;
         walk.fenced(140 * MS, true, soon);
-        assert_eq!(walk.fenced(140 * MS, true, soon).map(|pace| pace.quality), Some(80));
+        assert_eq!(
+            walk.fenced(140 * MS, true, soon).map(|pace| pace.quality),
+            Some(80)
+        );
         assert_eq!(walk.refused.map(|(cap, _)| cap), Some(81));
     }
 
@@ -920,21 +1159,35 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(90, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(80));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(80)
+        );
         let (moved, at) = clear(&mut walk, CLEAR_RUN, start + ADJUST_COOLDOWN);
         assert_eq!(moved.map(|pace| pace.quality), Some(83));
         walk.settle(at + 33 * MS);
         let soon = at + 33 * MS + REFUSAL_COOLDOWN;
         walk.fenced(140 * MS, true, soon);
-        assert_eq!(walk.fenced(140 * MS, true, soon), None, "the settle's frames were walked back on the refusal's cooldown");
+        assert_eq!(
+            walk.fenced(140 * MS, true, soon),
+            None,
+            "the settle's frames were walked back on the refusal's cooldown"
+        );
         assert_eq!(walk.quality(), 83);
         // After the full cooldown, still inside the refusal window of the step
         // up: an ordinary step down from the settle, not a refusal of the step.
         let later = at + 33 * MS + ADJUST_COOLDOWN;
         assert!(later.saturating_duration_since(at) <= REFUSAL_WINDOW);
         // The two behind frames above are still in the window: this one is the verdict.
-        assert_eq!(walk.fenced(140 * MS, true, later).map(|pace| pace.quality), Some(73), "the step up was refused across a settle");
-        assert_eq!(walk.refused, None, "a refusal cap was installed across a settle");
+        assert_eq!(
+            walk.fenced(140 * MS, true, later).map(|pace| pace.quality),
+            Some(73),
+            "the step up was refused across a settle"
+        );
+        assert_eq!(
+            walk.refused, None,
+            "a refusal cap was installed across a settle"
+        );
     }
 
     #[test]
@@ -945,12 +1198,20 @@ mod tests {
         let mut at = start;
         while at + 33 * MS < start + KEYFRAME_HOLD {
             at += 33 * MS;
-            assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at), None, "a verdict inside the hold");
+            assert_eq!(
+                walk.fenced(40 * MS + LAG_SEVERE, true, at),
+                None,
+                "a verdict inside the hold"
+            );
         }
         assert_eq!(walk.quality(), 90);
         at += 33 * MS;
         assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at), None);
-        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at).map(|pace| pace.quality), Some(60));
+        assert_eq!(
+            walk.fenced(40 * MS + LAG_SEVERE, true, at)
+                .map(|pace| pace.quality),
+            Some(60)
+        );
     }
 
     #[test]
@@ -958,14 +1219,26 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(90, start);
         walk.fenced(40 * MS + LAG_SEVERE, true, start);
-        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, start), Some(Pace { quality: 60, interval: CAPTURE * 2 }));
+        assert_eq!(
+            walk.fenced(40 * MS + LAG_SEVERE, true, start),
+            Some(Pace {
+                quality: 60,
+                interval: CAPTURE * 2
+            })
+        );
         let mut at = start + ADJUST_COOLDOWN;
         let mut moved = None;
         for _ in 0..CLEAR_FRAMES + 1 {
             at += 250 * MS;
             moved = walk.fenced(40 * MS, true, at).or(moved);
         }
-        assert_eq!(moved, Some(Pace { quality: 60, interval: CAPTURE }));
+        assert_eq!(
+            moved,
+            Some(Pace {
+                quality: 60,
+                interval: CAPTURE
+            })
+        );
         // But four inside a quarter second are not a second of evidence.
         let mut fresh = self::walk(90, start);
         fresh.fenced(140 * MS, true, start);
@@ -993,7 +1266,10 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(90, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(80));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(80)
+        );
         // The first step up waits a second, whatever the link shows.
         let (moved, at) = idle(&mut walk, CLEAR_RUN, start);
         assert_eq!(moved, Some(83));
@@ -1004,7 +1280,10 @@ mod tests {
         assert_eq!(moved, Some(89));
         // A little queued, and the next waits a second.
         let (moved, at) = clear(&mut walk, 17, at);
-        assert_eq!(moved, None, "a link with something queued was climbed sooner");
+        assert_eq!(
+            moved, None,
+            "a link with something queued was climbed sooner"
+        );
         let (moved, _) = clear(&mut walk, CLEAR_RUN - 17, at);
         assert_eq!(moved.map(|pace| pace.quality), Some(90));
 
@@ -1014,7 +1293,11 @@ mod tests {
         settled.fenced(140 * MS, true, start);
         let (_, at) = idle(&mut settled, CLEAR_RUN, start);
         settled.settle(at);
-        assert_eq!(idle(&mut settled, 17, at), (None, at + 17 * 33 * MS), "the settle's frames were climbed sooner");
+        assert_eq!(
+            idle(&mut settled, 17, at),
+            (None, at + 17 * 33 * MS),
+            "the settle's frames were climbed sooner"
+        );
 
         // A push that did not block says nothing of the queue past the socket.
         let mut pressed = QualityWalk::new(90, CAPTURE, false);
@@ -1022,7 +1305,11 @@ mod tests {
         pressed.observe(BEHIND_BLOCK, Duration::ZERO, start);
         let (moved, at) = clear_pushes(&mut pressed, CLEAR_RUN, start);
         assert_eq!(moved.map(|pace| pace.quality), Some(83));
-        assert_eq!(clear_pushes(&mut pressed, 17, at).0, None, "a walk that is not lag-aware was climbed sooner");
+        assert_eq!(
+            clear_pushes(&mut pressed, 17, at).0,
+            None,
+            "a walk that is not lag-aware was climbed sooner"
+        );
         // Nor does it on a lag-aware walk whose client answers no fence.
         let mut unfenced = QualityWalk::new(90, CAPTURE, true);
         unfenced.written(BEHIND_BLOCK, false, start);
@@ -1036,7 +1323,11 @@ mod tests {
         assert_eq!(moved.map(|pace| pace.quality), Some(83));
         for _ in 0..17 {
             at += 33 * MS;
-            assert_eq!(unfenced.written(Duration::ZERO, false, at), None, "writes without a fence were climbed sooner");
+            assert_eq!(
+                unfenced.written(Duration::ZERO, false, at),
+                None,
+                "writes without a fence were climbed sooner"
+            );
         }
     }
 
@@ -1052,7 +1343,10 @@ mod tests {
         walk.fenced(10 * MS, false, start);
         assert_eq!(walk.floor(), 10 * MS);
         walk.fenced(100 * MS, true, start);
-        assert_eq!(walk.fenced(100 * MS, true, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.fenced(100 * MS, true, start).map(|pace| pace.quality),
+            Some(50)
+        );
     }
 
     #[test]
@@ -1063,13 +1357,20 @@ mod tests {
         walk.fenced(140 * MS, true, start);
         // Inside one baseline window: longer, and 85 ms would be the floor.
         for i in 0..200 {
-            assert_eq!(walk.fenced(85 * MS, true, start + ADJUST_COOLDOWN + i * 50 * MS), None);
+            assert_eq!(
+                walk.fenced(85 * MS, true, start + ADJUST_COOLDOWN + i * 50 * MS),
+                None
+            );
         }
         assert_eq!(walk.quality(), 50);
         // The same band on a lag already floored.
         let mut walk = QualityWalk::new(30, CAPTURE, true);
         walk.observe(BEHIND_BLOCK, Duration::ZERO, start);
-        assert_eq!(walk.observe(BEHIND_BLOCK, Duration::ZERO, start).map(|pace| pace.quality), Some(20));
+        assert_eq!(
+            walk.observe(BEHIND_BLOCK, Duration::ZERO, start)
+                .map(|pace| pace.quality),
+            Some(20)
+        );
         let hover = LAG_CLEAR + (LAG_BEHIND - LAG_CLEAR) / 2;
         let mut at = start;
         for _ in 0..CLEAR_RUN * 4 {
@@ -1084,20 +1385,39 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(60, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(50)
+        );
         walk.settle(start + 1200 * MS);
         assert_eq!(walk.quality(), 50, "the settle moved the walk");
         walk.fenced(140 * MS, true, start + 1300 * MS);
-        assert_eq!(walk.fenced(140 * MS, true, start + 1300 * MS), None, "the settle was a move");
+        assert_eq!(
+            walk.fenced(140 * MS, true, start + 1300 * MS),
+            None,
+            "the settle was a move"
+        );
         // Counted all the same: the cooldown over, the verdict is already in.
-        assert_eq!(walk.fenced(140 * MS, true, start + 2300 * MS).map(|pace| pace.quality), Some(40));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start + 2300 * MS)
+                .map(|pace| pace.quality),
+            Some(40)
+        );
         // However far behind the frames after it are, a settle is owed the
         // full cooldown, not the one after a step down.
         let at = start + 4000 * MS;
         walk.settle(at);
         walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN);
-        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN), None, "the settle's frames were stepped on");
-        assert_eq!(walk.fenced(40 * MS + LAG_SEVERE, true, at + ADJUST_COOLDOWN).map(|pace| pace.quality), Some(QUALITY_FLOOR));
+        assert_eq!(
+            walk.fenced(40 * MS + LAG_SEVERE, true, at + HEAVY_COOLDOWN),
+            None,
+            "the settle's frames were stepped on"
+        );
+        assert_eq!(
+            walk.fenced(40 * MS + LAG_SEVERE, true, at + ADJUST_COOLDOWN)
+                .map(|pace| pace.quality),
+            Some(QUALITY_FLOOR)
+        );
     }
 
     /// The clear frames before a desktop went quiet do not span the quiet: a
@@ -1107,7 +1427,10 @@ mod tests {
         let start = Instant::now();
         let mut walk = walk(60, start);
         walk.fenced(140 * MS, true, start);
-        assert_eq!(walk.fenced(140 * MS, true, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.fenced(140 * MS, true, start).map(|pace| pace.quality),
+            Some(50)
+        );
         // Three clear frames, the cooldown over, and then the desktop goes quiet.
         let (moved, at) = clear(&mut walk, CLEAR_FRAMES - 1, start + ADJUST_COOLDOWN);
         assert_eq!(moved, None);
@@ -1115,7 +1438,11 @@ mod tests {
         // The first frame of the next burst, a clear span and more after those
         // three, does not make the fourth.
         let at = at + 5000 * MS + ADJUST_COOLDOWN;
-        assert_eq!(walk.fenced(40 * MS, true, at), None, "the quiet was counted as clear");
+        assert_eq!(
+            walk.fenced(40 * MS, true, at),
+            None,
+            "the quiet was counted as clear"
+        );
         // Its own run is what takes quality back.
         let (moved, _) = clear(&mut walk, CLEAR_RUN, at);
         assert_eq!(moved.map(|pace| pace.quality), Some(50 + STEP_UP));
@@ -1126,7 +1453,10 @@ mod tests {
         let start = Instant::now();
         let mut walk = QualityWalk::new(60, CAPTURE, true);
         assert_eq!(walk.written(80 * MS, false, start), None);
-        assert_eq!(walk.written(80 * MS, false, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.written(80 * MS, false, start).map(|pace| pace.quality),
+            Some(50)
+        );
     }
 
     /// With a fence to come, a lag-aware walk leaves the write to the fence:
@@ -1157,10 +1487,16 @@ mod tests {
         }
         assert_eq!(walk.quality(), 60);
         assert_eq!(walk.written(80 * MS, true, start), None);
-        assert_eq!(walk.written(80 * MS, true, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.written(80 * MS, true, start).map(|pace| pace.quality),
+            Some(50)
+        );
         let mut walk = QualityWalk::new(60, CAPTURE, false);
         assert_eq!(walk.written(80 * MS, false, start), None);
-        assert_eq!(walk.written(80 * MS, false, start).map(|pace| pace.quality), Some(50));
+        assert_eq!(
+            walk.written(80 * MS, false, start).map(|pace| pace.quality),
+            Some(50)
+        );
     }
 
     /// A lag-aware walk gives quality up on the client's lag alone: the push
@@ -1170,7 +1506,11 @@ mod tests {
         let start = Instant::now();
         let mut walk = QualityWalk::new(30, CAPTURE, true);
         assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, start), None);
-        assert_eq!(walk.observe(Duration::ZERO, LAG_BEHIND, start).map(|pace| pace.quality), Some(20));
+        assert_eq!(
+            walk.observe(Duration::ZERO, LAG_BEHIND, start)
+                .map(|pace| pace.quality),
+            Some(20)
+        );
     }
 
     #[test]
@@ -1184,7 +1524,11 @@ mod tests {
             walk.fenced(240 * MS, true, at);
             walk.fenced(240 * MS, true, at);
         }
-        assert_eq!(walk.quality(), QUALITY_FLOOR, "the old floor made the new route read as queueing");
+        assert_eq!(
+            walk.quality(),
+            QUALITY_FLOOR,
+            "the old floor made the new route read as queueing"
+        );
         assert_eq!(walk.interval(), CAPTURE * 8);
         // Once the old floor has left the window, the new route is a link that
         // keeps up: the frames come back, then the quality. A little is queued
@@ -1194,13 +1538,23 @@ mod tests {
         for _ in 0..5 {
             let (last, then) = (0..CLEAR_RUN).fold((None, at), |(last, at), i| {
                 let at = at + 33 * MS;
-                let queued = if i % 2 == 0 { Duration::ZERO } else { LAG_CLEAR };
+                let queued = if i % 2 == 0 {
+                    Duration::ZERO
+                } else {
+                    LAG_CLEAR
+                };
                 (walk.fenced(240 * MS + queued, true, at).or(last), at)
             });
             moved.extend(last);
             at = then + ADJUST_COOLDOWN;
         }
         // Three runs take the frames back, then two steps up: three, then six.
-        assert_eq!(moved.last(), Some(&Pace { quality: QUALITY_FLOOR + 3 * STEP_UP, interval: CAPTURE }));
+        assert_eq!(
+            moved.last(),
+            Some(&Pace {
+                quality: QUALITY_FLOOR + 3 * STEP_UP,
+                interval: CAPTURE
+            })
+        );
     }
 }

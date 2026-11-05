@@ -97,7 +97,11 @@ impl PixelFormat {
             return Err(PixelFormatError::ColourMap);
         }
         if (self.red_max, self.green_max, self.blue_max) != (255, 255, 255) {
-            return Err(PixelFormatError::ChannelMax(self.red_max, self.green_max, self.blue_max));
+            return Err(PixelFormatError::ChannelMax(
+                self.red_max,
+                self.green_max,
+                self.blue_max,
+            ));
         }
         for shift in [self.red_shift, self.green_shift, self.blue_shift] {
             if shift > 24 {
@@ -106,7 +110,11 @@ impl PixelFormat {
         }
         let masks = [self.red_shift, self.green_shift, self.blue_shift].map(|s| 0xFFu32 << s);
         if masks[0] & masks[1] != 0 || masks[0] & masks[2] != 0 || masks[1] & masks[2] != 0 {
-            return Err(PixelFormatError::Overlap(self.red_shift, self.green_shift, self.blue_shift));
+            return Err(PixelFormatError::Overlap(
+                self.red_shift,
+                self.green_shift,
+                self.blue_shift,
+            ));
         }
         Ok(())
     }
@@ -125,26 +133,41 @@ impl PixelFormat {
     #[inline]
     pub fn value(&self, bgrx: [u8; 4]) -> u32 {
         let [b, g, r, _] = bgrx;
-        (u32::from(r) << self.red_shift) | (u32::from(g) << self.green_shift) | (u32::from(b) << self.blue_shift)
+        (u32::from(r) << self.red_shift)
+            | (u32::from(g) << self.green_shift)
+            | (u32::from(b) << self.blue_shift)
     }
 
     /// The framebuffer pixel a value in this format stands for: [`Self::value`]
     /// the other way, which is a client's way.
     #[cfg(test)]
     pub(crate) fn bgrx(&self, value: u32) -> [u8; 4] {
-        [(value >> self.blue_shift) as u8, (value >> self.green_shift) as u8, (value >> self.red_shift) as u8, 0]
+        [
+            (value >> self.blue_shift) as u8,
+            (value >> self.green_shift) as u8,
+            (value >> self.red_shift) as u8,
+            0,
+        ]
     }
 
     /// The value four PIXEL bytes hold, in this format's byte order.
     #[cfg(test)]
     pub(crate) fn pixel_value(&self, bytes: [u8; 4]) -> u32 {
-        if self.big_endian { u32::from_be_bytes(bytes) } else { u32::from_le_bytes(bytes) }
+        if self.big_endian {
+            u32::from_be_bytes(bytes)
+        } else {
+            u32::from_le_bytes(bytes)
+        }
     }
 
     /// A PIXEL's four bytes for a value, in this format's byte order.
     #[inline]
     pub fn pixel_bytes(&self, value: u32) -> [u8; 4] {
-        if self.big_endian { value.to_be_bytes() } else { value.to_le_bytes() }
+        if self.big_endian {
+            value.to_be_bytes()
+        } else {
+            value.to_le_bytes()
+        }
     }
 
     /// Where ZRLE's CPIXEL sits inside [`Self::pixel_bytes`]: `(offset, length)`.
@@ -156,7 +179,9 @@ impl PixelFormat {
         if self.bits_per_pixel != 32 || self.depth > 24 {
             return (0, 4);
         }
-        let mask = (0xFFu32 << self.red_shift) | (0xFFu32 << self.green_shift) | (0xFFu32 << self.blue_shift);
+        let mask = (0xFFu32 << self.red_shift)
+            | (0xFFu32 << self.green_shift)
+            | (0xFFu32 << self.blue_shift);
         if mask & 0xFF00_0000 == 0 {
             // Least significant three bytes.
             if self.big_endian { (1, 3) } else { (0, 3) }
@@ -188,36 +213,83 @@ mod tests {
 
     #[test]
     fn a_big_endian_rgbx_format_is_swizzled_and_its_cpixel_is_the_low_bytes() {
-        let f = PixelFormat { big_endian: true, ..PixelFormat::NATIVE };
+        let f = PixelFormat {
+            big_endian: true,
+            ..PixelFormat::NATIVE
+        };
         assert!(!f.is_native());
         f.check().unwrap();
-        assert_eq!(f.pixel_bytes(f.value([0x11, 0x22, 0x33, 0])), [0x00, 0x33, 0x22, 0x11]);
-        assert_eq!(f.bgrx(f.pixel_value([0x00, 0x33, 0x22, 0x11])), [0x11, 0x22, 0x33, 0]);
+        assert_eq!(
+            f.pixel_bytes(f.value([0x11, 0x22, 0x33, 0])),
+            [0x00, 0x33, 0x22, 0x11]
+        );
+        assert_eq!(
+            f.bgrx(f.pixel_value([0x00, 0x33, 0x22, 0x11])),
+            [0x11, 0x22, 0x33, 0]
+        );
         assert_eq!(f.cpixel(), (1, 3));
     }
 
     #[test]
     fn a_format_with_a_channel_in_the_top_byte_uses_the_high_cpixel() {
-        let f = PixelFormat { red_shift: 24, green_shift: 16, blue_shift: 8, ..PixelFormat::NATIVE };
+        let f = PixelFormat {
+            red_shift: 24,
+            green_shift: 16,
+            blue_shift: 8,
+            ..PixelFormat::NATIVE
+        };
         f.check().unwrap();
         assert_eq!(f.cpixel(), (1, 3));
-        assert_eq!(PixelFormat { big_endian: true, ..f }.cpixel(), (0, 3));
+        assert_eq!(
+            PixelFormat {
+                big_endian: true,
+                ..f
+            }
+            .cpixel(),
+            (0, 3)
+        );
     }
 
     #[test]
     fn unsupported_formats_are_named() {
         assert_eq!(
-            PixelFormat { bits_per_pixel: 16, ..PixelFormat::NATIVE }.check(),
+            PixelFormat {
+                bits_per_pixel: 16,
+                ..PixelFormat::NATIVE
+            }
+            .check(),
             Err(PixelFormatError::BitsPerPixel(16))
         );
-        assert_eq!(PixelFormat { true_colour: false, ..PixelFormat::NATIVE }.check(), Err(PixelFormatError::ColourMap));
         assert_eq!(
-            PixelFormat { red_max: 31, ..PixelFormat::NATIVE }.check(),
+            PixelFormat {
+                true_colour: false,
+                ..PixelFormat::NATIVE
+            }
+            .check(),
+            Err(PixelFormatError::ColourMap)
+        );
+        assert_eq!(
+            PixelFormat {
+                red_max: 31,
+                ..PixelFormat::NATIVE
+            }
+            .check(),
             Err(PixelFormatError::ChannelMax(31, 255, 255))
         );
-        assert_eq!(PixelFormat { red_shift: 25, ..PixelFormat::NATIVE }.check(), Err(PixelFormatError::Shift(25)));
         assert_eq!(
-            PixelFormat { red_shift: 4, ..PixelFormat::NATIVE }.check(),
+            PixelFormat {
+                red_shift: 25,
+                ..PixelFormat::NATIVE
+            }
+            .check(),
+            Err(PixelFormatError::Shift(25))
+        );
+        assert_eq!(
+            PixelFormat {
+                red_shift: 4,
+                ..PixelFormat::NATIVE
+            }
+            .check(),
             Err(PixelFormatError::Overlap(4, 8, 0))
         );
     }

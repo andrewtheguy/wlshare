@@ -140,9 +140,13 @@ fn default_name() -> String {
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        let config: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        config.validate().with_context(|| format!("in {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let config: Self =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        config
+            .validate()
+            .with_context(|| format!("in {}", path.display()))?;
         Ok(config)
     }
 
@@ -150,8 +154,14 @@ impl Config {
     /// can finish inside, and one answer to the question of who may connect.
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.max_fps > 0, "max_fps must be at least 1");
-        anyhow::ensure!(self.handshake_timeout_secs > 0, "handshake_timeout_secs must be at least 1");
-        anyhow::ensure!(self.output_wait_secs == 0 || self.output.is_some(), "output_wait_secs waits for `output`, which is not set");
+        anyhow::ensure!(
+            self.handshake_timeout_secs > 0,
+            "handshake_timeout_secs must be at least 1"
+        );
+        anyhow::ensure!(
+            self.output_wait_secs == 0 || self.output.is_some(),
+            "output_wait_secs waits for `output`, which is not set"
+        );
         anyhow::ensure!(
             !(self.pam.is_some() && self.password.is_some()),
             "[pam] and [password] are two answers to the same question; keep one"
@@ -168,7 +178,11 @@ impl Config {
             (None, Some(password)) => &password.rsa_key_file,
             (None, None) => return None,
         };
-        Some(configured.clone().unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")))
+        Some(
+            configured
+                .clone()
+                .unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")),
+        )
     }
 }
 
@@ -232,9 +246,16 @@ mod tests {
         let c: Config = toml::from_str("[password]\nhash = \"$argon2id$v=19$x\"").unwrap();
         c.validate().unwrap();
         assert_eq!(c.password.as_ref().unwrap().hash, "$argon2id$v=19$x");
-        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/etc/x/rsa_key.pem")));
-        let c: Config = toml::from_str("[password]\nhash = \"h\"\nrsa_key_file = \"/k.pem\"").unwrap();
-        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/k.pem")));
+        assert_eq!(
+            c.rsa_key_file(Path::new("/etc/x/config.toml")),
+            Some(PathBuf::from("/etc/x/rsa_key.pem"))
+        );
+        let c: Config =
+            toml::from_str("[password]\nhash = \"h\"\nrsa_key_file = \"/k.pem\"").unwrap();
+        assert_eq!(
+            c.rsa_key_file(Path::new("/etc/x/config.toml")),
+            Some(PathBuf::from("/k.pem"))
+        );
         // A hash is the whole point of the table, and both tables at once is a
         // question with two answers.
         assert!(toml::from_str::<Config>("[password]\n").is_err());
@@ -247,10 +268,17 @@ mod tests {
         let c: Config = toml::from_str("[pam]\n").unwrap();
         let pam = c.pam.as_ref().unwrap();
         assert_eq!(pam.service, "wlshare");
-        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/etc/x/rsa_key.pem")));
-        let c: Config = toml::from_str("[pam]\nservice = \"vnc\"\nrsa_key_file = \"/k.pem\"").unwrap();
+        assert_eq!(
+            c.rsa_key_file(Path::new("/etc/x/config.toml")),
+            Some(PathBuf::from("/etc/x/rsa_key.pem"))
+        );
+        let c: Config =
+            toml::from_str("[pam]\nservice = \"vnc\"\nrsa_key_file = \"/k.pem\"").unwrap();
         assert_eq!(c.pam.as_ref().unwrap().service, "vnc");
-        assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), Some(PathBuf::from("/k.pem")));
+        assert_eq!(
+            c.rsa_key_file(Path::new("/etc/x/config.toml")),
+            Some(PathBuf::from("/k.pem"))
+        );
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), None);
     }
@@ -268,7 +296,12 @@ mod tests {
     /// on: their keys are refused rather than read and ignored.
     #[test]
     fn the_audio_camera_microphone_and_resize_keys_are_no_longer_keys() {
-        for key in ["audio = true", "camera = true", "microphone = false", "resize = true"] {
+        for key in [
+            "audio = true",
+            "camera = true",
+            "microphone = false",
+            "resize = true",
+        ] {
             assert!(toml::from_str::<Config>(key).is_err(), "{key}");
         }
     }

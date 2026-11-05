@@ -14,19 +14,25 @@
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
-use wlshare_proto::audio::{AUDIO_FRAME_HEADER_LEN, AudioParseError, MSG_AUDIO_FRAME, MSG_QEMU, ServerAudio};
+use wlshare_proto::audio::{
+    AUDIO_FRAME_HEADER_LEN, AudioParseError, MSG_AUDIO_FRAME, MSG_QEMU, ServerAudio,
+};
 use wlshare_proto::density::{Density, MSG_DENSITY};
 use wlshare_proto::tiles::{TileHeader, TilesParseError};
 use wlshare_proto::video::{FRAME_HEADER_LEN, VideoFrameError};
 use wlshare_proto::{ENCODING_AUDIO, ENCODING_TILES, ENCODING_VIDEO};
 
 use crate::rfb::msg::{
-    CLIENT_ENABLE_CONTINUOUS_UPDATES, CLIENT_FENCE, CLIENT_FRAMEBUFFER_UPDATE_REQUEST, CLIENT_KEY_EVENT, CLIENT_POINTER_EVENT,
-    CLIENT_SET_DESKTOP_SIZE, CLIENT_SET_ENCODINGS, CLIENT_SET_PIXEL_FORMAT, FENCE_MAX_PAYLOAD, MAX_CUT_TEXT, MAX_RECT_BODY, SERVER_CUT_TEXT,
+    CLIENT_ENABLE_CONTINUOUS_UPDATES, CLIENT_FENCE, CLIENT_FRAMEBUFFER_UPDATE_REQUEST,
+    CLIENT_KEY_EVENT, CLIENT_POINTER_EVENT, CLIENT_SET_DESKTOP_SIZE, CLIENT_SET_ENCODINGS,
+    CLIENT_SET_PIXEL_FORMAT, FENCE_MAX_PAYLOAD, MAX_CUT_TEXT, MAX_RECT_BODY, SERVER_CUT_TEXT,
     SERVER_END_OF_CONTINUOUS_UPDATES, SERVER_FENCE, SERVER_FRAMEBUFFER_UPDATE, Screen,
 };
 use crate::rfb::pixel::PixelFormat;
-use crate::rfb::{ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW, ENCODING_ZRLE};
+use crate::rfb::{
+    ENCODING_CURSOR, ENCODING_CURSOR_WITH_ALPHA, ENCODING_DESKTOP_SIZE,
+    ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_RAW, ENCODING_ZRLE,
+};
 
 // ── Handshake ────────────────────────────────────────────────────────────────
 
@@ -58,13 +64,17 @@ pub async fn read_version<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Ha
     let mut version = [0u8; 12];
     reader.read_exact(&mut version).await?;
     if &version != crate::rfb::msg::PROTOCOL_VERSION {
-        return Err(HandshakeError::Version(String::from_utf8_lossy(&version).trim_end().to_owned()));
+        return Err(HandshakeError::Version(
+            String::from_utf8_lossy(&version).trim_end().to_owned(),
+        ));
     }
     Ok(())
 }
 
 /// Read the security types on offer, or the reason there are none.
-pub async fn read_security_types<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, HandshakeError> {
+pub async fn read_security_types<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Vec<u8>, HandshakeError> {
     let count = usize::from(reader.read_u8().await?);
     if count == 0 {
         return Err(HandshakeError::Refused(read_text(reader).await?));
@@ -75,7 +85,9 @@ pub async fn read_security_types<R: AsyncRead + Unpin>(reader: &mut R) -> Result
 }
 
 /// Read the SecurityResult, and the reason behind a failed one.
-pub async fn read_security_result<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), HandshakeError> {
+pub async fn read_security_result<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<(), HandshakeError> {
     match reader.read_u32().await? {
         0 => Ok(()),
         _ => Err(HandshakeError::Failed(read_text(reader).await?)),
@@ -92,20 +104,29 @@ pub struct ServerInit {
     pub name: String,
 }
 
-pub async fn read_server_init<R: AsyncRead + Unpin>(reader: &mut R) -> Result<ServerInit, HandshakeError> {
+pub async fn read_server_init<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<ServerInit, HandshakeError> {
     let width = reader.read_u16().await?;
     let height = reader.read_u16().await?;
     let mut format = [0u8; 16];
     reader.read_exact(&mut format).await?;
     let name = read_text(reader).await?;
-    Ok(ServerInit { width, height, format: PixelFormat::parse(&format), name })
+    Ok(ServerInit {
+        width,
+        height,
+        format: PixelFormat::parse(&format),
+        name,
+    })
 }
 
 /// Read the server's answer to the protocol version the client's first list
 /// of private encodings carried ([`wlshare_proto::version`]): the first
 /// message after it, which must name this build's version. Anything else
 /// first is no answer, and is not waited out to the answer's length.
-pub async fn read_protocol_version<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), HandshakeError> {
+pub async fn read_protocol_version<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<(), HandshakeError> {
     let mut answer = [0u8; wlshare_proto::version::ANSWER_LEN];
     reader.read_exact(&mut answer[..1]).await?;
     if answer[0] == 0 {
@@ -157,12 +178,38 @@ fn region(kind: u8, flag: bool, x: u16, y: u16, width: u16, height: u16) -> [u8;
     msg
 }
 
-pub fn framebuffer_update_request(incremental: bool, x: u16, y: u16, width: u16, height: u16) -> [u8; 10] {
-    region(CLIENT_FRAMEBUFFER_UPDATE_REQUEST, incremental, x, y, width, height)
+pub fn framebuffer_update_request(
+    incremental: bool,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+) -> [u8; 10] {
+    region(
+        CLIENT_FRAMEBUFFER_UPDATE_REQUEST,
+        incremental,
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
-pub fn enable_continuous_updates(enable: bool, x: u16, y: u16, width: u16, height: u16) -> [u8; 10] {
-    region(CLIENT_ENABLE_CONTINUOUS_UPDATES, enable, x, y, width, height)
+pub fn enable_continuous_updates(
+    enable: bool,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+) -> [u8; 10] {
+    region(
+        CLIENT_ENABLE_CONTINUOUS_UPDATES,
+        enable,
+        x,
+        y,
+        width,
+        height,
+    )
 }
 
 /// A KeyEvent carrying an X11 keysym.
@@ -296,10 +343,17 @@ pub enum ServerMsg {
     /// with a negative length.
     ExtendedCutText(Vec<u8>),
     EndOfContinuousUpdates,
-    Fence { flags: u32, payload: Vec<u8> },
+    Fence {
+        flags: u32,
+        payload: Vec<u8>,
+    },
     /// The density extension's `OutputScale`: the framebuffer's size and the
     /// scale it is drawn at, as 16.16 fixed point.
-    OutputScale { width: u16, height: u16, fixed: u32 },
+    OutputScale {
+        width: u16,
+        height: u16,
+        fixed: u32,
+    },
     /// The audio extension: a stream is starting, and its frames follow.
     AudioBegin,
     /// The audio extension: the stream stopped.
@@ -344,7 +398,9 @@ fn u32_at(b: &[u8], i: usize) -> u32 {
 ///
 /// `Ok(None)` means more bytes are needed and nothing was consumed.
 pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
-    let Some(&kind) = buf.first() else { return Ok(None) };
+    let Some(&kind) = buf.first() else {
+        return Ok(None);
+    };
     macro_rules! need {
         ($n:expr) => {
             if buf.len() < $n {
@@ -359,7 +415,9 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
             let mut at = 4;
             let mut rects = Vec::with_capacity(count);
             for _ in 0..count {
-                let Some((rect, used)) = parse_rect(&buf[at..])? else { return Ok(None) };
+                let Some((rect, used)) = parse_rect(&buf[at..])? else {
+                    return Ok(None);
+                };
                 rects.push(rect);
                 at += used;
             }
@@ -375,7 +433,14 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
             }
             need!(8 + len);
             let body = buf[8..8 + len].to_vec();
-            (if extended { ServerMsg::ExtendedCutText(body) } else { ServerMsg::CutText(body) }, 8 + len)
+            (
+                if extended {
+                    ServerMsg::ExtendedCutText(body)
+                } else {
+                    ServerMsg::CutText(body)
+                },
+                8 + len,
+            )
         }
         SERVER_END_OF_CONTINUOUS_UPDATES => (ServerMsg::EndOfContinuousUpdates, 1),
         SERVER_FENCE => {
@@ -385,11 +450,34 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
                 return Err(ParseError::FencePayloadTooLong(len));
             }
             need!(9 + len);
-            (ServerMsg::Fence { flags: u32_at(buf, 4), payload: buf[9..9 + len].to_vec() }, 9 + len)
+            (
+                ServerMsg::Fence {
+                    flags: u32_at(buf, 4),
+                    payload: buf[9..9 + len].to_vec(),
+                },
+                9 + len,
+            )
         }
         MSG_DENSITY => {
-            let Some((Density { width, height, fixed }, used)) = Density::parse(buf) else { return Ok(None) };
-            (ServerMsg::OutputScale { width, height, fixed }, used)
+            let Some((
+                Density {
+                    width,
+                    height,
+                    fixed,
+                },
+                used,
+            )) = Density::parse(buf)
+            else {
+                return Ok(None);
+            };
+            (
+                ServerMsg::OutputScale {
+                    width,
+                    height,
+                    fixed,
+                },
+                used,
+            )
         }
         MSG_QEMU => match wlshare_proto::audio::parse_server(buf)? {
             None => return Ok(None),
@@ -397,10 +485,17 @@ pub fn parse(buf: &[u8]) -> Result<Option<(ServerMsg, usize)>, ParseError> {
             Some((ServerAudio::End, used)) => (ServerMsg::AudioEnd, used),
         },
         MSG_AUDIO_FRAME => {
-            let Some(header) = buf.first_chunk() else { return Ok(None) };
+            let Some(header) = buf.first_chunk() else {
+                return Ok(None);
+            };
             let len = wlshare_proto::audio::frame_len(header)?;
             need!(AUDIO_FRAME_HEADER_LEN + len);
-            (ServerMsg::AudioFrame(buf[AUDIO_FRAME_HEADER_LEN..AUDIO_FRAME_HEADER_LEN + len].to_vec()), AUDIO_FRAME_HEADER_LEN + len)
+            (
+                ServerMsg::AudioFrame(
+                    buf[AUDIO_FRAME_HEADER_LEN..AUDIO_FRAME_HEADER_LEN + len].to_vec(),
+                ),
+                AUDIO_FRAME_HEADER_LEN + len,
+            )
         }
         other => return Err(ParseError::UnknownType(other)),
     };
@@ -413,7 +508,12 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
     if buf.len() < 12 {
         return Ok(None);
     }
-    let (x, y, width, height) = (u16_at(buf, 0), u16_at(buf, 2), u16_at(buf, 4), u16_at(buf, 6));
+    let (x, y, width, height) = (
+        u16_at(buf, 0),
+        u16_at(buf, 2),
+        u16_at(buf, 4),
+        u16_at(buf, 6),
+    );
     let encoding = u32_at(buf, 8) as i32;
     let pixels = usize::from(width) * usize::from(height) * 4;
     // Take `len` bytes at `from`, or ask for more.
@@ -425,7 +525,9 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
     };
     let (body, used) = match encoding {
         ENCODING_RAW => {
-            let Some(raw) = take(12, pixels)? else { return Ok(None) };
+            let Some(raw) = take(12, pixels)? else {
+                return Ok(None);
+            };
             (RectBody::Raw(raw), 12 + pixels)
         }
         ENCODING_ZRLE => {
@@ -433,31 +535,45 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                 return Ok(None);
             }
             let len = u32_at(buf, 12) as usize;
-            let Some(payload) = take(16, len)? else { return Ok(None) };
+            let Some(payload) = take(16, len)? else {
+                return Ok(None);
+            };
             (RectBody::Zrle(payload), 16 + len)
         }
         ENCODING_VIDEO => {
-            let Some(header) = buf[12..].first_chunk::<FRAME_HEADER_LEN>() else { return Ok(None) };
+            let Some(header) = buf[12..].first_chunk::<FRAME_HEADER_LEN>() else {
+                return Ok(None);
+            };
             let len = wlshare_proto::video::parse_frame_header(header)?;
             let at = 12 + FRAME_HEADER_LEN;
-            let Some(frame) = take(at, len)? else { return Ok(None) };
+            let Some(frame) = take(at, len)? else {
+                return Ok(None);
+            };
             (RectBody::Video(frame), at + len)
         }
         ENCODING_TILES => {
-            let Some((header, used)) = TileHeader::parse(&buf[12..])? else { return Ok(None) };
+            let Some((header, used)) = TileHeader::parse(&buf[12..])? else {
+                return Ok(None);
+            };
             let at = 12 + used;
             let body = |len: usize| take(at, len);
             match header {
                 TileHeader::Png { len } => {
-                    let Some(png) = body(len)? else { return Ok(None) };
+                    let Some(png) = body(len)? else {
+                        return Ok(None);
+                    };
                     (RectBody::Tiles(TileBody::Png(png)), at + len)
                 }
                 TileHeader::Start { stream, len } => {
-                    let Some(frame) = body(len)? else { return Ok(None) };
+                    let Some(frame) = body(len)? else {
+                        return Ok(None);
+                    };
                     (RectBody::Tiles(TileBody::Start { stream, frame }), at + len)
                 }
                 TileHeader::Frame { stream, len } => {
-                    let Some(frame) = body(len)? else { return Ok(None) };
+                    let Some(frame) = body(len)? else {
+                        return Ok(None);
+                    };
                     (RectBody::Tiles(TileBody::Frame { stream, frame }), at + len)
                 }
                 TileHeader::End { stream } => (RectBody::Tiles(TileBody::End { stream }), at),
@@ -465,15 +581,21 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                 TileHeader::Cached { slot } => (RectBody::Tiles(TileBody::Cached { slot }), at),
                 TileHeader::Store { slot } => (RectBody::Tiles(TileBody::Store { slot }), at),
                 TileHeader::Progressive { len } => {
-                    let Some(block) = body(len)? else { return Ok(None) };
+                    let Some(block) = body(len)? else {
+                        return Ok(None);
+                    };
                     (RectBody::Tiles(TileBody::Progressive(block)), at + len)
                 }
                 TileHeader::Planar { len } => {
-                    let Some(bitmap) = body(len)? else { return Ok(None) };
+                    let Some(bitmap) = body(len)? else {
+                        return Ok(None);
+                    };
                     (RectBody::Tiles(TileBody::Planar(bitmap)), at + len)
                 }
                 TileHeader::Still { len } => {
-                    let Some(bytes) = body(len)? else { return Ok(None) };
+                    let Some(bytes) = body(len)? else {
+                        return Ok(None);
+                    };
                     (RectBody::Tiles(TileBody::Still(bytes)), at + len)
                 }
             }
@@ -504,11 +626,16 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
         }
         ENCODING_CURSOR => {
             let mask_len = usize::from(width).div_ceil(8) * usize::from(height);
-            let Some(body) = take(12, pixels + mask_len)? else { return Ok(None) };
+            let Some(body) = take(12, pixels + mask_len)? else {
+                return Ok(None);
+            };
             let mask = body[pixels..].to_vec();
             let mut body = body;
             body.truncate(pixels);
-            (RectBody::Cursor { pixels: body, mask }, 12 + pixels + mask_len)
+            (
+                RectBody::Cursor { pixels: body, mask },
+                12 + pixels + mask_len,
+            )
         }
         ENCODING_CURSOR_WITH_ALPHA => {
             if buf.len() < 16 {
@@ -518,21 +645,36 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             if inner != ENCODING_RAW {
                 return Err(ParseError::CursorEncoding(inner));
             }
-            let Some(rgba) = take(16, pixels)? else { return Ok(None) };
+            let Some(rgba) = take(16, pixels)? else {
+                return Ok(None);
+            };
             (RectBody::AlphaCursor(rgba), 16 + pixels)
         }
         ENCODING_AUDIO => (RectBody::Audio, 12),
         other => return Err(ParseError::UnknownEncoding(other)),
     };
-    Ok(Some((Rect { x, y, width, height, body }, used)))
+    Ok(Some((
+        Rect {
+            x,
+            y,
+            width,
+            height,
+            body,
+        },
+        used,
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wlshare_proto::audio::{AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect};
-    use wlshare_proto::tiles::{KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PLANAR, KIND_PNG, KIND_PROGRESSIVE, KIND_START, KIND_STILL, KIND_STORE};
-
+    use wlshare_proto::audio::{
+        AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect,
+    };
+    use wlshare_proto::tiles::{
+        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PLANAR, KIND_PNG, KIND_PROGRESSIVE,
+        KIND_START, KIND_STILL, KIND_STORE,
+    };
 
     use crate::rfb::audio::FlacEncoder;
     use crate::rfb::cursor::{CursorImage, alpha_cursor_rect, cursor_rect};
@@ -546,45 +688,127 @@ mod tests {
             assert_eq!(n, bytes.len(), "{m:?} is the whole message");
             m
         };
-        let rgbx = PixelFormat { red_shift: 0, green_shift: 8, blue_shift: 16, ..PixelFormat::NATIVE };
-        assert_eq!(parsed(&set_pixel_format(&rgbx)), ClientMsg::SetPixelFormat(rgbx));
+        let rgbx = PixelFormat {
+            red_shift: 0,
+            green_shift: 8,
+            blue_shift: 16,
+            ..PixelFormat::NATIVE
+        };
         assert_eq!(
-            parsed(&set_encodings(&[ENCODING_ZRLE, ENCODING_CURSOR, wlshare_proto::ENCODING_DENSITY])),
+            parsed(&set_pixel_format(&rgbx)),
+            ClientMsg::SetPixelFormat(rgbx)
+        );
+        assert_eq!(
+            parsed(&set_encodings(&[
+                ENCODING_ZRLE,
+                ENCODING_CURSOR,
+                wlshare_proto::ENCODING_DENSITY
+            ])),
             ClientMsg::SetEncodings(vec![16, -239, 0x574c_5348])
         );
         assert_eq!(
             parsed(&framebuffer_update_request(true, 1, 2, 3456, 1802)),
-            ClientMsg::FramebufferUpdateRequest { incremental: true, x: 1, y: 2, width: 3456, height: 1802 }
+            ClientMsg::FramebufferUpdateRequest {
+                incremental: true,
+                x: 1,
+                y: 2,
+                width: 3456,
+                height: 1802
+            }
         );
         assert_eq!(
             parsed(&enable_continuous_updates(true, 0, 0, 8, 4)),
-            ClientMsg::EnableContinuousUpdates { enable: true, x: 0, y: 0, width: 8, height: 4 }
+            ClientMsg::EnableContinuousUpdates {
+                enable: true,
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 4
+            }
         );
-        assert_eq!(parsed(&key_event(true, 0xFFEB)), ClientMsg::KeyEvent { down: true, keysym: 0xFFEB });
-        assert_eq!(parsed(&key_event(false, 0x0100_20AC)), ClientMsg::KeyEvent { down: false, keysym: 0x0100_20AC });
-        assert_eq!(parsed(&pointer_event(0b101, 300, 20)), ClientMsg::PointerEvent { buttons: 5, x: 300, y: 20 });
-        assert_eq!(parsed(&wlshare_proto::scroll::scroll(48, -700)), ClientMsg::Scroll { dx: 48, dy: -700 });
-        assert_eq!(parsed(&wlshare_proto::tiles::cache_empty()), ClientMsg::CacheEmpty);
-        assert_eq!(parsed(&fence(msg::FENCE_BLOCK_BEFORE, &[0, 0, 0, 9])), ClientMsg::Fence { flags: 1, payload: vec![0, 0, 0, 9] });
+        assert_eq!(
+            parsed(&key_event(true, 0xFFEB)),
+            ClientMsg::KeyEvent {
+                down: true,
+                keysym: 0xFFEB
+            }
+        );
+        assert_eq!(
+            parsed(&key_event(false, 0x0100_20AC)),
+            ClientMsg::KeyEvent {
+                down: false,
+                keysym: 0x0100_20AC
+            }
+        );
+        assert_eq!(
+            parsed(&pointer_event(0b101, 300, 20)),
+            ClientMsg::PointerEvent {
+                buttons: 5,
+                x: 300,
+                y: 20
+            }
+        );
+        assert_eq!(
+            parsed(&wlshare_proto::scroll::scroll(48, -700)),
+            ClientMsg::Scroll { dx: 48, dy: -700 }
+        );
+        assert_eq!(
+            parsed(&wlshare_proto::tiles::cache_empty()),
+            ClientMsg::CacheEmpty
+        );
+        assert_eq!(
+            parsed(&fence(msg::FENCE_BLOCK_BEFORE, &[0, 0, 0, 9])),
+            ClientMsg::Fence {
+                flags: 1,
+                payload: vec![0, 0, 0, 9]
+            }
+        );
         assert_eq!(
             parsed(&set_desktop_size(3456, 1802)),
-            ClientMsg::SetDesktopSize { width: 3456, height: 1802, screens: vec![Screen::whole(3456, 1802)] }
+            ClientMsg::SetDesktopSize {
+                width: 3456,
+                height: 1802,
+                screens: vec![Screen::whole(3456, 1802)]
+            }
         );
         assert_eq!(
             parsed(&wlshare_proto::density::client_density(2592, 1350, 1.5)),
-            ClientMsg::ClientDensity { width: 2592, height: 1350, fixed: 0x0001_8000 }
+            ClientMsg::ClientDensity {
+                width: 2592,
+                height: 1350,
+                fixed: 0x0001_8000
+            }
         );
-        assert_eq!(parsed(&client_extended_cut_text(&[2, 0, 0, 1])), ClientMsg::ExtendedCutText(vec![2, 0, 0, 1]));
+        assert_eq!(
+            parsed(&client_extended_cut_text(&[2, 0, 0, 1])),
+            ClientMsg::ExtendedCutText(vec![2, 0, 0, 1])
+        );
         use wlshare_proto::audio::{disable, enable, set_bitrate, set_format};
         assert_eq!(parsed(&enable()), ClientMsg::AudioEnable);
         assert_eq!(parsed(&disable()), ClientMsg::AudioDisable);
-        for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
-            let format = AudioFormat { sample, channels: 1, frequency: 44_100 };
+        for sample in [
+            SampleFormat::U8,
+            SampleFormat::S8,
+            SampleFormat::U16,
+            SampleFormat::S16,
+        ] {
+            let format = AudioFormat {
+                sample,
+                channels: 1,
+                frequency: 44_100,
+            };
             assert_eq!(parsed(&set_format(format)), ClientMsg::AudioFormat(format));
         }
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         assert_eq!(parsed(&set_format(format)), ClientMsg::AudioFormat(format));
-        assert_eq!(parsed(&set_bitrate(64_000)), ClientMsg::AudioBitrate(64_000));
+        assert_eq!(
+            parsed(&set_bitrate(64_000)),
+            ClientMsg::AudioBitrate(64_000)
+        );
     }
 
     #[test]
@@ -592,13 +816,38 @@ mod tests {
         let (m, n) = parse(&msg::end_of_continuous_updates()).unwrap().unwrap();
         assert_eq!((m, n), (ServerMsg::EndOfContinuousUpdates, 1));
         let wire = msg::fence(msg::FENCE_REQUEST, &[0, 0, 0, 7]);
-        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::Fence { flags: msg::FENCE_REQUEST, payload: vec![0, 0, 0, 7] }, wire.len()));
+        assert_eq!(
+            parse(&wire).unwrap().unwrap(),
+            (
+                ServerMsg::Fence {
+                    flags: msg::FENCE_REQUEST,
+                    payload: vec![0, 0, 0, 7]
+                },
+                wire.len()
+            )
+        );
         let wire = msg::server_extended_cut_text(&[8, 0, 0, 1]);
-        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::ExtendedCutText(vec![8, 0, 0, 1]), wire.len()));
+        assert_eq!(
+            parse(&wire).unwrap().unwrap(),
+            (ServerMsg::ExtendedCutText(vec![8, 0, 0, 1]), wire.len())
+        );
         let latin1 = [3, 0, 0, 0, 0, 0, 0, 2, 0xE9, b'a'];
-        assert_eq!(parse(&latin1).unwrap().unwrap(), (ServerMsg::CutText(vec![0xE9, b'a']), latin1.len()));
+        assert_eq!(
+            parse(&latin1).unwrap().unwrap(),
+            (ServerMsg::CutText(vec![0xE9, b'a']), latin1.len())
+        );
         let wire = wlshare_proto::density::output_scale(3456, 1802, 2.0);
-        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::OutputScale { width: 3456, height: 1802, fixed: 0x0002_0000 }, 10));
+        assert_eq!(
+            parse(&wire).unwrap().unwrap(),
+            (
+                ServerMsg::OutputScale {
+                    width: 3456,
+                    height: 1802,
+                    fixed: 0x0002_0000
+                },
+                10
+            )
+        );
         assert_eq!(parse(&[7]), Err(ParseError::UnknownType(7)));
     }
 
@@ -609,21 +858,49 @@ mod tests {
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&audio_rect());
         let (m, n) = parse(&wire).unwrap().unwrap();
-        assert_eq!((m, n), (ServerMsg::Update(vec![Rect { x: 0, y: 0, width: 0, height: 0, body: RectBody::Audio }]), wire.len()));
+        assert_eq!(
+            (m, n),
+            (
+                ServerMsg::Update(vec![Rect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                    body: RectBody::Audio
+                }]),
+                wire.len()
+            )
+        );
 
-        assert_eq!(parse(&audio_begin()).unwrap().unwrap(), (ServerMsg::AudioBegin, 4));
-        assert_eq!(parse(&audio_end()).unwrap().unwrap(), (ServerMsg::AudioEnd, 4));
+        assert_eq!(
+            parse(&audio_begin()).unwrap().unwrap(),
+            (ServerMsg::AudioBegin, 4)
+        );
+        assert_eq!(
+            parse(&audio_end()).unwrap().unwrap(),
+            (ServerMsg::AudioEnd, 4)
+        );
         assert_eq!(parse(&audio_begin()[..3]), Ok(None));
 
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
-        let frames = FlacEncoder::new(format).unwrap().push(&vec![0; format.block_frames() * format.frame_bytes()]).unwrap();
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
+        let frames = FlacEncoder::new(format)
+            .unwrap()
+            .push(&vec![0; format.block_frames() * format.frame_bytes()])
+            .unwrap();
         let mut wire = frames[0].clone();
         let whole = wire.len();
         wire.push(0xFF);
         for short in 0..whole {
             assert_eq!(parse(&wire[..short]), Ok(None), "{short} of {whole} bytes");
         }
-        assert_eq!(parse(&wire).unwrap().unwrap(), (ServerMsg::AudioFrame(frames[0][8..].to_vec()), whole));
+        assert_eq!(
+            parse(&wire).unwrap().unwrap(),
+            (ServerMsg::AudioFrame(frames[0][8..].to_vec()), whole)
+        );
     }
 
     /// A QEMU submessage or operation that cannot be measured leaves the stream
@@ -631,12 +908,23 @@ mod tests {
     /// that has lost its framing: all three end the connection.
     #[test]
     fn audio_that_cannot_be_framed_is_fatal() {
-        assert_eq!(parse(&[255, 2, 0, 0]), Err(ParseError::Audio(AudioParseError::UnknownSubmessage(2))));
+        assert_eq!(
+            parse(&[255, 2, 0, 0]),
+            Err(ParseError::Audio(AudioParseError::UnknownSubmessage(2)))
+        );
         // QEMU's own raw data, which this extension never sends.
-        assert_eq!(parse(&[255, 1, 0, 2]), Err(ParseError::Audio(AudioParseError::UnknownOperation(2))));
+        assert_eq!(
+            parse(&[255, 1, 0, 2]),
+            Err(ParseError::Audio(AudioParseError::UnknownOperation(2)))
+        );
         let mut wire = vec![0xE4, 0, 0, 0];
         wire.extend_from_slice(&(MAX_AUDIO_FRAME as u32 + 1).to_be_bytes());
-        assert_eq!(parse(&wire), Err(ParseError::Audio(AudioParseError::FrameTooLong(MAX_AUDIO_FRAME + 1))));
+        assert_eq!(
+            parse(&wire),
+            Err(ParseError::Audio(AudioParseError::FrameTooLong(
+                MAX_AUDIO_FRAME + 1
+            )))
+        );
     }
 
     /// One update with a rectangle of every kind, fed a byte short at every
@@ -651,7 +939,13 @@ mod tests {
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
         wire.extend_from_slice(&[0, 0, 0, 3, 0xAA, 0xBB, 0xCC]);
         wire.extend_from_slice(&msg::desktop_size_rect(800, 600));
-        wire.extend_from_slice(&msg::extended_desktop_size_rect(msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_PROHIBITED, 800, 600, &[Screen::whole(800, 600)]));
+        wire.extend_from_slice(&msg::extended_desktop_size_rect(
+            msg::EDS_REASON_THIS_CLIENT,
+            msg::EDS_STATUS_PROHIBITED,
+            800,
+            600,
+            &[Screen::whole(800, 600)],
+        ));
         wire.extend_from_slice(&alpha_cursor_rect(Some(&image)));
         wire.extend_from_slice(&cursor_rect(&PixelFormat::NATIVE, Some(&image)));
         wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VIDEO));
@@ -684,29 +978,146 @@ mod tests {
         }
         let (m, n) = parse(&wire).unwrap().unwrap();
         assert_eq!(n, whole);
-        let ServerMsg::Update(rects) = m else { panic!("an update") };
-        assert_eq!(rects[0], Rect { x: 3, y: 4, width: 2, height: 1, body: RectBody::Raw(vec![1, 2, 3, 0, 4, 5, 6, 0]) });
+        let ServerMsg::Update(rects) = m else {
+            panic!("an update")
+        };
+        assert_eq!(
+            rects[0],
+            Rect {
+                x: 3,
+                y: 4,
+                width: 2,
+                height: 1,
+                body: RectBody::Raw(vec![1, 2, 3, 0, 4, 5, 6, 0])
+            }
+        );
         assert_eq!(rects[1].body, RectBody::Zrle(vec![0xAA, 0xBB, 0xCC]));
-        assert_eq!((rects[2].width, rects[2].height, &rects[2].body), (800, 600, &RectBody::DesktopSize));
-        assert_eq!((rects[3].x, rects[3].y), (msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_PROHIBITED));
-        assert_eq!(rects[3].body, RectBody::ExtendedDesktopSize { screens: vec![Screen::whole(800, 600)] });
+        assert_eq!(
+            (rects[2].width, rects[2].height, &rects[2].body),
+            (800, 600, &RectBody::DesktopSize)
+        );
+        assert_eq!(
+            (rects[3].x, rects[3].y),
+            (msg::EDS_REASON_THIS_CLIENT, msg::EDS_STATUS_PROHIBITED)
+        );
+        assert_eq!(
+            rects[3].body,
+            RectBody::ExtendedDesktopSize {
+                screens: vec![Screen::whole(800, 600)]
+            }
+        );
         assert_eq!((rects[4].x, rects[4].y), (1, 0), "the hotspot");
-        assert_eq!(rects[4].body, RectBody::AlphaCursor(vec![255, 0, 0, 255, 0, 0, 128, 128]));
+        assert_eq!(
+            rects[4].body,
+            RectBody::AlphaCursor(vec![255, 0, 0, 255, 0, 0, 128, 128])
+        );
         // Opaque red, and half-transparent blue divided back out; both in the mask.
-        assert_eq!(rects[5].body, RectBody::Cursor { pixels: vec![0, 0, 255, 0, 255, 0, 0, 0], mask: vec![0b1100_0000] });
-        assert_eq!(rects[6], Rect { x: 0, y: 0, width: 800, height: 600, body: RectBody::Video(vec![0x82, 0x49]) });
-        assert_eq!(rects[7], Rect { x: 64, y: 0, width: 64, height: 64, body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50])) });
-        assert_eq!(rects[8].body, RectBody::Tiles(TileBody::Start { stream: 2, frame: vec![0x82] }));
-        assert_eq!(rects[9].body, RectBody::Tiles(TileBody::Frame { stream: 2, frame: vec![0x86] }));
-        assert_eq!((rects[10].width, &rects[10].body), (320, &RectBody::Tiles(TileBody::End { stream: 2 })));
-        assert_eq!(rects[11], Rect { x: 0, y: 0, width: 320, height: 160, body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 }) });
-        assert_eq!(rects[12], Rect { x: 64, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Store { slot: 4095 }) });
-        assert_eq!(rects[13], Rect { x: 128, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Cached { slot: 7 }) });
-        assert_eq!(rects[14], Rect { x: 192, y: 64, width: 64, height: 64, body: RectBody::Tiles(TileBody::Progressive(vec![0xC6, 0xCC])) });
-        assert_eq!(rects[15], Rect { x: 0, y: 128, width: 128, height: 64, body: RectBody::Tiles(TileBody::Planar(vec![0x30, 0x10, 0x07])) });
-        assert_eq!(rects[16], Rect { x: 128, y: 128, width: 64, height: 64, body: RectBody::Tiles(TileBody::Still(vec![0x28, 0xB5])) });
+        assert_eq!(
+            rects[5].body,
+            RectBody::Cursor {
+                pixels: vec![0, 0, 255, 0, 255, 0, 0, 0],
+                mask: vec![0b1100_0000]
+            }
+        );
+        assert_eq!(
+            rects[6],
+            Rect {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+                body: RectBody::Video(vec![0x82, 0x49])
+            }
+        );
+        assert_eq!(
+            rects[7],
+            Rect {
+                x: 64,
+                y: 0,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50]))
+            }
+        );
+        assert_eq!(
+            rects[8].body,
+            RectBody::Tiles(TileBody::Start {
+                stream: 2,
+                frame: vec![0x82]
+            })
+        );
+        assert_eq!(
+            rects[9].body,
+            RectBody::Tiles(TileBody::Frame {
+                stream: 2,
+                frame: vec![0x86]
+            })
+        );
+        assert_eq!(
+            (rects[10].width, &rects[10].body),
+            (320, &RectBody::Tiles(TileBody::End { stream: 2 }))
+        );
+        assert_eq!(
+            rects[11],
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 160,
+                body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 })
+            }
+        );
+        assert_eq!(
+            rects[12],
+            Rect {
+                x: 64,
+                y: 64,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Store { slot: 4095 })
+            }
+        );
+        assert_eq!(
+            rects[13],
+            Rect {
+                x: 128,
+                y: 64,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Cached { slot: 7 })
+            }
+        );
+        assert_eq!(
+            rects[14],
+            Rect {
+                x: 192,
+                y: 64,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Progressive(vec![0xC6, 0xCC]))
+            }
+        );
+        assert_eq!(
+            rects[15],
+            Rect {
+                x: 0,
+                y: 128,
+                width: 128,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Planar(vec![0x30, 0x10, 0x07]))
+            }
+        );
+        assert_eq!(
+            rects[16],
+            Rect {
+                x: 128,
+                y: 128,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Still(vec![0x28, 0xB5]))
+            }
+        );
     }
-
 
     #[test]
     fn a_rectangle_nobody_asked_for_is_fatal() {
@@ -716,15 +1127,24 @@ mod tests {
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_ZRLE));
         wire.extend_from_slice(&u32::MAX.to_be_bytes());
-        assert_eq!(parse(&wire), Err(ParseError::RectTooLong(u32::MAX as usize)));
+        assert_eq!(
+            parse(&wire),
+            Err(ParseError::RectTooLong(u32::MAX as usize))
+        );
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
         wire.push(10);
-        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::UnknownKind(10))));
+        assert_eq!(
+            parse(&wire),
+            Err(ParseError::Tiles(TilesParseError::UnknownKind(10)))
+        );
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_CACHED, 0x10, 0]);
-        assert_eq!(parse(&wire), Err(ParseError::Tiles(TilesParseError::Slot(4096))));
+        assert_eq!(
+            parse(&wire),
+            Err(ParseError::Tiles(TilesParseError::Slot(4096)))
+        );
     }
 
     #[tokio::test]
@@ -735,32 +1155,67 @@ mod tests {
         wire.extend(msg::server_init(1024, 768, &PixelFormat::NATIVE, "wlshare"));
         let mut reader = wire.as_slice();
         read_version(&mut reader).await.unwrap();
-        assert_eq!(read_security_types(&mut reader).await.unwrap(), vec![129, 5]);
+        assert_eq!(
+            read_security_types(&mut reader).await.unwrap(),
+            vec![129, 5]
+        );
         read_security_result(&mut reader).await.unwrap();
         let init = read_server_init(&mut reader).await.unwrap();
-        assert_eq!(init, ServerInit { width: 1024, height: 768, format: PixelFormat::NATIVE, name: "wlshare".to_owned() });
+        assert_eq!(
+            init,
+            ServerInit {
+                width: 1024,
+                height: 768,
+                format: PixelFormat::NATIVE,
+                name: "wlshare".to_owned()
+            }
+        );
         assert!(reader.is_empty());
 
         let refusal = msg::security_refusal("this server speaks RFB 3.8 only");
-        let err = read_security_types(&mut refusal.as_slice()).await.unwrap_err();
-        assert!(matches!(&err, HandshakeError::Refused(r) if r == "this server speaks RFB 3.8 only"), "{err}");
+        let err = read_security_types(&mut refusal.as_slice())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, HandshakeError::Refused(r) if r == "this server speaks RFB 3.8 only"),
+            "{err}"
+        );
         let failed = msg::security_failed("authentication failed");
-        let err = read_security_result(&mut failed.as_slice()).await.unwrap_err();
-        assert!(matches!(&err, HandshakeError::Failed(r) if r == "authentication failed"), "{err}");
-        let err = read_version(&mut b"RFB 003.003\n".as_slice()).await.unwrap_err();
-        assert!(matches!(&err, HandshakeError::Version(v) if v == "RFB 003.003"), "{err}");
+        let err = read_security_result(&mut failed.as_slice())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, HandshakeError::Failed(r) if r == "authentication failed"),
+            "{err}"
+        );
+        let err = read_version(&mut b"RFB 003.003\n".as_slice())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, HandshakeError::Version(v) if v == "RFB 003.003"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
     async fn the_protocol_version_is_read_as_the_server_answers_it() {
         use wlshare_proto::{PROTOCOL_VERSION, version};
-        read_protocol_version(&mut version::answer(PROTOCOL_VERSION).as_slice()).await.unwrap();
+        read_protocol_version(&mut version::answer(PROTOCOL_VERSION).as_slice())
+            .await
+            .unwrap();
         let other = version::answer(PROTOCOL_VERSION + 1);
-        let err = read_protocol_version(&mut other.as_slice()).await.unwrap_err();
-        assert!(matches!(err, HandshakeError::ProtocolVersion(v) if v == PROTOCOL_VERSION + 1), "{err}");
+        let err = read_protocol_version(&mut other.as_slice())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, HandshakeError::ProtocolVersion(v) if v == PROTOCOL_VERSION + 1),
+            "{err}"
+        );
         // A daemon from before the versions answered the density request first.
         let density = wlshare_proto::density::output_scale(1024, 768, 1.0);
-        let err = read_protocol_version(&mut density.as_slice()).await.unwrap_err();
+        let err = read_protocol_version(&mut density.as_slice())
+            .await
+            .unwrap_err();
         assert!(matches!(err, HandshakeError::NotVersioned(_)), "{err}");
     }
 }

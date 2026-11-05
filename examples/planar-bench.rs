@@ -17,14 +17,19 @@ mod rfb;
 #[path = "../src/wlcap.rs"]
 mod wlcap;
 
-use rfb::planar::{encode, pack, Rows};
+use rfb::planar::{Rows, encode, pack};
 use rfb::progressive::TILE;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let most: u64 = args.get(2).map_or(u64::MAX, |n| n.parse().unwrap());
     let input: Box<dyn Read> = if args[1].ends_with(".zst") {
-        let mut child = Command::new("zstd").arg("-dc").arg(&args[1]).stdout(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new("zstd")
+            .arg("-dc")
+            .arg(&args[1])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
         Box::new(child.stdout.take().unwrap())
     } else {
         Box::new(std::fs::File::open(&args[1]).unwrap())
@@ -48,8 +53,12 @@ fn main() {
             None => cells.fill(true),
             Some(rects) => {
                 for r in rects {
-                    for row in usize::from(r.y) / TILE..(usize::from(r.y) + usize::from(r.height)).div_ceil(TILE) {
-                        for col in usize::from(r.x) / TILE..(usize::from(r.x) + usize::from(r.width)).div_ceil(TILE) {
+                    for row in usize::from(r.y) / TILE
+                        ..(usize::from(r.y) + usize::from(r.height)).div_ceil(TILE)
+                    {
+                        for col in usize::from(r.x) / TILE
+                            ..(usize::from(r.x) + usize::from(r.width)).div_ceil(TILE)
+                        {
                             cells[row * cols + col] = true;
                         }
                     }

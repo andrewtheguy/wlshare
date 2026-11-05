@@ -103,9 +103,26 @@ impl Camera {
         let (thread_signals, thread_queued) = (signal_tx.clone(), queued.clone());
         let thread = std::thread::Builder::new()
             .name(format!("camera-{}", client.0))
-            .spawn(move || run(client, format, commands_rx, thread_signals, thread_queued, ready_tx))
+            .spawn(move || {
+                run(
+                    client,
+                    format,
+                    commands_rx,
+                    thread_signals,
+                    thread_queued,
+                    ready_tx,
+                )
+            })
             .context("spawning the camera thread")?;
-        let mut camera = Self { format, commands, thread: Some(thread), signals, signal_tx, queued, gap: false };
+        let mut camera = Self {
+            format,
+            commands,
+            thread: Some(thread),
+            signals,
+            signal_tx,
+            queued,
+            gap: false,
+        };
         match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(camera),
             Ok(Err(e)) => {
@@ -139,7 +156,11 @@ impl Camera {
         }
         self.gap = false;
         self.queued.fetch_add(1, Ordering::Relaxed);
-        if self.commands.send(Command::Sample { unit, keyframe }).is_err() {
+        if self
+            .commands
+            .send(Command::Sample { unit, keyframe })
+            .is_err()
+        {
             self.queued.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -207,7 +228,11 @@ impl Feed {
             Ok(Some(picture)) if picture != self.expected => {
                 warn!(
                     "client {}: the camera sent {}x{} pictures after plugging {}x{}; unplugging it",
-                    self.client.0, picture.width, picture.height, self.expected.width, self.expected.height
+                    self.client.0,
+                    picture.width,
+                    picture.height,
+                    self.expected.width,
+                    self.expected.height
                 );
                 self.size_reported = true;
                 let _ = self.signals.send(Signal::Failed);
@@ -219,7 +244,10 @@ impl Feed {
                 self.streaming
             }
             Err(e) => {
-                debug!("client {}: camera: {e:#}; asking for a keyframe", self.client.0);
+                debug!(
+                    "client {}: camera: {e:#}; asking for a keyframe",
+                    self.client.0
+                );
                 self.keyframe_owed = true;
                 let _ = self.signals.send(Signal::Keyframe);
                 false
@@ -249,7 +277,10 @@ fn run(
             }
         };
     }
-    let expected = Picture { width: usize::from(format.width), height: usize::from(format.height) };
+    let expected = Picture {
+        width: usize::from(format.width),
+        height: usize::from(format.height),
+    };
     let feed = Rc::new(RefCell::new(Feed {
         client,
         decoder: up!(Decoder::new(), "opening the camera's decoder"),
@@ -263,8 +294,14 @@ fn run(
     }));
 
     pw::init();
-    let mainloop = up!(pw::main_loop::MainLoopRc::new(None), "creating PipeWire's loop");
-    let context = up!(pw::context::ContextRc::new(&mainloop, None), "creating PipeWire's context");
+    let mainloop = up!(
+        pw::main_loop::MainLoopRc::new(None),
+        "creating PipeWire's loop"
+    );
+    let context = up!(
+        pw::context::ContextRc::new(&mainloop, None),
+        "creating PipeWire's context"
+    );
     let core = up!(context.connect_rc(None), "connecting to PipeWire");
 
     let mut props = pw::properties::properties! {
@@ -278,12 +315,18 @@ fn run(
         *pw::keys::NODE_DESCRIPTION => "wlshare remote camera",
     };
     props.insert(*pw::keys::NODE_NAME, format!("wlshare-camera-{}", client.0));
-    let stream = up!(pw::stream::StreamRc::new(core, "wlshare camera", props), "creating the camera stream");
+    let stream = up!(
+        pw::stream::StreamRc::new(core, "wlshare camera", props),
+        "creating the camera stream"
+    );
 
     let state_feed = feed.clone();
     let process_feed = feed.clone();
     // Within `i32` for any camera `fits` let through, and checked all the same.
-    let buffer_bytes = up!(i32::try_from(expected.bytes()), "sizing the camera's buffers");
+    let buffer_bytes = up!(
+        i32::try_from(expected.bytes()),
+        "sizing the camera's buffers"
+    );
     let stride = i32::from(format.width);
     let _listener = up!(
         stream
@@ -308,7 +351,11 @@ fn run(
                 } else {
                     info!("client {}: the camera is no longer open", client.0);
                 }
-                let _ = feed.signals.send(if streaming { Signal::Start } else { Signal::Stop });
+                let _ = feed.signals.send(if streaming {
+                    Signal::Start
+                } else {
+                    Signal::Stop
+                });
             })
             .param_changed(move |stream, _, id, param| {
                 if id != spa::param::ParamType::Format.as_raw() || param.is_none() {
@@ -317,17 +364,29 @@ fn run(
                 // The format is the one offered, so the buffers are always this size.
                 let pod = match serialize(buffers_param(buffer_bytes, stride)) {
                     Ok(pod) => pod,
-                    Err(e) => return warn!("client {}: serializing the camera's buffers: {e:?}", client.0),
+                    Err(e) => {
+                        return warn!(
+                            "client {}: serializing the camera's buffers: {e:?}",
+                            client.0
+                        );
+                    }
                 };
                 let mut params = [spa::pod::Pod::from_bytes(&pod).expect("a serialized pod")];
                 if let Err(e) = stream.update_params(&mut params) {
-                    warn!("client {}: the camera's buffers were refused: {e}", client.0);
+                    warn!(
+                        "client {}: the camera's buffers were refused: {e}",
+                        client.0
+                    );
                 }
             })
             .process(move |stream, _| {
-                let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                let Some(mut buffer) = stream.dequeue_buffer() else {
+                    return;
+                };
                 let feed = process_feed.borrow();
-                let Some(data) = buffer.datas_mut().first_mut() else { return };
+                let Some(data) = buffer.datas_mut().first_mut() else {
+                    return;
+                };
                 let written = match data.data() {
                     Some(bytes) => {
                         let n = feed.picture.len().min(bytes.len());
@@ -355,12 +414,18 @@ fn run(
             // process callback, which reads the picture, before returning.
             let deliver = feed.borrow_mut().take(&unit, keyframe);
             if deliver && let Err(e) = command_stream.trigger_process() {
-                debug!("client {}: the camera's graph cycle was not started: {e}", client.0);
+                debug!(
+                    "client {}: the camera's graph cycle was not started: {e}",
+                    client.0
+                );
             }
         }
     });
 
-    let pod = up!(serialize(format_param(format)), "serializing the camera format");
+    let pod = up!(
+        serialize(format_param(format)),
+        "serializing the camera format"
+    );
     let mut params = [spa::pod::Pod::from_bytes(&pod).expect("a serialized pod")];
     up!(
         stream.connect(
@@ -375,7 +440,12 @@ fn run(
     );
     info!(
         "client {}: plugged a {}x{} camera at {}/{} frames a second as PipeWire node wlshare-camera-{}",
-        client.0, format.width, format.height, format.fps_numerator, format.fps_denominator, client.0
+        client.0,
+        format.width,
+        format.height,
+        format.fps_numerator,
+        format.fps_denominator,
+        client.0
     );
     let _ = ready.send(Ok(()));
     mainloop.run();
@@ -383,7 +453,11 @@ fn run(
 }
 
 fn serialize(value: spa::pod::Value) -> Result<Vec<u8>, spa::pod::serialize::GenError> {
-    Ok(spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &value)?.0.into_inner())
+    Ok(
+        spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &value)?
+            .0
+            .into_inner(),
+    )
 }
 
 /// The one format the node offers: I420 at the plugged geometry and rate.
@@ -394,16 +468,26 @@ fn format_param(format: CameraFormat) -> spa::pod::Value {
         spa::param::ParamType::EnumFormat,
         spa::pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
         spa::pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
-        spa::pod::property!(FormatProperties::VideoFormat, Id, spa::param::video::VideoFormat::I420),
+        spa::pod::property!(
+            FormatProperties::VideoFormat,
+            Id,
+            spa::param::video::VideoFormat::I420
+        ),
         spa::pod::property!(
             FormatProperties::VideoSize,
             Rectangle,
-            spa::utils::Rectangle { width: u32::from(format.width), height: u32::from(format.height) }
+            spa::utils::Rectangle {
+                width: u32::from(format.width),
+                height: u32::from(format.height)
+            }
         ),
         spa::pod::property!(
             FormatProperties::VideoFramerate,
             Fraction,
-            spa::utils::Fraction { num: format.fps_numerator, denom: format.fps_denominator }
+            spa::utils::Fraction {
+                num: format.fps_numerator,
+                denom: format.fps_denominator
+            }
         ),
     ))
 }
@@ -413,7 +497,11 @@ fn format_param(format: CameraFormat) -> spa::pod::Value {
 fn buffers_param(bytes: i32, stride: i32) -> spa::pod::Value {
     use spa::pod::{ChoiceValue, Property, PropertyFlags, Value};
     use spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
-    let property = |key, value| Property { key, flags: PropertyFlags::empty(), value };
+    let property = |key, value| Property {
+        key,
+        flags: PropertyFlags::empty(),
+        value,
+    };
     let memory = (1 << spa::sys::SPA_DATA_MemPtr) | (1 << spa::sys::SPA_DATA_MemFd);
     Value::Object(spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
@@ -421,14 +509,27 @@ fn buffers_param(bytes: i32, stride: i32) -> spa::pod::Value {
         properties: vec![
             property(
                 spa::sys::SPA_PARAM_BUFFERS_buffers,
-                Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(), ChoiceEnum::Range { default: 4, min: 1, max: 8 }))),
+                Value::Choice(ChoiceValue::Int(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Range {
+                        default: 4,
+                        min: 1,
+                        max: 8,
+                    },
+                ))),
             ),
             property(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
             property(spa::sys::SPA_PARAM_BUFFERS_size, Value::Int(bytes)),
             property(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
             property(
                 spa::sys::SPA_PARAM_BUFFERS_dataType,
-                Value::Choice(ChoiceValue::Int(Choice(ChoiceFlags::empty(), ChoiceEnum::Flags { default: memory, flags: Vec::new() }))),
+                Value::Choice(ChoiceValue::Int(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Flags {
+                        default: memory,
+                        flags: Vec::new(),
+                    },
+                ))),
             ),
         ],
     })
@@ -439,7 +540,12 @@ mod tests {
     use super::*;
 
     fn format(width: u16, height: u16) -> CameraFormat {
-        CameraFormat { width, height, fps_numerator: 15, fps_denominator: 1 }
+        CameraFormat {
+            width,
+            height,
+            fps_numerator: 15,
+            fps_denominator: 1,
+        }
     }
 
     /// The ceiling admits the largest picture the gateway's encoder names and
@@ -452,7 +558,10 @@ mod tests {
         assert!(fits(format(3840, 2160)).is_ok());
         assert!(fits(format(4096, 2305)).is_err());
         assert!(fits(format(u16::MAX, u16::MAX)).is_err());
-        let largest = Picture { width: 4096, height: 2304 };
+        let largest = Picture {
+            width: 4096,
+            height: 2304,
+        };
         assert!(i32::try_from(largest.bytes()).is_ok());
     }
 }

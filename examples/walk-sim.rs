@@ -78,7 +78,10 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 /// The processor time the process has taken, on all of its threads.
 fn process_cpu() -> Duration {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `ts` is a valid `timespec` for the call to write.
     let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
     assert_eq!(rc, 0, "the process's processor clock");
@@ -114,7 +117,11 @@ fn main() -> Result<(), Error> {
     let link_json = sim::rates_json(&rates);
     let h264 = h264::Encoder::find(!libx264).map_err(|e| format!("{e:#}"))?;
     let mut source = Source::new(paths);
-    let mut gateway = Gateway::new(rates, Duration::from_secs_f64(rtt / 1e3), Duration::from_secs_f64(hop / 1e3));
+    let mut gateway = Gateway::new(
+        rates,
+        Duration::from_secs_f64(rtt / 1e3),
+        Duration::from_secs_f64(hop / 1e3),
+    );
     let paint = Duration::from_secs_f64(paint / 1e3);
     let mut jitter = sim::jitter(jitter);
 
@@ -136,7 +143,8 @@ fn main() -> Result<(), Error> {
     // When each change of the desktop the client has not seen yet was made,
     // and how long each one took to be painted.
     let (mut unshown, mut shown) = (Vec::new(), Vec::new());
-    let (mut frames, mut motion_frames, mut keyframes, mut bytes, mut moves, mut downs) = (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
+    let (mut frames, mut motion_frames, mut keyframes, mut bytes, mut moves, mut downs) =
+        (0u32, 0u32, 0u32, 0usize, 0u32, 0u32);
     let mut cpu = Duration::ZERO;
 
     loop {
@@ -146,7 +154,9 @@ fn main() -> Result<(), Error> {
             dirty = true;
             asked_key |= d.keyframe;
             damage = match (damage, &d.changed) {
-                (Some(mut all), Some(rects)) if desk.as_ref().is_some_and(|desk| desk.size == d.size) => {
+                (Some(mut all), Some(rects))
+                    if desk.as_ref().is_some_and(|desk| desk.size == d.size) =>
+                {
                     all.extend_from_slice(rects);
                     Some(all)
                 }
@@ -186,13 +196,18 @@ fn main() -> Result<(), Error> {
         let quality = walk.quality();
         out.clear();
         let (started, cpu_from) = (Instant::now(), process_cpu());
-        encoder.read(&d.pixels, usize::from(w) * 4, if keyframe { None } else { damage.as_deref() })?;
+        encoder.read(
+            &d.pixels,
+            usize::from(w) * 4,
+            if keyframe { None } else { damage.as_deref() },
+        )?;
         // The encoder making no frame of a picture is the session's to skip,
         // as it skips it.
         let produced = encoder.encode(keyframe, quality, &mut out)?;
         let spent = process_cpu().saturating_sub(cpu_from);
         cpu += spent;
-        let encode = encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
+        let encode =
+            encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
         dirty = false;
         damage = Some(Vec::new());
         asked_key = false;
@@ -211,7 +226,11 @@ fn main() -> Result<(), Error> {
         let delivery = back - sent;
         let verdict = !keyframe;
         let latency = painted.saturating_sub(d.at);
-        shown.extend(unshown.drain(..).map(|at: Duration| (painted - at).as_secs_f64() * 1e3));
+        shown.extend(
+            unshown
+                .drain(..)
+                .map(|at: Duration| (painted - at).as_secs_f64() * 1e3),
+        );
         frames += 1;
         bytes += size;
         keyframes += u32::from(keyframe);
@@ -239,7 +258,8 @@ fn main() -> Result<(), Error> {
             && pace != pace_was
         {
             moves += 1;
-            downs += u32::from(pace.quality < pace_was.quality || pace.interval > pace_was.interval);
+            downs +=
+                u32::from(pace.quality < pace_was.quality || pace.interval > pace_was.interval);
             pace_was = pace;
         }
     }

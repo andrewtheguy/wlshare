@@ -32,7 +32,9 @@
 
 use sound_flac::{Encoder, Stream};
 use thiserror::Error;
-use wlshare_proto::audio::{AUDIO_FRAME_HEADER_LEN, AudioFormat, AudioParseError, Codec, check_bitrate, frame_header};
+use wlshare_proto::audio::{
+    AUDIO_FRAME_HEADER_LEN, AudioFormat, AudioParseError, Codec, check_bitrate, frame_header,
+};
 #[cfg(test)]
 use wlshare_proto::audio::{MAX_AUDIO_FRAME, MAX_FREQUENCY, MIN_FREQUENCY, SampleFormat};
 
@@ -77,10 +79,19 @@ struct Pending(Vec<u8>);
 impl Pending {
     /// Add `samples` and hand every whole block of `block_bytes` to `encode`,
     /// in order, keeping what is left over.
-    fn push<E>(&mut self, samples: &[u8], block_bytes: usize, mut encode: impl FnMut(&[u8]) -> Result<Vec<u8>, E>) -> Result<Vec<Vec<u8>>, E> {
+    fn push<E>(
+        &mut self,
+        samples: &[u8],
+        block_bytes: usize,
+        mut encode: impl FnMut(&[u8]) -> Result<Vec<u8>, E>,
+    ) -> Result<Vec<Vec<u8>>, E> {
         self.0.extend_from_slice(samples);
         let whole = self.0.len() / block_bytes;
-        let messages = self.0.chunks_exact(block_bytes).map(&mut encode).collect::<Result<Vec<_>, E>>();
+        let messages = self
+            .0
+            .chunks_exact(block_bytes)
+            .map(&mut encode)
+            .collect::<Result<Vec<_>, E>>();
         self.0.drain(..whole * block_bytes);
         messages
     }
@@ -124,7 +135,12 @@ impl FlacEncoder {
             bits: 8 * format.sample.bytes() as u8,
             block: format.block_frames() as u16,
         })?;
-        Ok(Self { format, codec, pending: Pending::default(), samples: Vec::new() })
+        Ok(Self {
+            format,
+            codec,
+            pending: Pending::default(),
+            samples: Vec::new(),
+        })
     }
 
     /// Take `samples`, interleaved little-endian in the client's format and a
@@ -142,11 +158,23 @@ impl FlacEncoder {
     fn encode(&mut self, block: &[u8]) -> Result<Vec<u8>, AudioEncodeError> {
         // The top bit of an unsigned sample, flipped on the way in; it is in the
         // sample's last byte, the samples being little-endian.
-        let flip = if self.format.sample.unsigned() { 0x80 } else { 0 };
+        let flip = if self.format.sample.unsigned() {
+            0x80
+        } else {
+            0
+        };
         self.samples.clear();
         match self.format.sample.bytes() {
-            1 => self.samples.extend(block.iter().map(|&sample| i32::from((sample ^ flip) as i8))),
-            _ => self.samples.extend(block.as_chunks::<2>().0.iter().map(|&[low, high]| i32::from(i16::from_le_bytes([low, high ^ flip])))),
+            1 => self
+                .samples
+                .extend(block.iter().map(|&sample| i32::from((sample ^ flip) as i8))),
+            _ => self.samples.extend(
+                block
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[low, high]| i32::from(i16::from_le_bytes([low, high ^ flip]))),
+            ),
         }
         let mut msg = begin(block.len());
         self.codec.encode(&self.samples, &mut msg)?;
@@ -179,8 +207,19 @@ impl OpusEncoder {
     pub fn new(format: AudioFormat, bitrate: u32) -> Result<Self, AudioEncodeError> {
         format.check()?;
         check_bitrate(bitrate)?;
-        let codec = sound_opus::Encoder::new(sound_opus::Stream { rate: format.frequency, channels: format.channels }, bitrate)?;
-        Ok(Self { format, codec, pending: Pending::default(), samples: Vec::new() })
+        let codec = sound_opus::Encoder::new(
+            sound_opus::Stream {
+                rate: format.frequency,
+                channels: format.channels,
+            },
+            bitrate,
+        )?;
+        Ok(Self {
+            format,
+            codec,
+            pending: Pending::default(),
+            samples: Vec::new(),
+        })
     }
 
     /// Move the rate to `bitrate` bits per second, from the next packet on.
@@ -206,11 +245,25 @@ impl OpusEncoder {
     fn encode(&mut self, block: &[u8]) -> Result<Vec<u8>, AudioEncodeError> {
         // The encoder takes signed 16-bit: an unsigned sample has its top bit
         // flipped, as for FLAC, and an 8-bit one becomes the high byte.
-        let flip = if self.format.sample.unsigned() { 0x80 } else { 0 };
+        let flip = if self.format.sample.unsigned() {
+            0x80
+        } else {
+            0
+        };
         self.samples.clear();
         match self.format.sample.bytes() {
-            1 => self.samples.extend(block.iter().map(|&sample| i16::from((sample ^ flip) as i8) << 8)),
-            _ => self.samples.extend(block.as_chunks::<2>().0.iter().map(|&[low, high]| i16::from_le_bytes([low, high ^ flip]))),
+            1 => self.samples.extend(
+                block
+                    .iter()
+                    .map(|&sample| i16::from((sample ^ flip) as i8) << 8),
+            ),
+            _ => self.samples.extend(
+                block
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[low, high]| i16::from_le_bytes([low, high ^ flip])),
+            ),
         }
         let mut msg = begin(block.len());
         self.codec.encode(&self.samples, &mut msg)?;
@@ -228,10 +281,17 @@ impl AudioEncoder {
     /// An encoder of `codec` for `format`; `bitrate`, in bits per second, is
     /// the rate Opus starts at, which it has to have been set, and nothing to
     /// FLAC.
-    pub fn new(codec: Codec, format: AudioFormat, bitrate: Option<u32>) -> Result<Self, AudioEncodeError> {
+    pub fn new(
+        codec: Codec,
+        format: AudioFormat,
+        bitrate: Option<u32>,
+    ) -> Result<Self, AudioEncodeError> {
         Ok(match codec {
             Codec::Flac => Self::Flac(FlacEncoder::new(format)?),
-            Codec::Opus => Self::Opus(OpusEncoder::new(format, bitrate.ok_or(AudioEncodeError::NoBitrate)?)?),
+            Codec::Opus => Self::Opus(OpusEncoder::new(
+                format,
+                bitrate.ok_or(AudioEncodeError::NoBitrate)?,
+            )?),
         })
     }
 
@@ -268,7 +328,9 @@ fn streaminfo(format: AudioFormat) -> Result<[u8; 34], AudioParseError> {
     // Rate (20 bits), channels - 1 (3), bits per sample - 1 (5), total samples
     // (36, unknown).
     let bits = 8 * format.sample.bytes() as u64;
-    let packed = (u64::from(format.frequency) << 44) | (u64::from(format.channels - 1) << 41) | ((bits - 1) << 36);
+    let packed = (u64::from(format.frequency) << 44)
+        | (u64::from(format.channels - 1) << 41)
+        | ((bits - 1) << 36);
     info[10..18].copy_from_slice(&packed.to_be_bytes());
     Ok(info)
 }
@@ -285,8 +347,15 @@ enum AudioDecodeError {
     Format(String),
     #[error("decoding a FLAC frame: {0}")]
     Decode(String),
-    #[error("a FLAC frame of {got} frames of {channels} channels, where {want} of {expected} were agreed")]
-    Shape { got: usize, channels: usize, want: usize, expected: usize },
+    #[error(
+        "a FLAC frame of {got} frames of {channels} channels, where {want} of {expected} were agreed"
+    )]
+    Shape {
+        got: usize,
+        channels: usize,
+        want: usize,
+        expected: usize,
+    },
 }
 
 /// One stream's decoder, the client's end of [`FlacEncoder`]: the frame a
@@ -310,10 +379,17 @@ impl FlacDecoder {
 
         let info = streaminfo(format)?;
         let mut params = AudioCodecParameters::new();
-        params.for_codec(CODEC_ID_FLAC).with_extra_data(Box::new(info));
-        let decoder = symphonia_bundle_flac::FlacDecoder::try_new(&params, &AudioDecoderOptions::default())
-            .map_err(|e| AudioDecodeError::Format(e.to_string()))?;
-        Ok(Self { format, decoder, samples: Vec::new() })
+        params
+            .for_codec(CODEC_ID_FLAC)
+            .with_extra_data(Box::new(info));
+        let decoder =
+            symphonia_bundle_flac::FlacDecoder::try_new(&params, &AudioDecoderOptions::default())
+                .map_err(|e| AudioDecodeError::Format(e.to_string()))?;
+        Ok(Self {
+            format,
+            decoder,
+            samples: Vec::new(),
+        })
     }
 
     /// One frame — the bytes after a message's header — as
@@ -325,12 +401,28 @@ impl FlacDecoder {
         use symphonia_core::packet::Packet;
         use symphonia_core::units::{Duration, Timestamp};
 
-        let (block, channels) = (self.format.block_frames(), usize::from(self.format.channels));
-        let packet = Packet::new(0, Timestamp::new(0), Duration::new(block as u64), frame.to_vec());
-        let decoded = self.decoder.decode(&packet).map_err(|e| AudioDecodeError::Decode(e.to_string()))?;
+        let (block, channels) = (
+            self.format.block_frames(),
+            usize::from(self.format.channels),
+        );
+        let packet = Packet::new(
+            0,
+            Timestamp::new(0),
+            Duration::new(block as u64),
+            frame.to_vec(),
+        );
+        let decoded = self
+            .decoder
+            .decode(&packet)
+            .map_err(|e| AudioDecodeError::Decode(e.to_string()))?;
         let got = (decoded.frames(), decoded.spec().channels().count());
         if got != (block, channels) {
-            return Err(AudioDecodeError::Shape { got: got.0, channels: got.1, want: block, expected: channels });
+            return Err(AudioDecodeError::Shape {
+                got: got.0,
+                channels: got.1,
+                want: block,
+                expected: channels,
+            });
         }
         self.samples.clear();
         decoded.copy_to_vec_interleaved(&mut self.samples);
@@ -360,8 +452,15 @@ mod tests {
     /// own; FLAC needs none.
     #[test]
     fn an_opus_stream_needs_a_bitrate_and_flac_does_not() {
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
-        assert!(matches!(AudioEncoder::new(Codec::Opus, format, None), Err(AudioEncodeError::NoBitrate)));
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
+        assert!(matches!(
+            AudioEncoder::new(Codec::Opus, format, None),
+            Err(AudioEncodeError::NoBitrate)
+        ));
         assert!(AudioEncoder::new(Codec::Opus, format, Some(BITRATE)).is_ok());
         assert!(AudioEncoder::new(Codec::Flac, format, None).is_ok());
     }
@@ -387,7 +486,12 @@ mod tests {
     /// bit by bit rather than with the packing that wrote them.
     #[test]
     fn the_streaminfo_has_the_specified_layout() {
-        let info = streaminfo(AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 }).unwrap();
+        let info = streaminfo(AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        })
+        .unwrap();
         assert_eq!(&info[0..4], &[0x03, 0xC0, 0x03, 0xC0], "960 at both ends");
         assert_eq!(&info[4..10], &[0; 6], "frame sizes unknown");
         // 48000 = 0x0BB80 in 20 bits, then 001 for two channels, then 01111 for
@@ -401,16 +505,49 @@ mod tests {
     /// would spill into the ones after it.
     #[test]
     fn a_format_the_extension_does_not_carry_is_refused_everywhere() {
-        let good = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let good = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         for (format, error) in [
-            (AudioFormat { channels: 0, ..good }, AudioParseError::BadChannels(0)),
-            (AudioFormat { channels: 3, ..good }, AudioParseError::BadChannels(3)),
-            (AudioFormat { frequency: MIN_FREQUENCY - 1, ..good }, AudioParseError::FrequencyTooLow(MIN_FREQUENCY - 1)),
-            (AudioFormat { frequency: 1 << 20, ..good }, AudioParseError::FrequencyTooHigh(1 << 20)),
+            (
+                AudioFormat {
+                    channels: 0,
+                    ..good
+                },
+                AudioParseError::BadChannels(0),
+            ),
+            (
+                AudioFormat {
+                    channels: 3,
+                    ..good
+                },
+                AudioParseError::BadChannels(3),
+            ),
+            (
+                AudioFormat {
+                    frequency: MIN_FREQUENCY - 1,
+                    ..good
+                },
+                AudioParseError::FrequencyTooLow(MIN_FREQUENCY - 1),
+            ),
+            (
+                AudioFormat {
+                    frequency: 1 << 20,
+                    ..good
+                },
+                AudioParseError::FrequencyTooHigh(1 << 20),
+            ),
         ] {
             assert_eq!(streaminfo(format), Err(error.clone()));
-            assert!(matches!(FlacEncoder::new(format), Err(AudioEncodeError::Unsupported(e)) if e == error));
-            assert_eq!(FlacDecoder::new(format).err(), Some(AudioDecodeError::Unsupported(error)));
+            assert!(
+                matches!(FlacEncoder::new(format), Err(AudioEncodeError::Unsupported(e)) if e == error)
+            );
+            assert_eq!(
+                FlacDecoder::new(format).err(),
+                Some(AudioDecodeError::Unsupported(error))
+            );
         }
     }
 
@@ -419,13 +556,29 @@ mod tests {
     /// frame and goes on with the next.
     #[test]
     fn a_frame_that_does_not_decode_to_the_agreed_block_is_refused() {
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         let mut decoder = FlacDecoder::new(format).unwrap();
-        assert!(matches!(decoder.decode(&[0xFF, 0xF8, 1, 2, 3]), Err(AudioDecodeError::Decode(_))));
+        assert!(matches!(
+            decoder.decode(&[0xFF, 0xF8, 1, 2, 3]),
+            Err(AudioDecodeError::Decode(_))
+        ));
 
-        let other = AudioFormat { frequency: 44_100, ..format };
-        let messages = FlacEncoder::new(other).unwrap().push(&signal(other, other.block_frames())).unwrap();
-        assert!(decoder.decode(&messages[0][8..]).is_err(), "882 frames where 960 were agreed");
+        let other = AudioFormat {
+            frequency: 44_100,
+            ..format
+        };
+        let messages = FlacEncoder::new(other)
+            .unwrap()
+            .push(&signal(other, other.block_frames()))
+            .unwrap();
+        assert!(
+            decoder.decode(&messages[0][8..]).is_err(),
+            "882 frames where 960 were agreed"
+        );
 
         // And the decoder is still good for a frame that is right.
         let pcm = signal(format, format.block_frames());
@@ -464,10 +617,19 @@ mod tests {
     /// leave it to the header the client builds.
     #[test]
     fn every_format_round_trips_bit_for_bit() {
-        for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
+        for sample in [
+            SampleFormat::U8,
+            SampleFormat::S8,
+            SampleFormat::U16,
+            SampleFormat::S16,
+        ] {
             for channels in [1, 2] {
                 for frequency in [MIN_FREQUENCY, 11_025, 44_100, 48_000, 70_001, MAX_FREQUENCY] {
-                    let format = AudioFormat { sample, channels, frequency };
+                    let format = AudioFormat {
+                        sample,
+                        channels,
+                        frequency,
+                    };
                     let blocks = 5;
                     let pcm = signal(format, blocks * format.block_frames());
                     let mut encoder = FlacEncoder::new(format).unwrap();
@@ -484,7 +646,10 @@ mod tests {
                         rest = &rest[take..];
                     }
                     assert_eq!(messages.len(), blocks, "{format:?}");
-                    assert!(decode(format, &messages) == pcm, "{format:?} did not survive");
+                    assert!(
+                        decode(format, &messages) == pcm,
+                        "{format:?} did not survive"
+                    );
                 }
             }
         }
@@ -494,7 +659,11 @@ mod tests {
     /// sent for it until then.
     #[test]
     fn a_partial_frame_waits_for_the_rest() {
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         let pcm = signal(format, 960);
         let mut encoder = FlacEncoder::new(format).unwrap();
         assert!(encoder.push(&pcm[..959 * 4]).unwrap().is_empty());
@@ -508,7 +677,11 @@ mod tests {
     #[test]
     fn silence_is_a_few_bytes() {
         for sample in [SampleFormat::U8, SampleFormat::S16] {
-            let format = AudioFormat { sample, channels: 2, frequency: 48_000 };
+            let format = AudioFormat {
+                sample,
+                channels: 2,
+                frequency: 48_000,
+            };
             let silence: Vec<u8> = match sample {
                 SampleFormat::U8 => vec![0x80; 960 * 2],
                 _ => vec![0; 960 * 4],
@@ -516,7 +689,11 @@ mod tests {
             let mut encoder = FlacEncoder::new(format).unwrap();
             let messages = encoder.push(&silence).unwrap();
             assert_eq!(messages.len(), 1);
-            assert!(messages[0].len() < 32, "{sample:?}: {} bytes", messages[0].len());
+            assert!(
+                messages[0].len() < 32,
+                "{sample:?}: {} bytes",
+                messages[0].len()
+            );
             assert_eq!(decode(format, &messages), silence);
         }
     }
@@ -525,7 +702,10 @@ mod tests {
     #[test]
     fn the_bitrate_bounds_are_libopus_bounds() {
         use wlshare_proto::audio::{OPUS_BITRATE_MAX, OPUS_BITRATE_MIN};
-        assert_eq!((OPUS_BITRATE_MIN, OPUS_BITRATE_MAX), (sound_opus::BITRATE_MIN, sound_opus::BITRATE_MAX));
+        assert_eq!(
+            (OPUS_BITRATE_MIN, OPUS_BITRATE_MAX),
+            (sound_opus::BITRATE_MIN, sound_opus::BITRATE_MAX)
+        );
         assert!(check_bitrate(BITRATE).is_ok());
     }
 
@@ -548,7 +728,11 @@ mod tests {
         for &byte in &page {
             crc ^= u32::from(byte) << 24;
             for _ in 0..8 {
-                crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04c1_1db7 } else { crc << 1 };
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04c1_1db7
+                } else {
+                    crc << 1
+                };
             }
         }
         page[22..26].copy_from_slice(&crc.to_le_bytes());
@@ -579,13 +763,21 @@ mod tests {
             assert_eq!(msg.len(), 8 + len);
             assert!(len > 0 && len <= sound_opus::MAX_PACKET);
             let last = if n + 1 == messages.len() { 4 } else { 0 };
-            file.extend(ogg_page(last, (n as u64 + 1) * 960, n as u32 + 2, &msg[8..]));
+            file.extend(ogg_page(
+                last,
+                (n as u64 + 1) * 960,
+                n as u32 + 2,
+                &msg[8..],
+            ));
         }
         let channels = format.channels.to_string();
         let mut ffmpeg = Command::new("ffmpeg")
             // `-c:a opus` before the input names FFmpeg's decoder rather than
             // its wrapper around libopus.
-            .args(["-v", "error", "-c:a", "opus", "-i", "pipe:0", "-f", "s16le", "-ar", "48000", "-ac", &channels, "pipe:1"])
+            .args([
+                "-v", "error", "-c:a", "opus", "-i", "pipe:0", "-f", "s16le", "-ar", "48000",
+                "-ac", &channels, "pipe:1",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -595,8 +787,18 @@ mod tests {
         let output = ffmpeg.wait_with_output().unwrap();
         writer.join().unwrap().unwrap();
         assert!(output.status.success(), "ffmpeg refused the stream");
-        let decoded: Vec<i16> = output.stdout.as_chunks::<2>().0.iter().map(|&pair| i16::from_le_bytes(pair)).collect();
-        assert_eq!(decoded.len(), messages.len() * 960 * usize::from(format.channels), "every packet is twenty milliseconds");
+        let decoded: Vec<i16> = output
+            .stdout
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| i16::from_le_bytes(pair))
+            .collect();
+        assert_eq!(
+            decoded.len(),
+            messages.len() * 960 * usize::from(format.channels),
+            "every packet is twenty milliseconds"
+        );
         decoded
     }
 
@@ -607,7 +809,9 @@ mod tests {
         for n in 0..frames {
             for c in 0..format.channels {
                 let t = n as f64 / f64::from(format.frequency);
-                let full = ((t * 440.0 * (1.0 + f64::from(c)) * std::f64::consts::TAU).sin() * 0.5 * f64::from(i32::MAX)) as i32;
+                let full = ((t * 440.0 * (1.0 + f64::from(c)) * std::f64::consts::TAU).sin()
+                    * 0.5
+                    * f64::from(i32::MAX)) as i32;
                 let width = format.sample.bytes();
                 let mut bytes = (full >> (32 - 8 * width)).to_le_bytes();
                 if format.sample.unsigned() {
@@ -623,7 +827,12 @@ mod tests {
     /// fifth, where the encoder is still settling.
     fn energy(samples: &[i16], from: usize, step: usize) -> f64 {
         let settled = &samples[samples.len() / 5..];
-        let picked: Vec<f64> = settled.iter().skip(from).step_by(step).map(|&s| f64::from(s)).collect();
+        let picked: Vec<f64> = settled
+            .iter()
+            .skip(from)
+            .step_by(step)
+            .map(|&s| f64::from(s))
+            .collect();
         picked.iter().map(|s| s * s).sum::<f64>() / picked.len() as f64
     }
 
@@ -635,10 +844,19 @@ mod tests {
     fn every_format_survives_opus() {
         // A sine at half of full scale.
         let expected = (0.5 * 32_768.0_f64).powi(2) / 2.0;
-        for sample in [SampleFormat::U8, SampleFormat::S8, SampleFormat::U16, SampleFormat::S16] {
+        for sample in [
+            SampleFormat::U8,
+            SampleFormat::S8,
+            SampleFormat::U16,
+            SampleFormat::S16,
+        ] {
             for channels in [1, 2] {
                 for frequency in sound_opus::RATES {
-                    let format = AudioFormat { sample, channels, frequency };
+                    let format = AudioFormat {
+                        sample,
+                        channels,
+                        frequency,
+                    };
                     let blocks = 25;
                     let pcm = tone(format, blocks * format.block_frames());
                     let mut encoder = OpusEncoder::new(format, BITRATE).unwrap();
@@ -656,7 +874,10 @@ mod tests {
                     let decoded = decode_opus(format, &messages);
                     for channel in 0..usize::from(channels) {
                         let ratio = energy(&decoded, channel, usize::from(channels)) / expected;
-                        assert!((0.6..1.6).contains(&ratio), "{format:?} channel {channel}: {ratio}");
+                        assert!(
+                            (0.6..1.6).contains(&ratio),
+                            "{format:?} channel {channel}: {ratio}"
+                        );
                     }
                 }
             }
@@ -666,43 +887,95 @@ mod tests {
     /// A sound on the left alone is on the left alone after the trip.
     #[test]
     fn opus_keeps_the_channels_apart() {
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         let mut pcm = tone(format, 25 * 960);
-        pcm.as_chunks_mut::<4>().0.iter_mut().for_each(|frame| frame[2..].fill(0));
-        let messages = OpusEncoder::new(format, BITRATE).unwrap().push(&pcm).unwrap();
+        pcm.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .for_each(|frame| frame[2..].fill(0));
+        let messages = OpusEncoder::new(format, BITRATE)
+            .unwrap()
+            .push(&pcm)
+            .unwrap();
         let decoded = decode_opus(format, &messages);
         let (left, right) = (energy(&decoded, 0, 2), energy(&decoded, 1, 2));
-        assert!(left > 1_000_000.0 && right * 10.0 < left, "{left} against {right}");
+        assert!(
+            left > 1_000_000.0 && right * 10.0 < left,
+            "{left} against {right}"
+        );
     }
 
     /// A frequency Opus does not code at, and a rate outside libopus's, have
     /// no Opus encoder; FLAC carries the same format.
     #[test]
     fn opus_refuses_a_frequency_or_a_rate_it_does_not_code_at() {
-        let good = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let good = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         for frequency in [44_100, 11_025, MAX_FREQUENCY] {
             let format = AudioFormat { frequency, ..good };
-            assert!(matches!(OpusEncoder::new(format, BITRATE), Err(AudioEncodeError::Opus(sound_opus::Error::Unsupported(_)))));
-            assert!(matches!(AudioEncoder::new(Codec::Opus, format, Some(BITRATE)), Err(AudioEncodeError::Opus(_))));
+            assert!(matches!(
+                OpusEncoder::new(format, BITRATE),
+                Err(AudioEncodeError::Opus(sound_opus::Error::Unsupported(_)))
+            ));
+            assert!(matches!(
+                AudioEncoder::new(Codec::Opus, format, Some(BITRATE)),
+                Err(AudioEncodeError::Opus(_))
+            ));
             assert!(AudioEncoder::new(Codec::Flac, format, None).is_ok());
         }
-        assert!(matches!(OpusEncoder::new(AudioFormat { channels: 3, ..good }, BITRATE), Err(AudioEncodeError::Unsupported(AudioParseError::BadChannels(3)))));
-        assert!(matches!(OpusEncoder::new(good, 1), Err(AudioEncodeError::Unsupported(AudioParseError::BadBitrate(1)))));
+        assert!(matches!(
+            OpusEncoder::new(
+                AudioFormat {
+                    channels: 3,
+                    ..good
+                },
+                BITRATE
+            ),
+            Err(AudioEncodeError::Unsupported(AudioParseError::BadChannels(
+                3
+            )))
+        ));
+        assert!(matches!(
+            OpusEncoder::new(good, 1),
+            Err(AudioEncodeError::Unsupported(AudioParseError::BadBitrate(
+                1
+            )))
+        ));
         let mut encoder = OpusEncoder::new(good, BITRATE).unwrap();
-        assert!(matches!(encoder.set_bitrate(u32::MAX), Err(AudioEncodeError::Unsupported(AudioParseError::BadBitrate(u32::MAX)))));
+        assert!(matches!(
+            encoder.set_bitrate(u32::MAX),
+            Err(AudioEncodeError::Unsupported(AudioParseError::BadBitrate(
+                u32::MAX
+            )))
+        ));
     }
 
     /// What does not fill a packet waits, as for FLAC, and silence is a few
     /// bytes a packet.
     #[test]
     fn an_opus_packet_waits_for_its_block_and_silence_is_small() {
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         let mut encoder = OpusEncoder::new(format, BITRATE).unwrap();
         assert!(encoder.push(&vec![0; 959 * 4]).unwrap().is_empty());
         assert_eq!(encoder.push(&[0; 4]).unwrap().len(), 1);
         let messages = encoder.push(&vec![0; 10 * 960 * 4]).unwrap();
         assert_eq!(messages.len(), 10);
-        assert!(messages.iter().skip(2).all(|msg| msg.len() < 8 + 16), "{:?}", messages.iter().map(Vec::len).collect::<Vec<_>>());
+        assert!(
+            messages.iter().skip(2).all(|msg| msg.len() < 8 + 16),
+            "{:?}",
+            messages.iter().map(Vec::len).collect::<Vec<_>>()
+        );
     }
 
     /// The rate moves on a running stream, through the encoder a capture
@@ -710,20 +983,33 @@ mod tests {
     /// and has nothing to move.
     #[test]
     fn the_opus_rate_moves_on_a_running_stream() {
-        let format = AudioFormat { sample: SampleFormat::S16, channels: 2, frequency: 48_000 };
+        let format = AudioFormat {
+            sample: SampleFormat::S16,
+            channels: 2,
+            frequency: 48_000,
+        };
         let pcm = tone(format, 20 * 960);
         let mut encoder = AudioEncoder::new(Codec::Opus, format, Some(96_000)).unwrap();
         let before = encoder.push(&pcm).unwrap();
         encoder.set_bitrate(16_000).unwrap();
         let after = encoder.push(&pcm).unwrap();
-        let average = |messages: &[Vec<u8>]| messages.iter().map(Vec::len).sum::<usize>() / messages.len();
-        assert!(average(&after) * 2 < average(&before), "{} against {}", average(&after), average(&before));
+        let average =
+            |messages: &[Vec<u8>]| messages.iter().map(Vec::len).sum::<usize>() / messages.len();
+        assert!(
+            average(&after) * 2 < average(&before),
+            "{} against {}",
+            average(&after),
+            average(&before)
+        );
         let all: Vec<Vec<u8>> = before.into_iter().chain(after).collect();
         assert!(energy(&decode_opus(format, &all), 0, 2) > 1_000_000.0);
 
         let mut flac = AudioEncoder::new(Codec::Flac, format, None).unwrap();
         flac.set_bitrate(16_000).unwrap();
-        assert_eq!(decode(format, &flac.push(&pcm[..960 * 4]).unwrap()), &pcm[..960 * 4]);
+        assert_eq!(
+            decode(format, &flac.push(&pcm[..960 * 4]).unwrap()),
+            &pcm[..960 * 4]
+        );
     }
 
     /// The pre-skip a client's `OpusHead` states is the encoder's own.
@@ -731,7 +1017,9 @@ mod tests {
     fn the_pre_skip_is_the_encoders_lookahead() {
         assert_eq!(sound_opus::PRE_SKIP, 312);
         for rate in sound_opus::RATES {
-            let mut encoder = sound_opus::Encoder::new(sound_opus::Stream { rate, channels: 2 }, BITRATE).unwrap();
+            let mut encoder =
+                sound_opus::Encoder::new(sound_opus::Stream { rate, channels: 2 }, BITRATE)
+                    .unwrap();
             assert_eq!(encoder.pre_skip().unwrap(), sound_opus::PRE_SKIP);
         }
     }

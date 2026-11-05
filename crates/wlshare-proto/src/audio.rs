@@ -148,7 +148,11 @@ pub struct AudioFormat {
 impl AudioFormat {
     /// What QEMU streams to a client that enables audio without setting a
     /// format: CD-quality signed 16-bit stereo.
-    pub const DEFAULT: Self = Self { sample: SampleFormat::S16, channels: 2, frequency: 44_100 };
+    pub const DEFAULT: Self = Self {
+        sample: SampleFormat::S16,
+        channels: 2,
+        frequency: 44_100,
+    };
 
     /// The bytes of one frame: one sample per channel.
     pub fn frame_bytes(&self) -> usize {
@@ -192,7 +196,11 @@ pub enum Codec {
 impl Codec {
     /// The codec `encodings` asks for.
     pub fn listed(encodings: &[i32]) -> Self {
-        if encodings.contains(&crate::ENCODING_AUDIO_OPUS) { Self::Opus } else { Self::Flac }
+        if encodings.contains(&crate::ENCODING_AUDIO_OPUS) {
+            Self::Opus
+        } else {
+            Self::Flac
+        }
     }
 }
 
@@ -232,7 +240,9 @@ pub enum AudioParseError {
     FrequencyTooLow(u32),
     #[error("a frequency of {0} Hz, over the {MAX_FREQUENCY} Hz the extension carries")]
     FrequencyTooHigh(u32),
-    #[error("an Opus rate of {0} bit/s, outside the {OPUS_BITRATE_MIN} to {OPUS_BITRATE_MAX} Opus is coded at")]
+    #[error(
+        "an Opus rate of {0} bit/s, outside the {OPUS_BITRATE_MIN} to {OPUS_BITRATE_MAX} Opus is coded at"
+    )]
     BadBitrate(u32),
     #[error("an audio frame of {0} bytes is over the {MAX_AUDIO_FRAME}-byte ceiling")]
     FrameTooLong(usize),
@@ -241,7 +251,11 @@ pub enum AudioParseError {
 /// Whether `bitrate`, in bits per second, is one Opus is coded at. A
 /// set-bitrate is parsed only into one that is.
 pub fn check_bitrate(bitrate: u32) -> Result<(), AudioParseError> {
-    if (OPUS_BITRATE_MIN..=OPUS_BITRATE_MAX).contains(&bitrate) { Ok(()) } else { Err(AudioParseError::BadBitrate(bitrate)) }
+    if (OPUS_BITRATE_MIN..=OPUS_BITRATE_MAX).contains(&bitrate) {
+        Ok(())
+    } else {
+        Err(AudioParseError::BadBitrate(bitrate))
+    }
 }
 
 fn switch(operation: u16) -> [u8; AUDIO_SWITCH_LEN] {
@@ -313,7 +327,9 @@ pub fn set_bitrate(bitrate: u32) -> [u8; CLIENT_AUDIO_BITRATE_LEN] {
 /// is [`MSG_QEMU`]. `Ok(None)` means more bytes are needed.
 pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioParseError> {
     debug_assert_eq!(buf.first(), Some(&MSG_QEMU));
-    let Some(operation) = operation(buf)? else { return Ok(None) };
+    let Some(operation) = operation(buf)? else {
+        return Ok(None);
+    };
     match operation {
         CLIENT_AUDIO_ENABLE => Ok(Some((ClientAudio::Enable, AUDIO_SWITCH_LEN))),
         CLIENT_AUDIO_DISABLE => Ok(Some((ClientAudio::Disable, AUDIO_SWITCH_LEN))),
@@ -321,10 +337,18 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioPar
             if buf.len() < CLIENT_AUDIO_FORMAT_LEN {
                 return Ok(None);
             }
-            let sample = SampleFormat::from_wire(buf[4]).ok_or(AudioParseError::UnknownSampleFormat(buf[4]))?;
-            let format = AudioFormat { sample, channels: buf[5], frequency: crate::u32_at(buf, 6) };
+            let sample = SampleFormat::from_wire(buf[4])
+                .ok_or(AudioParseError::UnknownSampleFormat(buf[4]))?;
+            let format = AudioFormat {
+                sample,
+                channels: buf[5],
+                frequency: crate::u32_at(buf, 6),
+            };
             format.check()?;
-            Ok(Some((ClientAudio::SetFormat(format), CLIENT_AUDIO_FORMAT_LEN)))
+            Ok(Some((
+                ClientAudio::SetFormat(format),
+                CLIENT_AUDIO_FORMAT_LEN,
+            )))
         }
         CLIENT_AUDIO_SET_BITRATE => {
             if buf.len() < CLIENT_AUDIO_BITRATE_LEN {
@@ -332,7 +356,10 @@ pub fn parse_client(buf: &[u8]) -> Result<Option<(ClientAudio, usize)>, AudioPar
             }
             let bitrate = crate::u32_at(buf, 4);
             check_bitrate(bitrate)?;
-            Ok(Some((ClientAudio::SetBitrate(bitrate), CLIENT_AUDIO_BITRATE_LEN)))
+            Ok(Some((
+                ClientAudio::SetBitrate(bitrate),
+                CLIENT_AUDIO_BITRATE_LEN,
+            )))
         }
         other => Err(AudioParseError::UnknownOperation(other)),
     }
@@ -364,7 +391,9 @@ pub fn audio_end() -> [u8; AUDIO_SWITCH_LEN] {
 /// sends.
 pub fn parse_server(buf: &[u8]) -> Result<Option<(ServerAudio, usize)>, AudioParseError> {
     debug_assert_eq!(buf.first(), Some(&MSG_QEMU));
-    let Some(operation) = operation(buf)? else { return Ok(None) };
+    let Some(operation) = operation(buf)? else {
+        return Ok(None);
+    };
     match operation {
         SERVER_AUDIO_BEGIN => Ok(Some((ServerAudio::Begin, AUDIO_SWITCH_LEN))),
         SERVER_AUDIO_END => Ok(Some((ServerAudio::End, AUDIO_SWITCH_LEN))),

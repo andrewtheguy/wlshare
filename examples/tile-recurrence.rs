@@ -84,7 +84,14 @@ fn run() -> Result<(), Error> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--slots" => slots = args.next().ok_or("--slots needs a value")?.split(',').map(|s| s.parse()).collect::<Result<_, _>>()?,
+            "--slots" => {
+                slots = args
+                    .next()
+                    .ok_or("--slots needs a value")?
+                    .split(',')
+                    .map(|s| s.parse())
+                    .collect::<Result<_, _>>()?
+            }
             "--keep" => keep = true,
             _ => captures.push(arg),
         }
@@ -102,12 +109,19 @@ fn run() -> Result<(), Error> {
 fn open(path: &Path) -> Result<Reader<Box<dyn Read>>, Error> {
     let input: Box<dyn Read> = if path.extension().is_some_and(|e| e == "zst") {
         let file = File::open(path)?;
-        let child = Command::new("zstd").arg("-dc").stdin(file).stdout(Stdio::piped()).spawn().map_err(|e| format!("running zstd: {e}"))?;
+        let child = Command::new("zstd")
+            .arg("-dc")
+            .stdin(file)
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("running zstd: {e}"))?;
         Box::new(child.stdout.ok_or("zstd has no stdout")?)
     } else {
         Box::new(File::open(path)?)
     };
-    Ok(Reader::new(Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>)?)
+    Ok(Reader::new(
+        Box::new(BufReader::with_capacity(1 << 20, input)) as Box<dyn Read>,
+    )?)
 }
 
 /// A tile's content, hashed over B, G and R, and whether it is one colour.
@@ -173,7 +187,11 @@ fn png_bytes(w: usize, h: usize, rgb: &[u8]) -> Result<usize, Error> {
         encoder.set_filter(png::Filter::Adaptive);
     }
     let mut writer = encoder.write_header()?;
-    if indexed { writer.write_image_data(&indices)? } else { writer.write_image_data(rgb)? }
+    if indexed {
+        writer.write_image_data(&indices)?
+    } else {
+        writer.write_image_data(rgb)?
+    }
     writer.finish()?;
     Ok(out.len())
 }
@@ -198,9 +216,16 @@ impl Churn {
     fn observe(&mut self, key: (u16, u16), now: Duration) {
         let origin = *self.origin.get_or_insert(now);
         let slot = Self::slot(origin, now);
-        let cell = self.churn.entry(key).or_insert(ChurnCell { history: 0, last_slot: slot });
+        let cell = self.churn.entry(key).or_insert(ChurnCell {
+            history: 0,
+            last_slot: slot,
+        });
         let elapsed = slot.saturating_sub(cell.last_slot);
-        cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+        cell.history = if elapsed >= CHURN_WINDOW {
+            0
+        } else {
+            cell.history << elapsed
+        };
         cell.history |= 1;
         cell.last_slot = slot;
     }
@@ -211,12 +236,18 @@ impl Churn {
     }
 
     fn moving(&mut self, now: Duration) -> HashSet<(u16, u16)> {
-        let Some(origin) = self.origin else { return HashSet::new() };
+        let Some(origin) = self.origin else {
+            return HashSet::new();
+        };
         let slot = Self::slot(origin, now);
         let mut moving = HashSet::new();
         self.churn.retain(|key, cell| {
             let elapsed = slot.saturating_sub(cell.last_slot);
-            cell.history = if elapsed >= CHURN_WINDOW { 0 } else { cell.history << elapsed };
+            cell.history = if elapsed >= CHURN_WINDOW {
+                0
+            } else {
+                cell.history << elapsed
+            };
             cell.last_slot = slot;
             if cell.history.count_ones() >= CHURN_MOVING {
                 moving.insert(*key);
@@ -239,7 +270,12 @@ fn carried(moving: &HashSet<(u16, u16)>) -> HashSet<(u16, u16)> {
         let mut group = vec![start];
         let mut stack = vec![start];
         while let Some((c, r)) = stack.pop() {
-            for next in [(c.wrapping_sub(1), r), (c + 1, r), (c, r.wrapping_sub(1)), (c, r + 1)] {
+            for next in [
+                (c.wrapping_sub(1), r),
+                (c + 1, r),
+                (c, r.wrapping_sub(1)),
+                (c, r + 1),
+            ] {
                 if moving.contains(&next) && seen.insert(next) {
                     group.push(next);
                     stack.push(next);
@@ -263,7 +299,12 @@ struct Lru {
 
 impl Lru {
     fn new(slots: usize) -> Self {
-        Self { slots, stamp: 0, by_hash: HashMap::new(), by_use: BTreeSet::new() }
+        Self {
+            slots,
+            stamp: 0,
+            by_hash: HashMap::new(),
+            by_use: BTreeSet::new(),
+        }
     }
 
     fn clear(&mut self) {
@@ -371,23 +412,50 @@ impl Stats {
     fn json(&self, capture: &str, slots: &[usize]) -> String {
         let mut caches = Vec::new();
         for (i, (on, off)) in self.hits.iter().enumerate() {
-            let name = slots.get(i).map_or("unbounded".to_owned(), |n| n.to_string());
+            let name = slots
+                .get(i)
+                .map_or("unbounded".to_owned(), |n| n.to_string());
             let (tiles, png) = self.restart_hits[i];
             caches.push(format!("\"{name}\":{{\"onscreen\":{},\"offscreen\":{},\"restart\":{{\"tiles\":{tiles},\"png\":{png}}}}}", on.json(), off.json()));
         }
-        let why: Vec<String> =
-            WHY.iter().zip(&self.why).map(|(name, (count, delta))| format!("\"{name}\":{{\"stills\":{},\"delta\":{}}}", count.json(), delta.json())).collect();
+        let why: Vec<String> = WHY
+            .iter()
+            .zip(&self.why)
+            .map(|(name, (count, delta))| {
+                format!(
+                    "\"{name}\":{{\"stills\":{},\"delta\":{}}}",
+                    count.json(),
+                    delta.json()
+                )
+            })
+            .collect();
         format!(
             "{{\"capture\":\"{}\",\"frames\":{},\"seconds\":{:.1},\"whole_tiles\":{},\"restart_tiles\":{},\"restart_png\":{},\"stills\":{},\"why\":{{{}}},\"cache\":{{{}}}}}",
-            capture, self.frames, self.seconds, self.whole_tiles, self.restart_tiles, self.restart_png, self.stills.json(), why.join(","), caches.join(",")
+            capture,
+            self.frames,
+            self.seconds,
+            self.whole_tiles,
+            self.restart_tiles,
+            self.restart_png,
+            self.stills.json(),
+            why.join(","),
+            caches.join(",")
         )
     }
 }
 
 fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
     let mut reader = open(path)?;
-    let mut stats = Stats { hits: vec![(Count::default(), Count::default()); slots.len() + 1], restart_hits: vec![(0, 0); slots.len() + 1], ..Stats::default() };
-    let mut caches: Vec<Lru> = slots.iter().map(|&n| Lru::new(n)).chain(std::iter::once(Lru::new(usize::MAX))).collect();
+    let mut stats = Stats {
+        hits: vec![(Count::default(), Count::default()); slots.len() + 1],
+        restart_hits: vec![(0, 0); slots.len() + 1],
+        ..Stats::default()
+    };
+    let mut caches: Vec<Lru> = slots
+        .iter()
+        .map(|&n| Lru::new(n))
+        .chain(std::iter::once(Lru::new(usize::MAX)))
+        .collect();
     // What the client holds in each tile, losslessly: `None` under a stream.
     let mut held: HashMap<(u16, u16), Option<u64>> = HashMap::new();
     // Its pixels, where they are lossless.
@@ -433,13 +501,19 @@ fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
                     let (hash, flat) = tile_hash(pixels, width, x, y, w, h);
                     held.insert((tx, ty), Some(hash));
                     let rgb = tile_rgb(pixels, width, x, y, w, h);
-                    let png = if keep && restart { png_bytes(w, h, &rgb)? as u64 } else { 0 };
+                    let png = if keep && restart {
+                        png_bytes(w, h, &rgb)? as u64
+                    } else {
+                        0
+                    };
                     stats.restart_png += png;
                     held_rgb.insert((tx, ty), rgb);
                     *refcount.entry(hash).or_default() += 1;
                     if !flat {
                         stats.restart_tiles += u64::from(restart);
-                        for (cache, (tiles, bytes)) in caches.iter_mut().zip(&mut stats.restart_hits) {
+                        for (cache, (tiles, bytes)) in
+                            caches.iter_mut().zip(&mut stats.restart_hits)
+                        {
                             if cache.touch(hash) && restart {
                                 *tiles += 1;
                                 *bytes += png;
@@ -519,7 +593,11 @@ fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
         }
         // Tiles a stream carried that stopped and did not change this frame
         // are owed a still of what they show.
-        let stopped: Vec<(u16, u16)> = streamed.iter().filter(|k| !moving.contains(k)).copied().collect();
+        let stopped: Vec<(u16, u16)> = streamed
+            .iter()
+            .filter(|k| !moving.contains(k))
+            .copied()
+            .collect();
         for key in stopped {
             streamed.remove(&key);
             let (x, y, w, h) = geometry(key.0, key.1);
@@ -542,10 +620,19 @@ fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
             let (count, delta) = &mut stats.why[why as usize];
             count.add(flat, png);
             if let Some(old) = held_rgb.get(&key) {
-                let diff: Vec<u8> = rgb.iter().zip(old).map(|(new, old)| new.wrapping_sub(*old)).collect();
+                let diff: Vec<u8> = rgb
+                    .iter()
+                    .zip(old)
+                    .map(|(new, old)| new.wrapping_sub(*old))
+                    .collect();
                 delta.tiles += 1;
                 delta.pixels += (w * h) as u64;
-                delta.changed += diff.as_chunks::<3>().0.iter().filter(|px| **px != [0, 0, 0]).count() as u64;
+                delta.changed += diff
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .filter(|px| **px != [0, 0, 0])
+                    .count() as u64;
                 delta.png += png as u64;
                 delta.png_delta += png_bytes(w, h, &diff)? as u64;
             }
@@ -554,7 +641,11 @@ fn play(path: &Path, slots: &[usize], keep: bool) -> Result<Stats, Error> {
             if !flat {
                 for (cache, (on, off)) in caches.iter_mut().zip(&mut stats.hits) {
                     if cache.touch(hash) {
-                        if onscreen { on.add(flat, png) } else { off.add(flat, png) }
+                        if onscreen {
+                            on.add(flat, png)
+                        } else {
+                            off.add(flat, png)
+                        }
                     }
                 }
             }

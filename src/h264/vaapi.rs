@@ -46,7 +46,15 @@ const MAX_SINCE_IDR: u32 = 1 << 30;
 /// `None` with nothing working, the reasons logged.
 pub fn find() -> Option<Encoder> {
     let mut nodes: Vec<PathBuf> = match std::fs::read_dir(DRI) {
-        Ok(entries) => entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD"))).collect(),
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("renderD"))
+            })
+            .collect(),
         Err(e) => {
             info!("no hardware H.264 encoder: {DRI} cannot be read ({e})");
             return None;
@@ -59,16 +67,30 @@ pub fn find() -> Option<Encoder> {
     }
     for node in nodes {
         for low_power in [true, false] {
-            let encoder = Encoder::Vaapi { device: node.clone(), low_power };
+            let encoder = Encoder::Vaapi {
+                device: node.clone(),
+                low_power,
+            };
             match encoder.try_frames() {
                 Ok(()) => {
-                    info!("hardware H.264: {} through VA-API, its {} encoder", node.display(), kind(low_power));
+                    info!(
+                        "hardware H.264: {} through VA-API, its {} encoder",
+                        node.display(),
+                        kind(low_power)
+                    );
                     return Some(encoder);
                 }
-                Err(e) => debug!("the {} encoder on {}: {e:#}", kind(low_power), node.display()),
+                Err(e) => debug!(
+                    "the {} encoder on {}: {e:#}",
+                    kind(low_power),
+                    node.display()
+                ),
             }
         }
-        info!("{}: VA-API opens no H.264 encoder there (run with RUST_LOG=debug for each attempt)", node.display());
+        info!(
+            "{}: VA-API opens no H.264 encoder there (run with RUST_LOG=debug for each attempt)",
+            node.display()
+        );
     }
     info!("no hardware H.264 encoder");
     None
@@ -93,21 +115,35 @@ unsafe impl Sync for Display {}
 
 impl Display {
     pub fn open(node: &Path) -> anyhow::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open(node).map_err(|e| anyhow::anyhow!("opening {}: {e}", node.display()))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(node)
+            .map_err(|e| anyhow::anyhow!("opening {}: {e}", node.display()))?;
         // SAFETY: the descriptor stays open for the display's life, the
         // callbacks are plain functions, and a display whose initialization
         // fails is terminated, which frees it.
         unsafe {
             let display = va::vaGetDisplayDRM(file.as_raw_fd());
-            anyhow::ensure!(!display.is_null(), "libva has no display on {}", node.display());
+            anyhow::ensure!(
+                !display.is_null(),
+                "libva has no display on {}",
+                node.display()
+            );
             va::vaSetInfoCallback(display, Some(libva_info), ptr::null_mut());
             va::vaSetErrorCallback(display, Some(libva_error), ptr::null_mut());
             let (mut major, mut minor) = (0, 0);
-            if let Err(e) = status(va::vaInitialize(display, &mut major, &mut minor), "initializing VA-API") {
+            if let Err(e) = status(
+                va::vaInitialize(display, &mut major, &mut minor),
+                "initializing VA-API",
+            ) {
                 va::vaTerminate(display);
                 return Err(e.context(format!("VA-API on {}", node.display())));
             }
-            Ok(Self { display, _node: file })
+            Ok(Self {
+                display,
+                _node: file,
+            })
         }
     }
 }
@@ -123,12 +159,22 @@ impl Drop for Display {
 /// libva's messages, through the log: what it says it opened.
 unsafe extern "C" fn libva_info(_: *mut c_void, message: *const c_char) {
     // SAFETY: libva hands a NUL-terminated message.
-    debug!("libva: {}", unsafe { CStr::from_ptr(message) }.to_string_lossy().trim_end());
+    debug!(
+        "libva: {}",
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .trim_end()
+    );
 }
 
 unsafe extern "C" fn libva_error(_: *mut c_void, message: *const c_char) {
     // SAFETY: as `libva_info`'s.
-    warn!("libva: {}", unsafe { CStr::from_ptr(message) }.to_string_lossy().trim_end());
+    warn!(
+        "libva: {}",
+        unsafe { CStr::from_ptr(message) }
+            .to_string_lossy()
+            .trim_end()
+    );
 }
 
 /// A libva status as a result.
@@ -182,7 +228,11 @@ unsafe impl Send for Stream {}
 impl Stream {
     /// An encoder over a `width`×`height` picture, both even: the low-power
     /// one where `low_power` says so.
-    pub fn open(display: Arc<Display>, low_power: bool, (width, height): (usize, usize)) -> anyhow::Result<Self> {
+    pub fn open(
+        display: Arc<Display>,
+        low_power: bool,
+        (width, height): (usize, usize),
+    ) -> anyhow::Result<Self> {
         let mbs = (width.div_ceil(16) as u32, height.div_ceil(16) as u32);
         let mut stream = Self {
             display,
@@ -192,7 +242,11 @@ impl Stream {
             recon: [va::VA_INVALID_SURFACE; 2],
             coded: va::VA_INVALID_ID,
             upload: None,
-            sequence: Sequence { level_idc: syntax::level_idc(mbs), mbs, size: (width as u32, height as u32) },
+            sequence: Sequence {
+                level_idc: syntax::level_idc(mbs),
+                mbs,
+                size: (width as u32, height as u32),
+            },
             packed: 0,
             reference: None,
             frame_num: 0,
@@ -201,7 +255,11 @@ impl Stream {
         };
         let dpy = stream.display.display;
         let profile = va::VAProfileH264High;
-        let entrypoint = if low_power { va::VAEntrypointEncSliceLP } else { va::VAEntrypointEncSlice };
+        let entrypoint = if low_power {
+            va::VAEntrypointEncSliceLP
+        } else {
+            va::VAEntrypointEncSlice
+        };
         // SAFETY: every id made is the stream's, freed by `Drop` on any
         // failure after it; the attribute lists are their stated lengths.
         unsafe {
@@ -212,33 +270,121 @@ impl Stream {
                 attrib(va::VAConfigAttribEncPackedHeaders),
                 attrib(va::VAConfigAttribEncMaxRefFrames),
             ];
-            status(va::vaGetConfigAttributes(dpy, profile, entrypoint, attribs.as_mut_ptr(), attribs.len() as i32), "asking for High profile's encoder")?;
+            status(
+                va::vaGetConfigAttributes(
+                    dpy,
+                    profile,
+                    entrypoint,
+                    attribs.as_mut_ptr(),
+                    attribs.len() as i32,
+                ),
+                "asking for High profile's encoder",
+            )?;
             let [rt, rc, packed, refs] = attribs.map(|a| a.value);
-            anyhow::ensure!(rt != va::VA_ATTRIB_NOT_SUPPORTED && rt & va::VA_RT_FORMAT_YUV420 != 0, "the encoder takes no 4:2:0");
-            anyhow::ensure!(rc != va::VA_ATTRIB_NOT_SUPPORTED && rc & va::VA_RC_CQP != 0, "the encoder has no constant quantizer");
-            anyhow::ensure!(refs == va::VA_ATTRIB_NOT_SUPPORTED || refs & 0xffff >= 1, "the encoder takes no reference picture");
+            anyhow::ensure!(
+                rt != va::VA_ATTRIB_NOT_SUPPORTED && rt & va::VA_RT_FORMAT_YUV420 != 0,
+                "the encoder takes no 4:2:0"
+            );
+            anyhow::ensure!(
+                rc != va::VA_ATTRIB_NOT_SUPPORTED && rc & va::VA_RC_CQP != 0,
+                "the encoder has no constant quantizer"
+            );
+            anyhow::ensure!(
+                refs == va::VA_ATTRIB_NOT_SUPPORTED || refs & 0xffff >= 1,
+                "the encoder takes no reference picture"
+            );
             let mut config = vec![
-                va::VAConfigAttrib { type_: va::VAConfigAttribRTFormat, value: va::VA_RT_FORMAT_YUV420 },
-                va::VAConfigAttrib { type_: va::VAConfigAttribRateControl, value: va::VA_RC_CQP },
+                va::VAConfigAttrib {
+                    type_: va::VAConfigAttribRTFormat,
+                    value: va::VA_RT_FORMAT_YUV420,
+                },
+                va::VAConfigAttrib {
+                    type_: va::VAConfigAttribRateControl,
+                    value: va::VA_RC_CQP,
+                },
             ];
             // The sequence parameter set is the daemon's own: VA's sequence
             // parameters have no colour description, so a driver's would
             // leave the decoder to guess BT.709 at HD for BT.601's pixels.
             anyhow::ensure!(
-                packed != va::VA_ATTRIB_NOT_SUPPORTED && packed & va::VA_ENC_PACKED_HEADER_SEQUENCE != 0,
+                packed != va::VA_ATTRIB_NOT_SUPPORTED
+                    && packed & va::VA_ENC_PACKED_HEADER_SEQUENCE != 0,
                 "the encoder takes no packed sequence parameter set"
             );
-            stream.packed = packed & (va::VA_ENC_PACKED_HEADER_SEQUENCE | va::VA_ENC_PACKED_HEADER_PICTURE | va::VA_ENC_PACKED_HEADER_SLICE);
-            config.push(va::VAConfigAttrib { type_: va::VAConfigAttribEncPackedHeaders, value: stream.packed });
-            status(va::vaCreateConfig(dpy, profile, entrypoint, config.as_mut_ptr(), config.len() as i32, &mut stream.config), "making the encoder's configuration")?;
-            status(va::vaCreateSurfaces(dpy, va::VA_RT_FORMAT_YUV420, width as u32, height as u32, &mut stream.input, 1, ptr::null_mut(), 0), "making the input surface")?;
+            stream.packed = packed
+                & (va::VA_ENC_PACKED_HEADER_SEQUENCE
+                    | va::VA_ENC_PACKED_HEADER_PICTURE
+                    | va::VA_ENC_PACKED_HEADER_SLICE);
+            config.push(va::VAConfigAttrib {
+                type_: va::VAConfigAttribEncPackedHeaders,
+                value: stream.packed,
+            });
+            status(
+                va::vaCreateConfig(
+                    dpy,
+                    profile,
+                    entrypoint,
+                    config.as_mut_ptr(),
+                    config.len() as i32,
+                    &mut stream.config,
+                ),
+                "making the encoder's configuration",
+            )?;
+            status(
+                va::vaCreateSurfaces(
+                    dpy,
+                    va::VA_RT_FORMAT_YUV420,
+                    width as u32,
+                    height as u32,
+                    &mut stream.input,
+                    1,
+                    ptr::null_mut(),
+                    0,
+                ),
+                "making the input surface",
+            )?;
             let (w, h) = (mbs.0 * 16, mbs.1 * 16);
-            status(va::vaCreateSurfaces(dpy, va::VA_RT_FORMAT_YUV420, w, h, stream.recon.as_mut_ptr(), 2, ptr::null_mut(), 0), "making the reconstructed surfaces")?;
-            status(va::vaCreateContext(dpy, stream.config, w as i32, h as i32, va::VA_PROGRESSIVE, stream.recon.as_mut_ptr(), 2, &mut stream.context), "making the encoder")?;
+            status(
+                va::vaCreateSurfaces(
+                    dpy,
+                    va::VA_RT_FORMAT_YUV420,
+                    w,
+                    h,
+                    stream.recon.as_mut_ptr(),
+                    2,
+                    ptr::null_mut(),
+                    0,
+                ),
+                "making the reconstructed surfaces",
+            )?;
+            status(
+                va::vaCreateContext(
+                    dpy,
+                    stream.config,
+                    w as i32,
+                    h as i32,
+                    va::VA_PROGRESSIVE,
+                    stream.recon.as_mut_ptr(),
+                    2,
+                    &mut stream.context,
+                ),
+                "making the encoder",
+            )?;
             // Raw 4:2:0 is 384 bytes a macroblock; the rest is headroom for
             // the headers and a coarse estimate.
             let size = mbs.0 * mbs.1 * 400 + 64 * 1024;
-            status(va::vaCreateBuffer(dpy, stream.context, va::VAEncCodedBufferType, size, 1, ptr::null_mut(), &mut stream.coded), "making the coded buffer")?;
+            status(
+                va::vaCreateBuffer(
+                    dpy,
+                    stream.context,
+                    va::VAEncCodedBufferType,
+                    size,
+                    1,
+                    ptr::null_mut(),
+                    &mut stream.coded,
+                ),
+                "making the coded buffer",
+            )?;
             stream.upload = Some(stream.upload_kind()?);
         }
         Ok(stream)
@@ -263,7 +409,10 @@ impl Stream {
             format.byte_order = va::VA_LSB_FIRST;
             format.bits_per_pixel = 12;
             let (w, h) = self.sequence.size;
-            status(va::vaCreateImage(dpy, &mut format, w as i32, h as i32, &mut image), "making an NV12 image of the input surface")?;
+            status(
+                va::vaCreateImage(dpy, &mut format, w as i32, h as i32, &mut image),
+                "making an NV12 image of the input surface",
+            )?;
             Ok(Upload::Put(image))
         }
     }
@@ -279,18 +428,30 @@ impl Stream {
             let mut derived: va::VAImage = std::mem::zeroed();
             let image = match self.upload.as_ref().expect("made with the stream") {
                 Upload::Derive => {
-                    status(va::vaDeriveImage(dpy, self.input, &mut derived), "mapping the input surface")?;
+                    status(
+                        va::vaDeriveImage(dpy, self.input, &mut derived),
+                        "mapping the input surface",
+                    )?;
                     derived
                 }
                 Upload::Put(image) => *image,
             };
             let mut mapped: *mut c_void = ptr::null_mut();
-            let copied = status(va::vaMapBuffer(dpy, image.buf, &mut mapped), "mapping the input picture").map(|()| {
+            let copied = status(
+                va::vaMapBuffer(dpy, image.buf, &mut mapped),
+                "mapping the input picture",
+            )
+            .map(|()| {
                 let base = mapped.cast::<u8>();
                 for (plane, rows, source) in [(0, h, &planes.y), (1, h / 2, &planes.uv)] {
-                    let (offset, pitch) = (image.offsets[plane] as usize, image.pitches[plane] as usize);
+                    let (offset, pitch) =
+                        (image.offsets[plane] as usize, image.pitches[plane] as usize);
                     for row in 0..rows {
-                        ptr::copy_nonoverlapping(source.as_ptr().add(row * planes.stride), base.add(offset + row * pitch), w);
+                        ptr::copy_nonoverlapping(
+                            source.as_ptr().add(row * planes.stride),
+                            base.add(offset + row * pitch),
+                            w,
+                        );
                     }
                 }
                 va::vaUnmapBuffer(dpy, image.buf);
@@ -300,7 +461,24 @@ impl Stream {
                     va::vaDestroyImage(dpy, derived.image_id);
                     Ok(())
                 }
-                Upload::Put(image) => copied.as_ref().map_or(Ok(()), |()| status(va::vaPutImage(dpy, self.input, image.image_id, 0, 0, w as u32, h as u32, 0, 0, w as u32, h as u32), "putting the picture onto the input surface")),
+                Upload::Put(image) => copied.as_ref().map_or(Ok(()), |()| {
+                    status(
+                        va::vaPutImage(
+                            dpy,
+                            self.input,
+                            image.image_id,
+                            0,
+                            0,
+                            w as u32,
+                            h as u32,
+                            0,
+                            0,
+                            w as u32,
+                            h as u32,
+                        ),
+                        "putting the picture onto the input surface",
+                    )
+                }),
             };
             copied.and(put)
         }
@@ -320,19 +498,48 @@ impl Buffers {
         self.bytes(kind, (value as *const T).cast(), size_of::<T>(), what)
     }
 
-    fn bytes(&mut self, kind: va::VABufferType, data: *const c_void, len: usize, what: &str) -> anyhow::Result<()> {
+    fn bytes(
+        &mut self,
+        kind: va::VABufferType,
+        data: *const c_void,
+        len: usize,
+        what: &str,
+    ) -> anyhow::Result<()> {
         let mut id = va::VA_INVALID_ID;
         // SAFETY: libva copies `len` bytes from `data`, which holds them.
-        status(unsafe { va::vaCreateBuffer(self.display, self.context, kind, len as u32, 1, data.cast_mut(), &mut id) }, what)?;
+        status(
+            unsafe {
+                va::vaCreateBuffer(
+                    self.display,
+                    self.context,
+                    kind,
+                    len as u32,
+                    1,
+                    data.cast_mut(),
+                    &mut id,
+                )
+            },
+            what,
+        )?;
         self.ids.push(id);
         Ok(())
     }
 
     /// A packed header, the daemon's bytes with their emulation prevention.
     fn packed(&mut self, kind: u32, header: &[u8], what: &str) -> anyhow::Result<()> {
-        let parameters = va::VAEncPackedHeaderParameterBuffer { type_: kind, bit_length: (header.len() * 8) as u32, has_emulation_bytes: 1, ..Default::default() };
+        let parameters = va::VAEncPackedHeaderParameterBuffer {
+            type_: kind,
+            bit_length: (header.len() * 8) as u32,
+            has_emulation_bytes: 1,
+            ..Default::default()
+        };
         self.add(va::VAEncPackedHeaderParameterBufferType, &parameters, what)?;
-        self.bytes(va::VAEncPackedHeaderDataBufferType, header.as_ptr().cast(), header.len(), what)
+        self.bytes(
+            va::VAEncPackedHeaderDataBufferType,
+            header.as_ptr().cast(),
+            header.len(),
+            what,
+        )
     }
 }
 
@@ -347,15 +554,35 @@ impl Drop for Buffers {
 
 /// A picture no reference is: every list entry not in use.
 fn no_picture() -> va::VAPictureH264 {
-    va::VAPictureH264 { picture_id: va::VA_INVALID_SURFACE, frame_idx: 0, flags: va::VA_PICTURE_H264_INVALID, TopFieldOrderCnt: 0, BottomFieldOrderCnt: 0, va_reserved: [0; 4] }
+    va::VAPictureH264 {
+        picture_id: va::VA_INVALID_SURFACE,
+        frame_idx: 0,
+        flags: va::VA_PICTURE_H264_INVALID,
+        TopFieldOrderCnt: 0,
+        BottomFieldOrderCnt: 0,
+        va_reserved: [0; 4],
+    }
 }
 
 fn picture(surface: va::VASurfaceID, frame_num: u32, poc: i32, flags: u32) -> va::VAPictureH264 {
-    va::VAPictureH264 { picture_id: surface, frame_idx: frame_num, flags, TopFieldOrderCnt: poc, BottomFieldOrderCnt: poc, va_reserved: [0; 4] }
+    va::VAPictureH264 {
+        picture_id: surface,
+        frame_idx: frame_num,
+        flags,
+        TopFieldOrderCnt: poc,
+        BottomFieldOrderCnt: poc,
+        va_reserved: [0; 4],
+    }
 }
 
 impl Backend for Stream {
-    fn frame(&mut self, planes: &Planes, keyframe: bool, qp: u8, out: &mut Vec<u8>) -> anyhow::Result<bool> {
+    fn frame(
+        &mut self,
+        planes: &Planes,
+        keyframe: bool,
+        qp: u8,
+        out: &mut Vec<u8>,
+    ) -> anyhow::Result<bool> {
         let idr = keyframe || self.reference.is_none() || self.since_idr >= MAX_SINCE_IDR;
         if idr {
             (self.frame_num, self.since_idr) = (0, 0);
@@ -365,9 +592,18 @@ impl Backend for Stream {
         let current = self.reference.map_or(0, |r| 1 - r.surface);
         let poc = (2 * self.since_idr) as i32;
         let reference = self.reference.filter(|_| !idr);
-        let slice = Slice { idr, frame_num: self.frame_num, idr_pic_id: self.idr_pic_id, qp };
+        let slice = Slice {
+            idr,
+            frame_num: self.frame_num,
+            idr_pic_id: self.idr_pic_id,
+            qp,
+        };
         let sequence = self.sequence;
-        let mut buffers = Buffers { display: dpy, context: self.context, ids: Vec::new() };
+        let mut buffers = Buffers {
+            display: dpy,
+            context: self.context,
+            ids: Vec::new(),
+        };
         // SAFETY: the parameter structures are plain data, zeroed and filled
         // here, and copied by libva into its buffers; the picture is begun,
         // rendered and ended on the stream's own context and surfaces, synced
@@ -381,7 +617,8 @@ impl Backend for Stream {
                 seq.intra_idr_period = MAX_SINCE_IDR;
                 seq.ip_period = 1;
                 seq.max_num_ref_frames = 1;
-                (seq.picture_width_in_mbs, seq.picture_height_in_mbs) = (sequence.mbs.0 as u16, sequence.mbs.1 as u16);
+                (seq.picture_width_in_mbs, seq.picture_height_in_mbs) =
+                    (sequence.mbs.0 as u16, sequence.mbs.1 as u16);
                 let fields = &mut seq.seq_fields;
                 fields.set_chroma_format_idc(1);
                 fields.set_frame_mbs_only_flag(1);
@@ -397,15 +634,28 @@ impl Backend for Stream {
                 vui.set_motion_vectors_over_pic_boundaries_flag(1);
                 vui.set_log2_max_mv_length_horizontal(15);
                 vui.set_log2_max_mv_length_vertical(15);
-                buffers.add(va::VAEncSequenceParameterBufferType, &seq, "making the sequence's parameters")?;
-                buffers.packed(va::VAEncPackedHeaderH264_SPS, &sequence.sps(), "making the sequence parameter set")?;
+                buffers.add(
+                    va::VAEncSequenceParameterBufferType,
+                    &seq,
+                    "making the sequence's parameters",
+                )?;
+                buffers.packed(
+                    va::VAEncPackedHeaderH264_SPS,
+                    &sequence.sps(),
+                    "making the sequence parameter set",
+                )?;
             }
 
             let mut pic: va::VAEncPictureParameterBufferH264 = std::mem::zeroed();
             pic.CurrPic = picture(self.recon[current], self.frame_num, poc, 0);
             pic.ReferenceFrames = [no_picture(); 16];
             if let Some(r) = reference {
-                pic.ReferenceFrames[0] = picture(self.recon[r.surface], r.frame_num, r.poc, va::VA_PICTURE_H264_SHORT_TERM_REFERENCE);
+                pic.ReferenceFrames[0] = picture(
+                    self.recon[r.surface],
+                    r.frame_num,
+                    r.poc,
+                    va::VA_PICTURE_H264_SHORT_TERM_REFERENCE,
+                );
             }
             pic.coded_buf = self.coded;
             pic.frame_num = self.frame_num as u16;
@@ -416,13 +666,25 @@ impl Backend for Stream {
             fields.set_entropy_coding_mode_flag(1);
             fields.set_transform_8x8_mode_flag(1);
             fields.set_deblocking_filter_control_present_flag(1);
-            buffers.add(va::VAEncPictureParameterBufferType, &pic, "making the picture's parameters")?;
+            buffers.add(
+                va::VAEncPictureParameterBufferType,
+                &pic,
+                "making the picture's parameters",
+            )?;
             if idr && self.packed & va::VA_ENC_PACKED_HEADER_PICTURE != 0 {
-                buffers.packed(va::VAEncPackedHeaderH264_PPS, &syntax::pps(), "making the picture parameter set")?;
+                buffers.packed(
+                    va::VAEncPackedHeaderH264_PPS,
+                    &syntax::pps(),
+                    "making the picture parameter set",
+                )?;
             }
 
             if self.packed & va::VA_ENC_PACKED_HEADER_SLICE != 0 {
-                buffers.packed(va::VAEncPackedHeaderH264_Slice, &slice.header(), "making the slice header")?;
+                buffers.packed(
+                    va::VAEncPackedHeaderH264_Slice,
+                    &slice.header(),
+                    "making the slice header",
+                )?;
             }
             let mut sp: va::VAEncSliceParameterBufferH264 = std::mem::zeroed();
             sp.num_macroblocks = sequence.mbs.0 * sequence.mbs.1;
@@ -437,22 +699,48 @@ impl Backend for Stream {
                 debug_assert_eq!(r.surface, 1 - current);
             }
             sp.slice_qp_delta = (i32::from(qp) - i32::from(syntax::PIC_INIT_QP)) as i8;
-            buffers.add(va::VAEncSliceParameterBufferType, &sp, "making the slice's parameters")?;
+            buffers.add(
+                va::VAEncSliceParameterBufferType,
+                &sp,
+                "making the slice's parameters",
+            )?;
 
-            status(va::vaBeginPicture(dpy, self.context, self.input), "beginning a picture")?;
-            status(va::vaRenderPicture(dpy, self.context, buffers.ids.as_mut_ptr(), buffers.ids.len() as i32), "handing the encoder a picture")?;
+            status(
+                va::vaBeginPicture(dpy, self.context, self.input),
+                "beginning a picture",
+            )?;
+            status(
+                va::vaRenderPicture(
+                    dpy,
+                    self.context,
+                    buffers.ids.as_mut_ptr(),
+                    buffers.ids.len() as i32,
+                ),
+                "handing the encoder a picture",
+            )?;
             status(va::vaEndPicture(dpy, self.context), "coding a picture")?;
             drop(buffers);
-            status(va::vaSyncSurface(dpy, self.input), "waiting for a picture to be coded")?;
+            status(
+                va::vaSyncSurface(dpy, self.input),
+                "waiting for a picture to be coded",
+            )?;
 
             let mut mapped: *mut c_void = ptr::null_mut();
-            status(va::vaMapBuffer(dpy, self.coded, &mut mapped), "mapping the coded frame")?;
+            status(
+                va::vaMapBuffer(dpy, self.coded, &mut mapped),
+                "mapping the coded frame",
+            )?;
             let mut segment = mapped.cast::<va::VACodedBufferSegment>().cast_const();
             let (start, mut flags) = (out.len(), 0);
             while !segment.is_null() {
                 let s = &*segment;
-                flags |= s.status & (va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK | va::VA_CODED_BUF_STATUS_BAD_BITSTREAM);
-                out.extend_from_slice(std::slice::from_raw_parts(s.buf.cast::<u8>(), s.size as usize));
+                flags |= s.status
+                    & (va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK
+                        | va::VA_CODED_BUF_STATUS_BAD_BITSTREAM);
+                out.extend_from_slice(std::slice::from_raw_parts(
+                    s.buf.cast::<u8>(),
+                    s.size as usize,
+                ));
                 segment = s.next.cast::<va::VACodedBufferSegment>().cast_const();
             }
             va::vaUnmapBuffer(dpy, self.coded);
@@ -461,10 +749,20 @@ impl Backend for Stream {
             if flags != 0 {
                 out.truncate(start);
             }
-            anyhow::ensure!(flags & va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK == 0, "the coded frame overflowed its buffer");
-            anyhow::ensure!(flags & va::VA_CODED_BUF_STATUS_BAD_BITSTREAM == 0, "the encoder flagged the coded frame a bad bitstream");
+            anyhow::ensure!(
+                flags & va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK == 0,
+                "the coded frame overflowed its buffer"
+            );
+            anyhow::ensure!(
+                flags & va::VA_CODED_BUF_STATUS_BAD_BITSTREAM == 0,
+                "the encoder flagged the coded frame a bad bitstream"
+            );
         }
-        self.reference = Some(Reference { surface: current, frame_num: self.frame_num, poc });
+        self.reference = Some(Reference {
+            surface: current,
+            frame_num: self.frame_num,
+            poc,
+        });
         self.frame_num = (self.frame_num + 1) % (1 << syntax::LOG2_MAX_FRAME_NUM);
         self.since_idr += 1;
         if idr {
@@ -489,7 +787,12 @@ impl Drop for Stream {
             if self.context != va::VA_INVALID_ID {
                 va::vaDestroyContext(dpy, self.context);
             }
-            for surface in self.recon.iter_mut().chain([&mut self.input]).filter(|s| **s != va::VA_INVALID_SURFACE) {
+            for surface in self
+                .recon
+                .iter_mut()
+                .chain([&mut self.input])
+                .filter(|s| **s != va::VA_INVALID_SURFACE)
+            {
                 va::vaDestroySurfaces(dpy, surface, 1);
             }
             if self.config != va::VA_INVALID_ID {

@@ -32,11 +32,11 @@ use crate::clipboard::Clipboard;
 use crate::config::{Config, Xkb};
 use crate::cursor::CursorCapture;
 use crate::framebuffer::Framebuffer;
-use crate::input::Input;
 use crate::framebuffer::ResizeOrigin;
+use crate::input::Input;
 use crate::outputs::{ConfigKind, OutputInfo, Outputs};
-use crate::sway::{self, Step, Sway, VirtualDisplays};
 use crate::shared::{BESIDE, ClientId, Command, Displays, Event, FIRST, Geometry, Shared};
+use crate::sway::{self, Step, Sway, VirtualDisplays};
 
 /// What the compositor thread keeps for one desk: who is on it, and what
 /// shares its output with them.
@@ -97,7 +97,9 @@ impl Handle {
     pub async fn exited(&mut self) -> anyhow::Result<()> {
         match (&mut self.done).await {
             Ok(result) => result,
-            Err(_) => Err(anyhow::anyhow!("the compositor thread ended without a word")),
+            Err(_) => Err(anyhow::anyhow!(
+                "the compositor thread ended without a word"
+            )),
         }
     }
 }
@@ -116,7 +118,9 @@ pub fn start(config: &Config) -> anyhow::Result<(Handle, Arc<Shared>)> {
             let _ = done_tx.send(result);
         })
         .context("spawning the compositor thread")?;
-    let shared = ready_rx.recv().map_err(|_| anyhow::anyhow!("the compositor thread died during startup"))??;
+    let shared = ready_rx
+        .recv()
+        .map_err(|_| anyhow::anyhow!("the compositor thread died during startup"))??;
     Ok((Handle { done: done_rx }, shared))
 }
 
@@ -126,7 +130,8 @@ fn run(
     xkb: Xkb,
     ready: std::sync::mpsc::Sender<anyhow::Result<Arc<Shared>>>,
 ) -> anyhow::Result<()> {
-    let mut event_loop: EventLoop<'static, Compositor> = EventLoop::try_new().context("creating the event loop")?;
+    let mut event_loop: EventLoop<'static, Compositor> =
+        EventLoop::try_new().context("creating the event loop")?;
     let (commands_tx, commands_rx) = channel::channel::<Command>();
     let mut compositor = match connect(event_loop.handle(), max_fps, xkb) {
         Ok(c) => c,
@@ -149,10 +154,15 @@ fn run(
         .map_err(|e| anyhow::anyhow!("inserting the Wayland source: {e}"))?;
     event_loop
         .handle()
-        .insert_source(commands_rx, |event, _, state: &mut Compositor| match event {
-            channel::Event::Msg(command) => state.handle_command(command),
-            channel::Event::Closed => state.exit = Some(Err(anyhow::anyhow!("the command channel closed"))),
-        })
+        .insert_source(
+            commands_rx,
+            |event, _, state: &mut Compositor| match event {
+                channel::Event::Msg(command) => state.handle_command(command),
+                channel::Event::Closed => {
+                    state.exit = Some(Err(anyhow::anyhow!("the command channel closed")))
+                }
+            },
+        )
         .map_err(|e| anyhow::anyhow!("inserting the command channel: {e}"))?;
     let _ = ready.send(Ok(shared));
 
@@ -169,9 +179,15 @@ fn run(
 
 /// Connect and bind the globals. The queue is returned separately because the
 /// registry roundtrip needs `&mut Compositor` beside it.
-fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> anyhow::Result<Compositor> {
-    let conn = Connection::connect_to_env().context("connecting to the Wayland compositor (is WAYLAND_DISPLAY set?)")?;
-    let (globals, queue) = registry_queue_init::<Compositor>(&conn).context("reading the registry")?;
+fn connect(
+    handle: LoopHandle<'static, Compositor>,
+    max_fps: u32,
+    xkb: Xkb,
+) -> anyhow::Result<Compositor> {
+    let conn = Connection::connect_to_env()
+        .context("connecting to the Wayland compositor (is WAYLAND_DISPLAY set?)")?;
+    let (globals, queue) =
+        registry_queue_init::<Compositor>(&conn).context("reading the registry")?;
     let qh = queue.handle();
 
     let shm: WlShm = globals.bind(&qh, 1..=1, ()).context("wl_shm")?;
@@ -181,20 +197,29 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
     let keyboards: Option<ZwpVirtualKeyboardManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let pointers: Option<ZwlrVirtualPointerManagerV1> = globals.bind(&qh, 2..=2, ()).ok();
     let data_control: Option<ZwlrDataControlManagerV1> = globals.bind(&qh, 1..=2, ()).ok();
-    let capture_sources: Option<ExtOutputImageCaptureSourceManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
+    let capture_sources: Option<ExtOutputImageCaptureSourceManagerV1> =
+        globals.bind(&qh, 1..=1, ()).ok();
     let image_copy: Option<ExtImageCopyCaptureManagerV1> = globals.bind(&qh, 1..=1, ()).ok();
     let xdg_outputs: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 3..=3, ()).ok();
-    anyhow::ensure!(screencopy.is_some(), "the compositor does not offer wlr-screencopy version 2 or later");
+    anyhow::ensure!(
+        screencopy.is_some(),
+        "the compositor does not offer wlr-screencopy version 2 or later"
+    );
     anyhow::ensure!(
         capture_sources.is_some() && image_copy.is_some(),
         "the compositor does not offer ext-image-copy-capture with output capture sources, which the cursor image is taken from (wlroots 0.19 or later)"
     );
-    anyhow::ensure!(xdg_outputs.is_some(), "the compositor does not offer xdg-output version 3, which says where its outputs are laid out, where the pointer is aimed");
+    anyhow::ensure!(
+        xdg_outputs.is_some(),
+        "the compositor does not offer xdg-output version 3, which says where its outputs are laid out, where the pointer is aimed"
+    );
     if seat.is_none() {
         warn!("no seat: the cursor image cannot be captured, and clients draw their own");
     }
     if output_manager.is_none() {
-        warn!("no wlr-output-management: the output cannot be resized or rescaled, and its scale is read from wl_output only");
+        warn!(
+            "no wlr-output-management: the output cannot be resized or rescaled, and its scale is read from wl_output only"
+        );
     }
     if keyboards.is_none() || pointers.is_none() {
         warn!("no virtual keyboard or pointer protocol: input will be dropped");
@@ -241,7 +266,9 @@ fn connect(handle: LoopHandle<'static, Compositor>, max_fps: u32, xkb: Xkb) -> a
 
 impl Compositor {
     pub fn shared(&self) -> &Arc<Shared> {
-        self.shared.as_ref().expect("the shared state exists once discovery is done")
+        self.shared
+            .as_ref()
+            .expect("the shared state exists once discovery is done")
     }
 
     fn bind_output(&mut self, name: u32, version: u32) {
@@ -249,7 +276,11 @@ impl Compositor {
             warn!("wl_output {name} is version {version}; version 4 is needed to learn its name");
         }
         let output: WlOutput = self.registry.bind(name, version.min(4), &self.qh, ());
-        let xdg = self.outputs.xdg_manager.as_ref().map(|manager| manager.get_xdg_output(&output, &self.qh, name));
+        let xdg = self
+            .outputs
+            .xdg_manager
+            .as_ref()
+            .map(|manager| manager.get_xdg_output(&output, &self.qh, name));
         self.outputs.outputs.push(OutputInfo {
             output,
             global: name,
@@ -267,7 +298,11 @@ impl Compositor {
     }
 
     /// Learn the outputs, pick one, and build the shared state.
-    fn discover(&mut self, wanted: Option<&str>, commands: channel::Sender<Command>) -> anyhow::Result<(Connection, wayland_client::EventQueue<Compositor>)> {
+    fn discover(
+        &mut self,
+        wanted: Option<&str>,
+        commands: channel::Sender<Command>,
+    ) -> anyhow::Result<(Connection, wayland_client::EventQueue<Compositor>)> {
         let (conn, mut queue) = self.pending_queue.take().expect("the queue from connect");
         // Two round trips: the first delivers the outputs and heads, the second the
         // events of the mode objects the heads created.
@@ -276,13 +311,28 @@ impl Compositor {
         self.outputs.select(wanted)?;
         let (width, height) = self.outputs.size(FIRST);
         anyhow::ensure!(width > 0 && height > 0, "the shared output has no mode");
-        let geometry = Geometry { width, height, scale: self.outputs.scale(FIRST) };
-        let displays = Displays { active: [self.outputs.active_id(FIRST), 0], entries: self.outputs.entries() };
+        let geometry = Geometry {
+            width,
+            height,
+            scale: self.outputs.scale(FIRST),
+        };
+        let displays = Displays {
+            active: [self.outputs.active_id(FIRST), 0],
+            entries: self.outputs.entries(),
+        };
         let most_virtual_displays = if self.sway.is_some() { sway::MOST } else { 0 };
-        let shared = Arc::new(Shared::new(Framebuffer::new(width, height), geometry, displays, commands, most_virtual_displays));
+        let shared = Arc::new(Shared::new(
+            Framebuffer::new(width, height),
+            geometry,
+            displays,
+            commands,
+            most_virtual_displays,
+        ));
         self.shared = Some(shared);
 
-        if let (Some(seat), Some(keyboards), Some(pointers)) = (&self.seat, &self.keyboards, &self.pointers) {
+        if let (Some(seat), Some(keyboards), Some(pointers)) =
+            (&self.seat, &self.keyboards, &self.pointers)
+        {
             let mut input = Input::new(&self.qh, keyboards, seat, &self.xkb)?;
             input.point(FIRST, &self.qh, pointers, seat);
             self.input = Some(input);
@@ -296,7 +346,9 @@ impl Compositor {
     /// The desk a client is on, or `None` for one that never joined or was
     /// superseded: its last messages arrive after it lost its desk.
     pub fn desk_of(&self, client: ClientId) -> Option<usize> {
-        self.desks.iter().position(|desk| desk.client == Some(client))
+        self.desks
+            .iter()
+            .position(|desk| desk.client == Some(client))
     }
 
     /// Refresh a desk's shared geometry from the outputs; tell the sessions if
@@ -334,7 +386,13 @@ impl Compositor {
     }
 
     fn refresh_displays(&mut self) -> bool {
-        let now = Displays { active: [self.outputs.active_id(FIRST), self.outputs.active_id(BESIDE)], entries: self.outputs.entries() };
+        let now = Displays {
+            active: [
+                self.outputs.active_id(FIRST),
+                self.outputs.active_id(BESIDE),
+            ],
+            entries: self.outputs.entries(),
+        };
         let mut displays = self.shared().displays.lock().unwrap();
         if *displays == now {
             return false;
@@ -346,7 +404,11 @@ impl Compositor {
     fn refresh_geometry(&mut self, desk: usize) -> bool {
         let (width, height) = self.outputs.size(desk);
         let scale = self.outputs.scale(desk);
-        let now = Geometry { width, height, scale };
+        let now = Geometry {
+            width,
+            height,
+            scale,
+        };
         let mut g = self.shared().desks[desk].geometry.lock().unwrap();
         if *g == now {
             return false;
@@ -360,7 +422,10 @@ impl Compositor {
         match command {
             Command::ClientJoined(id) => {
                 if let Some(previous) = self.desks[FIRST].client.replace(id) {
-                    info!("client {} takes the desktop from client {}", id.0, previous.0);
+                    info!(
+                        "client {} takes the desktop from client {}",
+                        id.0, previous.0
+                    );
                     self.let_go(FIRST, previous);
                     // A display beside the client that held it was that client's.
                     self.end_beside();
@@ -391,35 +456,62 @@ impl Compositor {
             // Everything below is a desk's, so only the client on one is heard:
             // a superseded session's last messages arrive after the new client
             // has taken over.
-            Command::Key { client, keysym, down } => {
-                let Some(desk) = self.desk_of(client) else { return };
+            Command::Key {
+                client,
+                keysym,
+                down,
+            } => {
+                let Some(desk) = self.desk_of(client) else {
+                    return;
+                };
                 if let Some(input) = &mut self.input {
                     input.key(desk, keysym, down);
                 }
             }
-            Command::Pointer { client, buttons, x, y } => {
-                let Some(desk) = self.desk_of(client) else { return };
+            Command::Pointer {
+                client,
+                buttons,
+                x,
+                y,
+            } => {
+                let Some(desk) = self.desk_of(client) else {
+                    return;
+                };
                 let extent = {
                     let fb = self.shared().desks[desk].framebuffer.lock().unwrap();
                     (fb.width, fb.height)
                 };
-                let placement = self.outputs.selected(desk).and_then(|o| self.outputs.placement_of(o));
+                let placement = self
+                    .outputs
+                    .selected(desk)
+                    .and_then(|o| self.outputs.placement_of(o));
                 if let Some(input) = &mut self.input {
                     input.pointer(desk, buttons, x, y, extent, placement.as_ref());
                 }
             }
             Command::Scroll { client, dx, dy } => {
-                let Some(desk) = self.desk_of(client) else { return };
+                let Some(desk) = self.desk_of(client) else {
+                    return;
+                };
                 if let Some(input) = &mut self.input {
                     input.scroll(desk, dx, dy);
                 }
             }
-            Command::Resize { client, width, height } => {
+            Command::Resize {
+                client,
+                width,
+                height,
+            } => {
                 if let Some(desk) = self.desk_of(client) {
                     self.resize(desk, client, width, height, false);
                 }
             }
-            Command::Declare { client, width, height, scale } => {
+            Command::Declare {
+                client,
+                width,
+                height,
+                scale,
+            } => {
                 if let Some(desk) = self.desk_of(client) {
                     self.declare(desk, client, width, height, scale, false);
                 }
@@ -460,11 +552,18 @@ impl Compositor {
     /// in its first byte.
     fn want_virtual_displays(&mut self, client: ClientId, count: u32) {
         if self.sway.is_none() {
-            info!("client {}: asks for {count} virtual displays; the compositor's outputs are what they are", client.0);
+            info!(
+                "client {}: asks for {count} virtual displays; the compositor's outputs are what they are",
+                client.0
+            );
             return;
         }
         if count == 0 || count > u32::from(sway::MOST) {
-            warn!("client {}: asks for {count} virtual displays; one to {} can be had, and the outputs stay as they are", client.0, sway::MOST);
+            warn!(
+                "client {}: asks for {count} virtual displays; one to {} can be had, and the outputs stay as they are",
+                client.0,
+                sway::MOST
+            );
             return;
         }
         self.virtual_displays.wanted = Some(count);
@@ -475,7 +574,13 @@ impl Compositor {
     /// asked for, if any: run on the request, and on every output's arrival
     /// and departure, since each step is followed by one of those.
     pub fn reconcile_virtual_displays(&mut self) {
-        let headless: Vec<String> = self.outputs.outputs.iter().filter(|o| o.is_headless()).filter_map(|o| o.name.clone()).collect();
+        let headless: Vec<String> = self
+            .outputs
+            .outputs
+            .iter()
+            .filter(|o| o.is_headless())
+            .filter_map(|o| o.name.clone())
+            .collect();
         let shared = self.outputs.selected[FIRST].as_deref();
         let preferred = self.outputs.wanted.as_deref();
         let step = self.virtual_displays.next(&headless, shared, preferred);
@@ -484,12 +589,20 @@ impl Compositor {
         let result = match step {
             Step::Settled => return,
             Step::Create => {
-                info!("asking sway for a headless output: the client wants {wanted} virtual displays and there are {}", headless.len());
-                sway.create_output().map(|()| self.virtual_displays.creating(headless.clone()))
+                info!(
+                    "asking sway for a headless output: the client wants {wanted} virtual displays and there are {}",
+                    headless.len()
+                );
+                sway.create_output()
+                    .map(|()| self.virtual_displays.creating(headless.clone()))
             }
             Step::Unplug(name) => {
-                info!("asking sway to unplug {name}: the client wants {wanted} virtual displays and there are {}", headless.len());
-                sway.unplug(&name).map(|()| self.virtual_displays.unplugging(name))
+                info!(
+                    "asking sway to unplug {name}: the client wants {wanted} virtual displays and there are {}",
+                    headless.len()
+                );
+                sway.unplug(&name)
+                    .map(|()| self.virtual_displays.unplugging(name))
             }
         };
         if let Err(e) = result {
@@ -522,7 +635,10 @@ impl Compositor {
     /// beside is its client's: it is refused too.
     fn join_beside(&mut self, id: ClientId) {
         if self.shared().seats.borrow().beside_ended >= id.0 {
-            info!("client {}: a later connection beside has already ended", id.0);
+            info!(
+                "client {}: a later connection beside has already ended",
+                id.0
+            );
             return self.shared().end_beside(id);
         }
         let Some(holder) = self.desks[FIRST].client else {
@@ -530,19 +646,30 @@ impl Compositor {
             return self.shared().end_beside(id);
         };
         if holder.0 > id.0 {
-            info!("client {}: client {} took the desktop since it connected", id.0, holder.0);
+            info!(
+                "client {}: client {} took the desktop since it connected",
+                id.0, holder.0
+            );
             return self.shared().end_beside(id);
         }
         self.end_beside();
         let first = self.outputs.selected[FIRST].clone();
-        let Some(entry) = self.outputs.entries().into_iter().find(|entry| Some(&entry.name) != first.as_ref()) else {
+        let Some(entry) = self
+            .outputs
+            .entries()
+            .into_iter()
+            .find(|entry| Some(&entry.name) != first.as_ref())
+        else {
             info!("client {}: no other output to show beside", id.0);
             return self.shared().end_beside(id);
         };
         if self.outputs.selectable(entry.id).is_none() {
             return self.shared().end_beside(id);
         }
-        info!("client {}: showing output {} beside: {}x{} pixels at scale {:.2}", id.0, entry.name, entry.width, entry.height, entry.scale);
+        info!(
+            "client {}: showing output {} beside: {}x{} pixels at scale {:.2}",
+            id.0, entry.name, entry.width, entry.height, entry.scale
+        );
         self.desks[BESIDE].client = Some(id);
         self.share_output(BESIDE, entry.name, entry.width, entry.height);
         // After the framebuffer took the output's size: the session reads it
@@ -554,7 +681,9 @@ impl Compositor {
     /// the desktop left or took its output, or the output went away. Its
     /// session ends, and its framebuffer is given back.
     fn end_beside(&mut self) {
-        let Some(id) = self.desks[BESIDE].client.take() else { return };
+        let Some(id) = self.desks[BESIDE].client.take() else {
+            return;
+        };
         info!("client {} is no longer beside", id.0);
         self.shared().end_beside(id);
         self.let_go(BESIDE, id);
@@ -564,7 +693,11 @@ impl Compositor {
         }
         self.desks[BESIDE].cursor.stopped = false;
         self.outputs.selected[BESIDE] = None;
-        self.shared().desks[BESIDE].framebuffer.lock().unwrap().resize(1, 1, ResizeOrigin::Server);
+        self.shared().desks[BESIDE]
+            .framebuffer
+            .lock()
+            .unwrap()
+            .resize(1, 1, ResizeOrigin::Server);
         self.outputs_changed();
     }
 
@@ -572,14 +705,26 @@ impl Compositor {
     /// made again after the compositor cancelled the first
     /// ([`ConfigKind`]).
     pub fn resize(&mut self, desk: usize, client: ClientId, width: u16, height: u16, retry: bool) {
-        let refuse = |this: &Self, status: u16| this.shared().emit(Event::ResizeRefused { client, status });
+        let refuse =
+            |this: &Self, status: u16| this.shared().emit(Event::ResizeRefused { client, status });
         if width == 0 || height == 0 {
             return refuse(self, crate::rfb::msg::EDS_STATUS_INVALID_LAYOUT);
         }
         info!("client {} asks for a {width}x{height} desktop", client.0);
         self.desks[desk].pending_resize = Some((client, width, height));
         let qh = self.qh.clone();
-        if !self.outputs.configure(&qh, desk, Some((width, height)), None, ConfigKind::Resize { client, width, height, retry }) {
+        if !self.outputs.configure(
+            &qh,
+            desk,
+            Some((width, height)),
+            None,
+            ConfigKind::Resize {
+                client,
+                width,
+                height,
+                retry,
+            },
+        ) {
             self.desks[desk].pending_resize = None;
             refuse(self, crate::rfb::msg::EDS_STATUS_PROHIBITED);
         }
@@ -600,16 +745,26 @@ impl Compositor {
     /// what is on the canvas rather than with what was clicked.
     fn select_output(&mut self, client: ClientId, id: u32) {
         let Some(output) = self.outputs.selectable(id) else {
-            warn!("client {}: no output with id {id} to share; the list stands", client.0);
+            warn!(
+                "client {}: no output with id {id} to share; the list stands",
+                client.0
+            );
             return self.answer_outputs();
         };
         let name = output.name.clone().expect("selectable");
         if self.outputs.selected[FIRST].as_deref() == Some(name.as_str()) {
-            debug!("client {}: output {name} is already the shared one", client.0);
+            debug!(
+                "client {}: output {name} is already the shared one",
+                client.0
+            );
             return self.answer_outputs();
         }
         let (width, height) = self.outputs.size_of(output);
-        info!("client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}", client.0, self.outputs.scale_of(output));
+        info!(
+            "client {}: sharing output {name}: {width}x{height} pixels at scale {:.2}",
+            client.0,
+            self.outputs.scale_of(output)
+        );
         self.share_output(FIRST, name, width, height);
     }
 
@@ -657,7 +812,10 @@ impl Compositor {
             return;
         }
         let mut entries = self.outputs.entries();
-        let at = entries.iter().position(|entry| self.outputs.is_wanted(Some(&entry.name))).unwrap_or(0);
+        let at = entries
+            .iter()
+            .position(|entry| self.outputs.is_wanted(Some(&entry.name)))
+            .unwrap_or(0);
         let Some(entry) = (at < entries.len()).then(|| entries.swap_remove(at)) else {
             warn!("no output is left to share; the capture stops until one appears");
             self.stop_capture(FIRST);
@@ -666,7 +824,10 @@ impl Compositor {
         if self.outputs.selectable(entry.id).is_none() {
             return;
         }
-        info!("sharing output {}: {}x{} pixels at scale {:.2}", entry.name, entry.width, entry.height, entry.scale);
+        info!(
+            "sharing output {}: {}x{} pixels at scale {:.2}",
+            entry.name, entry.width, entry.height, entry.scale
+        );
         self.share_output(FIRST, entry.name, entry.width, entry.height);
     }
 
@@ -688,7 +849,11 @@ impl Compositor {
     /// A desk's client is on another output: it has a pointer, and what it
     /// held is let go, since a press does not carry over.
     fn retarget_input(&mut self, desk: usize) {
-        let (Some(input), Some(pointers), Some(seat)) = (&mut self.input, &self.pointers, &self.seat) else { return };
+        let (Some(input), Some(pointers), Some(seat)) =
+            (&mut self.input, &self.pointers, &self.seat)
+        else {
+            return;
+        };
         input.point(desk, &self.qh, pointers, seat);
     }
 
@@ -703,10 +868,24 @@ impl Compositor {
     /// is answered with the output as it is. `retry` marks the configuration as
     /// the one made again after the compositor cancelled the first
     /// ([`ConfigKind`]).
-    pub fn declare(&mut self, desk: usize, client: ClientId, width: u16, height: u16, scale: f64, retry: bool) {
+    pub fn declare(
+        &mut self,
+        desk: usize,
+        client: ClientId,
+        width: u16,
+        height: u16,
+        scale: f64,
+        retry: bool,
+    ) {
         if self.outputs.declaring.is_some() {
-            debug!("client {}: a declaration waits for the one before it to settle", client.0);
-            if let Some((waiting, ..)) = self.desks[desk].queued_declaration.replace((client, width, height, scale)) {
+            debug!(
+                "client {}: a declaration waits for the one before it to settle",
+                client.0
+            );
+            if let Some((waiting, ..)) = self.desks[desk]
+                .queued_declaration
+                .replace((client, width, height, scale))
+            {
                 self.answer_geometry(desk, Some(waiting));
             }
             return;
@@ -727,7 +906,20 @@ impl Compositor {
         let qh = self.qh.clone();
         let id = self.outputs.next_declaration;
         self.outputs.next_declaration += 1;
-        if !self.outputs.configure(&qh, desk, new_size, new_scale, ConfigKind::Declare { id, client, width, height, scale, retry }) {
+        if !self.outputs.configure(
+            &qh,
+            desk,
+            new_size,
+            new_scale,
+            ConfigKind::Declare {
+                id,
+                client,
+                width,
+                height,
+                scale,
+                retry,
+            },
+        ) {
             self.desks[desk].pending_resize = None;
             self.answer_geometry(desk, Some(client));
         }
@@ -750,9 +942,20 @@ impl Compositor {
 }
 
 impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
-    fn event(state: &mut Self, _: &WlRegistry, event: wl_registry::Event, _: &GlobalListContents, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlRegistry,
+        event: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
-            wl_registry::Event::Global { name, interface, version } if interface == "wl_output" => {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == "wl_output" => {
                 debug!("a new output appeared");
                 state.bind_output(name, version);
             }
@@ -762,7 +965,15 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
                     // An output with no name yet is nobody's selection, not even
                     // when nothing is selected.
                     let desks = state.outputs.desks_on(removed.name.as_deref());
-                    warn!("output {} went away{}", removed.name.unwrap_or_default(), if desks.is_empty() { "" } else { "; it is a shared one" });
+                    warn!(
+                        "output {} went away{}",
+                        removed.name.unwrap_or_default(),
+                        if desks.is_empty() {
+                            ""
+                        } else {
+                            "; it is a shared one"
+                        }
+                    );
                     removed.output.release();
                     if let Some(xdg) = &removed.xdg {
                         xdg.destroy();
@@ -783,10 +994,19 @@ impl Dispatch<WlRegistry, GlobalListContents> for Compositor {
 }
 
 impl Dispatch<WlSeat, ()> for Compositor {
-    fn event(state: &mut Self, _: &WlSeat, event: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         // Only the first pointer matters: from then on `get_pointer` is legal,
         // whatever the seat has at the moment.
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
             && capabilities.contains(wl_seat::Capability::Pointer)
             && !state.seat_had_pointer
         {

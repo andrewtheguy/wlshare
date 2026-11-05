@@ -47,7 +47,10 @@ impl VideoEncoder {
             return Err(VideoError::Empty(width, height));
         }
         let stream = coder.open(width, height).map_err(VideoError::Codec)?;
-        Ok(Self { stream, size: (width, height) })
+        Ok(Self {
+            stream,
+            size: (width, height),
+        })
     }
 
     /// The picture size this encoder codes.
@@ -66,8 +69,15 @@ impl VideoEncoder {
     /// read from `pixels`, widened to the 2×2 blocks they touch, which the
     /// framebuffer holds as it holds the rest. An encoder's first read is the
     /// whole picture whatever `changed` says.
-    pub fn read(&mut self, pixels: &[u8], stride: usize, changed: Option<&[Rect]>) -> Result<(), VideoError> {
-        self.stream.read_bgrx(pixels, stride, changed).map_err(VideoError::Codec)
+    pub fn read(
+        &mut self,
+        pixels: &[u8],
+        stride: usize,
+        changed: Option<&[Rect]>,
+    ) -> Result<(), VideoError> {
+        self.stream
+            .read_bgrx(pixels, stride, changed)
+            .map_err(VideoError::Codec)
     }
 
     /// Encode the picture as it was last read at `quality`, the 1–100 dial,
@@ -79,7 +89,12 @@ impl VideoEncoder {
     /// when the coder made no frame of the picture, since an empty rectangle
     /// is not a frame a client can decode and the pixels are the next frame's
     /// to carry. An error leaves `out` as it was too.
-    pub fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, VideoError> {
+    pub fn encode(
+        &mut self,
+        keyframe: bool,
+        quality: u8,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, VideoError> {
         let body_at = out.len();
         out.extend_from_slice(&wlshare_proto::video::frame_header(0));
         match self.stream.encode(keyframe, quality, out) {
@@ -98,7 +113,8 @@ impl VideoEncoder {
             out.truncate(body_at);
             return Err(VideoError::FrameTooLong(len));
         }
-        out[body_at..body_at + wlshare_proto::video::FRAME_HEADER_LEN].copy_from_slice(&wlshare_proto::video::frame_header(len as u32));
+        out[body_at..body_at + wlshare_proto::video::FRAME_HEADER_LEN]
+            .copy_from_slice(&wlshare_proto::video::frame_header(len as u32));
         Ok(true)
     }
 }
@@ -140,17 +156,35 @@ mod tests {
     impl H264Coder for Fake {
         fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
             self.log.lock().unwrap().opened.push((width, height));
-            Ok(Box::new(FakeStream { log: self.log.clone(), frame: self.frame.clone(), fail: self.fail }))
+            Ok(Box::new(FakeStream {
+                log: self.log.clone(),
+                frame: self.frame.clone(),
+                fail: self.fail,
+            }))
         }
     }
 
     impl H264Stream for FakeStream {
-        fn read_bgrx(&mut self, _pixels: &[u8], _stride: usize, changed: Option<&[Rect]>) -> Result<(), H264Error> {
-            self.log.lock().unwrap().reads.push(changed.map(<[Rect]>::to_vec));
+        fn read_bgrx(
+            &mut self,
+            _pixels: &[u8],
+            _stride: usize,
+            changed: Option<&[Rect]>,
+        ) -> Result<(), H264Error> {
+            self.log
+                .lock()
+                .unwrap()
+                .reads
+                .push(changed.map(<[Rect]>::to_vec));
             Ok(())
         }
 
-        fn encode(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, H264Error> {
+        fn encode(
+            &mut self,
+            keyframe: bool,
+            quality: u8,
+            out: &mut Vec<u8>,
+        ) -> Result<bool, H264Error> {
             self.log.lock().unwrap().encodes.push((keyframe, quality));
             if self.fail {
                 out.push(0xAB);
@@ -168,7 +202,14 @@ mod tests {
 
     fn fake(frame: Option<Vec<u8>>, fail: bool) -> (Fake, Arc<Mutex<Log>>) {
         let log = Arc::new(Mutex::new(Log::default()));
-        (Fake { log: log.clone(), frame, fail }, log)
+        (
+            Fake {
+                log: log.clone(),
+                frame,
+                fail,
+            },
+            log,
+        )
     }
 
     /// The body is the length word and the access unit, appended; the stream
@@ -180,12 +221,23 @@ mod tests {
         let (mut coder, log) = fake(Some(unit.clone()), false);
         let mut encoder = VideoEncoder::new(&mut coder, 64, 48).unwrap();
         assert_eq!(encoder.size(), (64, 48));
-        let damage = [Rect { x: 2, y: 4, width: 8, height: 6 }];
-        encoder.read(&[0; 64 * 48 * 4], 64 * 4, Some(&damage)).unwrap();
+        let damage = [Rect {
+            x: 2,
+            y: 4,
+            width: 8,
+            height: 6,
+        }];
+        encoder
+            .read(&[0; 64 * 48 * 4], 64 * 4, Some(&damage))
+            .unwrap();
         let mut out = vec![0xEE];
         assert!(encoder.encode(true, 47, &mut out).unwrap());
         assert_eq!(out[0], 0xEE, "appended, not overwritten");
-        assert_eq!(u32::from_be_bytes(out[1..5].try_into().unwrap()) as usize, unit.len(), "the length word is the access unit's");
+        assert_eq!(
+            u32::from_be_bytes(out[1..5].try_into().unwrap()) as usize,
+            unit.len(),
+            "the length word is the access unit's"
+        );
         assert_eq!(&out[5..], unit);
         let log = log.lock().unwrap();
         assert_eq!(log.opened, [(64, 48)]);
@@ -197,7 +249,10 @@ mod tests {
     #[test]
     fn an_empty_desktop_is_refused() {
         let (mut coder, log) = fake(Some(vec![1]), false);
-        assert!(matches!(VideoEncoder::new(&mut coder, 0, 16), Err(VideoError::Empty(0, 16))));
+        assert!(matches!(
+            VideoEncoder::new(&mut coder, 0, 16),
+            Err(VideoError::Empty(0, 16))
+        ));
         assert!(log.lock().unwrap().opened.is_empty());
     }
 
@@ -207,12 +262,20 @@ mod tests {
         let (mut coder, _) = fake(None, false);
         let mut encoder = VideoEncoder::new(&mut coder, 16, 16).unwrap();
         let mut out = vec![0xEE];
-        assert!(!encoder.encode(false, crate::rfb::QUALITY, &mut out).unwrap(), "no frame");
+        assert!(
+            !encoder
+                .encode(false, crate::rfb::QUALITY, &mut out)
+                .unwrap(),
+            "no frame"
+        );
         assert_eq!(out, [0xEE]);
 
         let (mut coder, _) = fake(Some(vec![1]), true);
         let mut encoder = VideoEncoder::new(&mut coder, 16, 16).unwrap();
-        assert!(matches!(encoder.encode(false, crate::rfb::QUALITY, &mut out), Err(VideoError::Codec(_))));
+        assert!(matches!(
+            encoder.encode(false, crate::rfb::QUALITY, &mut out),
+            Err(VideoError::Codec(_))
+        ));
         assert_eq!(out, [0xEE], "a failed frame left something behind");
     }
 }

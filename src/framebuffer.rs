@@ -22,7 +22,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn whole(width: u16, height: u16) -> Self {
-        Self { x: 0, y: 0, width, height }
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -44,7 +49,12 @@ impl Rect {
         if u32::from(self.x) >= right || u32::from(self.y) >= bottom {
             return None;
         }
-        Some(Self { x: self.x, y: self.y, width: (right - u32::from(self.x)) as u16, height: (bottom - u32::from(self.y)) as u16 })
+        Some(Self {
+            x: self.x,
+            y: self.y,
+            width: (right - u32::from(self.x)) as u16,
+            height: (bottom - u32::from(self.y)) as u16,
+        })
     }
 
     fn intersects_or_touches(&self, other: &Self) -> bool {
@@ -59,7 +69,12 @@ impl Rect {
         let y = self.y.min(other.y);
         let right = self.right().max(other.right());
         let bottom = self.bottom().max(other.bottom());
-        Self { x, y, width: (right - u32::from(x)) as u16, height: (bottom - u32::from(y)) as u16 }
+        Self {
+            x,
+            y,
+            width: (right - u32::from(x)) as u16,
+            height: (bottom - u32::from(y)) as u16,
+        }
     }
 }
 
@@ -130,7 +145,10 @@ pub struct FrameLayout {
 
 impl Default for FrameLayout {
     fn default() -> Self {
-        Self { flipped: false, bytes: BGRX }
+        Self {
+            flipped: false,
+            bytes: BGRX,
+        }
     }
 }
 
@@ -172,7 +190,8 @@ impl Framebuffer {
         self.width = width;
         self.height = height;
         self.pixels.clear();
-        self.pixels.resize(usize::from(width) * usize::from(height) * 4, 0);
+        self.pixels
+            .resize(usize::from(width) * usize::from(height) * 4, 0);
         self.generation += 1;
         self.size_generation = self.generation;
         self.resize_origin = origin;
@@ -188,7 +207,9 @@ impl Framebuffer {
         let last = usize::from(self.height).saturating_sub(1);
         let mut noted = Vec::with_capacity(damage.len());
         for rect in damage {
-            let Some(r) = rect.clipped(self.width, self.height) else { continue };
+            let Some(r) = rect.clipped(self.width, self.height) else {
+                continue;
+            };
             let x0 = usize::from(r.x) * 4;
             let len = usize::from(r.width) * 4;
             for row in usize::from(r.y)..usize::from(r.y) + usize::from(r.height) {
@@ -200,7 +221,12 @@ impl Framebuffer {
                     dst.copy_from_slice(frame);
                 } else {
                     let from = layout.bytes.map(usize::from);
-                    for (out, px) in dst.as_chunks_mut::<4>().0.iter_mut().zip(frame.as_chunks::<4>().0) {
+                    for (out, px) in dst
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(frame.as_chunks::<4>().0)
+                    {
                         *out = from.map(|i| px[i]);
                     }
                 }
@@ -235,7 +261,12 @@ impl Framebuffer {
         if self.log.front().is_some_and(|(g, _)| *g > since + 1) {
             return None;
         }
-        let rects: Vec<Rect> = self.log.iter().filter(|(g, _)| *g > since).map(|(_, r)| *r).collect();
+        let rects: Vec<Rect> = self
+            .log
+            .iter()
+            .filter(|(g, _)| *g > since)
+            .map(|(_, r)| *r)
+            .collect();
         Some(merge(rects, 32))
     }
 }
@@ -247,14 +278,58 @@ mod tests {
     #[test]
     fn touching_and_overlapping_rectangles_merge() {
         let rects = vec![
-            Rect { x: 0, y: 0, width: 10, height: 10 },
-            Rect { x: 10, y: 0, width: 10, height: 10 },
-            Rect { x: 50, y: 50, width: 5, height: 5 },
-            Rect { x: 0, y: 0, width: 0, height: 4 },
+            Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            Rect {
+                x: 10,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            Rect {
+                x: 50,
+                y: 50,
+                width: 5,
+                height: 5,
+            },
+            Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 4,
+            },
         ];
         let merged = merge(rects, 10);
-        assert_eq!(merged, vec![Rect { x: 0, y: 0, width: 20, height: 10 }, Rect { x: 50, y: 50, width: 5, height: 5 }]);
-        assert_eq!(merge(merged.clone(), 1), vec![Rect { x: 0, y: 0, width: 55, height: 55 }]);
+        assert_eq!(
+            merged,
+            vec![
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 20,
+                    height: 10
+                },
+                Rect {
+                    x: 50,
+                    y: 50,
+                    width: 5,
+                    height: 5
+                }
+            ]
+        );
+        assert_eq!(
+            merge(merged.clone(), 1),
+            vec![Rect {
+                x: 0,
+                y: 0,
+                width: 55,
+                height: 55
+            }]
+        );
     }
 
     #[test]
@@ -262,14 +337,50 @@ mod tests {
         let mut fb = Framebuffer::new(4, 4);
         assert_eq!(fb.damage_since(0), None);
         let frame = vec![7u8; 4 * 4 * 4];
-        fb.apply(&frame, 16, &[Rect { x: 1, y: 1, width: 2, height: 1 }], FrameLayout::default());
+        fb.apply(
+            &frame,
+            16,
+            &[Rect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 1,
+            }],
+            FrameLayout::default(),
+        );
         let g1 = fb.generation;
         assert_eq!(fb.damage_since(g1), Some(vec![]));
-        assert_eq!(fb.damage_since(g1 - 1), Some(vec![Rect { x: 1, y: 1, width: 2, height: 1 }]));
+        assert_eq!(
+            fb.damage_since(g1 - 1),
+            Some(vec![Rect {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 1
+            }])
+        );
         assert_eq!(&fb.pixels[20..28], &[7; 8]);
         assert_eq!(&fb.pixels[16..20], &[0; 4]);
-        fb.apply(&frame, 16, &[Rect { x: 3, y: 1, width: 5, height: 1 }], FrameLayout::default()); // clipped to x 3..4
-        assert_eq!(fb.damage_since(g1 - 1), Some(vec![Rect { x: 1, y: 1, width: 3, height: 1 }]));
+        fb.apply(
+            &frame,
+            16,
+            &[Rect {
+                x: 3,
+                y: 1,
+                width: 5,
+                height: 1,
+            }],
+            FrameLayout::default(),
+        ); // clipped to x 3..4
+        assert_eq!(
+            fb.damage_since(g1 - 1),
+            Some(vec![Rect {
+                x: 1,
+                y: 1,
+                width: 3,
+                height: 1
+            }])
+        );
         fb.resize(2, 2, ResizeOrigin::Client(ClientId(3)));
         assert_eq!(fb.damage_since(g1), None);
         assert!(!fb.painted);
@@ -282,7 +393,17 @@ mod tests {
         let frame = vec![1u8; 16];
         let start = fb.generation;
         for i in 0..LOG_LIMIT + 5 {
-            fb.apply(&frame, 8, &[Rect { x: (i % 2) as u16, y: 0, width: 1, height: 1 }], FrameLayout::default());
+            fb.apply(
+                &frame,
+                8,
+                &[Rect {
+                    x: (i % 2) as u16,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                }],
+                FrameLayout::default(),
+            );
         }
         assert_eq!(fb.damage_since(start), None);
         assert_eq!(fb.damage_since(fb.generation - 3).map(|r| r.len()), Some(1));
@@ -301,7 +422,15 @@ mod tests {
             ("BGRX8888/BGRA8888", [40, 30, 20, 10], [3, 2, 1, 0]),
         ] {
             let mut fb = Framebuffer::new(1, 1);
-            fb.apply(&frame, 4, &[Rect::whole(1, 1)], FrameLayout { flipped: false, bytes });
+            fb.apply(
+                &frame,
+                4,
+                &[Rect::whole(1, 1)],
+                FrameLayout {
+                    flipped: false,
+                    bytes,
+                },
+            );
             assert_eq!(fb.pixels, want, "{name}");
         }
     }
@@ -316,16 +445,43 @@ mod tests {
             1, 2, 3, 4, 5, 6, 7, 8, // frame row 0 = framebuffer row 1
             10, 20, 30, 40, 50, 60, 70, 80, // frame row 1 = framebuffer row 0
         ];
-        fb.apply(&frame, 8, &[Rect { x: 0, y: 0, width: 1, height: 1 }], FrameLayout { flipped: true, bytes: [2, 1, 0, 3] });
+        fb.apply(
+            &frame,
+            8,
+            &[Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }],
+            FrameLayout {
+                flipped: true,
+                bytes: [2, 1, 0, 3],
+            },
+        );
         assert_eq!(&fb.pixels[0..4], &[30, 20, 10, 40]);
-        assert_eq!(&fb.pixels[4..16], &[0; 12], "nothing outside the damage is touched");
+        assert_eq!(
+            &fb.pixels[4..16],
+            &[0; 12],
+            "nothing outside the damage is touched"
+        );
     }
 
     #[test]
     fn a_frame_with_no_damage_inside_the_framebuffer_changes_nothing() {
         let mut fb = Framebuffer::new(2, 2);
         let g = fb.generation;
-        fb.apply(&[9; 16], 8, &[Rect { x: 5, y: 5, width: 1, height: 1 }], FrameLayout::default());
+        fb.apply(
+            &[9; 16],
+            8,
+            &[Rect {
+                x: 5,
+                y: 5,
+                width: 1,
+                height: 1,
+            }],
+            FrameLayout::default(),
+        );
         assert_eq!(fb.generation, g);
         assert!(!fb.painted);
     }

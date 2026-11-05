@@ -135,10 +135,16 @@ impl Capture {
     /// `bitrate` bits per second, which an Opus stream has to have been set
     /// and FLAC has no use for. Blocks until PipeWire has taken the stream or
     /// refused it, so it belongs on a blocking thread.
-    pub fn start(client: ClientId, codec: Codec, format: AudioFormat, bitrate: Option<u32>) -> anyhow::Result<Self> {
+    pub fn start(
+        client: ClientId,
+        codec: Codec,
+        format: AudioFormat,
+        bitrate: Option<u32>,
+    ) -> anyhow::Result<Self> {
         // The encoder first: an enable it refuses must not make the speaker,
         // which would move the host's streams onto it and back for nothing.
-        let encoder = AudioEncoder::new(codec, format, bitrate).with_context(|| format!("setting up the {codec:?} encoder"))?;
+        let encoder = AudioEncoder::new(codec, format, bitrate)
+            .with_context(|| format!("setting up the {codec:?} encoder"))?;
         let speaker = Lease::take()?;
         let queue = Arc::new(Queue {
             buffers: Mutex::new(VecDeque::with_capacity(QUEUE_DEPTH)),
@@ -151,9 +157,24 @@ impl Capture {
         let thread_queue = queue.clone();
         let thread = std::thread::Builder::new()
             .name(format!("audio-{}", client.0))
-            .spawn(move || run(client, codec, format, encoder, thread_queue, quit_rx, ready_tx))
+            .spawn(move || {
+                run(
+                    client,
+                    codec,
+                    format,
+                    encoder,
+                    thread_queue,
+                    quit_rx,
+                    ready_tx,
+                )
+            })
             .context("spawning the audio thread")?;
-        let mut capture = Self { quit, thread: Some(thread), queue, _speaker: speaker };
+        let mut capture = Self {
+            quit,
+            thread: Some(thread),
+            queue,
+            _speaker: speaker,
+        };
         match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(capture),
             Ok(Err(e)) => {
@@ -196,7 +217,9 @@ impl Drop for Capture {
         }
         let dropped = self.queue.dropped.load(Ordering::Relaxed);
         if dropped > 0 {
-            debug!("audio: {dropped} frame(s) or buffer(s) were dropped for a session that fell behind");
+            debug!(
+                "audio: {dropped} frame(s) or buffer(s) were dropped for a session that fell behind"
+            );
         }
     }
 }
@@ -234,8 +257,14 @@ fn run(
         };
     }
     pw::init();
-    let mainloop = up!(pw::main_loop::MainLoopRc::new(None), "creating PipeWire's loop");
-    let context = up!(pw::context::ContextRc::new(&mainloop, None), "creating PipeWire's context");
+    let mainloop = up!(
+        pw::main_loop::MainLoopRc::new(None),
+        "creating PipeWire's loop"
+    );
+    let context = up!(
+        pw::context::ContextRc::new(&mainloop, None),
+        "creating PipeWire's context"
+    );
     let core = up!(context.connect_rc(None), "connecting to PipeWire");
 
     let frames = format.frequency * BUFFER_MS / 1000;
@@ -248,9 +277,15 @@ fn run(
         *pw::keys::APP_NAME => "wlshare",
     };
     props.insert(*pw::keys::NODE_NAME, format!("wlshare client {}", client.0));
-    props.insert(*pw::keys::NODE_LATENCY, format!("{frames}/{}", format.frequency));
+    props.insert(
+        *pw::keys::NODE_LATENCY,
+        format!("{frames}/{}", format.frequency),
+    );
     props.insert(*pw::keys::NODE_RATE, format!("1/{}", format.frequency));
-    let stream = up!(pw::stream::StreamBox::new(&core, "wlshare audio", props), "creating the capture stream");
+    let stream = up!(
+        pw::stream::StreamBox::new(&core, "wlshare audio", props),
+        "creating the capture stream"
+    );
 
     let frame_bytes = format.frame_bytes();
     let process_queue = queue.clone();
@@ -259,14 +294,19 @@ fn run(
         stream
             .add_local_listener::<()>()
             .state_changed(move |_, _, old, new| match &new {
-                pw::stream::StreamState::Error(e) => warn!("client {}: audio capture: {e}", client.0),
+                pw::stream::StreamState::Error(e) =>
+                    warn!("client {}: audio capture: {e}", client.0),
                 _ => debug!("client {}: audio capture {old:?} -> {new:?}", client.0),
             })
             // On this capture's own loop thread, not the graph's real-time one.
             .process(move |stream, _| {
-                let Some(mut buffer) = stream.dequeue_buffer() else { return };
+                let Some(mut buffer) = stream.dequeue_buffer() else {
+                    return;
+                };
                 let datas = buffer.datas_mut();
-                let Some(data) = datas.first_mut() else { return };
+                let Some(data) = datas.first_mut() else {
+                    return;
+                };
                 let offset = data.chunk().offset() as usize;
                 let size = data.chunk().size() as usize;
                 let Some(bytes) = data.data() else { return };
@@ -313,7 +353,10 @@ fn run(
         properties: info.into(),
     };
     let pod = up!(
-        spa::pod::serialize::PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &spa::pod::Value::Object(object)),
+        spa::pod::serialize::PodSerializer::serialize(
+            std::io::Cursor::new(Vec::new()),
+            &spa::pod::Value::Object(object)
+        ),
         "serializing the audio format"
     )
     .0
@@ -398,7 +441,11 @@ impl Speaker {
             .name("speaker".into())
             .spawn(move || serve(quit_rx, ready_tx))
             .context("spawning the speaker thread")?;
-        let mut speaker = Self { quit, thread: Some(thread), leases: 1 };
+        let mut speaker = Self {
+            quit,
+            thread: Some(thread),
+            leases: 1,
+        };
         match ready_rx.recv_timeout(START_TIMEOUT) {
             Ok(Ok(())) => Ok(speaker),
             Ok(Err(e)) => {
@@ -441,8 +488,14 @@ fn serve(quit: pw::channel::Receiver<()>, ready: std::sync::mpsc::Sender<anyhow:
         };
     }
     pw::init();
-    let mainloop = up!(pw::main_loop::MainLoopRc::new(None), "creating PipeWire's loop");
-    let context = up!(pw::context::ContextRc::new(&mainloop, None), "creating PipeWire's context");
+    let mainloop = up!(
+        pw::main_loop::MainLoopRc::new(None),
+        "creating PipeWire's loop"
+    );
+    let context = up!(
+        pw::context::ContextRc::new(&mainloop, None),
+        "creating PipeWire's context"
+    );
     let core = up!(context.connect_rc(None), "connecting to PipeWire");
 
     let mut props = pw::properties::properties! {
@@ -454,7 +507,10 @@ fn serve(quit: pw::channel::Receiver<()>, ready: std::sync::mpsc::Sender<anyhow:
         "audio.position" => "FL,FR",
     };
     props.insert(*pw::keys::PRIORITY_SESSION, SPEAKER_PRIORITY.to_string());
-    let _node = up!(core.create_object::<pw::node::Node>("adapter", &props), "creating the speaker");
+    let _node = up!(
+        core.create_object::<pw::node::Node>("adapter", &props),
+        "creating the speaker"
+    );
 
     // The node is made on the server's side; a round trip says whether it was.
     // Attached before the round trip, so a start that timed out can end a wait
@@ -504,7 +560,9 @@ fn serve(quit: pw::channel::Receiver<()>, ready: std::sync::mpsc::Sender<anyhow:
         return;
     }
     if let Some(message) = refused.take() {
-        let _ = ready.send(Err(anyhow::anyhow!("PipeWire refused the speaker: {message}")));
+        let _ = ready.send(Err(anyhow::anyhow!(
+            "PipeWire refused the speaker: {message}"
+        )));
         return;
     }
 
@@ -542,7 +600,10 @@ mod tests {
         }
         let held = held(&queue);
         assert_eq!(held.len(), QUEUE_DEPTH);
-        assert_eq!((held[0][0], held[QUEUE_DEPTH - 1][0]), (2, QUEUE_DEPTH as u8 + 1));
+        assert_eq!(
+            (held[0][0], held[QUEUE_DEPTH - 1][0]),
+            (2, QUEUE_DEPTH as u8 + 1)
+        );
         assert_eq!(queue.dropped.load(Ordering::Relaxed), 2);
     }
 

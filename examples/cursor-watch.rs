@@ -43,13 +43,31 @@ struct Watch {
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Watch {
-    fn event(state: &mut Self, registry: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
-        if let wl_registry::Event::Global { name, interface, version } = event {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
             match interface.as_str() {
-                "wl_output" if version >= 4 => state.outputs.push((registry.bind(name, 4, qh, ()), String::new())),
+                "wl_output" if version >= 4 => state
+                    .outputs
+                    .push((registry.bind(name, 4, qh, ()), String::new())),
                 "wl_seat" => state.seat = Some(registry.bind(name, 1, qh, ())),
-                "ext_output_image_capture_source_manager_v1" => state.sources = Some(registry.bind(name, 1, qh, ())),
-                "ext_image_copy_capture_manager_v1" => state.manager = Some(registry.bind(name, 1, qh, ())),
+                "ext_output_image_capture_source_manager_v1" => {
+                    state.sources = Some(registry.bind(name, 1, qh, ()))
+                }
+                "ext_image_copy_capture_manager_v1" => {
+                    state.manager = Some(registry.bind(name, 1, qh, ()))
+                }
                 _ => {}
             }
         }
@@ -57,7 +75,14 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Watch {
 }
 
 impl Dispatch<wl_output::WlOutput, ()> for Watch {
-    fn event(state: &mut Self, output: &wl_output::WlOutput, event: wl_output::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wl_output::Event::Name { name } = event
             && let Some(entry) = state.outputs.iter_mut().find(|(o, _)| o == output)
         {
@@ -67,8 +92,17 @@ impl Dispatch<wl_output::WlOutput, ()> for Watch {
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for Watch {
-    fn event(state: &mut Self, _: &wl_seat::WlSeat, event: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(capabilities) } = event
+    fn event(
+        state: &mut Self,
+        _: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
             && capabilities.contains(wl_seat::Capability::Pointer)
         {
             state.pointer = true;
@@ -77,11 +111,20 @@ impl Dispatch<wl_seat::WlSeat, ()> for Watch {
 }
 
 impl Dispatch<ExtImageCopyCaptureCursorSessionV1, String> for Watch {
-    fn event(_: &mut Self, _: &ExtImageCopyCaptureCursorSessionV1, event: ext_image_copy_capture_cursor_session_v1::Event, output: &String, _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        _: &mut Self,
+        _: &ExtImageCopyCaptureCursorSessionV1,
+        event: ext_image_copy_capture_cursor_session_v1::Event,
+        output: &String,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             ext_image_copy_capture_cursor_session_v1::Event::Enter => println!("{output} enter"),
             ext_image_copy_capture_cursor_session_v1::Event::Leave => println!("{output} leave"),
-            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => println!("{output} position {x},{y}"),
+            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => {
+                println!("{output} position {x},{y}")
+            }
             _ => {}
         }
     }
@@ -100,8 +143,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     conn.display().get_registry(&qh, ());
     queue.roundtrip(&mut state)?;
     queue.roundtrip(&mut state)?;
-    let (Some(seat), Some(sources), Some(manager)) = (state.seat.clone(), state.sources.clone(), state.manager.clone()) else {
-        return Err("the compositor has no seat or no ext-image-copy-capture with output sources".into());
+    let (Some(seat), Some(sources), Some(manager)) = (
+        state.seat.clone(),
+        state.sources.clone(),
+        state.manager.clone(),
+    ) else {
+        return Err(
+            "the compositor has no seat or no ext-image-copy-capture with output sources".into(),
+        );
     };
     // `get_pointer` is a protocol error before the seat has had a pointer.
     while !state.pointer {
@@ -113,7 +162,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let source = sources.create_source(output, &qh, ());
         sessions.push(manager.create_pointer_cursor_session(&source, &pointer, &qh, name.clone()));
     }
-    eprintln!("cursor-watch: watching {}", state.outputs.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(", "));
+    eprintln!(
+        "cursor-watch: watching {}",
+        state
+            .outputs
+            .iter()
+            .map(|(_, n)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     loop {
         queue.blocking_dispatch(&mut state)?;
     }

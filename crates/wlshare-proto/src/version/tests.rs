@@ -17,15 +17,31 @@ fn a_version_is_wlv_and_its_byte() {
 #[test]
 fn a_list_with_anything_private_carries_one_version() {
     assert_eq!(listed(&[16, -239]), Ok(None), "a plain client's list");
-    assert_eq!(listed(&[16, crate::ENCODING_DENSITY, encoding(3)]), Ok(Some(3)));
-    assert_eq!(listed(&[encoding(3), 16, encoding(3)]), Err(VersionListError::Several(3, 3)), "one version, listed once");
-    assert_eq!(listed(&[16, crate::ENCODING_DENSITY]), Err(VersionListError::Missing));
-    assert_eq!(listed(&[crate::ENCODING_DENSITY, encoding(3), encoding(4)]), Err(VersionListError::Several(3, 4)));
+    assert_eq!(
+        listed(&[16, crate::ENCODING_DENSITY, encoding(3)]),
+        Ok(Some(3))
+    );
+    assert_eq!(
+        listed(&[encoding(3), 16, encoding(3)]),
+        Err(VersionListError::Several(3, 3)),
+        "one version, listed once"
+    );
+    assert_eq!(
+        listed(&[16, crate::ENCODING_DENSITY]),
+        Err(VersionListError::Missing)
+    );
+    assert_eq!(
+        listed(&[crate::ENCODING_DENSITY, encoding(3), encoding(4)]),
+        Err(VersionListError::Several(3, 4))
+    );
 }
 
 #[test]
 fn the_answer_has_the_documented_layout() {
-    assert_eq!(answer(2), [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0x57, 0x4c, 0x56, 2]);
+    assert_eq!(
+        answer(2),
+        [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0x57, 0x4c, 0x56, 2]
+    );
     assert_eq!(parse_answer(&answer(2)), Ok(2));
 }
 

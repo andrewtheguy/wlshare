@@ -98,7 +98,11 @@ pub fn pack(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8>>
     PACKER.with_borrow_mut(|packer| {
         let packer = match packer {
             Some(packer) => packer,
-            None => packer.insert(Packer { rows: Rows::default(), bitmap: Vec::new(), zstd: compressor()? }),
+            None => packer.insert(Packer {
+                rows: Rows::default(),
+                bitmap: Vec::new(),
+                zstd: compressor()?,
+            }),
         };
         packer.bitmap.clear();
         encode(pixels, stride, w, h, &mut packer.rows, &mut packer.bitmap);
@@ -114,7 +118,11 @@ pub fn bitmap(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8
     PACKER.with_borrow_mut(|packer| {
         let packer = match packer {
             Some(packer) => packer,
-            None => packer.insert(Packer { rows: Rows::default(), bitmap: Vec::new(), zstd: compressor()? }),
+            None => packer.insert(Packer {
+                rows: Rows::default(),
+                bitmap: Vec::new(),
+                zstd: compressor()?,
+            }),
         };
         let mut bitmap = Vec::new();
         encode(pixels, stride, w, h, &mut packer.rows, &mut bitmap);
@@ -140,12 +148,17 @@ pub struct StillStream {
 impl StillStream {
     pub fn new() -> io::Result<Self> {
         let mut zstd = zstd::zstd_safe::CCtx::create();
-        let set = |zstd: &mut zstd::zstd_safe::CCtx, parameter| zstd.set_parameter(parameter).map(drop).map_err(zstd_error);
+        let set = |zstd: &mut zstd::zstd_safe::CCtx, parameter| {
+            zstd.set_parameter(parameter).map(drop).map_err(zstd_error)
+        };
         set(&mut zstd, zstd::zstd_safe::CParameter::CompressionLevel(1))?;
         for parameter in zstd_parameters() {
             set(&mut zstd, parameter)?;
         }
-        set(&mut zstd, zstd::zstd_safe::CParameter::WindowLog(STILL_WINDOW_LOG))?;
+        set(
+            &mut zstd,
+            zstd::zstd_safe::CParameter::WindowLog(STILL_WINDOW_LOG),
+        )?;
         Ok(Self { zstd })
     }
 
@@ -159,7 +172,10 @@ impl StillStream {
             out.reserve(zstd::zstd_safe::compress_bound(bitmap.len() - input.pos()) + 64);
             let at = out.len();
             let mut output = OutBuffer::around_pos(out, at);
-            let left = self.zstd.compress_stream2(&mut output, &mut input, ZSTD_EndDirective::ZSTD_e_flush).map_err(zstd_error)?;
+            let left = self
+                .zstd
+                .compress_stream2(&mut output, &mut input, ZSTD_EndDirective::ZSTD_e_flush)
+                .map_err(zstd_error)?;
             if left == 0 && input.pos() == bitmap.len() {
                 return Ok(());
             }
@@ -257,7 +273,13 @@ fn encode_in(pixels: &[u8], stride: usize, w: u16, h: u16, rows: &mut Rows, out:
     out.push(NO_ALPHA);
     for byte in [2usize, 1, 0] {
         for y in 0..h {
-            out.extend(pixels[y * stride..y * stride + w * 4].as_chunks::<4>().0.iter().map(|px| px[byte]));
+            out.extend(
+                pixels[y * stride..y * stride + w * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|px| px[byte]),
+            );
         }
     }
     out.push(0);
@@ -278,7 +300,11 @@ pub struct Rows {
 #[inline(always)]
 fn split(row: &[u8], red: &mut [u8], green: &mut [u8], blue: &mut [u8]) {
     let w = red.len();
-    let (row, green, blue) = (&row.as_chunks::<4>().0[..w], &mut green[..w], &mut blue[..w]);
+    let (row, green, blue) = (
+        &row.as_chunks::<4>().0[..w],
+        &mut green[..w],
+        &mut blue[..w],
+    );
     for i in 0..w {
         red[i] = row[i][2];
         green[i] = row[i][1];
@@ -306,7 +332,12 @@ fn same_colours(row: &[u8], above: &[u8]) -> bool {
     let colour = |px: &[u8; 4]| u32::from_le_bytes(*px) & 0x00FF_FFFF;
     // A word of pixels at a time, so the loop stops at a block that differs.
     let (row, above) = (row.as_chunks::<4>().0, above.as_chunks::<4>().0);
-    row.chunks(8).zip(above.chunks(8)).all(|(a, b)| a.iter().zip(b).fold(0, |differ, (a, b)| differ | (colour(a) ^ colour(b))) == 0)
+    row.chunks(8).zip(above.chunks(8)).all(|(a, b)| {
+        a.iter()
+            .zip(b)
+            .fold(0, |differ, (a, b)| differ | (colour(a) ^ colour(b)))
+            == 0
+    })
 }
 
 /// A row's difference from the row above, folded: the sign the bottom bit.
@@ -357,7 +388,8 @@ fn four_alike(row: &[u8], from: usize) -> Option<usize> {
         }
         i += 8;
     }
-    (i..row.len().saturating_sub(3)).find(|&i| row[i] == row[i + 1] && row[i] == row[i + 2] && row[i] == row[i + 3])
+    (i..row.len().saturating_sub(3))
+        .find(|&i| row[i] == row[i + 1] && row[i] == row[i + 2] && row[i] == row[i + 3])
 }
 
 /// One row as segments: bytes as they are, then a run of the last of them —
@@ -439,21 +471,36 @@ mod tests {
         for y in 0..h {
             for x in 0..w {
                 let [r, g, b] = f(x, y);
-                pixels[y * stride + x * 4..y * stride + x * 4 + 4].copy_from_slice(&[b, g, r, 0x77]);
+                pixels[y * stride + x * 4..y * stride + x * 4 + 4]
+                    .copy_from_slice(&[b, g, r, 0x77]);
             }
         }
         (pixels, stride)
     }
 
     fn rgb(pixels: &[u8], stride: usize, w: usize, h: usize) -> Vec<u8> {
-        (0..h).flat_map(|y| (0..w).flat_map(move |x| [pixels[y * stride + x * 4 + 2], pixels[y * stride + x * 4 + 1], pixels[y * stride + x * 4]])).collect()
+        (0..h)
+            .flat_map(|y| {
+                (0..w).flat_map(move |x| {
+                    [
+                        pixels[y * stride + x * 4 + 2],
+                        pixels[y * stride + x * 4 + 1],
+                        pixels[y * stride + x * 4],
+                    ]
+                })
+            })
+            .collect()
     }
 
     /// Pack and unpack, asserting the round trip exact, and return the body.
     fn packed(w: usize, h: usize, f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
         let (pixels, stride) = picture(w, h, f);
         let body = pack(&pixels, stride, w as u16, h as u16).unwrap();
-        assert_eq!(decoder::unpack(&body, w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}")), rgb(&pixels, stride, w, h), "{w}x{h}");
+        assert_eq!(
+            decoder::unpack(&body, w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}")),
+            rgb(&pixels, stride, w, h),
+            "{w}x{h}"
+        );
         body
     }
 
@@ -467,19 +514,37 @@ mod tests {
             packed(w, h, noise(w as u32 + h as u32));
         }
         let flat = packed(1920, 64, |_, _| [40, 50, 60]);
-        assert!(flat.len() < 256, "a flat run of tiles is {} bytes", flat.len());
+        assert!(
+            flat.len() < 256,
+            "a flat run of tiles is {} bytes",
+            flat.len()
+        );
         // A line of text, the same glyph every 8 pixels: the planes' runs
         // leave the glyph, and the frame its repeats.
-        let text = |x: usize, y: usize| if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 { [0, 0, 0] } else { [255, 255, 255] };
+        let text = |x: usize, y: usize| {
+            if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 {
+                [0, 0, 0]
+            } else {
+                [255, 255, 255]
+            }
+        };
         let mut bitmap = Vec::new();
         let (pixels, stride) = picture(1920, 64, text);
         encode(&pixels, stride, 1920, 64, &mut Rows::default(), &mut bitmap);
         let body = packed(1920, 64, text);
-        assert!(body.len() * 4 < bitmap.len(), "{} bytes framed of a {}-byte bitmap", body.len(), bitmap.len());
+        assert!(
+            body.len() * 4 < bitmap.len(),
+            "{} bytes framed of a {}-byte bitmap",
+            body.len(),
+            bitmap.len()
+        );
         let (pixels, stride) = picture(64, 64, noise(3));
         let mut bitmap = Vec::new();
         encode(&pixels, stride, 64, 64, &mut Rows::default(), &mut bitmap);
-        assert!(packed(64, 64, noise(3)).len() <= bitmap.len() + 32, "noise framed is the bitmap and a frame's few bytes");
+        assert!(
+            packed(64, 64, noise(3)).len() <= bitmap.len() + 32,
+            "noise framed is the bitmap and a frame's few bytes"
+        );
     }
 
     /// Every STILL's body is the stream's bytes of its bitmap, read after the
@@ -488,7 +553,13 @@ mod tests {
     /// again a few bytes, and a stream made anew a new frame.
     #[test]
     fn a_still_is_the_streams_bytes_of_its_bitmap() {
-        let text = |x: usize, y: usize| if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 { [0, 0, 0] } else { [255, 255, 255] };
+        let text = |x: usize, y: usize| {
+            if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 {
+                [0, 0, 0]
+            } else {
+                [255, 255, 255]
+            }
+        };
         let pictures = [
             (1920, 64, picture(1920, 64, text)),
             (64, 64, picture(64, 64, noise(9))),
@@ -505,27 +576,59 @@ mod tests {
             let mut body = vec![0xAB];
             stream.push(&bitmap, &mut body).unwrap();
             let body = body.split_off(1);
-            assert_eq!(body.starts_with(&decoder::ZSTD_MAGIC), i == 0, "body {i} begins a frame");
-            assert_eq!(reader.unpack(&body, *w, *h).unwrap(), rgb(pixels, stride, *w, *h), "body {i} by the reader");
+            assert_eq!(
+                body.starts_with(&decoder::ZSTD_MAGIC),
+                i == 0,
+                "body {i} begins a frame"
+            );
+            assert_eq!(
+                reader.unpack(&body, *w, *h).unwrap(),
+                rgb(pixels, stride, *w, *h),
+                "body {i} by the reader"
+            );
             bodies.push(body);
         }
-        assert!(bodies[3].len() * 4 < bodies[0].len(), "a line of text again is {} bytes, against {}", bodies[3].len(), bodies[0].len());
+        assert!(
+            bodies[3].len() * 4 < bodies[0].len(),
+            "a line of text again is {} bytes, against {}",
+            bodies[3].len(),
+            bodies[0].len()
+        );
         // Made anew, the stream starts over, and the reader with it.
         let (pixels, stride) = picture(64, 64, noise(4));
         let mut body = Vec::new();
-        StillStream::new().unwrap().push(&bitmap(&pixels, stride, 64, 64).unwrap(), &mut body).unwrap();
+        StillStream::new()
+            .unwrap()
+            .push(&bitmap(&pixels, stride, 64, 64).unwrap(), &mut body)
+            .unwrap();
         assert!(body.starts_with(&decoder::ZSTD_MAGIC));
-        assert_eq!(reader.unpack(&body, 64, 64).unwrap(), rgb(&pixels, stride, 64, 64));
-        assert!(decoder::StillReader::default().unpack(&bodies[1], 64, 64).is_err(), "a body that continues no stream");
+        assert_eq!(
+            reader.unpack(&body, 64, 64).unwrap(),
+            rgb(&pixels, stride, 64, 64)
+        );
+        assert!(
+            decoder::StillReader::default()
+                .unpack(&bodies[1], 64, 64)
+                .is_err(),
+            "a body that continues no stream"
+        );
     }
 
     /// Code and decode, asserting the round trip exact, and return the bitmap.
     fn round_trip(w: usize, h: usize, f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
         let (pixels, stride) = picture(w, h, f);
         let mut out = vec![0xAB];
-        encode(&pixels, stride, w as u16, h as u16, &mut Rows::default(), &mut out);
+        encode(
+            &pixels,
+            stride,
+            w as u16,
+            h as u16,
+            &mut Rows::default(),
+            &mut out,
+        );
         assert_eq!(out[0], 0xAB, "appended");
-        let (decoded, used) = decoder::decode(&out[1..], w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}"));
+        let (decoded, used) =
+            decoder::decode(&out[1..], w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}"));
         assert_eq!(used, out.len() - 1, "{w}x{h}: every byte read");
         assert_eq!(decoded, rgb(&pixels, stride, w, h), "{w}x{h}");
         out.split_off(1)
@@ -533,7 +636,8 @@ mod tests {
 
     fn noise(seed: u32) -> impl Fn(usize, usize) -> [u8; 3] {
         move |x, y| {
-            let mut n = (x as u32).wrapping_mul(0x9E37_79B9) ^ (y as u32).wrapping_mul(0x85EB_CA6B) ^ seed;
+            let mut n =
+                (x as u32).wrapping_mul(0x9E37_79B9) ^ (y as u32).wrapping_mul(0x85EB_CA6B) ^ seed;
             n ^= n >> 15;
             n = n.wrapping_mul(0x2C1B_3C6D);
             n ^= n >> 12;
@@ -543,14 +647,36 @@ mod tests {
 
     #[test]
     fn every_shape_of_picture_comes_back_exact() {
-        for (w, h) in [(1, 1), (2, 1), (1, 2), (3, 3), (17, 5), (64, 64), (63, 17), (200, 64), (64, 1)] {
+        for (w, h) in [
+            (1, 1),
+            (2, 1),
+            (1, 2),
+            (3, 3),
+            (17, 5),
+            (64, 64),
+            (63, 17),
+            (200, 64),
+            (64, 1),
+        ] {
             round_trip(w, h, |_, _| [0, 0, 0]);
             round_trip(w, h, |_, _| [200, 13, 255]);
             round_trip(w, h, |x, y| [x as u8, y as u8, (x * y) as u8]);
-            round_trip(w, h, |x, y| if (x / 3 + y / 2) % 2 == 0 { [255, 255, 255] } else { [30, 30, 30] });
+            round_trip(w, h, |x, y| {
+                if (x / 3 + y / 2) % 2 == 0 {
+                    [255, 255, 255]
+                } else {
+                    [30, 30, 30]
+                }
+            });
             round_trip(w, h, noise(w as u32 * 31 + h as u32));
             // Runs of every length against every kind of row start.
-            round_trip(w, h, |x, y| [((x + y) / 7 * 40) as u8, (x % 3 * 90) as u8, ((x / 16 + y) % 2 * 255) as u8]);
+            round_trip(w, h, |x, y| {
+                [
+                    ((x + y) / 7 * 40) as u8,
+                    (x % 3 * 90) as u8,
+                    ((x / 16 + y) % 2 * 255) as u8,
+                ]
+            });
         }
     }
 
@@ -559,8 +685,16 @@ mod tests {
     #[test]
     fn runs_at_every_length_come_back_exact() {
         for len in 1..=130 {
-            round_trip(len + 4, 2, |x, _| [if x < len { 0 } else { 9 }, if x < 2 || x >= len + 2 { 7 } else { 3 }, (x % 2) as u8]);
-            round_trip(len, 3, |x, y| [if y == 1 { 5 } else { 250 }, (x == len / 2) as u8, 0]);
+            round_trip(len + 4, 2, |x, _| {
+                [
+                    if x < len { 0 } else { 9 },
+                    if x < 2 || x >= len + 2 { 7 } else { 3 },
+                    (x % 2) as u8,
+                ]
+            });
+            round_trip(len, 3, |x, y| {
+                [if y == 1 { 5 } else { 250 }, (x == len / 2) as u8, 0]
+            });
         }
     }
 
@@ -580,7 +714,14 @@ mod tests {
         for w in [1, 2, 3, 7, 8, 9, 64, 65, 200] {
             let (mut pixels, stride) = picture(w, 4, |x, _| [x as u8, (x * 7) as u8, 200]);
             let mut plain = Vec::new();
-            encode(&pixels, stride, w as u16, 4, &mut Rows::default(), &mut plain);
+            encode(
+                &pixels,
+                stride,
+                w as u16,
+                4,
+                &mut Rows::default(),
+                &mut plain,
+            );
             for (i, px) in pixels.chunks_mut(4).enumerate() {
                 px[3] = i as u8;
             }
@@ -589,7 +730,10 @@ mod tests {
                 let mut out = Vec::new();
                 encode(&pixels, stride, w as u16, 4, &mut rows, &mut out);
                 assert_eq!(out, plain, "{w} wide");
-                assert_eq!(decoder::decode(&out, w, 4).unwrap().0, rgb(&pixels, stride, w, 4));
+                assert_eq!(
+                    decoder::decode(&out, w, 4).unwrap().0,
+                    rgb(&pixels, stride, w, 4)
+                );
             }
         }
     }
@@ -603,11 +747,32 @@ mod tests {
             return;
         }
         for (w, h) in [(1, 1), (17, 5), (64, 64), (63, 17), (200, 64), (1920, 8)] {
-            for (pixels, stride) in [picture(w, h, noise(w as u32 ^ 5)), picture(w, h, |x, y| [(x / 5 * 9) as u8, (y / 3) as u8, (x % 7 == 0) as u8 * 200])] {
+            for (pixels, stride) in [
+                picture(w, h, noise(w as u32 ^ 5)),
+                picture(w, h, |x, y| {
+                    [(x / 5 * 9) as u8, (y / 3) as u8, (x % 7 == 0) as u8 * 200]
+                }),
+            ] {
                 let (mut narrow, mut wide) = (Vec::new(), Vec::new());
-                encode_in(&pixels, stride, w as u16, h as u16, &mut Rows::default(), &mut narrow);
+                encode_in(
+                    &pixels,
+                    stride,
+                    w as u16,
+                    h as u16,
+                    &mut Rows::default(),
+                    &mut narrow,
+                );
                 // SAFETY: the processor has AVX2.
-                unsafe { encode_avx2(&pixels, stride, w as u16, h as u16, &mut Rows::default(), &mut wide) };
+                unsafe {
+                    encode_avx2(
+                        &pixels,
+                        stride,
+                        w as u16,
+                        h as u16,
+                        &mut Rows::default(),
+                        &mut wide,
+                    )
+                };
                 assert_eq!(narrow, wide, "{w}x{h}");
             }
         }
@@ -617,7 +782,11 @@ mod tests {
     fn noise_goes_as_the_planes_as_they_are() {
         let out = round_trip(64, 64, noise(7));
         assert_eq!(out[0], NO_ALPHA, "no RLE");
-        assert_eq!(out.len(), 1 + 3 * 64 * 64 + 1, "the planes and the padding byte");
+        assert_eq!(
+            out.len(),
+            1 + 3 * 64 * 64 + 1,
+            "the planes and the padding byte"
+        );
     }
 
     /// The layout the specification shows, written out by hand: one row of
@@ -629,7 +798,11 @@ mod tests {
         assert_eq!(out, [0x35, 1, 2, 3]);
         out.clear();
         scanline(&[0; 64], &mut out);
-        assert_eq!(out, [0xF2, 0x01 | (1 << 4)], "47 then 17 of zero, at the row's start");
+        assert_eq!(
+            out,
+            [0xF2, 0x01 | (1 << 4)],
+            "47 then 17 of zero, at the row's start"
+        );
         out.clear();
         scanline(&[0, 0, 9], &mut out);
         assert_eq!(out, [0x30, 0, 0, 9], "a run of two of zero is no run");
@@ -637,6 +810,9 @@ mod tests {
 
     #[test]
     fn a_difference_is_folded_by_its_sign() {
-        assert_eq!([0u8, 1, 0xFF, 2, 0xFE, 127, 0x80].map(fold), [0, 2, 1, 4, 3, 254, 255]);
+        assert_eq!(
+            [0u8, 1, 0xFF, 2, 0xFE, 127, 0x80].map(fold),
+            [0, 2, 1, 4, 3, 254, 255]
+        );
     }
 }

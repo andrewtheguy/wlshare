@@ -95,22 +95,51 @@ impl CursorImage {
     /// the rectangle's x and y as the hotspot and its body as the pixels. `None`
     /// is the empty rectangle, which says there is no pointer to draw.
     #[cfg(test)]
-    fn from_alpha_rect(width: u16, height: u16, hotspot: (u16, u16), rgba: Vec<u8>) -> Option<Self> {
-        assert_eq!(rgba.len(), usize::from(width) * usize::from(height) * 4, "a {width}x{height} RGBA image");
+    fn from_alpha_rect(
+        width: u16,
+        height: u16,
+        hotspot: (u16, u16),
+        rgba: Vec<u8>,
+    ) -> Option<Self> {
+        assert_eq!(
+            rgba.len(),
+            usize::from(width) * usize::from(height) * 4,
+            "a {width}x{height} RGBA image"
+        );
         if rgba.is_empty() {
             return None;
         }
-        Some(Self { width, height, hotspot: (hotspot.0.min(width - 1), hotspot.1.min(height - 1)), rgba })
+        Some(Self {
+            width,
+            height,
+            hotspot: (hotspot.0.min(width - 1), hotspot.1.min(height - 1)),
+            rgba,
+        })
     }
 
     /// The image a standard Cursor rectangle carried: `pixels` in `format`, and
     /// the mask saying which of them are drawn, which become opaque.
     #[cfg(test)]
-    fn from_masked_rect(format: &PixelFormat, width: u16, height: u16, hotspot: (u16, u16), pixels: &[u8], mask: &[u8]) -> Option<Self> {
+    fn from_masked_rect(
+        format: &PixelFormat,
+        width: u16,
+        height: u16,
+        hotspot: (u16, u16),
+        pixels: &[u8],
+        mask: &[u8],
+    ) -> Option<Self> {
         let w = usize::from(width);
         let mask_stride = w.div_ceil(8);
-        assert_eq!(pixels.len(), w * usize::from(height) * 4, "a {width}x{height} image");
-        assert_eq!(mask.len(), mask_stride * usize::from(height), "a {width}x{height} mask");
+        assert_eq!(
+            pixels.len(),
+            w * usize::from(height) * 4,
+            "a {width}x{height} image"
+        );
+        assert_eq!(
+            mask.len(),
+            mask_stride * usize::from(height),
+            "a {width}x{height} mask"
+        );
         let mut rgba = Vec::with_capacity(pixels.len());
         for (i, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
             let (x, y) = (i % w, i / w);
@@ -135,7 +164,13 @@ pub fn alpha_cursor_rect(image: Option<&CursorImage>) -> Vec<u8> {
     };
     let (hx, hy) = image.hotspot;
     let mut rect = Vec::with_capacity(16 + image.rgba.len());
-    rect.extend_from_slice(&rect_header(hx, hy, image.width, image.height, ENCODING_CURSOR_WITH_ALPHA));
+    rect.extend_from_slice(&rect_header(
+        hx,
+        hy,
+        image.width,
+        image.height,
+        ENCODING_CURSOR_WITH_ALPHA,
+    ));
     rect.extend_from_slice(&ENCODING_RAW.to_be_bytes());
     rect.extend_from_slice(&image.rgba);
     rect
@@ -153,14 +188,25 @@ pub fn cursor_rect(format: &PixelFormat, image: Option<&CursorImage>) -> Vec<u8>
     let mut mask = vec![0u8; mask_stride * usize::from(image.height)];
     let (hx, hy) = image.hotspot;
     let mut rect = Vec::with_capacity(12 + image.rgba.len() + mask.len());
-    rect.extend_from_slice(&rect_header(hx, hy, image.width, image.height, ENCODING_CURSOR));
+    rect.extend_from_slice(&rect_header(
+        hx,
+        hy,
+        image.width,
+        image.height,
+        ENCODING_CURSOR,
+    ));
     for (i, &[r, g, b, a]) in image.rgba.as_chunks::<4>().0.iter().enumerate() {
         // Pixels outside the mask go out black: nobody draws them, and a flat
         // run is what a compressing transport does best with.
         let bgrx = if a >= MASK_THRESHOLD {
             let (x, y) = (i % w, i / w);
             mask[y * mask_stride + x / 8] |= 0x80 >> (x % 8);
-            [unpremultiply(b, a), unpremultiply(g, a), unpremultiply(r, a), 0]
+            [
+                unpremultiply(b, a),
+                unpremultiply(g, a),
+                unpremultiply(r, a),
+                0,
+            ]
         } else {
             [0; 4]
         };
@@ -184,7 +230,9 @@ mod tests {
     /// half-transparent white one, a faint shadow, and an opaque blue pixel.
     fn image() -> Vec<u8> {
         let mut rgba = vec![0u8; 4 * 3 * 4];
-        let mut put = |x: usize, y: usize, px: [u8; 4]| rgba[(y * 4 + x) * 4..(y * 4 + x + 1) * 4].copy_from_slice(&px);
+        let mut put = |x: usize, y: usize, px: [u8; 4]| {
+            rgba[(y * 4 + x) * 4..(y * 4 + x + 1) * 4].copy_from_slice(&px)
+        };
         put(1, 1, [255, 0, 0, 255]);
         put(2, 1, [128, 128, 128, 128]);
         put(1, 2, [0, 0, 0, 40]);
@@ -195,17 +243,35 @@ mod tests {
     #[test]
     fn the_image_is_cropped_to_what_it_paints_and_the_hotspot() {
         let cropped = CursorImage::cropped(4, 3, (1, 1), &image()).unwrap();
-        assert_eq!((cropped.width(), cropped.height(), cropped.hotspot()), (2, 2, (0, 0)));
-        assert_eq!(cropped.rgba, [[255, 0, 0, 255], [128, 128, 128, 128], [0, 0, 0, 40], [0, 0, 255, 255]].concat());
+        assert_eq!(
+            (cropped.width(), cropped.height(), cropped.hotspot()),
+            (2, 2, (0, 0))
+        );
+        assert_eq!(
+            cropped.rgba,
+            [
+                [255, 0, 0, 255],
+                [128, 128, 128, 128],
+                [0, 0, 0, 40],
+                [0, 0, 255, 255]
+            ]
+            .concat()
+        );
 
         // A hotspot in the transparent margin keeps the margin up to it.
         let wide = CursorImage::cropped(4, 3, (0, 0), &image()).unwrap();
-        assert_eq!((wide.width(), wide.height(), wide.hotspot()), (3, 3, (0, 0)));
+        assert_eq!(
+            (wide.width(), wide.height(), wide.hotspot()),
+            (3, 3, (0, 0))
+        );
         assert_eq!(&wide.rgba[..4], &[0, 0, 0, 0]);
 
         // One past the image is clamped onto its last pixel.
         let clamped = CursorImage::cropped(4, 3, (9, -2), &image()).unwrap();
-        assert_eq!((clamped.width(), clamped.height(), clamped.hotspot()), (3, 3, (2, 0)));
+        assert_eq!(
+            (clamped.width(), clamped.height(), clamped.hotspot()),
+            (3, 3, (2, 0))
+        );
 
         // Nothing painted is no image at all.
         assert_eq!(CursorImage::cropped(4, 3, (1, 1), &[0u8; 4 * 3 * 4]), None);
@@ -216,17 +282,42 @@ mod tests {
     fn a_client_reads_back_the_image_either_rectangle_carried() {
         let image = CursorImage::cropped(4, 3, (2, 1), &image()).unwrap();
         let wire = alpha_cursor_rect(Some(&image));
-        assert_eq!(CursorImage::from_alpha_rect(2, 2, (1, 0), wire[16..].to_vec()), Some(image.clone()));
+        assert_eq!(
+            CursorImage::from_alpha_rect(2, 2, (1, 0), wire[16..].to_vec()),
+            Some(image.clone())
+        );
         assert_eq!(CursorImage::from_alpha_rect(0, 0, (0, 0), Vec::new()), None);
         // A hotspot outside the image is brought onto it, as the server's own is.
-        assert_eq!(CursorImage::from_alpha_rect(1, 1, (7, 7), vec![1, 2, 3, 255]).unwrap().hotspot(), (0, 0));
+        assert_eq!(
+            CursorImage::from_alpha_rect(1, 1, (7, 7), vec![1, 2, 3, 255])
+                .unwrap()
+                .hotspot(),
+            (0, 0)
+        );
 
-        let format = PixelFormat { big_endian: true, red_shift: 24, green_shift: 16, blue_shift: 8, ..PixelFormat::NATIVE };
+        let format = PixelFormat {
+            big_endian: true,
+            red_shift: 24,
+            green_shift: 16,
+            blue_shift: 8,
+            ..PixelFormat::NATIVE
+        };
         let wire = cursor_rect(&format, Some(&image));
-        let masked = CursorImage::from_masked_rect(&format, 2, 2, (1, 0), &wire[12..28], &wire[28..]).unwrap();
+        let masked =
+            CursorImage::from_masked_rect(&format, 2, 2, (1, 0), &wire[12..28], &wire[28..])
+                .unwrap();
         // The mask kept red, the grey divided back out to white, and blue; the
         // shadow under the threshold is gone.
-        assert_eq!(masked.rgba(), [[255, 0, 0, 255], [255, 255, 255, 255], [0, 0, 0, 0], [0, 0, 255, 255]].concat());
+        assert_eq!(
+            masked.rgba(),
+            [
+                [255, 0, 0, 255],
+                [255, 255, 255, 255],
+                [0, 0, 0, 0],
+                [0, 0, 255, 255]
+            ]
+            .concat()
+        );
         assert_eq!(masked.hotspot(), (1, 0));
     }
 
@@ -239,15 +330,30 @@ mod tests {
         assert_eq!(u16::from_be_bytes([wire[2], wire[3]]), 0, "hotspot y");
         assert_eq!(u16::from_be_bytes([wire[4], wire[5]]), 2);
         assert_eq!(u16::from_be_bytes([wire[6], wire[7]]), 2);
-        assert_eq!(i32::from_be_bytes([wire[8], wire[9], wire[10], wire[11]]), -314);
-        assert_eq!(i32::from_be_bytes([wire[12], wire[13], wire[14], wire[15]]), 0, "Raw");
-        assert_eq!(&wire[16..], &[255, 0, 0, 255, 128, 128, 128, 128, 0, 0, 0, 40, 0, 0, 255, 255]);
+        assert_eq!(
+            i32::from_be_bytes([wire[8], wire[9], wire[10], wire[11]]),
+            -314
+        );
+        assert_eq!(
+            i32::from_be_bytes([wire[12], wire[13], wire[14], wire[15]]),
+            0,
+            "Raw"
+        );
+        assert_eq!(
+            &wire[16..],
+            &[
+                255, 0, 0, 255, 128, 128, 128, 128, 0, 0, 0, 40, 0, 0, 255, 255
+            ]
+        );
 
         // No pointer: an empty rectangle, still with its encoding.
         let empty = alpha_cursor_rect(None);
         assert_eq!(empty.len(), 16);
         assert_eq!(&empty[..8], &[0; 8]);
-        assert_eq!(i32::from_be_bytes([empty[8], empty[9], empty[10], empty[11]]), -314);
+        assert_eq!(
+            i32::from_be_bytes([empty[8], empty[9], empty[10], empty[11]]),
+            -314
+        );
         assert_eq!(&empty[12..], &[0; 4]);
     }
 
@@ -269,7 +375,10 @@ mod tests {
         assert_eq!(u16::from_be_bytes([wire[2], wire[3]]), 1, "hotspot y");
         assert_eq!(u16::from_be_bytes([wire[4], wire[5]]), 2);
         assert_eq!(u16::from_be_bytes([wire[6], wire[7]]), 2);
-        assert_eq!(i32::from_be_bytes([wire[8], wire[9], wire[10], wire[11]]), -239);
+        assert_eq!(
+            i32::from_be_bytes([wire[8], wire[9], wire[10], wire[11]]),
+            -239
+        );
         assert_eq!(wire.len(), 12 + 2 * 2 * 4 + 2);
 
         let pixels = &wire[12..28];
@@ -286,6 +395,9 @@ mod tests {
         let empty = cursor_rect(&format, None);
         assert_eq!(empty.len(), 12);
         assert_eq!(&empty[..8], &[0; 8]);
-        assert_eq!(i32::from_be_bytes([empty[8], empty[9], empty[10], empty[11]]), -239);
+        assert_eq!(
+            i32::from_be_bytes([empty[8], empty[9], empty[10], empty[11]]),
+            -239
+        );
     }
 }

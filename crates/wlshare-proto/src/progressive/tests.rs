@@ -5,13 +5,32 @@ use super::*;
 /// holds back nothing.
 #[test]
 fn each_stage_holds_back_no_less_than_the_next() {
-    let bands = |stage: &[u8; 16]| -> Vec<u8> { stage[1..].iter().flat_map(|b| [b >> 4, b & 0xF]).collect() };
+    let bands = |stage: &[u8; 16]| -> Vec<u8> {
+        stage[1..].iter().flat_map(|b| [b >> 4, b & 0xF]).collect()
+    };
     for pair in STAGES.windows(2) {
         assert!(pair[0][0] < pair[1][0], "labelled coarsest first");
-        assert!(bands(&pair[0]).iter().zip(bands(&pair[1])).all(|(a, b)| *a >= b), "stage {} under {}", pair[0][0], pair[1][0]);
+        assert!(
+            bands(&pair[0])
+                .iter()
+                .zip(bands(&pair[1]))
+                .all(|(a, b)| *a >= b),
+            "stage {} under {}",
+            pair[0][0],
+            pair[1][0]
+        );
     }
-    assert!(bands(&STAGES[STAGES.len() - 1]).iter().all(|b| *b == 0), "the full stage holds back nothing");
-    assert!(QUANT.iter().flat_map(|b| [b >> 4, b & 0xF]).all(|q| (6..=15).contains(&q)), "RemoteFX's quantizers are 6 to 15");
+    assert!(
+        bands(&STAGES[STAGES.len() - 1]).iter().all(|b| *b == 0),
+        "the full stage holds back nothing"
+    );
+    assert!(
+        QUANT
+            .iter()
+            .flat_map(|b| [b >> 4, b & 0xF])
+            .all(|q| (6..=15).contains(&q)),
+        "RemoteFX's quantizers are 6 to 15"
+    );
 }
 
 /// A tile block's tile is read back; anything else is none.
@@ -25,7 +44,11 @@ fn a_body_names_its_tile() {
     assert_eq!(tile_of(&body), Some((7, 3)));
     assert_eq!(tile_of(&block(WBT_TILE_UPGRADE, &first)), Some((7, 3)));
     assert_eq!(tile_of(&block(WBT_REGION, &first)), None, "no tile block");
-    assert_eq!(tile_of(&body[..body.len() - 1]), None, "its length is the body's");
+    assert_eq!(
+        tile_of(&body[..body.len() - 1]),
+        None,
+        "its length is the body's"
+    );
     assert_eq!(tile_of(&[]), None);
 }
 
@@ -43,12 +66,33 @@ fn a_stream_wraps_the_bodies_in_one_region() {
         kinds.push(kind);
         if kind == WBT_REGION {
             let region = &s[at + 6..at + len];
-            assert_eq!((region[0], u16::from_le_bytes([region[1], region[2]]), region[3], region[4]), (TILE, 1, 3, 4));
-            assert_eq!(&region[region.len() - body.len()..], &body[..], "the body last");
+            assert_eq!(
+                (
+                    region[0],
+                    u16::from_le_bytes([region[1], region[2]]),
+                    region[3],
+                    region[4]
+                ),
+                (TILE, 1, 3, 4)
+            );
+            assert_eq!(
+                &region[region.len() - body.len()..],
+                &body[..],
+                "the body last"
+            );
             assert_eq!(region.len(), 12 + 8 + 15 + 4 * 16 + body.len());
         }
         at += len;
     }
     assert_eq!(at, s.len());
-    assert_eq!(kinds, [WBT_SYNC, WBT_FRAME_BEGIN, WBT_CONTEXT, WBT_REGION, WBT_FRAME_END]);
+    assert_eq!(
+        kinds,
+        [
+            WBT_SYNC,
+            WBT_FRAME_BEGIN,
+            WBT_CONTEXT,
+            WBT_REGION,
+            WBT_FRAME_END
+        ]
+    );
 }

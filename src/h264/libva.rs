@@ -31,7 +31,8 @@ pub type VAContextID = VAGenericID;
 pub type VASurfaceID = VAGenericID;
 pub type VABufferID = VAGenericID;
 pub type VAImageID = VAGenericID;
-pub type VAMessageCallback = Option<unsafe extern "C" fn(user_context: *mut c_void, message: *const c_char)>;
+pub type VAMessageCallback =
+    Option<unsafe extern "C" fn(user_context: *mut c_void, message: *const c_char)>;
 
 pub const VA_STATUS_SUCCESS: VAStatus = 0;
 pub const VA_INVALID_ID: VAGenericID = 0xffff_ffff;
@@ -182,7 +183,10 @@ macro_rules! bitfields {
     };
 }
 
-const _: () = assert!(cfg!(target_endian = "little"), "the bitfield words are laid out for a little-endian target");
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "the bitfield words are laid out for a little-endian target"
+);
 
 bitfields! {
     /// `seq_fields`.
@@ -329,11 +333,21 @@ const _: () = {
     assert!(offset_of!(VAEncSequenceParameterBufferH264, intra_period) == 4);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, picture_width_in_mbs) == 24);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, seq_fields) == 28);
-    assert!(offset_of!(VAEncSequenceParameterBufferH264, num_ref_frames_in_pic_order_cnt_cycle) == 34);
+    assert!(
+        offset_of!(
+            VAEncSequenceParameterBufferH264,
+            num_ref_frames_in_pic_order_cnt_cycle
+        ) == 34
+    );
     assert!(offset_of!(VAEncSequenceParameterBufferH264, offset_for_non_ref_pic) == 36);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, frame_cropping_flag) == 1068);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, frame_crop_right_offset) == 1076);
-    assert!(offset_of!(VAEncSequenceParameterBufferH264, vui_parameters_present_flag) == 1088);
+    assert!(
+        offset_of!(
+            VAEncSequenceParameterBufferH264,
+            vui_parameters_present_flag
+        ) == 1088
+    );
     assert!(offset_of!(VAEncSequenceParameterBufferH264, vui_fields) == 1092);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, aspect_ratio_idc) == 1096);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, sar_width) == 1100);
@@ -365,29 +379,111 @@ const _: () = {
 #[link(name = "va")]
 unsafe extern "C" {
     pub fn vaErrorStr(error_status: VAStatus) -> *const c_char;
-    pub fn vaSetErrorCallback(dpy: VADisplay, callback: VAMessageCallback, user_context: *mut c_void) -> VAMessageCallback;
-    pub fn vaSetInfoCallback(dpy: VADisplay, callback: VAMessageCallback, user_context: *mut c_void) -> VAMessageCallback;
-    pub fn vaInitialize(dpy: VADisplay, major_version: *mut c_int, minor_version: *mut c_int) -> VAStatus;
+    pub fn vaSetErrorCallback(
+        dpy: VADisplay,
+        callback: VAMessageCallback,
+        user_context: *mut c_void,
+    ) -> VAMessageCallback;
+    pub fn vaSetInfoCallback(
+        dpy: VADisplay,
+        callback: VAMessageCallback,
+        user_context: *mut c_void,
+    ) -> VAMessageCallback;
+    pub fn vaInitialize(
+        dpy: VADisplay,
+        major_version: *mut c_int,
+        minor_version: *mut c_int,
+    ) -> VAStatus;
     pub fn vaTerminate(dpy: VADisplay) -> VAStatus;
-    pub fn vaGetConfigAttributes(dpy: VADisplay, profile: VAProfile, entrypoint: VAEntrypoint, attrib_list: *mut VAConfigAttrib, num_attribs: c_int) -> VAStatus;
-    pub fn vaCreateConfig(dpy: VADisplay, profile: VAProfile, entrypoint: VAEntrypoint, attrib_list: *mut VAConfigAttrib, num_attribs: c_int, config_id: *mut VAConfigID) -> VAStatus;
+    pub fn vaGetConfigAttributes(
+        dpy: VADisplay,
+        profile: VAProfile,
+        entrypoint: VAEntrypoint,
+        attrib_list: *mut VAConfigAttrib,
+        num_attribs: c_int,
+    ) -> VAStatus;
+    pub fn vaCreateConfig(
+        dpy: VADisplay,
+        profile: VAProfile,
+        entrypoint: VAEntrypoint,
+        attrib_list: *mut VAConfigAttrib,
+        num_attribs: c_int,
+        config_id: *mut VAConfigID,
+    ) -> VAStatus;
     pub fn vaDestroyConfig(dpy: VADisplay, config_id: VAConfigID) -> VAStatus;
     /// `attrib_list` is a `VASurfaceAttrib *`, which the daemon passes null.
-    pub fn vaCreateSurfaces(dpy: VADisplay, format: c_uint, width: c_uint, height: c_uint, surfaces: *mut VASurfaceID, num_surfaces: c_uint, attrib_list: *mut c_void, num_attribs: c_uint) -> VAStatus;
-    pub fn vaDestroySurfaces(dpy: VADisplay, surfaces: *mut VASurfaceID, num_surfaces: c_int) -> VAStatus;
-    pub fn vaCreateContext(dpy: VADisplay, config_id: VAConfigID, picture_width: c_int, picture_height: c_int, flag: c_int, render_targets: *mut VASurfaceID, num_render_targets: c_int, context: *mut VAContextID) -> VAStatus;
+    pub fn vaCreateSurfaces(
+        dpy: VADisplay,
+        format: c_uint,
+        width: c_uint,
+        height: c_uint,
+        surfaces: *mut VASurfaceID,
+        num_surfaces: c_uint,
+        attrib_list: *mut c_void,
+        num_attribs: c_uint,
+    ) -> VAStatus;
+    pub fn vaDestroySurfaces(
+        dpy: VADisplay,
+        surfaces: *mut VASurfaceID,
+        num_surfaces: c_int,
+    ) -> VAStatus;
+    pub fn vaCreateContext(
+        dpy: VADisplay,
+        config_id: VAConfigID,
+        picture_width: c_int,
+        picture_height: c_int,
+        flag: c_int,
+        render_targets: *mut VASurfaceID,
+        num_render_targets: c_int,
+        context: *mut VAContextID,
+    ) -> VAStatus;
     pub fn vaDestroyContext(dpy: VADisplay, context: VAContextID) -> VAStatus;
-    pub fn vaCreateBuffer(dpy: VADisplay, context: VAContextID, type_: VABufferType, size: c_uint, num_elements: c_uint, data: *mut c_void, buf_id: *mut VABufferID) -> VAStatus;
+    pub fn vaCreateBuffer(
+        dpy: VADisplay,
+        context: VAContextID,
+        type_: VABufferType,
+        size: c_uint,
+        num_elements: c_uint,
+        data: *mut c_void,
+        buf_id: *mut VABufferID,
+    ) -> VAStatus;
     pub fn vaMapBuffer(dpy: VADisplay, buf_id: VABufferID, pbuf: *mut *mut c_void) -> VAStatus;
     pub fn vaUnmapBuffer(dpy: VADisplay, buf_id: VABufferID) -> VAStatus;
     pub fn vaDestroyBuffer(dpy: VADisplay, buffer_id: VABufferID) -> VAStatus;
-    pub fn vaBeginPicture(dpy: VADisplay, context: VAContextID, render_target: VASurfaceID) -> VAStatus;
-    pub fn vaRenderPicture(dpy: VADisplay, context: VAContextID, buffers: *mut VABufferID, num_buffers: c_int) -> VAStatus;
+    pub fn vaBeginPicture(
+        dpy: VADisplay,
+        context: VAContextID,
+        render_target: VASurfaceID,
+    ) -> VAStatus;
+    pub fn vaRenderPicture(
+        dpy: VADisplay,
+        context: VAContextID,
+        buffers: *mut VABufferID,
+        num_buffers: c_int,
+    ) -> VAStatus;
     pub fn vaEndPicture(dpy: VADisplay, context: VAContextID) -> VAStatus;
     pub fn vaSyncSurface(dpy: VADisplay, render_target: VASurfaceID) -> VAStatus;
-    pub fn vaCreateImage(dpy: VADisplay, format: *mut VAImageFormat, width: c_int, height: c_int, image: *mut VAImage) -> VAStatus;
+    pub fn vaCreateImage(
+        dpy: VADisplay,
+        format: *mut VAImageFormat,
+        width: c_int,
+        height: c_int,
+        image: *mut VAImage,
+    ) -> VAStatus;
     pub fn vaDestroyImage(dpy: VADisplay, image: VAImageID) -> VAStatus;
-    pub fn vaPutImage(dpy: VADisplay, surface: VASurfaceID, image: VAImageID, src_x: c_int, src_y: c_int, src_width: c_uint, src_height: c_uint, dest_x: c_int, dest_y: c_int, dest_width: c_uint, dest_height: c_uint) -> VAStatus;
+    pub fn vaPutImage(
+        dpy: VADisplay,
+        surface: VASurfaceID,
+        image: VAImageID,
+        src_x: c_int,
+        src_y: c_int,
+        src_width: c_uint,
+        src_height: c_uint,
+        dest_x: c_int,
+        dest_y: c_int,
+        dest_width: c_uint,
+        dest_height: c_uint,
+    ) -> VAStatus;
     pub fn vaDeriveImage(dpy: VADisplay, surface: VASurfaceID, image: *mut VAImage) -> VAStatus;
 }
 

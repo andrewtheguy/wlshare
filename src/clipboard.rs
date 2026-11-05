@@ -28,7 +28,13 @@ use crate::compositor::Compositor;
 use crate::shared::Shared;
 
 /// Text MIME types, most specific first.
-const TEXT_MIMES: [&str; 5] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"];
+const TEXT_MIMES: [&str; 5] = [
+    "text/plain;charset=utf-8",
+    "text/plain",
+    "UTF8_STRING",
+    "STRING",
+    "TEXT",
+];
 
 #[derive(Default)]
 pub struct Clipboard {
@@ -49,7 +55,9 @@ impl Clipboard {
 
     /// Put `text` on the compositor's clipboard.
     pub fn set(&mut self, qh: &QueueHandle<Compositor>, text: Arc<str>) {
-        let (Some(manager), Some(device)) = (&self.manager, &self.device) else { return };
+        let (Some(manager), Some(device)) = (&self.manager, &self.device) else {
+            return;
+        };
         if let Some(old) = self.source.take() {
             old.destroy();
         }
@@ -64,7 +72,14 @@ impl Clipboard {
 }
 
 impl Dispatch<ZwlrDataControlDeviceV1, ()> for Compositor {
-    fn event(state: &mut Self, _: &ZwlrDataControlDeviceV1, event: zwlr_data_control_device_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlDeviceV1,
+        event: zwlr_data_control_device_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             zwlr_data_control_device_v1::Event::DataOffer { id } => {
                 state.clipboard.offers.insert(id.id(), Vec::new());
@@ -83,8 +98,15 @@ impl Dispatch<ZwlrDataControlDeviceV1, ()> for Compositor {
                     state.shared().set_clipboard(Arc::from(""), true);
                     return;
                 };
-                let mimes = state.clipboard.offers.remove(&offer.id()).unwrap_or_default();
-                let Some(mime) = TEXT_MIMES.iter().find(|m| mimes.iter().any(|have| have == *m)) else {
+                let mimes = state
+                    .clipboard
+                    .offers
+                    .remove(&offer.id())
+                    .unwrap_or_default();
+                let Some(mime) = TEXT_MIMES
+                    .iter()
+                    .find(|m| mimes.iter().any(|have| have == *m))
+                else {
                     debug!("a selection with no text: {mimes:?}");
                     state.shared().set_clipboard(Arc::from(""), true);
                     offer.destroy();
@@ -136,7 +158,14 @@ fn read_selection(read: OwnedFd, shared: Arc<Shared>) {
 }
 
 impl Dispatch<ZwlrDataControlOfferV1, ()> for Compositor {
-    fn event(state: &mut Self, offer: &ZwlrDataControlOfferV1, event: zwlr_data_control_offer_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        offer: &ZwlrDataControlOfferV1,
+        event: zwlr_data_control_offer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let zwlr_data_control_offer_v1::Event::Offer { mime_type } = event
             && let Some(mimes) = state.clipboard.offers.get_mut(&offer.id())
         {
@@ -146,7 +175,14 @@ impl Dispatch<ZwlrDataControlOfferV1, ()> for Compositor {
 }
 
 impl Dispatch<ZwlrDataControlSourceV1, ()> for Compositor {
-    fn event(state: &mut Self, source: &ZwlrDataControlSourceV1, event: zwlr_data_control_source_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        source: &ZwlrDataControlSourceV1,
+        event: zwlr_data_control_source_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             zwlr_data_control_source_v1::Event::Send { fd, .. } => {
                 let text = state.clipboard.text.clone();

@@ -81,10 +81,23 @@ impl ZrleEncoder {
                     let base = (ty + row) * stride + tx * 4;
                     for px in 0..tw {
                         let i = base + px * 4;
-                        self.tile.push(format.value([pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]));
+                        self.tile.push(format.value([
+                            pixels[i],
+                            pixels[i + 1],
+                            pixels[i + 2],
+                            pixels[i + 3],
+                        ]));
                     }
                 }
-                encode_tile(&self.tile, tw, th, format, cpixel, &mut self.palette, &mut self.plain);
+                encode_tile(
+                    &self.tile,
+                    tw,
+                    th,
+                    format,
+                    cpixel,
+                    &mut self.palette,
+                    &mut self.plain,
+                );
             }
         }
         deflate_flush(&mut self.deflate, &self.plain, out);
@@ -116,7 +129,14 @@ fn deflate_flush(deflate: &mut Compress, input: &[u8], out: &mut Vec<u8>) {
 }
 
 /// Append a Raw rectangle: every pixel, in the client's format.
-pub fn encode_raw_rect(pixels: &[u8], stride: usize, width: usize, height: usize, format: &PixelFormat, out: &mut Vec<u8>) {
+pub fn encode_raw_rect(
+    pixels: &[u8],
+    stride: usize,
+    width: usize,
+    height: usize,
+    format: &PixelFormat,
+    out: &mut Vec<u8>,
+) {
     out.reserve(width * height * 4);
     for row in 0..height {
         let line = &pixels[row * stride..row * stride + width * 4];
@@ -179,7 +199,11 @@ fn encode_tile(
     let mut prev = tile[0];
     let account = |len: usize, plain_rle: &mut usize, palette_rle: &mut usize| {
         *plain_rle += clen + run_length_bytes(len);
-        *palette_rle += if len == 1 { 1 } else { 1 + run_length_bytes(len) };
+        *palette_rle += if len == 1 {
+            1
+        } else {
+            1 + run_length_bytes(len)
+        };
     };
     for &v in tile {
         palette.insert(v);
@@ -307,7 +331,12 @@ const SLOTS: usize = 512;
 
 impl Default for Palette {
     fn default() -> Self {
-        Self { entries: Vec::with_capacity(MAX_PALETTE), slots: [0; SLOTS], keys: [0; SLOTS], overflowed: false }
+        Self {
+            entries: Vec::with_capacity(MAX_PALETTE),
+            slots: [0; SLOTS],
+            keys: [0; SLOTS],
+            overflowed: false,
+        }
     }
 }
 
@@ -387,11 +416,19 @@ mod tests {
 
     impl Decoder {
         fn new() -> Self {
-            Self { inflate: Decompress::new(true) }
+            Self {
+                inflate: Decompress::new(true),
+            }
         }
 
         /// Decode one rectangle payload (length word included) to pixel values.
-        fn rect(&mut self, payload: &[u8], width: usize, height: usize, format: &PixelFormat) -> Vec<u32> {
+        fn rect(
+            &mut self,
+            payload: &[u8],
+            width: usize,
+            height: usize,
+            format: &PixelFormat,
+        ) -> Vec<u32> {
             let len = u32::from_be_bytes(payload[..4].try_into().unwrap()) as usize;
             assert_eq!(payload.len(), 4 + len, "the length word covers the payload");
             let mut plain = Vec::new();
@@ -399,7 +436,9 @@ mod tests {
             while consumed < len {
                 plain.reserve(4096);
                 let before = self.inflate.total_in();
-                self.inflate.decompress_vec(&payload[4 + consumed..], &mut plain, FlushDecompress::Sync).unwrap();
+                self.inflate
+                    .decompress_vec(&payload[4 + consumed..], &mut plain, FlushDecompress::Sync)
+                    .unwrap();
                 consumed += (self.inflate.total_in() - before) as usize;
             }
             let (coff, clen) = format.cpixel();
@@ -407,7 +446,11 @@ mod tests {
                 let mut pixel = [0u8; 4];
                 pixel[coff..coff + clen].copy_from_slice(&bytes[..clen]);
                 *bytes = &bytes[clen..];
-                if format.big_endian { u32::from_be_bytes(pixel) } else { u32::from_le_bytes(pixel) }
+                if format.big_endian {
+                    u32::from_be_bytes(pixel)
+                } else {
+                    u32::from_le_bytes(pixel)
+                }
             };
             let read_run = |bytes: &mut &[u8]| -> usize {
                 let mut len = 1usize;
@@ -440,7 +483,8 @@ mod tests {
                             tile.resize(tw * th, c);
                         }
                         2..=16 => {
-                            let palette: Vec<u32> = (0..sub).map(|_| read_cpixel(&mut bytes)).collect();
+                            let palette: Vec<u32> =
+                                (0..sub).map(|_| read_cpixel(&mut bytes)).collect();
                             let bits = match sub {
                                 2 => 1,
                                 3..=4 => 2,
@@ -467,12 +511,17 @@ mod tests {
                             }
                         }
                         130..=255 => {
-                            let palette: Vec<u32> = (0..sub - 128).map(|_| read_cpixel(&mut bytes)).collect();
+                            let palette: Vec<u32> =
+                                (0..sub - 128).map(|_| read_cpixel(&mut bytes)).collect();
                             while tile.len() < tw * th {
                                 let b = bytes[0];
                                 bytes = &bytes[1..];
                                 let idx = usize::from(b & 0x7F);
-                                let len = if b & 0x80 != 0 { read_run(&mut bytes) } else { 1 };
+                                let len = if b & 0x80 != 0 {
+                                    read_run(&mut bytes)
+                                } else {
+                                    1
+                                };
                                 tile.extend(std::iter::repeat_n(palette[idx], len));
                             }
                         }
@@ -480,7 +529,8 @@ mod tests {
                     }
                     assert_eq!(tile.len(), tw * th, "a tile of exactly its pixels");
                     for (row, chunk) in tile.chunks_exact(tw).enumerate() {
-                        out[(ty + row) * width + tx..(ty + row) * width + tx + tw].copy_from_slice(chunk);
+                        out[(ty + row) * width + tx..(ty + row) * width + tx + tw]
+                            .copy_from_slice(chunk);
                     }
                 }
             }
@@ -502,10 +552,19 @@ mod tests {
     }
 
     fn expected(fb: &[u8], format: &PixelFormat) -> Vec<u32> {
-        fb.as_chunks::<4>().0.iter().map(|p| format.value(*p)).collect()
+        fb.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| format.value(*p))
+            .collect()
     }
 
-    fn round_trip(w: usize, h: usize, format: PixelFormat, f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
+    fn round_trip(
+        w: usize,
+        h: usize,
+        format: PixelFormat,
+        f: impl Fn(usize, usize) -> [u8; 3],
+    ) -> Vec<u8> {
         let fb = framebuffer(w, h, f);
         let mut enc = ZrleEncoder::default();
         let mut out = Vec::new();
@@ -529,11 +588,20 @@ mod tests {
                 for row in 0..th {
                     for px in 0..tw {
                         let i = (ty + row) * w * 4 + (tx + px) * 4;
-                        enc.tile.push(format.value([fb[i], fb[i + 1], fb[i + 2], fb[i + 3]]));
+                        enc.tile
+                            .push(format.value([fb[i], fb[i + 1], fb[i + 2], fb[i + 3]]));
                     }
                 }
                 let mut tile_bytes = Vec::new();
-                encode_tile(&enc.tile, tw, th, format, cpixel, &mut enc.palette, &mut tile_bytes);
+                encode_tile(
+                    &enc.tile,
+                    tw,
+                    th,
+                    format,
+                    cpixel,
+                    &mut enc.palette,
+                    &mut tile_bytes,
+                );
                 subs.push(tile_bytes[0]);
             }
         }
@@ -543,13 +611,22 @@ mod tests {
     #[test]
     fn a_flat_rectangle_is_one_solid_tile_each() {
         let fb = framebuffer(130, 70, |_, _| [0x11, 0x22, 0x33]);
-        assert_eq!(subencodings(&fb, 130, 70, &PixelFormat::NATIVE), vec![1, 1, 1, 1, 1, 1]);
+        assert_eq!(
+            subencodings(&fb, 130, 70, &PixelFormat::NATIVE),
+            vec![1, 1, 1, 1, 1, 1]
+        );
         round_trip(130, 70, PixelFormat::NATIVE, |_, _| [0x11, 0x22, 0x33]);
     }
 
     #[test]
     fn two_colours_in_columns_pack_to_one_bit() {
-        let f = |x: usize, _| if x.is_multiple_of(2) { [255, 0, 0] } else { [0, 0, 255] };
+        let f = |x: usize, _| {
+            if x.is_multiple_of(2) {
+                [255, 0, 0]
+            } else {
+                [0, 0, 255]
+            }
+        };
         let fb = framebuffer(64, 64, f);
         // Alternating columns have no runs, so RLE loses and packing wins.
         assert_eq!(subencodings(&fb, 64, 64, &PixelFormat::NATIVE), vec![2]);
@@ -560,7 +637,10 @@ mod tests {
     fn a_few_colours_in_rows_become_palette_rle() {
         let f = |_, y: usize| [(y % 5) as u8 * 40, 7, 9];
         let fb = framebuffer(64, 64, f);
-        assert_eq!(subencodings(&fb, 64, 64, &PixelFormat::NATIVE), vec![128 + 5]);
+        assert_eq!(
+            subencodings(&fb, 64, 64, &PixelFormat::NATIVE),
+            vec![128 + 5]
+        );
         round_trip(64, 64, PixelFormat::NATIVE, f);
     }
 
@@ -599,17 +679,29 @@ mod tests {
 
     #[test]
     fn odd_sizes_cut_partial_tiles_at_the_right_and_bottom() {
-        round_trip(133, 67, PixelFormat::NATIVE, |x, y| [(x / 7) as u8, (y / 3) as u8, ((x + y) % 3) as u8 * 100]);
+        round_trip(133, 67, PixelFormat::NATIVE, |x, y| {
+            [(x / 7) as u8, (y / 3) as u8, ((x + y) % 3) as u8 * 100]
+        });
         round_trip(1, 1, PixelFormat::NATIVE, |_, _| [9, 8, 7]);
-        round_trip(65, 1, PixelFormat::NATIVE, |x, _| if x == 64 { [1, 1, 1] } else { [2, 2, 2] });
+        round_trip(65, 1, PixelFormat::NATIVE, |x, _| {
+            if x == 64 { [1, 1, 1] } else { [2, 2, 2] }
+        });
     }
 
     #[test]
     fn packed_rows_pad_to_a_byte_each() {
         // 3 pixels wide, 2 colours: each row is one byte with 5 padding bits.
-        round_trip(3, 5, PixelFormat::NATIVE, |x, y| if (x + y).is_multiple_of(2) { [1, 0, 0] } else { [0, 1, 0] });
+        round_trip(3, 5, PixelFormat::NATIVE, |x, y| {
+            if (x + y).is_multiple_of(2) {
+                [1, 0, 0]
+            } else {
+                [0, 1, 0]
+            }
+        });
         // 5 wide, 4 colours: 10 bits a row, two bytes.
-        round_trip(5, 5, PixelFormat::NATIVE, |x, y| [((x * y) % 4) as u8, 0, 0]);
+        round_trip(5, 5, PixelFormat::NATIVE, |x, y| {
+            [((x * y) % 4) as u8, 0, 0]
+        });
         // 3 wide, 9 colours: 12 bits a row, two bytes.
         round_trip(3, 3, PixelFormat::NATIVE, |x, y| [(x * 3 + y) as u8, 0, 0]);
     }
@@ -637,17 +729,44 @@ mod tests {
     #[test]
     fn other_client_formats_are_honoured_in_every_shape() {
         let formats = [
-            PixelFormat { big_endian: true, ..PixelFormat::NATIVE },
-            PixelFormat { red_shift: 0, green_shift: 8, blue_shift: 16, ..PixelFormat::NATIVE },
-            PixelFormat { red_shift: 24, green_shift: 16, blue_shift: 8, ..PixelFormat::NATIVE },
-            PixelFormat { red_shift: 24, green_shift: 16, blue_shift: 8, big_endian: true, ..PixelFormat::NATIVE },
+            PixelFormat {
+                big_endian: true,
+                ..PixelFormat::NATIVE
+            },
+            PixelFormat {
+                red_shift: 0,
+                green_shift: 8,
+                blue_shift: 16,
+                ..PixelFormat::NATIVE
+            },
+            PixelFormat {
+                red_shift: 24,
+                green_shift: 16,
+                blue_shift: 8,
+                ..PixelFormat::NATIVE
+            },
+            PixelFormat {
+                red_shift: 24,
+                green_shift: 16,
+                blue_shift: 8,
+                big_endian: true,
+                ..PixelFormat::NATIVE
+            },
         ];
         for format in formats {
             format.check().unwrap();
             round_trip(70, 70, format, |_, _| [1, 2, 3]);
-            round_trip(70, 70, format, |x, _| if x.is_multiple_of(2) { [255, 0, 0] } else { [0, 0, 255] });
+            round_trip(70, 70, format, |x, _| {
+                if x.is_multiple_of(2) {
+                    [255, 0, 0]
+                } else {
+                    [0, 0, 255]
+                }
+            });
             round_trip(70, 70, format, |_, y| [(y % 5) as u8 * 40, 7, 9]);
-            round_trip(70, 70, format, |_, y| [y as u8, (y * 3) as u8, (y * 7) as u8]);
+            round_trip(70, 70, format, |_, y| {
+                [y as u8, (y * 3) as u8, (y * 7) as u8]
+            });
             round_trip(70, 70, format, |x, y| [x as u8, y as u8, (x ^ y) as u8]);
         }
     }
@@ -659,7 +778,12 @@ mod tests {
         encode_raw_rect(&fb, 12, 3, 2, &PixelFormat::NATIVE, &mut out);
         assert_eq!(out, fb);
         let mut out = Vec::new();
-        let rgbx = PixelFormat { red_shift: 0, green_shift: 8, blue_shift: 16, ..PixelFormat::NATIVE };
+        let rgbx = PixelFormat {
+            red_shift: 0,
+            green_shift: 8,
+            blue_shift: 16,
+            ..PixelFormat::NATIVE
+        };
         encode_raw_rect(&fb, 12, 3, 2, &rgbx, &mut out);
         assert_eq!(&out[..4], &[0, 0, 200, 0]);
         assert_eq!(&out[4..8], &[1, 0, 200, 0]);

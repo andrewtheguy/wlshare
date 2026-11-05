@@ -17,8 +17,10 @@
 //! Both checks block — a PAM stack may sleep or run programs, and Argon2 is
 //! slow on purpose — so both run off the runtime.
 
-use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher as _, PasswordVerifier as _, Version};
 use crate::rfb::rsa_aes::{Credentials, MAX_CREDENTIAL_LEN, Subtype};
+use argon2::{
+    Algorithm, Argon2, Params, PasswordHash, PasswordHasher as _, PasswordVerifier as _, Version,
+};
 
 use crate::pam;
 
@@ -59,7 +61,13 @@ impl Login {
     /// for as long as the check takes, so call it off the runtime.
     pub fn check(&self, credentials: &Credentials, peer: &str) -> Result<(), Refused> {
         match self {
-            Self::Pam { service, account } => pam::check(service, account, &credentials.username, &credentials.password, peer),
+            Self::Pam { service, account } => pam::check(
+                service,
+                account,
+                &credentials.username,
+                &credentials.password,
+                peer,
+            ),
             Self::Password { hash } => verify(hash, &credentials.password),
         }
     }
@@ -74,7 +82,11 @@ fn verify(hash: &str, password: &str) -> Result<(), Refused> {
     }
     Argon2::default()
         .verify_password(password.as_bytes(), hash)
-        .map_err(|e| Refused::new(format!("the password does not match the configured hash: {e}")))
+        .map_err(|e| {
+            Refused::new(format!(
+                "the password does not match the configured hash: {e}"
+            ))
+        })
 }
 
 /// Hash a password as `[password]` wants it: Argon2id in the crate's default
@@ -89,7 +101,9 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
         "the password is {} bytes, and RSA-AES carries at most {MAX_CREDENTIAL_LEN}: no client could send it",
         password.len()
     );
-    let hash = Argon2::default().hash_password(password.as_bytes()).map_err(|e| anyhow::anyhow!("hashing the password: {e}"))?;
+    let hash = Argon2::default()
+        .hash_password(password.as_bytes())
+        .map_err(|e| anyhow::anyhow!("hashing the password: {e}"))?;
     Ok(hash.to_string())
 }
 
@@ -100,15 +114,26 @@ pub fn hash_password(password: &str) -> anyhow::Result<String> {
 /// password, so every piece [`verify`] will reach for is taken out here, in the
 /// order it reaches for them.
 pub fn check_hash(hash: &str) -> anyhow::Result<()> {
-    let parsed = PasswordHash::new(hash).map_err(|e| anyhow::anyhow!("the hash is not a PHC string: {e}"))?;
-    Algorithm::new(parsed.algorithm.as_str())
-        .map_err(|e| anyhow::anyhow!("the hash names {}, and wlshare verifies Argon2 only: {e}", parsed.algorithm))?;
+    let parsed = PasswordHash::new(hash)
+        .map_err(|e| anyhow::anyhow!("the hash is not a PHC string: {e}"))?;
+    Algorithm::new(parsed.algorithm.as_str()).map_err(|e| {
+        anyhow::anyhow!(
+            "the hash names {}, and wlshare verifies Argon2 only: {e}",
+            parsed.algorithm
+        )
+    })?;
     if let Some(version) = parsed.version {
-        Version::try_from(version).map_err(|e| anyhow::anyhow!("the hash's version {version} is not one Argon2 has: {e}"))?;
+        Version::try_from(version).map_err(|e| {
+            anyhow::anyhow!("the hash's version {version} is not one Argon2 has: {e}")
+        })?;
     }
     anyhow::ensure!(parsed.salt.is_some(), "the hash carries no salt");
-    anyhow::ensure!(parsed.hash.is_some(), "the hash carries no digest: there would be nothing to compare a password against");
-    Params::try_from(&parsed).map_err(|e| anyhow::anyhow!("the hash's parameters are not ones Argon2 takes: {e}"))?;
+    anyhow::ensure!(
+        parsed.hash.is_some(),
+        "the hash carries no digest: there would be nothing to compare a password against"
+    );
+    Params::try_from(&parsed)
+        .map_err(|e| anyhow::anyhow!("the hash's parameters are not ones Argon2 takes: {e}"))?;
     Ok(())
 }
 
@@ -134,7 +159,9 @@ mod tests {
         assert!(hash_password(&"a".repeat(MAX_CREDENTIAL_LEN + 1)).is_err());
         assert!(hash_password(&"a".repeat(MAX_CREDENTIAL_LEN)).is_ok());
         assert!(check_hash("hunter2").is_err());
-        assert!(check_hash("$2b$12$K3JNi5xUNaXNaXNaXNaXNuJ3nQ2mDe2hAaXQ1oX8fJz4T6bA0aXNa").is_err());
+        assert!(
+            check_hash("$2b$12$K3JNi5xUNaXNaXNaXNaXNuJ3nQ2mDe2hAaXQ1oX8fJz4T6bA0aXNa").is_err()
+        );
     }
 
     /// A PHC string is happy with far less than a verification needs, and each
@@ -159,8 +186,17 @@ mod tests {
 
     #[test]
     fn the_table_decides_which_credentials_the_client_is_asked_for() {
-        let pam = Login::Pam { service: "wlshare".into(), account: "me".into() };
+        let pam = Login::Pam {
+            service: "wlshare".into(),
+            account: "me".into(),
+        };
         assert_eq!(pam.subtype(), Subtype::UserPass);
-        assert_eq!(Login::Password { hash: String::new() }.subtype(), Subtype::Password);
+        assert_eq!(
+            Login::Password {
+                hash: String::new()
+            }
+            .subtype(),
+            Subtype::Password
+        );
     }
 }

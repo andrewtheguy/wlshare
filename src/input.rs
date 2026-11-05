@@ -39,15 +39,17 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 use log::{debug, trace, warn};
+use wayland_client::QueueHandle;
 use wayland_client::protocol::wl_output::Transform;
 use wayland_client::protocol::wl_pointer;
 use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::QueueHandle;
 use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
-    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1, zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
-    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1, zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
+    zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+    zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
 };
 use xkbcommon::xkb;
 
@@ -84,7 +86,9 @@ enum ShiftFix {
 /// rather than a key. libxkbcommon gives Tab, Return, BackSpace, Escape and
 /// Delete control codepoints, so those count as keys here too.
 fn is_character(keysym: u32) -> bool {
-    xkb::Keysym::new(keysym).key_char().is_some_and(|c| !c.is_control())
+    xkb::Keysym::new(keysym)
+        .key_char()
+        .is_some_and(|c| !c.is_control())
 }
 
 /// The modifier state the compositor is told after every key: an `xkb_state`
@@ -104,15 +108,29 @@ struct Modifiers {
 
 impl Modifiers {
     fn new(keymap: &xkb::Keymap) -> Self {
-        Self { state: xkb::State::new(keymap), down: HashSet::new() }
+        Self {
+            state: xkb::State::new(keymap),
+            down: HashSet::new(),
+        }
     }
 
     /// Whether the keycode went down or came up: a press of one already down,
     /// or a release of one that is not, changes nothing.
     fn key(&mut self, code: u32, down: bool) -> bool {
-        let changed = if down { self.down.insert(code) } else { self.down.remove(&code) };
+        let changed = if down {
+            self.down.insert(code)
+        } else {
+            self.down.remove(&code)
+        };
         if changed {
-            self.state.update_key(xkb::Keycode::new(code), if down { xkb::KeyDirection::Down } else { xkb::KeyDirection::Up });
+            self.state.update_key(
+                xkb::Keycode::new(code),
+                if down {
+                    xkb::KeyDirection::Down
+                } else {
+                    xkb::KeyDirection::Up
+                },
+            );
         }
         changed
     }
@@ -228,7 +246,11 @@ fn aim(x: u16, y: u16, extent: (u16, u16), placement: &Placement) -> Option<(u32
         Transform::Flipped270 => ((h - y, h), (w - x, w)),
         _ => ((x, w), (y, h)),
     };
-    let axis = |(at, of): (u64, u64), pixels: u16, (box_at, units): (i32, i32), (layout_at, layout_size): (i32, i32)| -> Option<u32> {
+    let axis = |(at, of): (u64, u64),
+                pixels: u16,
+                (box_at, units): (i32, i32),
+                (layout_at, layout_size): (i32, i32)|
+     -> Option<u32> {
         if units <= 0 || layout_size <= 0 {
             return None;
         }
@@ -238,7 +260,9 @@ fn aim(x: u16, y: u16, extent: (u16, u16), placement: &Placement) -> Option<(u32
         let (layout_at, layout_size) = (f64::from(layout_at), f64::from(layout_size));
         // What wlroots makes of a numerator, in its own arithmetic.
         let lands = |n: u32| layout_size * (f64::from(n) / f64::from(EXTENT)) + layout_at;
-        let mut n = ((place - layout_at) / layout_size * f64::from(EXTENT)).ceil().clamp(0.0, f64::from(EXTENT)) as u32;
+        let mut n = ((place - layout_at) / layout_size * f64::from(EXTENT))
+            .ceil()
+            .clamp(0.0, f64::from(EXTENT)) as u32;
         while n < EXTENT && lands(n) < place {
             n += 1;
         }
@@ -249,8 +273,18 @@ fn aim(x: u16, y: u16, extent: (u16, u16), placement: &Placement) -> Option<(u32
     };
     let (logical, layout) = (placement.logical, placement.layout);
     Some((
-        axis(across, placement.size.0, (logical.x, logical.width), (layout.x, layout.width))?,
-        axis(down, placement.size.1, (logical.y, logical.height), (layout.y, layout.height))?,
+        axis(
+            across,
+            placement.size.0,
+            (logical.x, logical.width),
+            (layout.x, layout.width),
+        )?,
+        axis(
+            down,
+            placement.size.1,
+            (logical.y, logical.height),
+            (layout.y, layout.height),
+        )?,
     ))
 }
 
@@ -273,11 +307,22 @@ impl Keys {
             }
         }
         debug!("keymap resolves {} keysyms", keycodes.len());
-        let shift_codes: Vec<u32> = [XK_SHIFT_L, XK_SHIFT_R].iter().filter_map(|sym| keycodes.get(sym).map(|&(code, _)| code)).collect();
+        let shift_codes: Vec<u32> = [XK_SHIFT_L, XK_SHIFT_R]
+            .iter()
+            .filter_map(|sym| keycodes.get(sym).map(|&(code, _)| code))
+            .collect();
         if shift_codes.is_empty() {
             warn!("the keymap has no Shift key: case cannot be corrected");
         }
-        Self { modifiers: Modifiers::new(keymap), keycodes, shift_codes, held: HashSet::new(), owners: Default::default(), fixes: HashMap::new(), sent: Vec::new() }
+        Self {
+            modifiers: Modifiers::new(keymap),
+            keycodes,
+            shift_codes,
+            held: HashSet::new(),
+            owners: Default::default(),
+            fixes: HashMap::new(),
+            sent: Vec::new(),
+        }
     }
 
     /// A KeyEvent, as the transitions to send for it.
@@ -356,11 +401,18 @@ impl Keys {
         if !is_character(keysym) {
             return;
         }
-        let produced = self.modifiers.state.key_get_one_sym(xkb::Keycode::new(code)).raw();
+        let produced = self
+            .modifiers
+            .state
+            .key_get_one_sym(xkb::Keycode::new(code))
+            .raw();
         if produced == keysym {
             return;
         }
-        let shift_down = self.modifiers.state.mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_DEPRESSED);
+        let shift_down = self
+            .modifiers
+            .state
+            .mod_name_is_active(xkb::MOD_NAME_SHIFT, xkb::STATE_MODS_DEPRESSED);
         if level == 1 && !shift_down {
             if let Some(&shift) = self.shift_codes.first() {
                 debug!("keysym {keysym:#x} needs Shift on keycode {code}; pressing it");
@@ -368,7 +420,12 @@ impl Keys {
                 self.fixes.insert(code, ShiftFix::Pressed(shift));
             }
         } else if level == 0 && shift_down {
-            let shifts: Vec<u32> = self.shift_codes.iter().copied().filter(|s| self.held.contains(s)).collect();
+            let shifts: Vec<u32> = self
+                .shift_codes
+                .iter()
+                .copied()
+                .filter(|s| self.held.contains(s))
+                .collect();
             if !shifts.is_empty() {
                 debug!("keysym {keysym:#x} needs keycode {code} without Shift; letting go of it");
                 for &shift in &shifts {
@@ -377,7 +434,9 @@ impl Keys {
                 self.fixes.insert(code, ShiftFix::Released(shifts));
             }
         } else {
-            debug!("keysym {keysym:#x} is at level {level} of keycode {code}, which now produces {produced:#x}; sending the keycode as it is");
+            debug!(
+                "keysym {keysym:#x} is at level {level} of keycode {code}, which now produces {produced:#x}; sending the keycode as it is"
+            );
         }
     }
 
@@ -389,7 +448,8 @@ impl Keys {
     /// either, so it goes up there and then, and not a second time with the key.
     fn release(&mut self, code: u32) {
         if self.shift_codes.contains(&code) {
-            self.fixes.retain(|_, fix| !matches!(fix, ShiftFix::Pressed(shift) if *shift == code));
+            self.fixes
+                .retain(|_, fix| !matches!(fix, ShiftFix::Pressed(shift) if *shift == code));
         }
         self.send_key(code, false);
         match self.fixes.remove(&code) {
@@ -452,7 +512,11 @@ impl Input {
         xkb_config: &Xkb,
     ) -> anyhow::Result<Self> {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let options = if xkb_config.options.is_empty() { None } else { Some(xkb_config.options.clone()) };
+        let options = if xkb_config.options.is_empty() {
+            None
+        } else {
+            Some(xkb_config.options.clone())
+        };
         let keymap = xkb::Keymap::new_from_names(
             &context,
             &xkb_config.rules,
@@ -465,7 +529,8 @@ impl Input {
         .ok_or_else(|| anyhow::anyhow!("no keymap compiles from {xkb_config:?}"))?;
 
         let text = keymap.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1);
-        let fd = rustix::fs::memfd_create("wlshare-keymap", rustix::fs::MemfdFlags::CLOEXEC).context("memfd for the keymap")?;
+        let fd = rustix::fs::memfd_create("wlshare-keymap", rustix::fs::MemfdFlags::CLOEXEC)
+            .context("memfd for the keymap")?;
         let mut file = std::fs::File::from(fd);
         std::io::Write::write_all(&mut file, text.as_bytes())?;
         std::io::Write::write_all(&mut file, b"\0")?;
@@ -493,8 +558,10 @@ impl Input {
     fn send_keys(&mut self, sent: &[Sent]) {
         let time = self.time();
         for key in sent {
-            self.keyboard.key(time, key.code - EVDEV_OFFSET, u32::from(key.down));
-            self.keyboard.modifiers(key.depressed, key.latched, key.locked, key.layout);
+            self.keyboard
+                .key(time, key.code - EVDEV_OFFSET, u32::from(key.down));
+            self.keyboard
+                .modifiers(key.depressed, key.latched, key.locked, key.layout);
         }
     }
 
@@ -503,7 +570,15 @@ impl Input {
         for (bit, code) in [(1u8, BTN_LEFT), (2, BTN_MIDDLE), (4, BTN_RIGHT)] {
             let now = after & bit != 0;
             if now != (before & bit != 0) {
-                pointer.button(time, code, if now { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released });
+                pointer.button(
+                    time,
+                    code,
+                    if now {
+                        wl_pointer::ButtonState::Pressed
+                    } else {
+                        wl_pointer::ButtonState::Released
+                    },
+                );
             }
         }
     }
@@ -512,9 +587,24 @@ impl Input {
     /// button mask, onto the desk's output as it is laid out now ([`aim`]).
     /// With nothing to aim at, before the layout is known, a press or a notch
     /// would land wherever the cursor is, so only the buttons let go go.
-    pub fn pointer(&mut self, desk: usize, buttons: u8, x: u16, y: u16, extent: (u16, u16), placement: Option<&Placement>) {
+    pub fn pointer(
+        &mut self,
+        desk: usize,
+        buttons: u8,
+        x: u16,
+        y: u16,
+        extent: (u16, u16),
+        placement: Option<&Placement>,
+    ) {
         let time = self.time();
-        let Some(Pointer { pointer, buttons: held, aimed }) = &mut self.pointers[desk] else { return };
+        let Some(Pointer {
+            pointer,
+            buttons: held,
+            aimed,
+        }) = &mut self.pointers[desk]
+        else {
+            return;
+        };
         let Some((ax, ay)) = placement.and_then(|placement| aim(x, y, extent, placement)) else {
             debug!("desk {desk}: motion to {x},{y} with no layout to aim at: {placement:?}");
             let kept = *held & buttons;
@@ -525,7 +615,10 @@ impl Input {
             *held = kept;
             return;
         };
-        trace!("desk {desk}: motion to {x},{y} of {}x{}, aimed at {ax},{ay} of {EXTENT}", extent.0, extent.1);
+        trace!(
+            "desk {desk}: motion to {x},{y} of {}x{}, aimed at {ax},{ay} of {EXTENT}",
+            extent.0, extent.1
+        );
         pointer.motion_absolute(time, ax, ay, EXTENT, EXTENT);
         *aimed = Some((ax, ay));
         let previous = std::mem::replace(held, buttons);
@@ -558,7 +651,9 @@ impl Input {
             return;
         }
         let time = self.time();
-        let Some(Pointer { pointer, aimed, .. }) = &self.pointers[desk] else { return };
+        let Some(Pointer { pointer, aimed, .. }) = &self.pointers[desk] else {
+            return;
+        };
         if self.cursor != Some(desk) {
             let Some((ax, ay)) = *aimed else {
                 debug!("desk {desk}: a scroll before any motion on its output, dropped");
@@ -567,7 +662,10 @@ impl Input {
             pointer.motion_absolute(time, ax, ay, EXTENT, EXTENT);
         }
         pointer.axis_source(wl_pointer::AxisSource::Continuous);
-        for (axis, pixels) in [(wl_pointer::Axis::VerticalScroll, dy), (wl_pointer::Axis::HorizontalScroll, dx)] {
+        for (axis, pixels) in [
+            (wl_pointer::Axis::VerticalScroll, dy),
+            (wl_pointer::Axis::HorizontalScroll, dx),
+        ] {
             if pixels != 0 {
                 pointer.axis(time, axis, f64::from(pixels));
             }
@@ -581,14 +679,24 @@ impl Input {
     /// for another, and a press does not carry over to the new one. The
     /// pointer is made with no output, so the compositor binds it to none and
     /// has nothing to lose; its motions say where on the layout ([`aim`]).
-    pub fn point(&mut self, desk: usize, qh: &QueueHandle<Compositor>, pointers: &ZwlrVirtualPointerManagerV1, seat: &WlSeat) {
+    pub fn point(
+        &mut self,
+        desk: usize,
+        qh: &QueueHandle<Compositor>,
+        pointers: &ZwlrVirtualPointerManagerV1,
+        seat: &WlSeat,
+    ) {
         self.release_all(desk);
         self.leave_cursor(desk);
         match &mut self.pointers[desk] {
             Some(Pointer { aimed, .. }) => *aimed = None,
             None => {
                 let pointer = pointers.create_virtual_pointer(Some(seat), qh, ());
-                self.pointers[desk] = Some(Pointer { pointer, buttons: 0, aimed: None });
+                self.pointers[desk] = Some(Pointer {
+                    pointer,
+                    buttons: 0,
+                    aimed: None,
+                });
             }
         }
     }
@@ -614,7 +722,10 @@ impl Input {
         let time = self.time();
         let sent = self.keys.desk_left(desk);
         self.send_keys(&sent);
-        if let Some(Pointer { pointer, buttons, .. }) = &mut self.pointers[desk] {
+        if let Some(Pointer {
+            pointer, buttons, ..
+        }) = &mut self.pointers[desk]
+        {
             let before = std::mem::take(buttons) & 7;
             if before != 0 {
                 Self::set_buttons(pointer, time, before, 0);
@@ -635,7 +746,9 @@ mod tests {
 
     use wayland_client::protocol::wl_output::Transform;
 
-    use super::{EDGE, EVDEV_OFFSET, EXTENT, Keys, Modifiers, Placement, Rect, Sent, aim, is_character};
+    use super::{
+        EDGE, EVDEV_OFFSET, EXTENT, Keys, Modifiers, Placement, Rect, Sent, aim, is_character,
+    };
     use crate::shared::{BESIDE, FIRST};
 
     /// The evdev codes of Left Shift, Left Control, Left Alt and Left Meta.
@@ -652,7 +765,16 @@ mod tests {
 
     fn keymap() -> xkb::Keymap {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS).expect("the us layout compiles")
+        xkb::Keymap::new_from_names(
+            &context,
+            "",
+            "",
+            "us",
+            "",
+            None,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .expect("the us layout compiles")
     }
 
     fn modifiers() -> Modifiers {
@@ -662,7 +784,9 @@ mod tests {
     /// What reached the compositor: each keycode, its direction, and the
     /// depressed modifiers reported after it.
     fn wire(sent: Vec<Sent>) -> Vec<(u32, bool, u32)> {
-        sent.into_iter().map(|key| (key.code, key.down, key.depressed)).collect()
+        sent.into_iter()
+            .map(|key| (key.code, key.down, key.depressed))
+            .collect()
     }
 
     /// Where wlroots puts a numerator over [`EXTENT`] of a layout axis at
@@ -675,7 +799,10 @@ mod tests {
     /// layout's units.
     fn placed(x: u16, y: u16, extent: (u16, u16), placement: &Placement) -> (f64, f64) {
         let (ax, ay) = aim(x, y, extent, placement).expect("a layout to aim at");
-        (lands(ax, placement.layout.x, placement.layout.width), lands(ay, placement.layout.y, placement.layout.height))
+        (
+            lands(ax, placement.layout.x, placement.layout.width),
+            lands(ay, placement.layout.y, placement.layout.height),
+        )
     }
 
     /// Within a hundred-thousandth of a unit, which a 2^32 extent is well under.
@@ -685,7 +812,10 @@ mod tests {
 
     /// The box `size` pixels at `scale` are laid out as.
     fn laid_out(size: (u16, u16), scale: f64) -> (i32, i32) {
-        ((f64::from(size.0) / scale).trunc() as i32, (f64::from(size.1) / scale).trunc() as i32)
+        (
+            (f64::from(size.0) / scale).trunc() as i32,
+            (f64::from(size.1) / scale).trunc() as i32,
+        )
     }
 
     /// An output of `size` pixels at `scale`, turned by `transform`, at the
@@ -693,10 +823,20 @@ mod tests {
     fn beside(size: (u16, u16), scale: f64, transform: Transform) -> Placement {
         let (width, height) = laid_out(size, scale);
         Placement {
-            logical: Rect { x: 0, y: 0, width, height },
+            logical: Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
             size,
             transform,
-            layout: Rect { x: 0, y: 0, width: width + 1280, height: height.max(720) },
+            layout: Rect {
+                x: 0,
+                y: 0,
+                width: width + 1280,
+                height: height.max(720),
+            },
         }
     }
 
@@ -706,15 +846,33 @@ mod tests {
 
     #[test]
     fn a_motion_lands_on_its_pixel_with_the_extent_spread_over_the_output() {
-        assert!(near(placed(349, 16, (1920, 928), &upright((1920, 928))), (349.0, 16.0)));
-        assert!(near(placed(0, 0, (1920, 928), &upright((1920, 928))), (0.0, 0.0)));
-        assert!(near(placed(1919, 927, (1920, 928), &upright((1920, 928))), (1919.0, 927.0)));
+        assert!(near(
+            placed(349, 16, (1920, 928), &upright((1920, 928))),
+            (349.0, 16.0)
+        ));
+        assert!(near(
+            placed(0, 0, (1920, 928), &upright((1920, 928))),
+            (0.0, 0.0)
+        ));
+        assert!(near(
+            placed(1919, 927, (1920, 928), &upright((1920, 928))),
+            (1919.0, 927.0)
+        ));
         // The output resized to 1789x903, the framebuffer still the old size.
-        assert!(near(placed(349, 16, (1920, 928), &upright((1789, 903))), (349.0 * 1789.0 / 1920.0, 16.0 * 903.0 / 928.0)));
+        assert!(near(
+            placed(349, 16, (1920, 928), &upright((1789, 903))),
+            (349.0 * 1789.0 / 1920.0, 16.0 * 903.0 / 928.0)
+        ));
         // Past the edge, held at the far edge, inside it as wlroots keeps a
         // point, and spread over an output grown to twice the size.
-        assert!(near(placed(4000, 5000, (3456, 1802), &upright((3456, 1802))), (3456.0 - EDGE, 1802.0 - EDGE)));
-        assert!(near(placed(1280, 10, (1280, 720), &upright((2560, 1440))), (2560.0 - EDGE, 20.0)));
+        assert!(near(
+            placed(4000, 5000, (3456, 1802), &upright((3456, 1802))),
+            (3456.0 - EDGE, 1802.0 - EDGE)
+        ));
+        assert!(near(
+            placed(1280, 10, (1280, 720), &upright((2560, 1440))),
+            (2560.0 - EDGE, 20.0)
+        ));
     }
 
     #[test]
@@ -731,19 +889,53 @@ mod tests {
     fn a_motion_on_the_second_output_is_aimed_past_the_first() {
         // A 1920x1080 output at the origin, the desk's 1280x720 to its right.
         let placement = Placement {
-            logical: Rect { x: 1920, y: 0, width: 1280, height: 720 },
+            logical: Rect {
+                x: 1920,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
             size: (1280, 720),
             transform: Transform::Normal,
-            layout: Rect { x: 0, y: 0, width: 3200, height: 1080 },
+            layout: Rect {
+                x: 0,
+                y: 0,
+                width: 3200,
+                height: 1080,
+            },
         };
         assert!(near(placed(0, 0, (1280, 720), &placement), (1920.0, 0.0)));
-        assert!(near(placed(640, 360, (1280, 720), &placement), (2560.0, 360.0)));
-        assert!(near(placed(1279, 719, (1280, 720), &placement), (3199.0, 719.0)));
-        assert!(near(placed(1280, 720, (1280, 720), &placement), (3200.0 - EDGE, 720.0 - EDGE)));
+        assert!(near(
+            placed(640, 360, (1280, 720), &placement),
+            (2560.0, 360.0)
+        ));
+        assert!(near(
+            placed(1279, 719, (1280, 720), &placement),
+            (3199.0, 719.0)
+        ));
+        assert!(near(
+            placed(1280, 720, (1280, 720), &placement),
+            (3200.0 - EDGE, 720.0 - EDGE)
+        ));
         // The layout starting left of the origin, as an output placed there has it.
-        let shifted = Placement { logical: Rect { x: -1280, y: -100, ..placement.logical }, layout: Rect { x: -1280, y: -100, ..placement.layout }, ..placement };
+        let shifted = Placement {
+            logical: Rect {
+                x: -1280,
+                y: -100,
+                ..placement.logical
+            },
+            layout: Rect {
+                x: -1280,
+                y: -100,
+                ..placement.layout
+            },
+            ..placement
+        };
         assert!(near(placed(0, 0, (1280, 720), &shifted), (-1280.0, -100.0)));
-        assert!(near(placed(640, 360, (1280, 720), &shifted), (-640.0, 260.0)));
+        assert!(near(
+            placed(640, 360, (1280, 720), &shifted),
+            (-640.0, 260.0)
+        ));
     }
 
     #[test]
@@ -753,15 +945,30 @@ mod tests {
         // output spreads them, so a motion lands short of its pixel by up to
         // two, and the far edge is held inside the box. 1802 are 655.
         let fractional = beside((3456, 1802), 2.75, Transform::Normal);
-        assert_eq!((fractional.logical.width, fractional.logical.height), (1256, 655));
+        assert_eq!(
+            (fractional.logical.width, fractional.logical.height),
+            (1256, 655)
+        );
         let (x, y) = placed(2593, 901, (3456, 1802), &fractional);
-        assert!(near((x, y), (2593.0 * 1256.0 / 3456.0, 901.0 * 655.0 / 1802.0)));
+        assert!(near(
+            (x, y),
+            (2593.0 * 1256.0 / 3456.0, 901.0 * 655.0 / 1802.0)
+        ));
         assert_eq!(((x * 2.75).floor(), (y * 2.75).floor()), (2591.0, 900.0));
-        assert!(near(placed(3456, 1802, (3456, 1802), &fractional), (1256.0 - EDGE, 655.0 - EDGE)));
+        assert!(near(
+            placed(3456, 1802, (3456, 1802), &fractional),
+            (1256.0 - EDGE, 655.0 - EDGE)
+        ));
         // A whole scale divides the pixels exactly, so every one is reached.
         let whole = beside((3456, 1802), 2.0, Transform::Normal);
-        assert!(near(placed(2593, 901, (3456, 1802), &whole), (1296.5, 450.5)));
-        assert!(near(placed(3455, 1801, (3456, 1802), &whole), (1727.5, 900.5)));
+        assert!(near(
+            placed(2593, 901, (3456, 1802), &whole),
+            (1296.5, 450.5)
+        ));
+        assert!(near(
+            placed(3455, 1801, (3456, 1802), &whole),
+            (1727.5, 900.5)
+        ));
     }
 
     #[test]
@@ -770,8 +977,17 @@ mod tests {
         // 1280x720 framebuffer's motions, and where the cursor session put
         // them on the upright 720x1280 output.
         let turned = beside((720, 1280), 1.0, Transform::_270);
-        for (sent, want) in [((100, 100), (100.0, 1180.0)), ((600, 1000), (720.0 - EDGE, 680.0)), ((50, 1200), (720.0 - EDGE, 1230.0)), ((700, 20), (20.0, 580.0)), ((360, 640), (640.0, 920.0))] {
-            assert!(near(placed(sent.0, sent.1, (1280, 720), &turned), want), "{sent:?}");
+        for (sent, want) in [
+            ((100, 100), (100.0, 1180.0)),
+            ((600, 1000), (720.0 - EDGE, 680.0)),
+            ((50, 1200), (720.0 - EDGE, 1230.0)),
+            ((700, 20), (20.0, 580.0)),
+            ((360, 640), (640.0, 920.0)),
+        ] {
+            assert!(
+                near(placed(sent.0, sent.1, (1280, 720), &turned), want),
+                "{sent:?}"
+            );
         }
         // Every transform puts the extent's corners on the output's corners.
         let all = [
@@ -785,13 +1001,21 @@ mod tests {
             Transform::Flipped270,
         ];
         for transform in all {
-            let quarter = matches!(transform, Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270);
+            let quarter = matches!(
+                transform,
+                Transform::_90 | Transform::_270 | Transform::Flipped90 | Transform::Flipped270
+            );
             let size = if quarter { (720, 1280) } else { (1280, 720) };
             let placement = beside(size, 1.0, transform);
             for corner in [(0, 0), (1280, 0), (0, 720), (1280, 720)] {
                 let (x, y) = placed(corner.0, corner.1, (1280, 720), &placement);
-                let edge = |at: f64, size: u16| at.abs() < 1e-5 || (at - (f64::from(size) - EDGE)).abs() < 1e-5;
-                assert!(edge(x, size.0) && edge(y, size.1), "{transform:?} {corner:?}: {x},{y}");
+                let edge = |at: f64, size: u16| {
+                    at.abs() < 1e-5 || (at - (f64::from(size) - EDGE)).abs() < 1e-5
+                };
+                assert!(
+                    edge(x, size.0) && edge(y, size.1),
+                    "{transform:?} {corner:?}: {x},{y}"
+                );
             }
         }
     }
@@ -802,17 +1026,48 @@ mod tests {
         // a hair under the integer would be a pixel back: every pixel of a
         // 1400x900 output beside a 1280x720 one lands at or over itself, and
         // under a millionth over.
-        let placement = Placement { logical: Rect { x: 0, y: 0, width: 1400, height: 900 }, size: (1400, 900), transform: Transform::Normal, layout: Rect { x: 0, y: 0, width: 2680, height: 900 } };
+        let placement = Placement {
+            logical: Rect {
+                x: 0,
+                y: 0,
+                width: 1400,
+                height: 900,
+            },
+            size: (1400, 900),
+            transform: Transform::Normal,
+            layout: Rect {
+                x: 0,
+                y: 0,
+                width: 2680,
+                height: 900,
+            },
+        };
         for x in 0..1400u16 {
             let (lx, ly) = placed(x, x % 900, (1400, 900), &placement);
             assert!(lx >= f64::from(x) && lx - f64::from(x) < 1e-6, "{x}: {lx}");
-            assert!(ly >= f64::from(x % 900) && ly - f64::from(x % 900) < 1e-6, "{}: {ly}", x % 900);
+            assert!(
+                ly >= f64::from(x % 900) && ly - f64::from(x % 900) < 1e-6,
+                "{}: {ly}",
+                x % 900
+            );
         }
         // So is one on the output to the right, from the layout's origin.
-        let beside = Placement { logical: Rect { x: 1400, y: 0, width: 1280, height: 720 }, size: (1280, 720), ..placement };
+        let beside = Placement {
+            logical: Rect {
+                x: 1400,
+                y: 0,
+                width: 1280,
+                height: 720,
+            },
+            size: (1280, 720),
+            ..placement
+        };
         for x in 0..1280u16 {
             let (lx, _) = placed(x, 0, (1280, 720), &beside);
-            assert!(lx >= 1400.0 + f64::from(x) && lx - 1400.0 - f64::from(x) < 1e-6, "{x}: {lx}");
+            assert!(
+                lx >= 1400.0 + f64::from(x) && lx - 1400.0 - f64::from(x) < 1e-6,
+                "{x}: {lx}"
+            );
         }
     }
 
@@ -830,7 +1085,10 @@ mod tests {
     fn a_shift_the_client_takes_over_outlives_the_key_it_was_pressed_for() {
         let mut keys = Keys::new(&keymap());
         // `A` with no Shift held, as under Caps Lock: Shift is pressed for it.
-        assert_eq!(wire(keys.key(XK_UPPER_A, true)), [(SHIFT, true, SHIFT_MASK), (A, true, SHIFT_MASK)]);
+        assert_eq!(
+            wire(keys.key(XK_UPPER_A, true)),
+            [(SHIFT, true, SHIFT_MASK), (A, true, SHIFT_MASK)]
+        );
         // The client presses that Shift itself, and it repeats: it is down.
         for _ in 0..3 {
             assert_eq!(wire(keys.key(XK_SHIFT_L, true)), []);
@@ -847,7 +1105,10 @@ mod tests {
     #[test]
     fn a_held_key_is_pressed_once_however_often_the_client_repeats_it() {
         let mut keys = Keys::new(&keymap());
-        assert_eq!(wire(keys.key(XK_SHIFT_L, true)), [(SHIFT, true, SHIFT_MASK)]);
+        assert_eq!(
+            wire(keys.key(XK_SHIFT_L, true)),
+            [(SHIFT, true, SHIFT_MASK)]
+        );
         // Sway's table of pressed keys holds 32.
         for _ in 0..40 {
             assert_eq!(wire(keys.key(XK_SHIFT_L, true)), []);
@@ -864,8 +1125,14 @@ mod tests {
     #[test]
     fn a_shift_pressed_for_a_key_goes_with_the_key() {
         let mut keys = Keys::new(&keymap());
-        assert_eq!(wire(keys.key(XK_UPPER_A, true)), [(SHIFT, true, SHIFT_MASK), (A, true, SHIFT_MASK)]);
-        assert_eq!(wire(keys.key(XK_UPPER_A, false)), [(A, false, SHIFT_MASK), (SHIFT, false, 0)]);
+        assert_eq!(
+            wire(keys.key(XK_UPPER_A, true)),
+            [(SHIFT, true, SHIFT_MASK), (A, true, SHIFT_MASK)]
+        );
+        assert_eq!(
+            wire(keys.key(XK_UPPER_A, false)),
+            [(A, false, SHIFT_MASK), (SHIFT, false, 0)]
+        );
         assert_eq!(wire(keys.key(XK_TAB, true)), [(TAB, true, 0)]);
     }
 
@@ -885,7 +1152,10 @@ mod tests {
         // The second press of a key already down is a repeat.
         assert_eq!(wire(keys.desk_key(BESIDE, XK_TAB, true)), []);
         assert_eq!(wire(keys.desk_key(FIRST, XK_TAB, false)), []);
-        assert_eq!(wire(keys.desk_key(BESIDE, XK_TAB, false)), [(TAB, false, 0)]);
+        assert_eq!(
+            wire(keys.desk_key(BESIDE, XK_TAB, false)),
+            [(TAB, false, 0)]
+        );
     }
 
     #[test]
@@ -895,7 +1165,10 @@ mod tests {
         assert_eq!(wire(keys.desk_key(BESIDE, XK_SHIFT_L, false)), []);
         assert_eq!(wire(keys.desk_left(BESIDE)), []);
         // The Shift is still down for the client that holds it.
-        assert_eq!(wire(keys.desk_key(FIRST, XK_TAB, true)), [(TAB, true, SHIFT_MASK)]);
+        assert_eq!(
+            wire(keys.desk_key(FIRST, XK_TAB, true)),
+            [(TAB, true, SHIFT_MASK)]
+        );
     }
 
     #[test]
@@ -950,7 +1223,9 @@ mod tests {
     #[test]
     fn keys_are_sent_as_they_are() {
         // Tab, ISO_Left_Tab, Return, BackSpace, Escape, Delete, Left, Shift_L, F1
-        for keysym in [0xff09, 0xfe20, 0xff0d, 0xff08, 0xff1b, 0xffff, 0xff51, 0xffe1, 0xffbe] {
+        for keysym in [
+            0xff09, 0xfe20, 0xff0d, 0xff08, 0xff1b, 0xffff, 0xff51, 0xffe1, 0xffbe,
+        ] {
             assert!(!is_character(keysym), "{keysym:#x}");
         }
     }

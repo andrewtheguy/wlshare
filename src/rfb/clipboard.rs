@@ -49,7 +49,8 @@ const FORMAT_MASK: u32 = 0x0000_ffff;
 const ACTION_MASK: u32 = 0xff00_0000;
 
 /// Every action this module speaks, which is every action the extension has.
-pub const ALL_ACTIONS: u32 = ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE;
+pub const ALL_ACTIONS: u32 =
+    ACTION_CAPS | ACTION_REQUEST | ACTION_PEEK | ACTION_NOTIFY | ACTION_PROVIDE;
 
 /// The longest text either end sends or accepts, in bytes of UTF-8. Half the
 /// cut-text ceiling, so a provide's deflated body — which for text that does not
@@ -81,7 +82,11 @@ impl Caps {
     /// What wlshare's own ends take: text, every action, and no unsolicited
     /// text — a change is notified and the text asked for, as the extension
     /// recommends, so a large clipboard crosses only when it is wanted.
-    pub const WLSHARE: Self = Self { actions: ALL_ACTIONS, formats: FORMAT_TEXT, text_size: Some(0) };
+    pub const WLSHARE: Self = Self {
+        actions: ALL_ACTIONS,
+        formats: FORMAT_TEXT,
+        text_size: Some(0),
+    };
 
     pub fn takes(&self, action: u32) -> bool {
         self.actions & action != 0
@@ -97,14 +102,20 @@ impl Caps {
 pub enum Message {
     Caps(Caps),
     /// The peer wants these formats, as a provide.
-    Request { formats: u32 },
+    Request {
+        formats: u32,
+    },
     /// The peer wants a notify of what this end holds.
     Peek,
     /// The peer's clipboard changed and holds these formats; none is a
     /// clipboard that was cleared or holds nothing this extension carries.
-    Notify { formats: u32 },
+    Notify {
+        formats: u32,
+    },
     /// The peer's clipboard. `None` when the provide carried no text.
-    Provide { text: Option<String> },
+    Provide {
+        text: Option<String>,
+    },
 }
 
 /// Why an extended cut text could not be read. None of these is a broken
@@ -135,7 +146,11 @@ fn flags(actions: u32, formats: u32) -> [u8; 4] {
 /// A caps body: the flags, then the largest unsolicited size of each format
 /// named, in format order. Text is the only format this module names.
 pub fn caps(caps: &Caps) -> Vec<u8> {
-    let formats = if caps.text_size.is_some() { FORMAT_TEXT } else { 0 };
+    let formats = if caps.text_size.is_some() {
+        FORMAT_TEXT
+    } else {
+        0
+    };
     let mut body = flags(caps.actions | ACTION_CAPS, formats).to_vec();
     if let Some(size) = caps.text_size {
         body.extend_from_slice(&size.to_be_bytes());
@@ -166,16 +181,23 @@ pub fn provide(text: &str) -> Result<Vec<u8>, ClipboardError> {
         return Err(ClipboardError::TooLongToSend(text.len()));
     }
     let wire = to_wire(text);
-    let mut encoder = ZlibEncoder::new(flags(ACTION_PROVIDE, FORMAT_TEXT).to_vec(), Compression::default());
+    let mut encoder = ZlibEncoder::new(
+        flags(ACTION_PROVIDE, FORMAT_TEXT).to_vec(),
+        Compression::default(),
+    );
     // Writing into a Vec cannot fail.
-    encoder.write_all(&(wire.len() as u32).to_be_bytes()).expect("deflating into memory");
+    encoder
+        .write_all(&(wire.len() as u32).to_be_bytes())
+        .expect("deflating into memory");
     encoder.write_all(&wire).expect("deflating into memory");
     Ok(encoder.finish().expect("deflating into memory"))
 }
 
 /// Read one extended cut text's body.
 pub fn parse(body: &[u8]) -> Result<Message, ClipboardError> {
-    let Some((head, rest)) = body.split_first_chunk::<4>() else { return Err(ClipboardError::Short(body.len())) };
+    let Some((head, rest)) = body.split_first_chunk::<4>() else {
+        return Err(ClipboardError::Short(body.len()));
+    };
     let flags = u32::from_be_bytes(*head);
     let (actions, formats) = (flags & ACTION_MASK, flags & FORMAT_MASK);
     // Caps may come with any other action bit set: they are what it takes.
@@ -198,8 +220,13 @@ fn parse_caps(actions: u32, formats: u32, sizes: &[u8]) -> Result<Message, Clipb
     if sizes.len() < named * 4 {
         return Err(ClipboardError::ShortCaps);
     }
-    let text_size = (formats & FORMAT_TEXT != 0).then(|| u32::from_be_bytes([sizes[0], sizes[1], sizes[2], sizes[3]]));
-    Ok(Message::Caps(Caps { actions, formats, text_size }))
+    let text_size = (formats & FORMAT_TEXT != 0)
+        .then(|| u32::from_be_bytes([sizes[0], sizes[1], sizes[2], sizes[3]]));
+    Ok(Message::Caps(Caps {
+        actions,
+        formats,
+        text_size,
+    }))
 }
 
 fn parse_provide(formats: u32, deflated: &[u8]) -> Result<Message, ClipboardError> {
@@ -211,7 +238,9 @@ fn parse_provide(formats: u32, deflated: &[u8]) -> Result<Message, ClipboardErro
     // so a stream that inflates without end is refused on what it claims.
     let mut stream = ZlibDecoder::new(deflated);
     let mut length = [0u8; 4];
-    stream.read_exact(&mut length).map_err(|e| ClipboardError::Inflate(e.to_string()))?;
+    stream
+        .read_exact(&mut length)
+        .map_err(|e| ClipboardError::Inflate(e.to_string()))?;
     let length = u32::from_be_bytes(length);
     // The wire form is the text, a CR per line and the NUL, so a text at the
     // ceiling claims more than the ceiling. Twice it bounds what is inflated,
@@ -220,7 +249,10 @@ fn parse_provide(formats: u32, deflated: &[u8]) -> Result<Message, ClipboardErro
         return Err(ClipboardError::TooLong(u64::from(length)));
     }
     let mut wire = Vec::with_capacity(length as usize);
-    stream.take(u64::from(length)).read_to_end(&mut wire).map_err(|e| ClipboardError::Inflate(e.to_string()))?;
+    stream
+        .take(u64::from(length))
+        .read_to_end(&mut wire)
+        .map_err(|e| ClipboardError::Inflate(e.to_string()))?;
     if wire.len() != length as usize {
         return Err(ClipboardError::ShortProvide);
     }
@@ -273,7 +305,9 @@ mod tests {
     fn inflate_by_hand(body: &[u8]) -> (u32, Vec<u8>) {
         let flags = u32::from_be_bytes(body[..4].try_into().unwrap());
         let mut stream = Vec::new();
-        ZlibDecoder::new(&body[4..]).read_to_end(&mut stream).unwrap();
+        ZlibDecoder::new(&body[4..])
+            .read_to_end(&mut stream)
+            .unwrap();
         (flags, stream)
     }
 
@@ -294,43 +328,90 @@ mod tests {
         assert_eq!(&stream[..4], &(wire.len() as u32).to_be_bytes());
         assert_eq!(&stream[4..], wire);
         // A CRLF or lone CR already there is one line ending, not two.
-        assert_eq!(inflate_by_hand(&provide("a\r\nb\rc").unwrap()).1[4..], *b"a\r\nb\r\nc\0");
+        assert_eq!(
+            inflate_by_hand(&provide("a\r\nb\rc").unwrap()).1[4..],
+            *b"a\r\nb\r\nc\0"
+        );
     }
 
     #[test]
     fn the_messages_a_peer_sends_parse() {
-        let mut theirs = (ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY | FORMAT_TEXT | (1 << 2)).to_be_bytes().to_vec();
+        let mut theirs = (ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY | FORMAT_TEXT | (1 << 2))
+            .to_be_bytes()
+            .to_vec();
         theirs.extend_from_slice(&[0, 0, 0x10, 0, 0, 0, 0, 0]);
         assert_eq!(
             parse(&theirs),
-            Ok(Message::Caps(Caps { actions: ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY, formats: FORMAT_TEXT | (1 << 2), text_size: Some(0x1000) }))
+            Ok(Message::Caps(Caps {
+                actions: ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY,
+                formats: FORMAT_TEXT | (1 << 2),
+                text_size: Some(0x1000)
+            }))
         );
-        assert_eq!(parse(&[0x02, 0, 0, 0x01]), Ok(Message::Request { formats: FORMAT_TEXT }));
+        assert_eq!(
+            parse(&[0x02, 0, 0, 0x01]),
+            Ok(Message::Request {
+                formats: FORMAT_TEXT
+            })
+        );
         assert_eq!(parse(&[0x04, 0, 0, 0]), Ok(Message::Peek));
-        assert_eq!(parse(&[0x08, 0, 0, 0x01]), Ok(Message::Notify { formats: FORMAT_TEXT }));
+        assert_eq!(
+            parse(&[0x08, 0, 0, 0x01]),
+            Ok(Message::Notify {
+                formats: FORMAT_TEXT
+            })
+        );
         assert_eq!(parse(&[0x08, 0, 0, 0]), Ok(Message::Notify { formats: 0 }));
-        assert_eq!(parse(&provide_by_hand(&[(FORMAT_TEXT, b"one\r\ntwo\0")])), Ok(Message::Provide { text: Some("one\ntwo".into()) }));
+        assert_eq!(
+            parse(&provide_by_hand(&[(FORMAT_TEXT, b"one\r\ntwo\0")])),
+            Ok(Message::Provide {
+                text: Some("one\ntwo".into())
+            })
+        );
     }
 
     #[test]
     fn a_format_after_the_text_is_stepped_over_and_one_without_text_is_none() {
         let body = provide_by_hand(&[(FORMAT_TEXT, b"the text\0"), (1 << 2, b"<b>the text</b>")]);
-        assert_eq!(parse(&body), Ok(Message::Provide { text: Some("the text".into()) }));
-        assert_eq!(parse(&provide_by_hand(&[(1 << 3, b"a bitmap")])), Ok(Message::Provide { text: None }));
+        assert_eq!(
+            parse(&body),
+            Ok(Message::Provide {
+                text: Some("the text".into())
+            })
+        );
+        assert_eq!(
+            parse(&provide_by_hand(&[(1 << 3, b"a bitmap")])),
+            Ok(Message::Provide { text: None })
+        );
     }
 
     #[test]
     fn what_is_not_one_message_is_an_error_and_not_a_panic() {
         assert_eq!(parse(&[0x08, 0, 0]), Err(ClipboardError::Short(3)));
-        assert_eq!(parse(&[0x0A, 0, 0, 0x01]), Err(ClipboardError::Actions(ACTION_REQUEST | ACTION_NOTIFY)));
-        assert_eq!(parse(&[0x01, 0, 0, 0x01, 0, 0]), Err(ClipboardError::ShortCaps));
-        assert!(matches!(parse(&[0x10, 0, 0, 0x01, 1, 2, 3]), Err(ClipboardError::Inflate(_))));
+        assert_eq!(
+            parse(&[0x0A, 0, 0, 0x01]),
+            Err(ClipboardError::Actions(ACTION_REQUEST | ACTION_NOTIFY))
+        );
+        assert_eq!(
+            parse(&[0x01, 0, 0, 0x01, 0, 0]),
+            Err(ClipboardError::ShortCaps)
+        );
+        assert!(matches!(
+            parse(&[0x10, 0, 0, 0x01, 1, 2, 3]),
+            Err(ClipboardError::Inflate(_))
+        ));
         // A length that promises more than the stream holds.
         let mut stream = 100u32.to_be_bytes().to_vec();
         stream.extend_from_slice(b"short\0");
-        let mut encoder = ZlibEncoder::new((ACTION_PROVIDE | FORMAT_TEXT).to_be_bytes().to_vec(), Compression::fast());
+        let mut encoder = ZlibEncoder::new(
+            (ACTION_PROVIDE | FORMAT_TEXT).to_be_bytes().to_vec(),
+            Compression::fast(),
+        );
         encoder.write_all(&stream).unwrap();
-        assert_eq!(parse(&encoder.finish().unwrap()), Err(ClipboardError::ShortProvide));
+        assert_eq!(
+            parse(&encoder.finish().unwrap()),
+            Err(ClipboardError::ShortProvide)
+        );
     }
 
     #[test]
@@ -338,23 +419,38 @@ mod tests {
         // Line breaks, whose CRs make the wire form longer than the text.
         let text = format!("{}\n{}", "a".repeat(1000), "b".repeat(MAX_TEXT - 1001));
         assert_eq!(text.len(), MAX_TEXT);
-        assert_eq!(parse(&provide(&text).unwrap()), Ok(Message::Provide { text: Some(text) }));
-        assert_eq!(provide(&"é".repeat(MAX_TEXT / 2 + 1)), Err(ClipboardError::TooLongToSend(MAX_TEXT + 2)));
+        assert_eq!(
+            parse(&provide(&text).unwrap()),
+            Ok(Message::Provide { text: Some(text) })
+        );
+        assert_eq!(
+            provide(&"é".repeat(MAX_TEXT / 2 + 1)),
+            Err(ClipboardError::TooLongToSend(MAX_TEXT + 2))
+        );
     }
 
     /// A few kilobytes that claim gigabytes are refused on the claim, before
     /// anything is inflated.
     #[test]
     fn a_provide_that_inflates_without_end_is_refused_on_what_it_claims() {
-        let mut encoder = ZlibEncoder::new((ACTION_PROVIDE | FORMAT_TEXT).to_be_bytes().to_vec(), Compression::best());
+        let mut encoder = ZlibEncoder::new(
+            (ACTION_PROVIDE | FORMAT_TEXT).to_be_bytes().to_vec(),
+            Compression::best(),
+        );
         encoder.write_all(&u32::MAX.to_be_bytes()).unwrap();
         encoder.write_all(&vec![b'a'; 4 * 1024 * 1024]).unwrap();
         let bomb = encoder.finish().unwrap();
         assert!(bomb.len() < 64 * 1024);
-        assert_eq!(parse(&bomb), Err(ClipboardError::TooLong(u64::from(u32::MAX))));
+        assert_eq!(
+            parse(&bomb),
+            Err(ClipboardError::TooLong(u64::from(u32::MAX)))
+        );
         // And one that claims its size honestly is measured once inflated.
         let text = "a".repeat(MAX_TEXT + 1);
         let body = provide_by_hand(&[(FORMAT_TEXT, format!("{text}\0").as_bytes())]);
-        assert_eq!(parse(&body), Err(ClipboardError::TooLong(MAX_TEXT as u64 + 1)));
+        assert_eq!(
+            parse(&body),
+            Err(ClipboardError::TooLong(MAX_TEXT as u64 + 1))
+        );
     }
 }

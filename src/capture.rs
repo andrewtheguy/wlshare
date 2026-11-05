@@ -45,7 +45,14 @@ pub(crate) struct ShmBuffer {
 }
 
 impl ShmBuffer {
-    pub fn new(shm: &WlShm, qh: &QueueHandle<Compositor>, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> anyhow::Result<Self> {
+    pub fn new(
+        shm: &WlShm,
+        qh: &QueueHandle<Compositor>,
+        width: u32,
+        height: u32,
+        stride: u32,
+        format: wl_shm::Format,
+    ) -> anyhow::Result<Self> {
         let size = stride as usize * height as usize;
         let fd = rustix::fs::memfd_create("wlshare-frame", rustix::fs::MemfdFlags::CLOEXEC)?;
         rustix::fs::ftruncate(&fd, size as u64)?;
@@ -54,8 +61,25 @@ impl ShmBuffer {
         // side does not read it.
         let map = unsafe { memmap2::MmapMut::map_mut(&fd)? };
         let pool = shm.create_pool(fd.as_fd(), size as i32, qh, ());
-        let buffer = pool.create_buffer(0, width as i32, height as i32, stride as i32, format, qh, ());
-        Ok(Self { _fd: fd, pool, buffer, map, width, height, stride, format })
+        let buffer = pool.create_buffer(
+            0,
+            width as i32,
+            height as i32,
+            stride as i32,
+            format,
+            qh,
+            (),
+        );
+        Ok(Self {
+            _fd: fd,
+            pool,
+            buffer,
+            map,
+            width,
+            height,
+            stride,
+            format,
+        })
     }
 
     pub fn matches(&self, width: u32, height: u32, stride: u32, format: wl_shm::Format) -> bool {
@@ -93,8 +117,12 @@ impl Compositor {
         if self.desks[desk].client.is_none() || self.desks[desk].capture.frame.is_some() {
             return;
         }
-        let Some(manager) = &self.screencopy else { return };
-        let Some(output) = self.outputs.selected(desk) else { return };
+        let Some(manager) = &self.screencopy else {
+            return;
+        };
+        let Some(output) = self.outputs.selected(desk) else {
+            return;
+        };
         // Keep the compositor's pointer out of the framebuffer. wlroots 0.19
         // gives the headless backend a cursor plane, so a screencopy without
         // overlay_cursor can finally leave it behind; the plane's image is
@@ -129,12 +157,18 @@ impl Compositor {
         if let Some(token) = self.desks[desk].capture.timer.take() {
             self.handle.remove(token);
         }
-        let timer = if delay.is_zero() { Timer::immediate() } else { Timer::from_duration(delay) };
-        match self.handle.insert_source(timer, move |_, _, state: &mut Compositor| {
-            state.desks[desk].capture.timer = None;
-            state.start_capture(desk);
-            TimeoutAction::Drop
-        }) {
+        let timer = if delay.is_zero() {
+            Timer::immediate()
+        } else {
+            Timer::from_duration(delay)
+        };
+        match self
+            .handle
+            .insert_source(timer, move |_, _, state: &mut Compositor| {
+                state.desks[desk].capture.timer = None;
+                state.start_capture(desk);
+                TimeoutAction::Drop
+            }) {
             Ok(token) => self.desks[desk].capture.timer = Some(token),
             Err(e) => error!("cannot schedule a capture: {e}"),
         }
@@ -152,7 +186,9 @@ impl Compositor {
     fn frame_ready(&mut self, desk: usize) {
         let shared = self.shared().clone();
         let state = &mut self.desks[desk];
-        let Some(buffer) = &state.capture.buffer else { return };
+        let Some(buffer) = &state.capture.buffer else {
+            return;
+        };
         let (width, height) = (buffer.width as u16, buffer.height as u16);
         let origin = match state.pending_resize {
             Some((client, w, h)) if (w, h) == (width, height) => {
@@ -169,7 +205,12 @@ impl Compositor {
                 fb.resize(width, height, origin);
             }
             let damage = damage_for(damage, fb.painted, width, height);
-            fb.apply(&buffer.map, buffer.stride as usize, &damage, state.capture.layout);
+            fb.apply(
+                &buffer.map,
+                buffer.stride as usize,
+                &damage,
+                state.capture.layout,
+            );
             fb.generation
         };
         shared.desks[desk].frame_changed(generation);
@@ -180,7 +221,9 @@ impl Compositor {
     /// The desk whose frame in flight this is, or `None` for a frame destroyed
     /// while its events were in flight.
     fn frame_desk(&self, frame: &ZwlrScreencopyFrameV1) -> Option<usize> {
-        self.desks.iter().position(|desk| desk.capture.frame.as_ref() == Some(frame))
+        self.desks
+            .iter()
+            .position(|desk| desk.capture.frame.as_ref() == Some(frame))
     }
 }
 
@@ -238,33 +281,58 @@ fn rank(format: wl_shm::Format) -> u8 {
 }
 
 impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
-    fn event(state: &mut Self, frame: &ZwlrScreencopyFrameV1, event: zwlr_screencopy_frame_v1::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
-        let Some(desk) = state.frame_desk(frame) else { return };
+    fn event(
+        state: &mut Self,
+        frame: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let Some(desk) = state.frame_desk(frame) else {
+            return;
+        };
         match event {
-            zwlr_screencopy_frame_v1::Event::Buffer { format, width, height, stride } => {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
                 let WEnum::Value(format) = format else { return };
                 // The compositor lists every format it can copy into, in no
                 // order this server may rely on. Keep the best one seen so far,
                 // and the first of them regardless -- an unusable format still
                 // has to reach the error below, which names it.
-                let better = state.desks[desk].capture.announced.is_none_or(|(.., current)| rank(format) > rank(current));
+                let better = state.desks[desk]
+                    .capture
+                    .announced
+                    .is_none_or(|(.., current)| rank(format) > rank(current));
                 if better {
                     state.desks[desk].capture.announced = Some((width, height, stride, format));
                 }
             }
             zwlr_screencopy_frame_v1::Event::BufferDone => {
-                let Some((width, height, stride, format)) = state.desks[desk].capture.announced else {
+                let Some((width, height, stride, format)) = state.desks[desk].capture.announced
+                else {
                     warn!("the compositor offered no buffer format");
                     state.capture_failed(desk, frame);
                     return;
                 };
                 let Some(bytes) = channel_bytes(format) else {
-                    error!("the compositor offers frames only as {format:?}; this server needs a 32-bit format at eight bits a channel: XRGB8888, XBGR8888, RGBX8888, BGRX8888 or one of their alpha spellings");
+                    error!(
+                        "the compositor offers frames only as {format:?}; this server needs a 32-bit format at eight bits a channel: XRGB8888, XBGR8888, RGBX8888, BGRX8888 or one of their alpha spellings"
+                    );
                     state.capture_failed(desk, frame);
                     return;
                 };
                 state.desks[desk].capture.layout.bytes = bytes;
-                if !state.desks[desk].capture.buffer.as_ref().is_some_and(|b| b.matches(width, height, stride, format)) {
+                if !state.desks[desk]
+                    .capture
+                    .buffer
+                    .as_ref()
+                    .is_some_and(|b| b.matches(width, height, stride, format))
+                {
                     match ShmBuffer::new(&state.shm, qh, width, height, stride, format) {
                         Ok(b) => {
                             debug!("frame buffer {width}x{height}, stride {stride}, {format:?}");
@@ -292,16 +360,25 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for Compositor {
                 };
                 let buffer = state.desks[desk].capture.buffer.as_ref().unwrap();
                 if whole {
-                    debug!("asking for a whole {width}x{height} frame: the framebuffer holds no pixels at that size");
+                    debug!(
+                        "asking for a whole {width}x{height} frame: the framebuffer holds no pixels at that size"
+                    );
                     frame.copy(&buffer.buffer);
                 } else {
                     frame.copy_with_damage(&buffer.buffer);
                 }
             }
             zwlr_screencopy_frame_v1::Event::Flags { flags } => {
-                state.desks[desk].capture.layout.flipped = flags.into_result().is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
+                state.desks[desk].capture.layout.flipped = flags
+                    .into_result()
+                    .is_ok_and(|f| f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
             }
-            zwlr_screencopy_frame_v1::Event::Damage { x, y, width, height } => {
+            zwlr_screencopy_frame_v1::Event::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => {
                 state.desks[desk].capture.damage.push(Rect {
                     x: x.min(u32::from(u16::MAX)) as u16,
                     y: y.min(u32::from(u16::MAX)) as u16,
@@ -331,7 +408,8 @@ impl Compositor {
         self.desks[desk].capture.failures += 1;
         // An output being reconfigured fails a frame or two; give up loudly only
         // when it keeps failing.
-        let delay = Duration::from_millis(100 * u64::from(self.desks[desk].capture.failures.min(20)));
+        let delay =
+            Duration::from_millis(100 * u64::from(self.desks[desk].capture.failures.min(20)));
         if self.desks[desk].capture.failures == 20 {
             error!("screen capture keeps failing; retrying every {delay:?}");
         } else {
@@ -352,7 +430,12 @@ mod tests {
 
     #[test]
     fn a_framebuffer_with_no_pixels_yet_takes_the_whole_frame() {
-        let spot = vec![Rect { x: 4, y: 4, width: 8, height: 8 }];
+        let spot = vec![Rect {
+            x: 4,
+            y: 4,
+            width: 8,
+            height: 8,
+        }];
         let whole = vec![Rect::whole(1280, 800)];
         // The frame that fills a blank framebuffer -- after a resize, or after a
         // switch to another output, where the size may not have changed at all.

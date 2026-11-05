@@ -41,7 +41,9 @@ use wlshare_proto::tiles::TilesPicture;
 
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::msg::{FENCE_REQUEST, SECURITY_NONE};
-use crate::rfb::{ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE};
+use crate::rfb::{
+    ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE,
+};
 
 // The tests' reader of the lossless tiles' bodies.
 #[path = "../src/rfb/planar_decoder.rs"]
@@ -76,24 +78,40 @@ struct Stream {
 /// A line of `--keys` that is a pointer's: `@X,Y,BUTTONS`.
 fn pointer(line: &str) -> Option<(u16, u16, u8)> {
     let mut fields = line.strip_prefix('@')?.split(',');
-    let at = (fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?);
+    let at = (
+        fields.next()?.parse().ok()?,
+        fields.next()?.parse().ok()?,
+        fields.next()?.parse().ok()?,
+    );
     fields.next().is_none().then_some(at)
 }
 
 fn size(s: &str) -> Result<(u16, u16), String> {
     let (w, h) = s.split_once('x').ok_or_else(|| format!("{s}: not WxH"))?;
-    Ok((w.parse().map_err(|_| format!("{w}: not a width"))?, h.parse().map_err(|_| format!("{h}: not a height"))?))
+    Ok((
+        w.parse().map_err(|_| format!("{w}: not a width"))?,
+        h.parse().map_err(|_| format!("{h}: not a height"))?,
+    ))
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
     let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held | --lossless] [--seconds N] [--streams DIR] [--keys]")?;
-    let mut parsed = Args { addr, size: (0, 0), seconds: 10, streams: None, keys: false, picture: TilesPicture::Progressive };
+    let mut parsed = Args {
+        addr,
+        size: (0, 0),
+        seconds: 10,
+        streams: None,
+        keys: false,
+        picture: TilesPicture::Progressive,
+    };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
         match flag.as_str() {
             "--size" => parsed.size = size(&value()?)?,
-            "--seconds" => parsed.seconds = value()?.parse().map_err(|_| "--seconds takes a number")?,
+            "--seconds" => {
+                parsed.seconds = value()?.parse().map_err(|_| "--seconds takes a number")?
+            }
             "--streams" => parsed.streams = Some(value()?),
             "--keys" => parsed.keys = true,
             "--held" => parsed.picture = TilesPicture::Held,
@@ -131,38 +149,73 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     out.write_all(crate::rfb::msg::PROTOCOL_VERSION).await?;
     let types = client::read_security_types(&mut reader).await?;
     if !types.contains(&SECURITY_NONE) {
-        return Err(format!("the daemon offers security {types:?}, not None: start it without [pam] and [password]").into());
+        return Err(format!(
+            "the daemon offers security {types:?}, not None: start it without [pam] and [password]"
+        )
+        .into());
     }
     out.write_all(&[SECURITY_NONE]).await?;
     client::read_security_result(&mut reader).await?;
     out.write_all(&[1]).await?;
     let init = client::read_server_init(&mut reader).await?;
-    eprintln!("tiles-sink: {} is {}x{}", init.name, init.width, init.height);
+    eprintln!(
+        "tiles-sink: {} is {}x{}",
+        init.name, init.width, init.height
+    );
 
     let mut encodings = args.picture.encodings();
-    encodings.extend([ENCODING_FENCE, ENCODING_CONTINUOUS_UPDATES, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_CURSOR]);
-    encodings.push(wlshare_proto::version::encoding(wlshare_proto::PROTOCOL_VERSION));
+    encodings.extend([
+        ENCODING_FENCE,
+        ENCODING_CONTINUOUS_UPDATES,
+        ENCODING_EXTENDED_DESKTOP_SIZE,
+        ENCODING_CURSOR,
+    ]);
+    encodings.push(wlshare_proto::version::encoding(
+        wlshare_proto::PROTOCOL_VERSION,
+    ));
     out.write_all(&client::set_encodings(&encodings)).await?;
     // The daemon answers the version first, before anything is asked of it.
     client::read_protocol_version(&mut reader).await?;
     let (mut width, mut height) = (init.width, init.height);
     if (width, height) != args.size {
-        out.write_all(&client::set_desktop_size(args.size.0, args.size.1)).await?;
+        out.write_all(&client::set_desktop_size(args.size.0, args.size.1))
+            .await?;
     }
-    out.write_all(&client::enable_continuous_updates(true, 0, 0, width, height)).await?;
-    out.write_all(&client::framebuffer_update_request(false, 0, 0, width, height)).await?;
+    out.write_all(&client::enable_continuous_updates(
+        true, 0, 0, width, height,
+    ))
+    .await?;
+    out.write_all(&client::framebuffer_update_request(
+        false, 0, 0, width, height,
+    ))
+    .await?;
     if let Some(dir) = &args.streams {
         std::fs::create_dir_all(dir)?;
     }
 
     let began = Instant::now();
     let end = began + Duration::from_secs(args.seconds);
-    let mut keys = args.keys.then(|| BufReader::new(tokio::io::stdin()).lines());
+    let mut keys = args
+        .keys
+        .then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut progressives, mut progressive_bytes, mut planars, mut planar_bytes) = (0u64, 0u64, 0u64, 0u64);
-    let (mut stills, mut still_bytes, mut still_stream) = (0u64, 0u64, planar_decoder::StillReader::default());
-    let (mut pngs, mut png_bytes, mut copies, mut cached, mut starts, mut frames, mut frame_bytes, mut ends, mut updates, mut second) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut progressives, mut progressive_bytes, mut planars, mut planar_bytes) =
+        (0u64, 0u64, 0u64, 0u64);
+    let (mut stills, mut still_bytes, mut still_stream) =
+        (0u64, 0u64, planar_decoder::StillReader::default());
+    let (
+        mut pngs,
+        mut png_bytes,
+        mut copies,
+        mut cached,
+        mut starts,
+        mut frames,
+        mut frame_bytes,
+        mut ends,
+        mut updates,
+        mut second,
+    ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -210,75 +263,121 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 png_bytes += png.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Copy { x, y }) => {
-                                if u32::from(x) + u32::from(rect.width) > u32::from(width) || u32::from(y) + u32::from(rect.height) > u32::from(height) {
+                                if u32::from(x) + u32::from(rect.width) > u32::from(width)
+                                    || u32::from(y) + u32::from(rect.height) > u32::from(height)
+                                {
                                     return Err(format!("a copy from {x},{y} of {}x{}, past the {width}x{height} desktop", rect.width, rect.height).into());
                                 }
                                 copies += 1;
                             }
                             RectBody::Tiles(TileBody::Cached { .. }) => cached += 1,
                             RectBody::Tiles(TileBody::Progressive(block)) => {
-                                let cell = wlshare_proto::progressive::tile_of(&block).ok_or("a progressive body that is no tile block")?;
-                                if (u32::from(cell.0) * 64, u32::from(cell.1) * 64) != (u32::from(rect.x), u32::from(rect.y)) {
-                                    return Err(format!("a progressive tile {cell:?} at {},{}", rect.x, rect.y).into());
+                                let cell = wlshare_proto::progressive::tile_of(&block)
+                                    .ok_or("a progressive body that is no tile block")?;
+                                if (u32::from(cell.0) * 64, u32::from(cell.1) * 64)
+                                    != (u32::from(rect.x), u32::from(rect.y))
+                                {
+                                    return Err(format!(
+                                        "a progressive tile {cell:?} at {},{}",
+                                        rect.x, rect.y
+                                    )
+                                    .into());
                                 }
                                 progressives += 1;
                                 progressive_bytes += block.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Planar(body)) => {
-                                planar_decoder::unpack(&body, usize::from(rect.width), usize::from(rect.height))?;
+                                planar_decoder::unpack(
+                                    &body,
+                                    usize::from(rect.width),
+                                    usize::from(rect.height),
+                                )?;
                                 planars += 1;
                                 planar_bytes += body.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Still(body)) => {
-                                still_stream.unpack(&body, usize::from(rect.width), usize::from(rect.height))?;
+                                still_stream.unpack(
+                                    &body,
+                                    usize::from(rect.width),
+                                    usize::from(rect.height),
+                                )?;
                                 stills += 1;
                                 still_bytes += body.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Store { .. }) => {}
                             RectBody::Tiles(TileBody::Start { stream, frame }) => {
                                 if live.contains_key(&stream) {
-                                    return Err(format!("stream {stream} started while live").into());
+                                    return Err(
+                                        format!("stream {stream} started while live").into()
+                                    );
                                 }
                                 starts += 1;
                                 n += 1;
                                 let file = match &args.streams {
-                                    Some(dir) => Some(File::create(format!("{dir}/stream-{n:03}-{}x{}.h264", rect.width, rect.height))?),
+                                    Some(dir) => Some(File::create(format!(
+                                        "{dir}/stream-{n:03}-{}x{}.h264",
+                                        rect.width, rect.height
+                                    ))?),
                                     None => None,
                                 };
-                                let mut opened = Stream { n, rect: place, frames: 0, bytes: 0, file };
+                                let mut opened = Stream {
+                                    n,
+                                    rect: place,
+                                    frames: 0,
+                                    bytes: 0,
+                                    file,
+                                };
                                 write_frame(&mut opened, &frame)?;
                                 frames += 1;
                                 frame_bytes += frame.len() as u64;
                                 live.insert(stream, opened);
                             }
                             RectBody::Tiles(TileBody::Frame { stream, frame }) => {
-                                let held = live.get_mut(&stream).ok_or_else(|| format!("a frame of stream {stream}, which is not live"))?;
+                                let held = live.get_mut(&stream).ok_or_else(|| {
+                                    format!("a frame of stream {stream}, which is not live")
+                                })?;
                                 if held.rect != place {
-                                    return Err(format!("stream {stream} moved from {:?} to {place:?}", held.rect).into());
+                                    return Err(format!(
+                                        "stream {stream} moved from {:?} to {place:?}",
+                                        held.rect
+                                    )
+                                    .into());
                                 }
                                 write_frame(held, &frame)?;
                                 frames += 1;
                                 frame_bytes += frame.len() as u64;
                             }
                             RectBody::Tiles(TileBody::End { stream }) => {
-                                let held = live.remove(&stream).ok_or_else(|| format!("stream {stream} ended while not live"))?;
+                                let held = live.remove(&stream).ok_or_else(|| {
+                                    format!("stream {stream} ended while not live")
+                                })?;
                                 ends += 1;
                                 done.push(held);
                             }
                             RectBody::ExtendedDesktopSize { .. } => {
                                 (width, height) = (rect.width, rect.height);
-                                eprintln!("tiles-sink: {:.1}s desktop {width}x{height}", began.elapsed().as_secs_f64());
+                                eprintln!(
+                                    "tiles-sink: {:.1}s desktop {width}x{height}",
+                                    began.elapsed().as_secs_f64()
+                                );
                                 // A new size ends every stream with no END.
                                 done.extend(live.drain().map(|(_, stream)| stream));
-                                out.write_all(&client::enable_continuous_updates(true, 0, 0, width, height)).await?;
-                                out.write_all(&client::framebuffer_update_request(false, 0, 0, width, height)).await?;
+                                out.write_all(&client::enable_continuous_updates(
+                                    true, 0, 0, width, height,
+                                ))
+                                .await?;
+                                out.write_all(&client::framebuffer_update_request(
+                                    false, 0, 0, width, height,
+                                ))
+                                .await?;
                             }
                             _ => {}
                         }
                     }
                 }
                 ServerMsg::Fence { flags, payload } if flags & FENCE_REQUEST != 0 => {
-                    out.write_all(&client::fence(flags & !FENCE_REQUEST, &payload)).await?;
+                    out.write_all(&client::fence(flags & !FENCE_REQUEST, &payload))
+                        .await?;
                 }
                 _ => {}
             }
@@ -287,7 +386,10 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let elapsed = began.elapsed().as_secs();
         if elapsed > second {
             second = elapsed;
-            eprintln!("tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends", live.len());
+            eprintln!(
+                "tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
+                live.len()
+            );
         }
     }
     done.extend(live.drain().map(|(_, stream)| stream));
@@ -297,9 +399,14 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             file.flush()?;
         }
         let (x, y, w, h) = stream.rect;
-        eprintln!("tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes", stream.n, stream.frames, stream.bytes);
+        eprintln!(
+            "tiles-sink: stream {} {w}x{h}+{x}+{y}: {} frames {} bytes",
+            stream.n, stream.frames, stream.bytes
+        );
     }
-    eprintln!("tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends");
+    eprintln!(
+        "tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
+    );
 
     Ok(())
 }

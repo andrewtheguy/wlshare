@@ -193,8 +193,12 @@ impl Strength {
 
     fn cipher(self, key: &[u8]) -> Cipher {
         match self {
-            Self::Aes128 => Cipher::Aes128(Eax::<Aes128>::new_from_slice(key).expect("a 16-byte key")),
-            Self::Aes256 => Cipher::Aes256(Eax::<Aes256>::new_from_slice(key).expect("a 32-byte key")),
+            Self::Aes128 => {
+                Cipher::Aes128(Eax::<Aes128>::new_from_slice(key).expect("a 16-byte key"))
+            }
+            Self::Aes256 => {
+                Cipher::Aes256(Eax::<Aes256>::new_from_slice(key).expect("a 32-byte key"))
+            }
         }
     }
 }
@@ -236,7 +240,11 @@ impl WireKey {
     /// RealVNC's display of a key: the first eight bytes of its SHA-1, dashed.
     fn fingerprint(&self) -> String {
         let digest = Sha1::digest(&self.0);
-        digest[..8].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("-")
+        digest[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join("-")
     }
 
     fn public_key(&self) -> Result<RsaPublicKey, Error> {
@@ -250,8 +258,16 @@ impl WireKey {
 }
 
 fn left_pad(bytes: &[u8], size: usize) -> Vec<u8> {
-    let bytes = bytes.iter().copied().skip_while(|&b| b == 0).collect::<Vec<_>>();
-    assert!(bytes.len() <= size, "a {}-byte number in a {size}-byte field", bytes.len());
+    let bytes = bytes
+        .iter()
+        .copied()
+        .skip_while(|&b| b == 0)
+        .collect::<Vec<_>>();
+    assert!(
+        bytes.len() <= size,
+        "a {}-byte number in a {size}-byte field",
+        bytes.len()
+    );
     let mut out = vec![0u8; size - bytes.len()];
     out.extend_from_slice(&bytes);
     out
@@ -267,7 +283,9 @@ pub enum Error {
     #[error("{0}")]
     Protocol(String),
     /// The other end's key hash does not cover the keys that were exchanged.
-    #[error("the other end's RSA-AES key hash does not match the keys exchanged — the connection was tampered with")]
+    #[error(
+        "the other end's RSA-AES key hash does not match the keys exchanged — the connection was tampered with"
+    )]
     Tampered,
 }
 
@@ -286,14 +304,21 @@ impl ServerKey {
     /// A fresh [`SERVER_KEY_BITS`]-bit key. Real CPU time — call it off any
     /// latency-sensitive path.
     pub fn generate() -> Result<Self, rsa::Error> {
-        Ok(Self::new(RsaPrivateKey::new(&mut rand::rng(), SERVER_KEY_BITS)?))
+        Ok(Self::new(RsaPrivateKey::new(
+            &mut rand::rng(),
+            SERVER_KEY_BITS,
+        )?))
     }
 
     fn new(private: RsaPrivateKey) -> Self {
         let wire = WireKey::of_public(private.as_public_key());
         let mut reject_secret = [0u8; 32];
         rand::rng().fill_bytes(&mut reject_secret);
-        Self { private, wire, reject_secret }
+        Self {
+            private,
+            wire,
+            reject_secret,
+        }
     }
 
     /// The client random out of its ciphertext — or, for a ciphertext that does
@@ -307,7 +332,10 @@ impl ServerKey {
         debug_assert_eq!(sealed.len(), size);
         // Computed for every ciphertext, so that the work done is the same
         // whether or not it is used.
-        let substitute = Sha256::new().chain_update(self.reject_secret).chain_update(sealed).finalize();
+        let substitute = Sha256::new()
+            .chain_update(self.reject_secret)
+            .chain_update(sealed)
+            .finalize();
         let substitute = &substitute[..want];
         // The two refusals below are about the ciphertext as an integer — too
         // long for the modulus, or not below it — which is public arithmetic on
@@ -331,12 +359,16 @@ impl ServerKey {
         for byte in &em[2..separator] {
             valid &= !byte.ct_eq(&0);
         }
-        (0..want).map(|i| u8::conditional_select(&substitute[i], &em[separator + 1 + i], valid)).collect()
+        (0..want)
+            .map(|i| u8::conditional_select(&substitute[i], &em[separator + 1 + i], valid))
+            .collect()
     }
 
     /// The key as a PKCS#8 PEM document (`BEGIN PRIVATE KEY`), for the file.
     pub fn to_pem(&self) -> Result<String, rsa::pkcs8::Error> {
-        self.private.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).map(|pem| pem.to_string())
+        self.private
+            .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
+            .map(|pem| pem.to_string())
     }
 
     /// A key from the PEM document [`Self::to_pem`] wrote.
@@ -399,7 +431,11 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     rand::rng().fill_bytes(&mut server_random);
     let sealed_random = client_key
         .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &server_random)
-        .map_err(|e| Error::Protocol(format!("encrypting the server random to the client's key failed: {e}")))?;
+        .map_err(|e| {
+            Error::Protocol(format!(
+                "encrypting the server random to the client's key failed: {e}"
+            ))
+        })?;
     if sealed_random.len() != client_wire.size() {
         return Err(Error::Protocol(format!(
             "the server random encrypted to {} bytes under a {}-byte client key",
@@ -431,7 +467,10 @@ pub async fn authenticate<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let username = read_field(&mut frames).await?;
     let password = read_field(&mut frames).await?;
     let (_, opener) = frames.into_parts();
-    Ok((Credentials { username, password }, Session { sealer, opener }))
+    Ok((
+        Credentials { username, password },
+        Session { sealer, opener },
+    ))
 }
 
 /// The key a client makes for one session and forgets with it.
@@ -485,25 +524,37 @@ pub async fn begin<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     let len = usize::from(reader.read_u16().await?);
     if len != key.wire.size() {
-        return Err(Error::Protocol(format!("the server random is {len} bytes, not the {} of the client key", key.wire.size())));
+        return Err(Error::Protocol(format!(
+            "the server random is {len} bytes, not the {} of the client key",
+            key.wire.size()
+        )));
     }
     let mut sealed = vec![0u8; len];
     reader.read_exact(&mut sealed).await?;
     // The key is this session's alone, so a refusal here tells nobody anything
     // about a key worth having.
-    let server_random = key
-        .private
-        .decrypt(Pkcs1v15Encrypt, &sealed)
-        .map_err(|e| Error::Protocol(format!("the server random does not decrypt under the client's key: {e}")))?;
+    let server_random = key.private.decrypt(Pkcs1v15Encrypt, &sealed).map_err(|e| {
+        Error::Protocol(format!(
+            "the server random does not decrypt under the client's key: {e}"
+        ))
+    })?;
     if server_random.len() != strength.random_len() {
-        return Err(Error::Protocol(format!("the server random is {} bytes, not {}", server_random.len(), strength.random_len())));
+        return Err(Error::Protocol(format!(
+            "the server random is {} bytes, not {}",
+            server_random.len(),
+            strength.random_len()
+        )));
     }
 
     let mut client_random = vec![0u8; strength.random_len()];
     rand::rng().fill_bytes(&mut client_random);
     let sealed_random = server_key
         .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &client_random)
-        .map_err(|e| Error::Protocol(format!("encrypting the client random to the server's key failed: {e}")))?;
+        .map_err(|e| {
+            Error::Protocol(format!(
+                "encrypting the client random to the server's key failed: {e}"
+            ))
+        })?;
     let mut out = (sealed_random.len() as u16).to_be_bytes().to_vec();
     out.extend_from_slice(&sealed_random);
     writer.write_all(&out).await?;
@@ -520,12 +571,22 @@ pub async fn begin<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     if server_hash != expected {
         return Err(Error::Tampered);
     }
-    writer.write_all(&sealer.frame(&strength.hash(&[&key.wire.0, &server_wire.0]))).await?;
+    writer
+        .write_all(&sealer.frame(&strength.hash(&[&key.wire.0, &server_wire.0])))
+        .await?;
 
     let subtype = frames.read_u8().await?;
-    let subtype = Subtype::of(subtype).ok_or_else(|| Error::Protocol(format!("the server asks for credentials of subtype {subtype}, which is not one")))?;
+    let subtype = Subtype::of(subtype).ok_or_else(|| {
+        Error::Protocol(format!(
+            "the server asks for credentials of subtype {subtype}, which is not one"
+        ))
+    })?;
     let (_, opener) = frames.into_parts();
-    Ok(Exchange { session: Session { sealer, opener }, fingerprint: server_wire.fingerprint(), subtype })
+    Ok(Exchange {
+        session: Session { sealer, opener },
+        fingerprint: server_wire.fingerprint(),
+        subtype,
+    })
 }
 
 #[allow(dead_code)]
@@ -544,19 +605,32 @@ impl Exchange {
     /// Answer the server's question. The username goes out empty to a server
     /// that asked for a password alone. What comes back is the transport
     /// SecurityResult and everything after it arrive over.
-    pub async fn login<W: AsyncWrite + Unpin>(mut self, writer: &mut W, credentials: &Credentials) -> Result<Session, Error> {
+    pub async fn login<W: AsyncWrite + Unpin>(
+        mut self,
+        writer: &mut W,
+        credentials: &Credentials,
+    ) -> Result<Session, Error> {
         let username = match self.subtype {
             Subtype::UserPass => credentials.username.as_str(),
             Subtype::Password => "",
         };
         let mut fields = Vec::with_capacity(2 + username.len() + credentials.password.len());
-        for (name, field) in [("username", username), ("password", credentials.password.as_str())] {
-            let len = u8::try_from(field.len())
-                .map_err(|_| Error::Protocol(format!("a {name} of {} bytes is over the {MAX_CREDENTIAL_LEN} RSA-AES can carry", field.len())))?;
+        for (name, field) in [
+            ("username", username),
+            ("password", credentials.password.as_str()),
+        ] {
+            let len = u8::try_from(field.len()).map_err(|_| {
+                Error::Protocol(format!(
+                    "a {name} of {} bytes is over the {MAX_CREDENTIAL_LEN} RSA-AES can carry",
+                    field.len()
+                ))
+            })?;
             fields.push(len);
             fields.extend_from_slice(field.as_bytes());
         }
-        writer.write_all(&self.session.sealer.frame(&fields)).await?;
+        writer
+            .write_all(&self.session.sealer.frame(&fields))
+            .await?;
         Ok(self.session)
     }
 }
@@ -576,7 +650,11 @@ async fn read_peer_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<WireKey, 
     Ok(WireKey(wire))
 }
 
-async fn read_client_random<R: AsyncRead + Unpin>(reader: &mut R, key: &ServerKey, strength: Strength) -> Result<Vec<u8>, Error> {
+async fn read_client_random<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    key: &ServerKey,
+    strength: Strength,
+) -> Result<Vec<u8>, Error> {
     let len = usize::from(reader.read_u16().await?);
     if len != key.wire.size() {
         return Err(Error::Protocol(format!(
@@ -642,14 +720,18 @@ pub struct Sealer {
 
 impl Sealer {
     fn new(cipher: Cipher) -> Self {
-        Self { cipher, counter: [0; 16] }
+        Self {
+            cipher,
+            counter: [0; 16],
+        }
     }
 
     /// Frame a message, cutting it at 8192 bytes (`MAX_FRAME_BODY`). An empty message is
     /// no frame at all — nothing has ever needed to send one, and a reader that
     /// receives one has only a counter to advance for it.
     pub fn frame(&mut self, msg: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(msg.len() + (msg.len() / MAX_FRAME_BODY + 1) * (HEADER + TAG));
+        let mut out =
+            Vec::with_capacity(msg.len() + (msg.len() / MAX_FRAME_BODY + 1) * (HEADER + TAG));
         for body in msg.chunks(MAX_FRAME_BODY) {
             let header = (body.len() as u16).to_be_bytes();
             let sealed = self.cipher.seal(&self.counter, &header, body);
@@ -709,16 +791,29 @@ impl Opener {
         let body = self
             .cipher
             .open(&self.counter, header, &sealed[..len + TAG])
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "an RSA-AES frame failed its authentication tag"))?;
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "an RSA-AES frame failed its authentication tag",
+                )
+            })?;
         bump(&mut self.counter);
         self.body = body;
         self.body_pos = 0;
         Ok(())
     }
 
-    fn poll_read<R: AsyncRead + Unpin>(&mut self, inner: &mut R, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read<R: AsyncRead + Unpin>(
+        &mut self,
+        inner: &mut R,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         if self.failed {
-            return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, "the RSA-AES transport already failed")));
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the RSA-AES transport already failed",
+            )));
         }
         loop {
             if self.body_pos < self.body.len() {
@@ -736,11 +831,16 @@ impl Opener {
                     let n = ready!(poll_fill(inner, cx, &mut self.staging[self.filled..]))?;
                     if n == 0 {
                         // Between frames a hang-up is an ordinary close.
-                        return if self.filled == 0 { Poll::Ready(Ok(())) } else { Poll::Ready(Err(truncated())) };
+                        return if self.filled == 0 {
+                            Poll::Ready(Ok(()))
+                        } else {
+                            Poll::Ready(Err(truncated()))
+                        };
                     }
                     self.filled += n;
                     if self.filled == HEADER {
-                        let len = usize::from(u16::from_be_bytes([self.staging[0], self.staging[1]]));
+                        let len =
+                            usize::from(u16::from_be_bytes([self.staging[0], self.staging[1]]));
                         self.staging.resize(HEADER + len + TAG, 0);
                         self.phase = Phase::Sealed { len };
                     }
@@ -766,14 +866,21 @@ impl Opener {
     }
 }
 
-fn poll_fill<R: AsyncRead + Unpin>(inner: &mut R, cx: &mut Context<'_>, dst: &mut [u8]) -> Poll<io::Result<usize>> {
+fn poll_fill<R: AsyncRead + Unpin>(
+    inner: &mut R,
+    cx: &mut Context<'_>,
+    dst: &mut [u8],
+) -> Poll<io::Result<usize>> {
     let mut buf = ReadBuf::new(dst);
     ready!(Pin::new(inner).poll_read(cx, &mut buf))?;
     Poll::Ready(Ok(buf.filled().len()))
 }
 
 fn truncated() -> io::Error {
-    io::Error::new(io::ErrorKind::UnexpectedEof, "the connection ended inside an RSA-AES frame")
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "the connection ended inside an RSA-AES frame",
+    )
 }
 
 /// An [`Opener`] over a reader: the plaintext stream, as the RFB layer reads it.
@@ -795,7 +902,11 @@ impl<R> FrameReader<R> {
 }
 
 impl<R: AsyncRead + Unpin> AsyncRead for FrameReader<R> {
-    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let me = self.get_mut();
         me.opener.poll_read(&mut me.inner, cx, buf)
     }
@@ -807,7 +918,10 @@ mod tests {
 
     fn pair(strength: Strength) -> (Sealer, Opener) {
         let key = vec![0x42u8; strength.random_len()];
-        (Sealer::new(strength.cipher(&key)), Opener::new(strength.cipher(&key)))
+        (
+            Sealer::new(strength.cipher(&key)),
+            Opener::new(strength.cipher(&key)),
+        )
     }
 
     /// A small key for the tests: generation dominates their run time, and the
@@ -907,7 +1021,12 @@ mod tests {
         let back = ServerKey::from_pem(&pem).unwrap();
         assert_eq!(back.fingerprint(), key.fingerprint());
         assert_eq!(back.bits(), 1024);
-        assert!(ServerKey::from_pem("-----BEGIN PRIVATE KEY-----\nbm9wZQ==\n-----END PRIVATE KEY-----\n").is_err());
+        assert!(
+            ServerKey::from_pem(
+                "-----BEGIN PRIVATE KEY-----\nbm9wZQ==\n-----END PRIVATE KEY-----\n"
+            )
+            .is_err()
+        );
     }
 
     /// The client side of the exchange, written from the specification rather
@@ -953,7 +1072,9 @@ mod tests {
 
         let mut client_random = vec![0u8; random_len];
         rand::rng().fill_bytes(&mut client_random);
-        let mut sealed = server_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &client_random).unwrap();
+        let mut sealed = server_key
+            .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &client_random)
+            .unwrap();
         if misbehave == Misbehave::GarbageRandom {
             rand::rng().fill_bytes(&mut sealed);
             sealed[0] = 0;
@@ -966,7 +1087,8 @@ mod tests {
         let send = strength.hash(&[&server_random, &client_random]);
         let recv = strength.hash(&[&client_random, &server_random]);
         let mut sealer = Sealer::new(strength.cipher(&send[..random_len]));
-        let mut frames = FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
+        let mut frames =
+            FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
         let mut server_hash = vec![0u8; strength.hash(&[]).len()];
         frames.read_exact(&mut server_hash).await?;
         assert_eq!(server_hash, strength.hash(&[&server_wire, &client_wire]));
@@ -1017,18 +1139,32 @@ mod tests {
         username: &str,
         password: &str,
         misbehave: Misbehave,
-    ) -> (Result<Credentials, Error>, Result<(u32, Vec<u8>), io::Error>) {
+    ) -> (
+        Result<Credentials, Error>,
+        Result<(u32, Vec<u8>), io::Error>,
+    ) {
         let key = test_key();
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let username = username.to_owned();
         let password = password.to_owned();
-        let client = tokio::spawn(async move { scripted_client(client_sock, strength, subtype, &username, &password, misbehave).await });
+        let client = tokio::spawn(async move {
+            scripted_client(
+                client_sock,
+                strength,
+                subtype,
+                &username,
+                &password,
+                misbehave,
+            )
+            .await
+        });
 
         // The halves live inside the block, so a server that gives up drops them
         // and the client reads a hang-up instead of waiting for a hash forever.
         let server = async {
             let (mut reader, mut writer) = tokio::io::split(server_sock);
-            let (credentials, Session { mut sealer, opener }) = authenticate(&mut reader, &mut writer, strength, &key, subtype).await?;
+            let (credentials, Session { mut sealer, opener }) =
+                authenticate(&mut reader, &mut writer, strength, &key, subtype).await?;
             // SecurityResult and a message, both inside one frame, then an echo back.
             let mut after = 0u32.to_be_bytes().to_vec();
             after.extend_from_slice(b"after");
@@ -1046,7 +1182,14 @@ mod tests {
     #[tokio::test]
     async fn the_exchange_authenticates_against_a_client_written_from_the_specification() {
         for strength in [Strength::Aes128, Strength::Aes256] {
-            let (server, client) = exchange(strength, Subtype::UserPass, "andrew", "hunter2", Misbehave::No).await;
+            let (server, client) = exchange(
+                strength,
+                Subtype::UserPass,
+                "andrew",
+                "hunter2",
+                Misbehave::No,
+            )
+            .await;
             let credentials = server.unwrap();
             assert_eq!(credentials.username, "andrew");
             assert_eq!(credentials.password, "hunter2");
@@ -1061,7 +1204,14 @@ mod tests {
     /// arrives and names nobody.
     #[tokio::test]
     async fn a_password_only_exchange_asks_for_subtype_2_and_carries_no_username() {
-        let (server, client) = exchange(Strength::Aes256, Subtype::Password, "", "hunter2", Misbehave::No).await;
+        let (server, client) = exchange(
+            Strength::Aes256,
+            Subtype::Password,
+            "",
+            "hunter2",
+            Misbehave::No,
+        )
+        .await;
         let credentials = server.unwrap();
         assert_eq!(credentials.username, "");
         assert_eq!(credentials.password, "hunter2");
@@ -1070,7 +1220,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_hash_over_other_keys_ends_the_exchange() {
-        let (server, client) = exchange(Strength::Aes256, Subtype::UserPass, "andrew", "hunter2", Misbehave::LieInHash).await;
+        let (server, client) = exchange(
+            Strength::Aes256,
+            Subtype::UserPass,
+            "andrew",
+            "hunter2",
+            Misbehave::LieInHash,
+        )
+        .await;
         assert!(matches!(server, Err(Error::Tampered)), "{server:?}");
         assert!(client.is_err());
     }
@@ -1080,12 +1237,25 @@ mod tests {
     /// wrong key would — at the client's hash frame, whose tag cannot check.
     #[tokio::test]
     async fn a_ciphertext_that_does_not_decrypt_fails_at_the_hash_like_any_wrong_key() {
-        let (server, client) = exchange(Strength::Aes128, Subtype::UserPass, "andrew", "hunter2", Misbehave::GarbageRandom).await;
+        let (server, client) = exchange(
+            Strength::Aes128,
+            Subtype::UserPass,
+            "andrew",
+            "hunter2",
+            Misbehave::GarbageRandom,
+        )
+        .await;
         // The client's hash frame does not open under the substitute keys — or,
         // this lockstep client having failed on the server's hash first and hung
         // up, never arrives. Either is the hash step; neither names the random.
         match server {
-            Err(Error::Io(e)) => assert!(matches!(e.kind(), io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof), "{e}"),
+            Err(Error::Io(e)) => assert!(
+                matches!(
+                    e.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ),
+                "{e}"
+            ),
             other => panic!("expected a failure at the hash step, got {other:?}"),
         }
         // The client got as far as the server's hash, so the server did send it.
@@ -1103,21 +1273,41 @@ mod tests {
         let key = test_key();
         let public = key.wire.public_key().unwrap();
         for (len, strength) in [(32usize, Strength::Aes256), (16, Strength::Aes128)] {
-            let random: Vec<u8> = (0..len as u8).map(|i| i.wrapping_mul(37).wrapping_add(11)).collect();
-            let sealed = public.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &random).unwrap();
+            let random: Vec<u8> = (0..len as u8)
+                .map(|i| i.wrapping_mul(37).wrapping_add(11))
+                .collect();
+            let sealed = public
+                .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &random)
+                .unwrap();
             assert_eq!(key.open_client_random(&sealed, strength), random);
             for wrong in [len - 1, len + 1] {
                 let message = vec![0xa5u8; wrong];
-                let sealed = public.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &message).unwrap();
+                let sealed = public
+                    .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &message)
+                    .unwrap();
                 let opened = key.open_client_random(&sealed, strength);
-                let substitute = Sha256::new().chain_update(key.reject_secret).chain_update(&sealed).finalize()[..len].to_vec();
-                assert_eq!(opened, substitute, "a {wrong}-byte message is not a {len}-byte random");
+                let substitute = Sha256::new()
+                    .chain_update(key.reject_secret)
+                    .chain_update(&sealed)
+                    .finalize()[..len]
+                    .to_vec();
+                assert_eq!(
+                    opened, substitute,
+                    "a {wrong}-byte message is not a {len}-byte random"
+                );
             }
         }
         // A ciphertext that is not below the modulus is refused the same way.
         let sealed = vec![0xffu8; key.wire.size()];
-        let substitute = Sha256::new().chain_update(key.reject_secret).chain_update(&sealed).finalize()[..32].to_vec();
-        assert_eq!(key.open_client_random(&sealed, Strength::Aes256), substitute);
+        let substitute = Sha256::new()
+            .chain_update(key.reject_secret)
+            .chain_update(&sealed)
+            .finalize()[..32]
+            .to_vec();
+        assert_eq!(
+            key.open_client_random(&sealed, Strength::Aes256),
+            substitute
+        );
     }
 
     #[test]
@@ -1130,7 +1320,10 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         // Another key's secret gives another substitute for the same bytes.
-        assert_ne!(a, test_key().open_client_random(&[1u8; 128], Strength::Aes256));
+        assert_ne!(
+            a,
+            test_key().open_client_random(&[1u8; 128], Strength::Aes256)
+        );
     }
 
     #[tokio::test]
@@ -1139,7 +1332,16 @@ mod tests {
         let mut offer = 512u32.to_be_bytes().to_vec();
         offer.resize(4 + 128, 1);
         let mut sent = Vec::new();
-        let err = authenticate(&mut offer.as_slice(), &mut sent, Strength::Aes128, &key, Subtype::UserPass).await.err().expect("a 512-bit key is refused");
+        let err = authenticate(
+            &mut offer.as_slice(),
+            &mut sent,
+            Strength::Aes128,
+            &key,
+            Subtype::UserPass,
+        )
+        .await
+        .err()
+        .expect("a 512-bit key is refused");
         assert!(err.to_string().contains("512 bits"), "{err}");
         // The server's key went out first, as the exchange has it, and nothing else.
         assert_eq!(sent.len(), 4 + 2 * 128);
@@ -1148,7 +1350,12 @@ mod tests {
     /// The server side of the exchange, written from the specification the way
     /// [`scripted_client`] is, for the client's half to be run against. Reads
     /// the credentials, answers SecurityResult OK, and returns what it read.
-    async fn scripted_server<S: AsyncRead + AsyncWrite + Unpin>(mut sock: S, strength: Strength, subtype: u8, lie_in_hash: bool) -> io::Result<(String, String)> {
+    async fn scripted_server<S: AsyncRead + AsyncWrite + Unpin>(
+        mut sock: S,
+        strength: Strength,
+        subtype: u8,
+        lie_in_hash: bool,
+    ) -> io::Result<(String, String)> {
         let server_key = RsaPrivateKey::new(&mut rand::rng(), 1024).unwrap();
         let size = (server_key.n().bits() as usize).div_ceil(8);
         let mut server_wire = server_key.n().bits().to_be_bytes().to_vec();
@@ -1170,7 +1377,9 @@ mod tests {
         let random_len = strength.random_len();
         let mut server_random = vec![0u8; random_len];
         rand::rng().fill_bytes(&mut server_random);
-        let sealed = client_key.encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &server_random).unwrap();
+        let sealed = client_key
+            .encrypt(&mut rand::rng(), Pkcs1v15Encrypt, &server_random)
+            .unwrap();
         let mut out = (sealed.len() as u16).to_be_bytes().to_vec();
         out.extend(&sealed);
         sock.write_all(&out).await?;
@@ -1191,7 +1400,8 @@ mod tests {
         }
         sock.write_all(&sealer.frame(&server_hash)).await?;
 
-        let mut frames = FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
+        let mut frames =
+            FrameReader::new(&mut sock, Opener::new(strength.cipher(&recv[..random_len])));
         let mut client_hash = vec![0u8; server_hash.len()];
         frames.read_exact(&mut client_hash).await?;
         assert_eq!(client_hash, strength.hash(&[&client_wire, &server_wire]));
@@ -1213,21 +1423,35 @@ mod tests {
 
     #[tokio::test]
     async fn the_client_half_logs_in_to_a_server_written_from_the_specification() {
-        for (strength, subtype, sent_username) in [(Strength::Aes128, 1u8, "andrew"), (Strength::Aes256, 2, "")] {
+        for (strength, subtype, sent_username) in
+            [(Strength::Aes128, 1u8, "andrew"), (Strength::Aes256, 2, "")]
+        {
             let (client_sock, server_sock) = tokio::io::duplex(4096);
             let server = tokio::spawn(scripted_server(server_sock, strength, subtype, false));
             let (mut reader, mut writer) = tokio::io::split(client_sock);
             // A key apiece, because `begin` takes one: two exchanges are two
             // connections and a connection's key is its own.
             let key = ClientKey::of_bits(1024).unwrap();
-            let exchange = begin(&mut reader, &mut writer, strength, key).await.unwrap();
+            let exchange = begin(&mut reader, &mut writer, strength, key)
+                .await
+                .unwrap();
             assert_eq!(exchange.subtype().byte(), subtype);
             assert_eq!(exchange.fingerprint().len(), 8 * 2 + 7);
-            let credentials = Credentials { username: "andrew".to_owned(), password: "hunter2".to_owned() };
+            let credentials = Credentials {
+                username: "andrew".to_owned(),
+                password: "hunter2".to_owned(),
+            };
             let Session { opener, .. } = exchange.login(&mut writer, &credentials).await.unwrap();
             let mut frames = FrameReader::new(reader, opener);
-            assert_eq!(frames.read_u32().await.unwrap(), 0, "SecurityResult arrives inside the frames");
-            assert_eq!(server.await.unwrap().unwrap(), (sent_username.to_owned(), "hunter2".to_owned()));
+            assert_eq!(
+                frames.read_u32().await.unwrap(),
+                0,
+                "SecurityResult arrives inside the frames"
+            );
+            assert_eq!(
+                server.await.unwrap().unwrap(),
+                (sent_username.to_owned(), "hunter2".to_owned())
+            );
         }
     }
 
@@ -1238,12 +1462,34 @@ mod tests {
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let server = tokio::spawn(async move {
             let (mut reader, mut writer) = tokio::io::split(server_sock);
-            authenticate(&mut reader, &mut writer, Strength::Aes256, &server_key, Subtype::UserPass).await.map(|(credentials, _)| credentials)
+            authenticate(
+                &mut reader,
+                &mut writer,
+                Strength::Aes256,
+                &server_key,
+                Subtype::UserPass,
+            )
+            .await
+            .map(|(credentials, _)| credentials)
         });
         let (mut reader, mut writer) = tokio::io::split(client_sock);
-        let exchange = begin(&mut reader, &mut writer, Strength::Aes256, ClientKey::of_bits(1024).unwrap()).await.unwrap();
-        assert_eq!(exchange.fingerprint(), fingerprint, "the client shows the fingerprint the server logs");
-        let credentials = Credentials { username: "andrew".to_owned(), password: "hunter2".to_owned() };
+        let exchange = begin(
+            &mut reader,
+            &mut writer,
+            Strength::Aes256,
+            ClientKey::of_bits(1024).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            exchange.fingerprint(),
+            fingerprint,
+            "the client shows the fingerprint the server logs"
+        );
+        let credentials = Credentials {
+            username: "andrew".to_owned(),
+            password: "hunter2".to_owned(),
+        };
         exchange.login(&mut writer, &credentials).await.unwrap();
         assert_eq!(server.await.unwrap().unwrap(), credentials);
     }
@@ -1253,10 +1499,19 @@ mod tests {
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let server = tokio::spawn(scripted_server(server_sock, Strength::Aes128, 1, true));
         let (mut reader, mut writer) = tokio::io::split(client_sock);
-        let result = begin(&mut reader, &mut writer, Strength::Aes128, ClientKey::of_bits(1024).unwrap()).await;
+        let result = begin(
+            &mut reader,
+            &mut writer,
+            Strength::Aes128,
+            ClientKey::of_bits(1024).unwrap(),
+        )
+        .await;
         assert!(matches!(result, Err(Error::Tampered)), "{:?}", result.err());
         drop((reader, writer));
-        assert!(server.await.unwrap().is_err(), "the server is hung up on at the hash");
+        assert!(
+            server.await.unwrap().is_err(),
+            "the server is hung up on at the hash"
+        );
     }
 
     #[tokio::test]
@@ -1264,9 +1519,23 @@ mod tests {
         let (client_sock, server_sock) = tokio::io::duplex(4096);
         let _server = tokio::spawn(scripted_server(server_sock, Strength::Aes128, 2, false));
         let (mut reader, mut writer) = tokio::io::split(client_sock);
-        let exchange = begin(&mut reader, &mut writer, Strength::Aes128, ClientKey::of_bits(1024).unwrap()).await.unwrap();
-        let credentials = Credentials { username: String::new(), password: "x".repeat(256) };
-        let err = exchange.login(&mut writer, &credentials).await.err().expect("256 bytes do not fit");
+        let exchange = begin(
+            &mut reader,
+            &mut writer,
+            Strength::Aes128,
+            ClientKey::of_bits(1024).unwrap(),
+        )
+        .await
+        .unwrap();
+        let credentials = Credentials {
+            username: String::new(),
+            password: "x".repeat(256),
+        };
+        let err = exchange
+            .login(&mut writer, &credentials)
+            .await
+            .err()
+            .expect("256 bytes do not fit");
         assert!(err.to_string().contains("256 bytes"), "{err}");
     }
 }
