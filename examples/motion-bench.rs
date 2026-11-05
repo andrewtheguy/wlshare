@@ -48,7 +48,7 @@
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
 //! by the client's parser, a PNG by the `png` crate and a planar bitmap by
 //! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by
-//! ruzstd's streaming decoder and the still stream by ruzstd's
+//! ruzstd-decompress's streaming decoder and the still stream by ruzstd-decompress's
 //! `FrameDecoder` a block at a time, the fork handing out its newest bytes as
 //! soon as their blocks are decoded)
 //! — and compared with the
