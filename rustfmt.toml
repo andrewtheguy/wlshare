@@ -1,0 +1,4 @@
+# rustfmt's defaults, held to the 2024 style edition, for every crate in the
+# workspace. CI checks them (.github/workflows/rust-format.yml), and the release
+# compares wlshare-proto with its proto-v<N> tag after formatting both.
+style_edition = "2024"
