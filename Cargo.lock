@@ -169,7 +169,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex 2.0.1",
- "syn 3.0.5",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -826,7 +826,7 @@ dependencies = [
 [[package]]
 name = "libopus-prebuilt-sys"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260906161304-8dd83e8#8dd83e865b4913df74b66199236346f9bfab2912"
+source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20261106175320-d681e6f#d681e6f7eb4d00940037b612499bd30488c99bf8"
 
 [[package]]
 name = "libspa"
@@ -975,7 +975,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "opus-prebuilt"
 version = "0.1.0"
-source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20260906161304-8dd83e8#8dd83e865b4913df74b66199236346f9bfab2912"
+source = "git+https://github.com/andrewtheguy/libopus-prebuilt?tag=v1.6.1-20261106175320-d681e6f#d681e6f7eb4d00940037b612499bd30488c99bf8"
 dependencies = [
  "libopus-prebuilt-sys",
 ]
@@ -1423,8 +1423,8 @@ dependencies = [
 
 [[package]]
 name = "sound-opus"
-version = "0.0.7"
-source = "git+https://github.com/andrewtheguy/sound-opus?tag=v0.0.7#1d4b53692a5e5a6e9c6789357a037013c7b452b6"
+version = "0.0.9"
+source = "git+https://github.com/andrewtheguy/sound-opus?tag=v0.0.9#2f7ecbd2633d1d863ad71954679bcadc29576eb4"
 dependencies = [
  "opus-prebuilt",
  "thiserror",
