@@ -32,6 +32,13 @@ Alpha. The client moves it without waiting for a framebuffer update.
 See it in action on [its page](https://zdesk.dev/wlshare#demo), and set it up with
 [Setting up wlshare](https://zdesk.dev/guides/wlshare).
 
+wlshare does the most with sway, because of how sway is built: every command
+it takes can be sent while it runs, over its IPC socket, so a feature the mainstream
+Wayland protocols give no easy way to — the headless outputs a client's virtual displays ask for —
+costs wlshare a small IPC client and nothing more.
+[`docs/sway.md`](docs/sway.md) says what wlshare uses sway for, with examples
+of a sway session set up for it.
+
 It is compositor-independent within that protocol surface: any wlroots-based
 compositor exposing the required protocols is the same kind of peer.
 `wlr-screencopy` version 2 or later is required, and so are `ext-image-copy-capture`

@@ -63,6 +63,9 @@
   are not meant for a mobile client. Nothing in them accommodates a phone or
   a tablet, not its decoder's speed, its memory, its screen or its link, and
   a change to them weighs none of those.
+- A feature the mainstream Wayland protocols give no easy way to is built on
+  sway's IPC (`src/sway.rs`, `docs/sway.md`), since every sway command can be
+  sent at run time, and is absent on other compositors, the client told so.
 - Build and run the daemon on a Linux host inside the wlroots-based Wayland
   session it shares; packages are built only in Docker, by
   `scripts/build-debs.sh` for wlshare and `scripts/build-sway-debs.sh` for the

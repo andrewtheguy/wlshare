@@ -9,6 +9,8 @@
 在[它的頁面](https://zdesk.dev/zh-TW/wlshare#demo)上觀看實際效果，並依照
 [設定 wlshare](https://zdesk.dev/zh-TW/guides/wlshare) 進行設定。
 
+wlshare 在 sway 上能做的最多，這源自 sway 的設計：它接受的每個指令都能在執行時透過它的 IPC socket 傳送，因此主流 Wayland 協定沒有簡便方法做到的功能（例如用戶端的虛擬顯示器所需的無頭輸出）只需要 wlshare 內建一個小小的 IPC 用戶端即可。[`docs/sway.md`](docs/sway.md)（英文）說明了 wlshare 用 sway 做什麼，並提供為它設定好的 sway 工作階段範例。
+
 在這組協定範圍內，它與特定合成器無關：任何提供所需協定、以 wlroots 為基礎的合成器都是同一類對等端。需要 `wlr-screencopy` 版本 2 或更新、具備輸出擷取來源的 `ext-image-copy-capture`（游標圖像來自它），以及 `xdg-output` 版本 3（它說明每個輸出在版面配置中的位置，指標就依此定位）。調整輸出尺寸和縮放還需要 `wlr-output-management`；合成器提供虛擬鍵盤、虛擬指標和 `wlr-data-control` 協定時，輸入和剪貼簿會使用它們。在無頭輸出上讓游標保持獨立並擷取它，需要 wlroots 0.19 或更新版本。
 
 在影格緩衝區層面，任何宣告了標準 Cursor 虛擬編碼並能繪製 Raw 矩形的 RFB 3.8 用戶端都可以連線。用戶端列出 ZRLE 時會使用它，除非用戶端還要求了 wlshare 私有的視訊串流或它的圖塊。設定了登入時，還需要 RSA-AES。之所以要求支援游標，是因為 wlshare 從不把指標畫進影格緩衝區的像素。密度和輸出擴充由用戶端要求，否則保持靜默；在設定了 `subtype = "wlshare"` 的 `vnc` 目標上，zDesk 會要求這兩者以及視訊串流（選擇器中選了 *Tiles with motion*、*Progressive tiles (alpha)* 或 *Lossless tiles (experimental)* 時則要求圖塊），在未設定的目標上則以任何 VNC 伺服器的方式讀取 wlshare。音訊是一個私有擴充，zDesk 在這類目標上以聲音啟動的工作階段中會要求它：在用戶端收聽期間，wlshare 自己的輸出裝置（sink）是預設裝置，因此所有跟隨預設裝置的串流都在那裡播放，而不是在主機的喇叭上；該裝置的監聽來源會編碼為無損 FLAC 傳送，或在用戶端改為要求 Opus 時，以用戶端指定的位元率編碼為 Opus 傳送。固定到主機某個輸出裝置的應用程式會留在那裡，在主機上播放。沒有列出該擴充的用戶端聽不到任何聲音。
