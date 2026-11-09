@@ -110,9 +110,10 @@ performance](tiles-performance.md#progressive-tiles).
 
 What is left of the lossless picture, every tile that changed a planar bitmap
 ([On a lossless list, every tile planar](architecture.md#the-tiles-encoding)).
-It is for a desktop client on a LAN, never a phone or a tablet, so a client
-decoder that takes more memory or more of the processor than RDP's planar
-codec is no cost against it. Where the desktop is still it is already
+It is for a desktop client on a LAN, never a phone, a tablet or a page zDesk
+flags as tight on memory, none of which it accommodates, so a client decoder
+that takes more memory or more of the processor than RDP's planar codec is no
+cost against it. Where the desktop is still it is already
 about a ninth of the held picture's bytes or less; where it moves it is 6 to 12 times them,
 nearly all of its 15 GB over the samples
 ([measured](tiles-performance.md#lossless-tiles)). Of the encoder's time over

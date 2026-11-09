@@ -59,10 +59,13 @@
   none; testdesktop2
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
   the hardware's is run for real.
-- The lossless tiles (`WLSL`: every changed tile planar, no H.264 stream)
-  are not meant for a mobile client. Nothing in them accommodates a phone or
-  a tablet, not its decoder's speed, its memory, its screen or its link, and
-  a change to them weighs none of those.
+- The lossless pictures — the lossless tiles (`WLSL`: every changed tile
+  planar, no H.264 stream) and the tiles with motion (`WLSD`: lossless PNG
+  where the desktop is still) — are not meant for a mobile client or
+  a page zDesk flags as tight on memory (`tight_memory`: an iPhone, an iPad,
+  or a browser that reports 4 GB or less). Nothing in them accommodates one,
+  not its decoder's speed, its memory, its screen or its link, and a change to
+  them weighs none of those.
 - A feature the mainstream Wayland protocols give no easy way to is built on
   sway's IPC (`src/sway.rs`, `docs/sway.md`), since every sway command can be
   sent at run time, and is absent on other compositors, the client told so.
