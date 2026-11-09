@@ -91,28 +91,55 @@ pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), Str
     Ok((rgb, at))
 }
 
-/// The `w`×`h` pixels a [`wlshare_proto::tiles::KIND_PLANAR`] body carries,
-/// `R, G, B` a pixel, top row first: one zstd frame and nothing after it,
-/// read by ruzstd-decompress, of a planar bitmap of exactly that size.
-pub fn unpack(body: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
-    let mut source = body;
-    let mut frame = ruzstd_decompress::decoding::StreamingDecoder::new(&mut source)
-        .map_err(|e| format!("a zstd frame: {e}"))?;
-    let mut bitmap = Vec::new();
-    std::io::Read::read_to_end(&mut frame, &mut bitmap)
-        .map_err(|e| format!("a zstd frame: {e}"))?;
-    drop(frame);
-    if !source.is_empty() {
-        return Err(format!("{} bytes past the zstd frame", source.len()));
+/// The pixels each of an update's [`wlshare_proto::tiles::KIND_PLANAR`]
+/// bodies carries, `(body, w, h)`, `R, G, B` a pixel, top row first, read as
+/// zDesk's page reads a batch's: their zstd frames decoded side by side by
+/// ruzstd-decompress, each into the room its headers bound it to and held to
+/// what a planar bitmap of its rectangle can be, then each bitmap side by
+/// side, which must be one planar bitmap of exactly its rectangle and nothing
+/// after it. One result for each body, in order.
+pub fn unpack_each(bodies: &[(&[u8], usize, usize)]) -> Vec<Result<Vec<u8>, String>> {
+    use rayon::prelude::*;
+    let mut outputs: Vec<Vec<u8>> = Vec::with_capacity(bodies.len());
+    let mut bounded: Vec<Result<(), String>> = Vec::with_capacity(bodies.len());
+    for &(body, w, h) in bodies {
+        // A format header, three planes of at most two bytes a pixel, a
+        // run-length coded row's worst, and the plain form's padding byte.
+        let most = 1 + 3 * 2 * w * h + 1;
+        let bound = ruzstd_decompress::decoding::decompressed_bound(body)
+            .map_err(|e| format!("a zstd frame: {e}"))
+            .and_then(|bound| {
+                usize::try_from(bound)
+                    .ok()
+                    .filter(|&bound| bound <= most)
+                    .ok_or_else(|| {
+                        format!("a zstd frame of {bound} bytes, more than a {w}x{h} bitmap can be")
+                    })
+            });
+        outputs.push(Vec::with_capacity(*bound.as_ref().unwrap_or(&0)));
+        bounded.push(bound.map(|_| ()));
     }
-    let (rgb, used) = decode(&bitmap, w, h)?;
-    if used != bitmap.len() {
-        return Err(format!(
-            "a planar bitmap of {} bytes, {used} of them its {w}x{h} pixels",
-            bitmap.len()
-        ));
-    }
-    Ok(rgb)
+    let inputs: Vec<&[u8]> = bodies.iter().map(|&(body, _, _)| body).collect();
+    let decoded = ruzstd_decompress::decoding::FrameDecoder::new()
+        .decode_each_parallel(&inputs, &mut outputs);
+    bodies
+        .par_iter()
+        .zip(outputs)
+        .zip(bounded)
+        .zip(decoded)
+        .map(|((((_, w, h), bitmap), bounded), decoded)| {
+            bounded?;
+            decoded.map_err(|e| format!("a zstd frame: {e}"))?;
+            let (rgb, used) = decode(&bitmap, *w, *h)?;
+            if used != bitmap.len() {
+                return Err(format!(
+                    "a planar bitmap of {} bytes, {used} of them its {w}x{h} pixels",
+                    bitmap.len()
+                ));
+            }
+            Ok(rgb)
+        })
+        .collect()
 }
 
 /// The still stream as a client reads it: each STILL body decompressed,

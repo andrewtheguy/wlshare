@@ -526,7 +526,10 @@ mod tests {
         let (pixels, stride) = picture(w, h, f);
         let body = pack(&pixels, stride, w as u16, h as u16).unwrap();
         assert_eq!(
-            decoder::unpack(&body, w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}")),
+            decoder::unpack_each(&[(&body, w, h)])
+                .pop()
+                .expect("a result for the one body")
+                .unwrap_or_else(|e| panic!("{w}x{h}: {e}")),
             rgb(&pixels, stride, w, h),
             "{w}x{h}"
         );

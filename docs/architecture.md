@@ -949,10 +949,11 @@ the picture.
   ([measured](tiles-performance.md#lossless-tiles)). Its tests read every
   body back with a reader of their own, written from the specification,
   the zstd by ruzstd-decompress, a decoder that shares nothing with libzstd,
-  andrewtheguy's fork of ruzstd, which adds `FrameDecoder::peek` for the still
-  stream's newest bytes, held back while its frame goes on; the page
-  decodes it with the same and the planar codec of the compositor that
-  draws an RDP host's pipeline.
+  andrewtheguy's fork of ruzstd, which hands out the still stream's newest
+  bytes as soon as their blocks are decoded, where ruzstd holds them back
+  while its frame goes on, and decodes an update's moving frames side by
+  side; the page decodes a batch's the same way, with the planar codec of
+  the compositor that draws an RDP host's pipeline.
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
   region of a held list is H.264, by an encoder found once at startup; the client has no

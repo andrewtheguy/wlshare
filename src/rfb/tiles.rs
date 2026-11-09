@@ -3250,6 +3250,19 @@ mod tests {
                 panic!("an update")
             };
             assert_eq!(used, wire.len(), "the update is its rectangles");
+            // An update's planar bodies read together, as the page reads a batch's.
+            let mut planars = super::planar::decoder::unpack_each(
+                &rects
+                    .iter()
+                    .filter_map(|rect| match &rect.body {
+                        RectBody::Tiles(TileBody::Planar(body)) => {
+                            Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_iter();
             for rect in rects {
                 let RectBody::Tiles(body) = rect.body else {
                     panic!("a tiles rectangle")
@@ -3349,11 +3362,12 @@ mod tests {
                             self.canvas[at..at + line].copy_from_slice(pixels);
                         }
                     }
-                    TileBody::Planar(body) => {
+                    TileBody::Planar(_) => {
                         self.planars += 1;
-                        let rgb =
-                            super::planar::decoder::unpack(&body, usize::from(w), usize::from(h))
-                                .expect("a planar body of the rectangle");
+                        let rgb = planars
+                            .next()
+                            .expect("a result for every planar body")
+                            .expect("a planar body of the rectangle");
                         self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Still(body) => {

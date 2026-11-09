@@ -273,6 +273,19 @@ impl Page {
         let Some((ServerMsg::Update(rects), _)) = client::parse(&wire)? else {
             return Err("an update the client cannot read".into());
         };
+        // An update's planar bodies read together, as the page reads a batch's.
+        let mut planars = planar_decoder::unpack_each(
+            &rects
+                .iter()
+                .filter_map(|rect| match &rect.body {
+                    RectBody::Tiles(TileBody::Planar(body)) => {
+                        Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_iter();
         for rect in rects {
             let RectBody::Tiles(body) = rect.body else {
                 return Err("a rectangle not of the tiles".into());
@@ -289,8 +302,8 @@ impl Page {
                     let bgrx = Self::rgb(&buf[..info.buffer_size()]);
                     self.paste(place, &bgrx, w);
                 }
-                TileBody::Planar(body) => {
-                    let rgb = planar_decoder::unpack(&body, w, h)?;
+                TileBody::Planar(_) => {
+                    let rgb = planars.next().expect("a result for every planar body")?;
                     self.paste(place, &Self::rgb(&rgb), w);
                 }
                 TileBody::Still(body) => {
