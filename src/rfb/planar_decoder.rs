@@ -91,6 +91,21 @@ pub fn decode(bitmap: &[u8], w: usize, h: usize) -> Result<(Vec<u8>, usize), Str
     Ok((rgb, at))
 }
 
+/// Whether `body` is one zstd frame and nothing after it, as a
+/// [`wlshare_proto::tiles::KIND_PLANAR`] body is: the decoders read every
+/// frame of an input, and skip skippable ones.
+fn one_frame(body: &[u8]) -> Result<(), String> {
+    if !body.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+        return Err("a body that begins no zstd frame".into());
+    }
+    let len = ruzstd_decompress::decoding::frame_compressed_size(body)
+        .map_err(|e| format!("a zstd frame: {e}"))?;
+    if len != body.len() {
+        return Err(format!("{} bytes past its zstd frame", body.len() - len));
+    }
+    Ok(())
+}
+
 /// The pixels each of an update's [`wlshare_proto::tiles::KIND_PLANAR`]
 /// bodies carries, `(body, w, h)`, `R, G, B` a pixel, top row first, read as
 /// zDesk's page reads a batch's: their zstd frames decoded side by side by
@@ -106,8 +121,11 @@ pub fn unpack_each(bodies: &[(&[u8], usize, usize)]) -> Vec<Result<Vec<u8>, Stri
         // A format header, three planes of at most two bytes a pixel, a
         // run-length coded row's worst, and the plain form's padding byte.
         let most = 1 + 3 * 2 * w * h + 1;
-        let bound = ruzstd_decompress::decoding::decompressed_bound(body)
-            .map_err(|e| format!("a zstd frame: {e}"))
+        let bound = one_frame(body)
+            .and_then(|()| {
+                ruzstd_decompress::decoding::decompressed_bound(body)
+                    .map_err(|e| format!("a zstd frame: {e}"))
+            })
             .and_then(|bound| {
                 usize::try_from(bound)
                     .ok()

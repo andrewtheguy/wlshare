@@ -1263,8 +1263,8 @@ dependencies = [
 
 [[package]]
 name = "ruzstd-decompress"
-version = "0.9.2-alpha.15"
-source = "git+https://github.com/andrewtheguy/ruzstd-decompress?tag=v0.9.2-alpha.15#03f70620709f59791b20d0e3b35331ac5f761d16"
+version = "0.9.2-alpha.16"
+source = "git+https://github.com/andrewtheguy/ruzstd-decompress?tag=v0.9.2-alpha.16#847ea5be83b5ae1fcb640f942431e4bdf2c22084"
 dependencies = [
  "rayon",
  "twox-hash",
