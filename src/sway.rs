@@ -1,5 +1,5 @@
-//! sway's IPC, for the one thing no Wayland protocol a client can bind offers:
-//! making an output, and taking one away.
+//! sway's IPC, for the one thing the mainstream Wayland protocols a client can
+//! bind give no easy way to: making an output, and taking one away.
 //!
 //! A client that asks for a number of virtual displays
 //! ([`crate::shared::Command::VirtualDisplays`]) is asking for that many headless

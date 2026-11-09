@@ -1,7 +1,7 @@
 # Architecture
 
 wlshare connects to a wlroots-based Wayland compositor through its public
-protocols. It is one process with two halves and one shared framebuffer between them.
+protocols, and sway through its IPC as well ([Sway](sway.md)). It is one process with two halves and one shared framebuffer between them.
 
 ```text
 wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ Framebuffer ──▶ session tasks ──▶ TCP
@@ -1234,8 +1234,8 @@ two — and the daemon has the compositor make headless outputs, or unplug them,
 until there are that many. The client on the desktop alone is heard; a display
 beside's request, like its `SelectOutput`, is answered with the list as it is.
 
-Only sway can be asked. No Wayland protocol a client binds makes an output, and
-sway's IPC does: `create_output` makes a headless output and `output NAME
+sway is what the daemon asks. The mainstream protocols a client binds give no
+easy way to make an output, and sway's IPC does: `create_output` makes a headless output and `output NAME
 unplug` destroys one, a startup one included. The daemon finds the socket in
 `SWAYSOCK`, which sway sets for everything it starts and the session's user
 manager carries to its units, and checks at startup that it answers as sway;
