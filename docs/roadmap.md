@@ -85,16 +85,18 @@ cost against it. Where the desktop is still it is already about a ninth of the
 held picture's bytes or less; where it moves it is 6 to 12 times them, nearly
 all of its 15 GB over the samples
 ([measured](tiles-performance.md#lossless-tiles), with what the encoder's time
-went to). Each item is measured as the lossless tiles were: `motion-bench
---tiles-only --lossless` over the samples on lab1, against [Lossless
-tiles](tiles-performance.md#lossless-tiles).
+went to). An item is measured as the lossless tiles were before it is
+planned: `motion-bench --tiles-only --lossless` over the samples at every
+size on lab1, against [Lossless tiles](tiles-performance.md#lossless-tiles).
 
 ### Under consideration
 
-Held back by the host's processor. Both were measured over the runs the
-encoder codes, with the other codecs that came no nearer ([Other coders for
-the lossless tiles' moving
+Held back by the host's processor. The figures below are preliminary: a
+scratch bench outside the daemon, on one thread, over the runs the encoder
+codes at 1920x1080 alone, with the other codecs that came no nearer ([Other
+coders for the lossless tiles' moving
 runs](tiles-performance.md#other-coders-for-the-lossless-tiles-moving-runs)).
+Neither item has been through `motion-bench`.
 
 #### A median predictor ahead of zstd for the moving runs
 
