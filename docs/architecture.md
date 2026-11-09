@@ -880,7 +880,16 @@ the picture.
 - **On a walked list, every tile progressive (alpha).** A list whose dial walks
   gets no PNG or stream: every tile that changed, still or moving, is a
   PROGRESSIVE, as a Windows host draws its desktop where it has no H.264,
-  and copies and the cache as above. `src/rfb/progressive.rs`
+  and copies and the cache as above. It has no stream by design: the page
+  draws it with the module that composes an RDP host's pipeline alone, no
+  video decoder beside it, light enough for a phone, a tablet or a page
+  short of memory, where a stream for each region would put up to four
+  decoders beside the module, as an RDP host's mixed pipeline does, and
+  leave a browser with no H.264 decoder without the picture. So on a slow
+  link and a large desktop its frame rate falls, as the host's does without
+  H.264, where streams would hold it up
+  ([measured, and not taken](tiles-performance.md#a-walked-lists-streams-not-taken)).
+  `src/rfb/progressive.rs`
   is the encoder: a tile to YCbCr in 11.5 fixed point, three levels of the
   reduce-extrapolate 5/3 wavelet, quantized by the protocol's table, and sent
   in passes. A first pass holds back the low bits of every coefficient at a

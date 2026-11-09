@@ -74,25 +74,6 @@ configuration (a 1.1, a 1.7) reaches the daemon rounded to 1/256.
   configured 1.1 and 1.7, and held back as more than 1x and 2x need; it is
   taken up when zDesk offers a fractional density.
 
-## Progressive tiles
-
-What is left of the progressive picture, every tile of a walked list
-([On a walked list, every tile
-progressive](architecture.md#the-tiles-encoding)), each measured as it was:
-`tiles-walk-sim` against the runs in [Tiles
-performance](tiles-performance.md#progressive-tiles).
-
-- **Motion on a slow link and a large desktop.** What costs the progressive
-  picture its frame rate there is a moving region coded as wavelet tiles,
-  each from nothing or as a difference of its coefficients, which a P-frame
-  predicted from the frame before carries in fewer bytes. The first passes
-  there are already at the stage below 50, and one at half resolution
-  shrinks them by 1 to 9% more ([measured](tiles-performance.md#progressive-tiles)),
-  so no stage closes it: what is left is a frame rate that falls, as the
-  host's does, or a moving region carried by prediction, as the walked
-  tiles' H.264 regions did before progressive tiles took their place (a 4K
-  window at 5 Mbit/s at 17 frames a second where these have 7).
-
 ## Lossless tiles
 
 What is left of the lossless picture, every tile that changed a planar bitmap
