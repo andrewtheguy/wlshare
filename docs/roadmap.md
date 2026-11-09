@@ -151,23 +151,25 @@ Debian and Ubuntu as `libcharls-dev`, linked from the system as libx264 and
 libva are. By CharLS 2.4, over the runs the encoder codes, a row of tiles at a
 time, on one thread, each decoded again exact: with its HP1 colour transform a
 video 0.55 of planar's bytes, a walk and a window 0.56, the mixed session 0.62
-over every run, still or moving; without a transform 0.69. A run starting over
-what JPEG-LS has learned of its contexts costs nothing: ffmpeg's encoder, the
-video's frames whole and no transform, came to the same 102 MB. A video at
-1920x1080 is 63 ms a frame on one thread where planar and its frame take 4.7,
-and its decoding 49 ms in native code; and where the desktop is a page or a
-terminal it is 1.2 to 2 times planar's bytes, which zstd's matches of what
-repeats take off. So it would be chosen run by run, a moving picture JPEG-LS
-and the rest planar, by how little planar's segments took off: a video's
-bitmaps 0.8 of their planes, a page's 0.15. It leaves RDP's planar codec, the
-one a Windows host draws its lossless pipeline with, so the page needs a
-decoder of its own (CharLS in WebAssembly) beside its RDP compositor's, and
-the protocol a body kind for it, `PROTOCOL_VERSION` with it. A run is coded on
-any thread, as a planar one is, so an update's wait is its largest run's. It
-is planned only once the host's processor at the frame rate is settled, a
-faster coder or fewer of the runs; then the page's decoding in WebAssembly,
-measured on testdesktop2's Chrome, and a cut between the two codecs that loses
-nothing where the desktop is a page.
+over every run, still or moving; without a transform 0.69. A run starts over
+what JPEG-LS has learned of its contexts, which costs it about 2% where the
+desktop moves: by CharLS with HP1 the video's frames whole are 81.9 MB, and
+the same frames in strips a tile high, each coded alone, 83.4, 1.8% more, as
+the walk's are; as single tiles 87.4, 7% more. A video at 1920x1080 is 63 ms a
+frame on one thread where planar and its frame take 4.7, and its decoding 49
+ms in native code; and where the desktop is a page or a terminal it is 1.2 to
+2 times planar's bytes, which zstd's matches of what repeats take off. So it
+would be chosen run by run, a moving picture JPEG-LS and the rest planar, by
+how little planar's segments took off: a video's bitmaps 0.8 of their planes,
+a page's 0.15. It leaves RDP's planar codec, the one a Windows host draws its
+lossless pipeline with, so the page needs a decoder of its own (CharLS in
+WebAssembly) beside its RDP compositor's, and the protocol a body kind for it,
+`PROTOCOL_VERSION` with it. A run is coded on any thread, as a planar one is,
+so an update's wait is its largest run's. It is planned only once the host's
+processor at the frame rate is settled, a faster coder or fewer of the runs;
+then the page's decoding in WebAssembly, measured on testdesktop2's Chrome,
+and a cut between the two codecs that loses nothing where the desktop is a
+page.
 
 #### The other lossless codecs
 
