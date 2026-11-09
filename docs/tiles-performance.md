@@ -481,6 +481,39 @@ window gains 20 tiles of 2,000 to 3,000 stills, what was shown before its
 keyframe shown again after it. motion-bench's samples begin with their one
 whole picture, so its figures are the same.
 
+At 16384 slots, four times the cache, it was counted on 2026-11-09 at
+`9694da1` (on the desktop machine, four runs at once, so bytes and
+`--encode` walks alone): the tree built with `CACHE_SLOTS` at 4096 and at
+16384, then `motion-bench --tiles-only`, held and `--lossless`, over every
+sample but flood and still, and `tiles-walk-sim --encode 20`, walked, over
+the mixed captures at 10 and 5 Mbit/s (`bench/cache-16384-20261109/` in the
+artifacts). Held, only the mixed sessions fill 4096 slots; lossless, the
+browser's samples at 2x save 0.5 to 53 KB, and the video, walk, window and
+mixed samples a few KB of hundreds of MB. Where nothing fills the cache, the
+bytes are the same; every sample ends as many pixels off either way:
+
+| Pass | 4096 slots | 16384 slots |
+|---|---:|---:|
+| held, mixed-1920x1080 | 171.9 MB | 171.1 MB, −0.5% |
+| held, mixed-2880x1800@2 | 348.6 MB | 343.9 MB, −1.4% |
+| held, every sample | 1,174.7 MB | 1,169.2 MB, −0.47% |
+| lossless, every sample | 15,026.7 MB | 15,026.1 MB, −0.00% |
+
+Walked, the bytes a larger cache saves go to frames, and nothing moves past
+what two runs of one build differ by:
+
+| Capture, link | Frames a second | Mbit/s | Mean PSNR |
+|---|---|---|---|
+| mixed-1920x1080, 10 Mbit/s | 14.90 → 14.91 | 3.48 → 3.46 | 39.57 → 39.57 dB |
+| mixed-2880x1800@2, 10 Mbit/s | 10.93 → 10.90 | 4.17 → 4.12 | 39.32 → 39.38 dB |
+| mixed-1920x1080, 5 Mbit/s | 11.36 → 11.37 | 2.07 → 2.05 | 38.47 → 38.46 dB |
+| mixed-2880x1800@2, 5 Mbit/s | 6.32 → 6.49 | 2.16 → 2.19 | 40.24 → 39.86 dB |
+
+The six points more of the mixed session's stills the larger cache serves at
+2880x1800@2, counted above, are little of what the session sends beside its
+regions, and a lossless session's bytes are nearly all where the desktop
+moves, which no cache serves.
+
 ## The motion the stills carry
 
 How much of what the stills send is motion — what a codec that sends a

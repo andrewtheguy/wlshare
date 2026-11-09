@@ -81,11 +81,21 @@ was: `tile-recurrence` for what a rule would serve, then the tiles-only
 passes of motion-bench against [the cache's
 rows](tiles-performance.md#the-cache).
 
-- **A larger cache kept as the coded stills.** 16384 slots serve 18% of the
-  mixed session's stills at 2880x1800@2 where 4096 serve 13%, but as pixels
-  they are 256 MiB in a tab. Kept as the stills that were sent, about
-  2.5 KB a tile, they are 40 MB, decoded again on a draw, which is a hit's
-  cost in the page rather than a still's on the link.
+### Measured and set aside
+
+So not tried again as they were.
+
+- **A larger cache kept as the coded stills.** 16384 slots serve 20% of the
+  mixed session's stills at 2880x1800@2 where 4096 serve 14%, but stills are
+  little of what a session sends beside its regions: held, the larger cache
+  took 1.4% off that session and 0.47% off every sample; lossless, nothing;
+  walked, the frame rate and the link within what two runs differ by
+  ([measured](tiles-performance.md#the-cache)). As pixels they are 256 MiB
+  in a tab, and only a held list's PNGs could be kept as the stills that
+  were sent: a walked tile's first pass is often a difference from what the
+  client held, and a still in the lossless still stream decodes only after
+  the bodies before it, so for those the page would code each tile it
+  stores again, read back from the canvas.
 
 ## Progressive tiles
 
