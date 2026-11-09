@@ -550,8 +550,8 @@ coefficients, sent coarse first.
 
 ## Progressive tiles
 
-The progressive picture ([On a walked list, every tile
-progressive](architecture.md#the-tiles-encoding)) was measured from
+The progressive picture ([the tiles
+encoding](architecture.md#the-tiles-encoding)) was measured from
 2026-10-27 to 2026-10-28 as a replacement for the walked list's WebP and
 H.264, which it then replaced: every tile RemoteFX Progressive, still or
 moving, as a Windows host draws its desktop without H.264. The run is `bench/progressive-20261028/` in
@@ -895,6 +895,96 @@ search's rolling hash a rotating one, its chain a rotate and an xor where a
 polynomial's is two multiplies: no gain, the scan's time being its loop and
 its filter's lookups. Looking along each probe's own row and column before
 the scan: a scroll 6% cheaper, a drag a fifth dearer and 2% more bytes.
+
+## A walked list's streams
+
+Measured 2026-11-09, as the walked list took a stream for each region that
+moves ([On a walked list, every still progressive and what moves a stream
+refined in place](architecture.md#the-tiles-encoding)). Until then every
+tile of it was progressive, still or moving: a moving region coded as
+wavelet tiles, each from nothing or as the difference of its coefficients,
+whose first passes on a large desktop at 5 Mbit/s were already at the
+coarsest stage, so no stage closed what that cost the frame rate (above).
+Now each region the held list's rules lay out is an H.264 stream whose
+frames are at the walk's dial, a P-frame predicted from the frame before,
+and once nothing in it has changed for half a second a frame more at the
+ceiling refines it in place, its tiles settled at that picture. The run is
+`bench/walked-regions-20261109/` in the artifacts: `tiles-walk-sim` over the
+window and mixed captures at 5, 10 and 25 Mbit/s, main (0.0.122) then the
+branch, the regions by libx264.
+
+**Bytes and pictures.** On this machine, with `--encode 20`, which is
+deterministic:
+
+| Capture | Link | Frames/s | p50 ms | Mbit/s | dB mean | dB end |
+|---|---|---|---|---|---|---|
+| window-1920x1080 | 5 | 20.3 → 22.5 | 104 → 74 | 3.70 → 2.78 | 38.3 → 40.8 | 45.7 → 42.0 |
+| window-1920x1080 | 10 | 24.8 → 23.8 | 73 → 72 | 5.65 → 5.36 | 41.2 → 42.7 | 45.7 → 42.0 |
+| window-1920x1080 | 25 | 25.7 → 24.8 | 55 → 55 | 5.77 → 5.87 | 41.1 → 43.2 | 45.7 → 41.9 |
+| window-2880x1800@2 | 5 | 17.6 → 18.7 | 122 → 107 | 4.00 → 3.56 | 37.7 → 44.2 | 48.4 → 45.4 |
+| window-2880x1800@2 | 10 | 19.8 → 20.7 | 106 → 88 | 7.10 → 6.21 | 41.7 → 45.8 | 48.4 → 45.4 |
+| window-2880x1800@2 | 25 | 23.9 → 23.5 | 61 → 61 | 8.99 → 9.10 | 43.8 → 46.6 | 48.4 → 45.4 |
+| window-3840x2160@2 | 5 | 10.5 → 18.6 | 195 → 87 | 4.44 → 3.29 | 34.6 → 41.8 | 47.7 → 45.3 |
+| window-3840x2160@2 | 10 | 17.6 → 17.5 | 123 → 118 | 7.74 → 6.84 | 36.5 → 44.4 | 47.7 → 45.3 |
+| window-3840x2160@2 | 25 | 22.5 → 21.8 | 75 → 72 | 14.15 → 13.29 | 43.9 → 46.3 | 47.7 → 45.3 |
+| mixed-1920x1080 | 5 | 11.4 → 13.6 | 113 → 95 | 2.07 → 2.05 | 38.5 → 40.1 | 47.0 → 47.0 |
+| mixed-1920x1080 | 10 | 14.9 → 15.0 | 74 → 71 | 3.48 → 3.34 | 39.6 → 41.9 | 47.0 → 47.0 |
+| mixed-1920x1080 | 25 | 15.9 → 15.9 | 56 → 56 | 5.26 → 4.85 | 41.3 → 42.7 | 47.0 → 47.1 |
+| mixed-2880x1800@2 | 5 | 6.3 → 12.6 | 255 → 100 | 2.16 → 2.23 | 40.2 → 40.2 | 47.6 → 47.7 |
+| mixed-2880x1800@2 | 10 | 10.9 → 13.8 | 127 → 96 | 4.17 → 4.13 | 39.3 → 41.8 | 47.6 → 47.6 |
+| mixed-2880x1800@2 | 25 | 14.5 → 14.5 | 82 → 78 | 8.94 → 8.55 | 42.2 → 44.9 | 47.6 → 47.7 |
+
+What moved went to the streams: on the 4K window at 5 Mbit/s the first
+passes at the coarsest stage fell from 22,052 tiles (4.25 MB) to 1,916, and
+the differences from 28,372 (3.71 MB) to 563; on the mixed session at
+2880x1800 the coarsest first passes from 178,527 (33.3 MB) to 36,110.
+
+**With lab1's encode times.** lab1 (four vCPUs of EPYC Rome, rebuilt that
+day), alone, each run main's then the branch's; the encoder's processor
+time as a share of one core:
+
+| Capture | Link | Frames/s | p50 ms | p95 ms | Mbit/s | dB mean | dB end | Encoder |
+|---|---|---|---|---|---|---|---|---|
+| window-1920x1080 | 5 | 24.8 → 24.5 | 74 → 47 | 114 → 122 | 4.03 → 2.60 | 38.1 → 40.6 | 45.7 → 42.0 | 11 → 7% |
+| window-1920x1080 | 10 | 25.6 → 24.6 | 51 → 50 | 62 → 94 | 5.75 → 5.46 | 41.1 → 42.7 | 45.7 → 42.2 | 11 → 9% |
+| window-1920x1080 | 25 | 25.6 → 24.8 | 36 → 38 | 40 → 46 | 5.75 → 5.85 | 41.2 → 43.2 | 45.7 → 42.1 | 11 → 8% |
+| window-2880x1800@2 | 5 | 19.2 → 21.4 | 111 → 65 | 173 → 189 | 4.21 → 3.29 | 37.7 → 43.5 | 48.4 → 45.5 | 14 → 12% |
+| window-2880x1800@2 | 10 | 24.2 → 22.9 | 59 → 62 | 114 → 125 | 6.78 → 6.49 | 40.6 → 45.7 | 48.4 → 45.4 | 17 → 16% |
+| window-2880x1800@2 | 25 | 24.0 → 23.6 | 44 → 46 | 51 → 60 | 8.98 → 9.10 | 43.8 → 46.6 | 48.4 → 45.4 | 18 → 17% |
+| window-3840x2160@2 | 5 | 7.2 → 19.5 | 209 → 66 | 380 → 221 | 3.16 → 3.27 | 36.0 → 41.7 | 47.7 → 45.3 | 11 → 22% |
+| window-3840x2160@2 | 10 | 21.1 → 20.4 | 87 → 67 | 152 → 187 | 7.90 → 6.35 | 36.2 → 43.9 | 47.7 → 45.3 | 24 → 26% |
+| window-3840x2160@2 | 25 | 22.8 → 22.2 | 57 → 61 | 70 → 102 | 14.10 → 13.46 | 43.8 → 46.3 | 47.7 → 45.3 | 28 → 33% |
+| mixed-1920x1080 | 5 | 12.4 → 15.0 | 74 → 63 | 320 → 155 | 2.06 → 2.08 | 38.4 → 40.0 | 47.0 → 47.0 | 6 → 10% |
+| mixed-1920x1080 | 10 | 15.6 → 15.2 | 52 → 54 | 131 → 143 | 3.49 → 3.54 | 39.1 → 42.0 | 47.0 → 47.0 | 9 → 10% |
+| mixed-1920x1080 | 25 | 16.1 → 15.9 | 38 → 40 | 70 → 71 | 5.37 → 4.86 | 41.3 → 42.7 | 47.0 → 47.1 | 10 → 12% |
+| mixed-2880x1800@2 | 5 | 6.5 → 12.6 | 258 → 94 | 561 → 338 | 2.12 → 2.19 | 40.4 → 40.1 | 47.6 → 47.6 | 10 → 24% |
+| mixed-2880x1800@2 | 10 | 11.1 → 14.0 | 121 → 84 | 295 → 192 | 4.18 → 4.04 | 39.0 → 41.7 | 47.6 → 47.7 | 16 → 27% |
+| mixed-2880x1800@2 | 25 | 15.0 → 14.4 | 63 → 68 | 142 → 163 | 9.01 → 8.08 | 41.8 → 44.8 | 47.6 → 47.7 | 22 → 31% |
+
+- **On a slow link and a large desktop**, which is what it was for: the 4K
+  window at 5 Mbit/s plays at 19.5 frames a second where it had 7.2, its
+  changes shown at a median 66 ms where they took 209, and 5.7 dB finer
+  while it moves; the mixed session at 2880x1800 at 12.6 where it had 6.5.
+  The walked tiles' H.264 regions held that window at 17 before progressive
+  tiles took their place ([Progressive tiles](#progressive-tiles)).
+- **With room on the link**, at 25 Mbit/s and at 10 on all but the mixed
+  session at 2880x1800 (which gains there too, 11.1 to 14.0), the frame
+  rate is within 1.3 frames a second of main's, and the picture while it
+  moves 1.4 to 7.7 dB finer; but the slowest updates are slower, the p95
+  up to 35 ms longer. That was not looked into further.
+- **Once still**, a window's region is the ceiling's 4:2:0 picture, QP 18:
+  2.4 to 3.7 dB under the full stage the progressive tiles settled it at,
+  the cost of refining it in its own stream rather than sending it again
+  in another codec. The mixed sessions, whose regions are a small part of
+  the desktop, end where they did.
+- **The processor**, on lab1, where the regions are libx264: near main's
+  where the frame rate stayed, from a few points less on the 1920x1080
+  window to 9 more on the mixed session at 2880x1800 at 25 Mbit/s, and
+  about twice it where the frame rate rose with it: 22% of a core where 11
+  on the 4K window at 5 Mbit/s, 24 where 10 on the mixed session at
+  2880x1800. On a host
+  with an H.264 encoder a VA-API driver reaches, a region's coding is the
+  GPU's.
 
 ## Lossless tiles
 

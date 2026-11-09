@@ -965,7 +965,7 @@ fn dwt_line(x: &[i32], low: &mut [i32], high: &mut [i32]) {
     }
 }
 
-/// The inverse of [`dwt_line`], as the decoder runs it.
+/// The inverse of `dwt_line`, as the decoder runs it.
 fn idwt_line(low: &[i32], high: &[i32], x: &mut [i32]) {
     let n = x.len();
     let (nl, nh) = (band_l(n), band_h(n));
@@ -986,7 +986,7 @@ fn idwt_line(low: &[i32], high: &[i32], x: &mut [i32]) {
     }
 }
 
-/// [`dwt_line`] down `w` lines at once: `x` is `n` rows of `w` samples, a
+/// `dwt_line` down `w` lines at once: `x` is `n` rows of `w` samples, a
 /// line down each column, and `out` takes the `band_l(n)` low rows, then the
 /// `band_h(n)` high ones, every row a sample of each line, so that each
 /// step runs along a row.
@@ -1040,7 +1040,7 @@ fn dwt_lines(x: &[i32], n: usize, w: usize, out: &mut [i32]) {
     }
 }
 
-/// [`dwt_line`] along one row, its even and odd samples apart first, so that
+/// `dwt_line` along one row, its even and odd samples apart first, so that
 /// each step runs along an array.
 #[inline(always)]
 fn dwt_row(x: &[i32], low: &mut [i32], high: &mut [i32]) {

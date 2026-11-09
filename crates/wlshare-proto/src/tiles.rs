@@ -1,8 +1,9 @@
 //! The tiles encoding: the desktop as lossless PNG tiles where it is still,
 //! and a video stream of its own for each region that moves, for a client on
 //! a link with room to spare — or, on a list that lets the dial walk, every
-//! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
-//! client that wants the walk more than a picture that ends lossless — or,
+//! still a RemoteFX Progressive tile and each region that moves a stream at
+//! the walk's dial, for a client that wants the walk more than a picture
+//! that ends lossless — or,
 //! on a list that asks for it lossless, every tile that changed a planar
 //! bitmap of its pixels, still or moving, and no H.264 stream, for a client
 //! on a LAN that wants every picture it is shown exact.
@@ -40,8 +41,8 @@
 //!   a difference, or an upgrade, the bits the stage before held back. The
 //!   client decodes every one in order and holds each tile's coefficients from
 //!   one to the next; what it draws is the tile as those coefficients show
-//!   it. It is every rectangle of a list whose dial walks but a COPY, a CACHED
-//!   and a STORE: no PNG or stream. A first pass below the full stage is
+//!   it. It is every still of a list whose dial walks, a tile no stream
+//!   carries, and sent on no other: no PNG. A first pass below the full stage is
 //!   owed its upgrades once the link has room, and the full stage is the
 //!   settled picture, lossy still: nothing is owed a lossless picture.
 //! - A **PLANAR** is the desktop's pixels in the rectangle, lossless, as
@@ -185,10 +186,11 @@ pub fn parse_cache_empty(buf: &[u8]) -> usize {
 /// [`crate::ENCODING_TILES`]. The dial is the server's alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TilesPicture {
-    /// The encoding alone: every tile a RemoteFX Progressive tile, the
-    /// server's dial the ceiling its first passes are coded toward while the
-    /// link keeps up, walked down while it does not, nothing owed a lossless
-    /// picture.
+    /// The encoding alone: every still a RemoteFX Progressive tile and each
+    /// region that moves a stream, the server's dial the ceiling the first
+    /// passes and the frames are coded toward while the link keeps up,
+    /// walked down while it does not, a still region refined in its stream,
+    /// nothing owed a lossless picture.
     Progressive,
     /// `WLSD` ([`ENCODING_HELD`]) beside it: every still a lossless PNG and
     /// each region that moves a stream at the server's dial, whatever the

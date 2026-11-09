@@ -71,10 +71,11 @@
 //! below, unless the list holds it: each update's fence is the
 //! walk's verdict as a video frame's is, a picture sent whole counting as a
 //! keyframe and one of the tick alone as no verdict, a settle once the
-//! desktop has stopped, and every
-//! tile a RemoteFX Progressive tile whose first pass follows the dial,
-//! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), with
-//! no stream; a list that holds the dial is sent every still lossless. A
+//! desktop has stopped, every
+//! still a RemoteFX Progressive tile whose first pass follows the dial,
+//! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), and
+//! every region that moves a stream whose frames follow it, refined at the
+//! ceiling once still; a list that holds the dial is sent every still lossless. A
 //! slowed walk paces the updates as it paces the video's frames. What the
 //! encoder still owes once the desktop stops — a stream to end, a tile a
 //! stream carried to send as a PNG, a progressive tile's upgrade — is

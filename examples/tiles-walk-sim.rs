@@ -20,8 +20,9 @@
 //! long the browser takes to paint an update once it has it and the one before
 //! is painted, 5 ms, and `--jitter` up to how much more, at random.
 //! The walk starts at wlshare's dial ([`rfb::QUALITY`]) and never passes it,
-//! over every tile progressive, as a client that lists the tiles with no
-//! `WLSD` is sent them, and the passes are counted by kind on stderr;
+//! over every still progressive and the regions streamed at the walk's dial,
+//! as a client that lists the tiles with no `WLSD` is sent them, and the
+//! progressive passes are counted by kind on stderr;
 //! `--held` holds the dial there instead, as a client that lists `WLSD`
 //! beside the tiles, every still lossless and the regions streamed; and
 //! `--lossless` asks for every tile lossless, as a client that lists `WLSL`,

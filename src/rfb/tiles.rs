@@ -1,8 +1,9 @@
 //! The tiles encoding's server side: the desktop as lossless PNG tiles where it
 //! is still, and a video stream of its own for each region that moves, for a
 //! client on a link with room to spare — or, on a list whose dial walks, every
-//! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
-//! client that wants the walk more than a picture that ends lossless.
+//! still a RemoteFX Progressive tile and every region that moves a stream at
+//! the walk's dial, refined in the stream once still, for a client that
+//! wants the walk more than a picture that ends lossless.
 //!
 //! The encoding — the rectangles and their kinds — is
 //! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::video`]'s rather than in
@@ -15,14 +16,19 @@
 //!
 //! **The dial walks, where the list lets it.** wlshare's dial
 //! ([`crate::rfb::QUALITY`]) is a ceiling, and the session's walk of the link ([`crate::walk`]) moves
-//! the encoder below it ([`TilesEncoder::set_pace`]). A list whose dial walks is progressive: every tile, still or
-//! moving, a RemoteFX Progressive tile ([`progressive`],
-//! [`wlshare_proto::tiles::KIND_PROGRESSIVE`]), and no stream. A tile's first
+//! the encoder below it ([`TilesEncoder::set_pace`]). A list whose dial walks is progressive: every still, a tile
+//! no stream carries, a RemoteFX Progressive tile ([`progressive`],
+//! [`wlshare_proto::tiles::KIND_PROGRESSIVE`]), and every region that moves
+//! a stream whose frames are at the walk's dial, a P-frame from the frame
+//! before carrying a moving picture in fewer bytes than its tiles' wavelets
+//! would. A tile's first
 //! pass is at 75 while the walk stands at the ceiling and is not coarse, at
 //! 50 below it, and at a stage coarser still once the dial is under
 //! [`PROGRESSIVE_COARSE_BELOW`]; or whole, where that costs little more.
 //! Nothing is owed a lossless picture: a first pass below the full stage is
-//! owed its upgrades, and the debts are paid while the walk is not slowed: a link that
+//! owed its upgrades, and a still stream whose frames were below the ceiling
+//! a frame more at the ceiling, which refines it in place
+//! ([`TilesEncoder::refine`]); the debts are paid while the walk is not slowed: a link that
 //! is behind is not handed finer pictures of what it has already seen. An
 //! update of the tick alone, what the desktop stopping owes, is no verdict
 //! for the walk ([`Update`]). A list that holds the dial never walks: every
@@ -67,11 +73,12 @@
 //!
 //! **What a stream codes.** A region is an encoder over its rectangle alone,
 //! told the damage inside it as the video encoding's whole-desktop stream is, so
-//! the encoder's time follows the area that moves. It is 4:2:0 at wlshare's
-//! dial, held there: what a stream loses of a picture lasts
-//! only while the region moves, since it settles. The encoder is the
+//! the encoder's time follows the area that moves. It is 4:2:0, on a held
+//! list at wlshare's dial, held there, what a stream loses of a picture
+//! lasting only while the region moves, since it settles; on a walked list
+//! at the walk's dial, refined in the stream once still. The encoder is the
 //! [`H264Coder`] the daemon hands this one, its host's H.264 encoder, on a
-//! held list alone: the
+//! held or a walked list: the
 //! hardware's, where a region costs the processor its conversion alone, or
 //! else libx264 (`src/h264/x264.rs`). A coder that refuses a stream, or
 //! fails one midway, fails the encode: a region has no other codec.
@@ -91,10 +98,13 @@
 //! What a scroll or a drag uncovers is stills whatever its size, and so is
 //! the rest where the coder refuses the stream or every stream is taken.
 //!
-//! **It settles.** Every tile a stream carried is owed a PNG, and every
-//! progressive tile below the full stage its next upgrade, once it has been
-//! still for half a second, looked for every quarter of a second
-//! ([`TilesEncoder::tick_at`]), the coarsest and longest owed first, at most
+//! **It settles.** On a held list every tile a stream carried is owed a PNG;
+//! on a walked one every stream below the ceiling its refining frame, and
+//! every progressive tile below the full stage its next upgrade, where a
+//! stream that ended unrefined leaves its tiles owed the full stage; each
+//! once it has been still for half a second, looked for every quarter of a
+//! second ([`TilesEncoder::tick_at`]), the refining frames first, then the
+//! coarsest and longest owed, at most
 //! 320 tiles at a time. On a held list a look keeps to the link's pace, the
 //! most the picture was found sending over a second since something was
 //! last owed: its share of the look's interval, 32 KiB to 128 KiB, the looks
@@ -107,14 +117,14 @@
 //! found to take once it is still, a look cut short owed again at the next
 //! update's turn ([`TilesEncoder::delivered`]) — and sent after the stream's
 //! END, so a
-//! desktop that stops is lossless on a held list and at the full stage on a
-//! walked one.
+//! desktop that stops is lossless on a held list and on a walked one at the
+//! full stage, where a stream left it at the ceiling's quantizer.
 //!
 //! The measurements these rules were chosen by are the daemon crate's
 //! `examples/motion-bench.rs`, which plays the kept captures through this
 //! encoder and through the video encoding's, both on the daemon's H.264, and
-//! `examples/tiles-walk-sim.rs`, which walks the progressive tiles over a
-//! slow link.
+//! `examples/tiles-walk-sim.rs`, which walks the walked list's tiles and
+//! streams over a slow link.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
@@ -1057,9 +1067,51 @@ struct Live {
     started: bool,
     carried: bool,
     moving_at: Duration,
+    /// When the damage last fell inside it.
+    changed_at: Duration,
+    /// The dial its last frame was coded at: on a walked list, below the
+    /// ceiling until a frame at the ceiling refines it.
+    dial: u8,
+}
+
+/// What the streams ended in one place leave behind.
+#[derive(Default)]
+struct Ended {
+    /// What no frame of theirs carried, owed as stills.
+    unsent: Vec<Area>,
+    /// The tiles a walked list's streams left refined, at the ceiling: owed
+    /// nothing more.
+    settled: Vec<(u16, u16)>,
 }
 
 impl Live {
+    /// Whether its last frame leaves its tiles as a walked list settles them:
+    /// coded at the ceiling.
+    fn refined(&self, ceiling: u8) -> bool {
+        self.started && self.dial >= ceiling
+    }
+
+    /// Whether its motion has stopped for good: none for [`STREAM_IDLE`],
+    /// and on a walked list (`walked`) its tiles refined, which it waits for
+    /// while the walk holds its upgrades back.
+    fn stopped(&self, now: Duration, walked: bool, ceiling: u8) -> bool {
+        now.saturating_sub(self.moving_at) >= STREAM_IDLE
+            && (!walked || !self.started || self.dial >= ceiling)
+    }
+
+    /// End it: its END where its START went out, what no frame carried
+    /// owed, and on a walked list (`walked`), where it is refined, its tiles
+    /// settled.
+    fn close(self, walked: bool, ceiling: u8, out: &mut Out, ended: &mut Ended) {
+        if self.started {
+            out.end(self.id, self.area);
+        }
+        ended.unsent.extend(self.unsent());
+        if walked && self.refined(ceiling) {
+            ended.settled.extend(self.cells);
+        }
+    }
+
     /// The damage no frame carried, on the desktop: what the client holds of
     /// it is the stream's last frame from before it.
     fn unsent(&self) -> impl Iterator<Item = Area> + '_ {
@@ -2134,6 +2186,7 @@ impl TilesEncoder {
                     .filter_map(|change| live.area.intersect(*change))
                 {
                     live.dirty = true;
+                    live.changed_at = now;
                     live.pending.push(part.within(live.area));
                 }
             }
@@ -2615,6 +2668,13 @@ impl TilesEncoder {
         let moving = self.churn.moving(now);
         self.retune(&moving, now, out)?;
         let stride = self.stride;
+        // A held list's streams are at its dial; a walked list's follow the
+        // walk, as `WLSV`'s frames do.
+        let dial = if self.picture == TilesPicture::Held {
+            self.ceiling
+        } else {
+            self.quality
+        };
         for live in &mut self.live {
             live.carried = false;
             if !live.dirty {
@@ -2642,10 +2702,7 @@ impl TilesEncoder {
                 .and_then(|()| {
                     headed = true;
                     let header_at = out.header(live.area, header);
-                    Ok((
-                        live.stream.encode(!live.started, self.ceiling, out.out)?,
-                        header_at,
-                    ))
+                    Ok((live.stream.encode(!live.started, dial, out.out)?, header_at))
                 });
             match coded {
                 Ok((true, header_at)) => {
@@ -2654,6 +2711,7 @@ impl TilesEncoder {
                     live.dirty = false;
                     live.started = true;
                     live.carried = true;
+                    live.dial = dial;
                 }
                 // The coder made no frame: the stream owes its whole picture
                 // to the next.
@@ -2702,9 +2760,10 @@ impl TilesEncoder {
             return Ok(());
         }
         self.retuned_at = Some(now);
-        if self.picture != TilesPicture::Held {
+        if self.picture == TilesPicture::Lossless {
             return Ok(());
         }
+        let (walked, ceiling) = (self.picture == TilesPicture::Progressive, self.ceiling);
         let worthy = components(moving, self.stream_cells);
         let busy: HashSet<(u16, u16)> = moving
             .iter()
@@ -2732,17 +2791,14 @@ impl TilesEncoder {
         for live in &mut next {
             live.moving_at = now;
         }
-        let mut unsent = Vec::new();
+        let mut ended = Ended::default();
         for area in wanted {
             if next.iter().any(|live| live.area.contains(area)) {
                 continue;
             }
             if next.len() < MAX_STREAMS {
                 for live in old.extract_if(.., |live| live.area.intersect(area).is_some()) {
-                    if live.started {
-                        out.end(live.id, live.area);
-                    }
-                    unsent.extend(live.unsent());
+                    live.close(walked, ceiling, out, &mut ended);
                 }
                 let id = (0..=u8::MAX)
                     .find(|id| !next.iter().chain(&old).any(|live| live.id == *id))
@@ -2751,23 +2807,78 @@ impl TilesEncoder {
             }
         }
         for live in old {
-            let idle = now.saturating_sub(live.moving_at) >= STREAM_IDLE;
             let overlaps = next
                 .iter()
                 .any(|kept| kept.area.intersect(live.area).is_some());
-            if !idle && !overlaps && next.len() < MAX_STREAMS {
+            if !live.stopped(now, walked, ceiling) && !overlaps && next.len() < MAX_STREAMS {
                 next.push(live);
             } else {
-                if live.started {
-                    out.end(live.id, live.area);
-                }
-                unsent.extend(live.unsent());
+                live.close(walked, ceiling, out, &mut ended);
             }
         }
         self.live = next;
-        self.cover();
-        self.owe(&unsent);
+        self.closed(ended);
         Ok(())
+    }
+
+    /// On a walked list, each stream whose damage stopped [`CLEANUP_IDLE`]
+    /// ago, its last frame below the ceiling, coded once more at the ceiling:
+    /// a P-frame of the same picture, whose reference is the coarser one the
+    /// client holds, so it is the difference that refines it in place, as a
+    /// host refines a still AVC420 region within its stream rather than
+    /// sending it again in another codec. The stream then ends with its
+    /// tiles settled ([`Live::close`]).
+    fn refine(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        let (stride, ceiling) = (self.stride, self.ceiling);
+        for live in &mut self.live {
+            if !live.started
+                || live.dial >= ceiling
+                || now.saturating_sub(live.changed_at) < CLEANUP_IDLE
+            {
+                continue;
+            }
+            let at = usize::from(live.area.top) * stride + usize::from(live.area.left) * 4;
+            live.stream
+                .read_bgrx(&self.mirror[at..], stride, Some(&live.pending))
+                .map_err(TilesError::Region)?;
+            let from = out.out.len();
+            let header = TileHeader::Frame {
+                stream: live.id,
+                len: 0,
+            };
+            let header_at = out.header(live.area, header);
+            match live.stream.encode(false, ceiling, out.out) {
+                Ok(true) => {
+                    out.length(from, header_at, header)?;
+                    live.pending.clear();
+                    live.dirty = false;
+                    live.dial = ceiling;
+                }
+                Ok(false) => {
+                    out.out.truncate(from);
+                    out.count -= 1;
+                }
+                Err(e) => {
+                    out.out.truncate(from);
+                    out.count -= 1;
+                    return Err(TilesError::Region(e));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The live streams' tiles counted again after streams `ended`: the
+    /// tiles they left refined and no live stream carries owed nothing, and
+    /// what they did not carry owed as stills.
+    fn closed(&mut self, ended: Ended) {
+        self.cover();
+        for cell in ended.settled {
+            if !self.covered.contains(&cell) {
+                self.debts.remove(&cell);
+            }
+        }
+        self.owe(&ended.unsent);
     }
 
     /// What streams that ended did not carry, owed as stills where no stream
@@ -2798,6 +2909,11 @@ impl TilesEncoder {
         let cells: Vec<(u16, u16)> = tiles_of(area).map(|(cell, _)| cell).collect();
         for cell in &cells {
             self.debts.insert(*cell, now);
+            // The client holds the stream's picture there, no progressive
+            // coefficients: a tile's next pass is a first that is no difference.
+            if let Some(enc) = &mut self.progressive {
+                enc.forget_tile(*cell);
+            }
         }
         Ok(Live {
             id,
@@ -2809,6 +2925,8 @@ impl TilesEncoder {
             started: false,
             carried: false,
             moving_at: now,
+            changed_at: now,
+            dial: 0,
         })
     }
 
@@ -2878,19 +2996,15 @@ impl TilesEncoder {
             .expect("at most a few streams live");
         match self.build(id, around, now) {
             Ok(live) => {
-                let mut unsent = Vec::new();
+                let mut ended = Ended::default();
                 for old in self
                     .live
                     .extract_if(.., |old| old.area.intersect(around).is_some())
                 {
-                    if old.started {
-                        out.end(old.id, old.area);
-                    }
-                    unsent.extend(old.unsent());
+                    old.close(false, self.ceiling, out, &mut ended);
                 }
                 self.live.push(live);
-                self.cover();
-                self.owe(&unsent);
+                self.closed(ended);
                 Ok(true)
             }
             Err(_) => {
@@ -2963,19 +3077,21 @@ impl TilesEncoder {
     /// been still for [`COARSE_QUIET`]. Whether it stopped short of a tile
     /// that was ready.
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
-        let mut unsent = Vec::new();
+        let from = out.out.len();
+        let held_back = self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET;
+        let (walked, ceiling) = (self.picture == TilesPicture::Progressive, self.ceiling);
+        if walked && !held_back {
+            self.refine(now, out)?;
+        }
+        let mut ended = Ended::default();
         for live in self
             .live
-            .extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE)
+            .extract_if(.., |live| live.stopped(now, walked, ceiling))
         {
-            if live.started {
-                out.end(live.id, live.area);
-            }
-            unsent.extend(live.unsent());
+            live.close(walked, ceiling, out, &mut ended);
         }
-        self.cover();
-        self.owe(&unsent);
-        if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
+        self.closed(ended);
+        if held_back {
             return Ok(false);
         }
 
@@ -3026,7 +3142,7 @@ impl TilesEncoder {
         } else {
             SETTLE_BYTES_LEAST
         };
-        let from = out.out.len();
+        // A stream's refining frame is the tick's too.
         'runs: for (run, _) in runs {
             if out.out.len() - from >= budget {
                 more = true;
@@ -3515,7 +3631,7 @@ mod tests {
         TilesPicture::Held
     }
 
-    /// A list that lets the dial walk: every tile progressive.
+    /// A list that lets the dial walk: every still progressive, what moves a stream.
     fn progressive() -> TilesPicture {
         TilesPicture::Progressive
     }
@@ -3555,7 +3671,8 @@ mod tests {
 
     /// A region coder standing in for the daemon's H.264 one: its frames are
     /// the region's pixels, each sample's lowest bit dropped, so a stream's
-    /// picture is not lossless, behind a byte that says keyframe or not. It can
+    /// picture is not lossless, or its lowest four below wlshare's dial,
+    /// behind a byte that says keyframe or not. It can
     /// be told to refuse every stream, or to fail one after so many frames, at
     /// its read or at its encode.
     struct Fake {
@@ -3645,7 +3762,7 @@ mod tests {
         fn encode(
             &mut self,
             keyframe: bool,
-            _quality: u8,
+            quality: u8,
             out: &mut Vec<u8>,
         ) -> Result<bool, H264Error> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
@@ -3656,7 +3773,13 @@ mod tests {
             } else {
                 Fake::FRAME
             });
-            out.extend(self.picture.iter().map(|sample| sample & !1));
+            // Coarser below wlshare's dial, as a higher QP is.
+            let mask = if quality >= crate::rfb::QUALITY {
+                !1
+            } else {
+                !15
+            };
+            out.extend(self.picture.iter().map(|sample| sample & mask));
             self.frames += 1;
             Ok(true)
         }
@@ -3865,10 +3988,10 @@ mod tests {
         assert!(!encoder.owed());
     }
 
-    /// On a progressive list every rectangle is a progressive tile, a COPY,
-    /// a CACHED or a STORE: no PNG or stream, even where the desktop
-    /// moves. Each settles to the full stage, close to the desktop, and owes
-    /// nothing then.
+    /// On a progressive list every still is a progressive tile, beside a
+    /// COPY, a CACHED or a STORE: no PNG, and no stream where what moves is
+    /// fewer tiles than a region. Each settles to the full stage, close to
+    /// the desktop, and owes nothing then.
     #[test]
     fn a_progressive_list_is_sent_progressive_tiles_alone() {
         let (w, h) = (256u16, 128u16);
@@ -3890,7 +4013,7 @@ mod tests {
             page.psnr(&pixels)
         );
 
-        // Moving: no stream, every frame progressive tiles.
+        // Moving over two tiles: no stream, every frame progressive tiles.
         encoder.set_pace(40, false);
         let busy = Rect {
             x: 64,
@@ -3924,6 +4047,126 @@ mod tests {
             "settled close again: {:.1} dB",
             page.psnr(&pixels)
         );
+    }
+
+    /// Paint `video` with a new picture every 50 ms from `now`, `count` of
+    /// them, each read and encoded; when the last was.
+    fn play(
+        encoder: &mut TilesEncoder,
+        page: &mut Page,
+        pixels: &mut [u8],
+        video: Rect,
+        mut now: Duration,
+        count: u32,
+    ) -> Duration {
+        let w = encoder.size().0;
+        for n in 0..count {
+            paint(pixels, w, video, 600 + n);
+            step(encoder, page, pixels, Some(&[video]), now);
+            now += ms(50);
+        }
+        now - ms(50)
+    }
+
+    /// On a walked list what moves over a region's tiles is a stream, at the
+    /// walk's dial, and none of its tiles a progressive tile while it lives.
+    /// Once it is still, one frame more at the ceiling refines it in place,
+    /// and the stream ends with its tiles settled: no progressive pass over
+    /// them, nothing owed. At the ceiling its frames need no refining.
+    #[test]
+    fn a_walked_list_streams_what_moves_and_refines_it_in_the_stream() {
+        let (w, h) = (512u16, 256u16);
+        let mut pixels = soft(w, h, 0);
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+        assert!(!encoder.owed());
+
+        // Six tiles, more than a region's least.
+        let video = Rect {
+            x: 64,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        encoder.set_pace(40, false);
+        let last = play(&mut encoder, &mut page, &mut pixels, video, ms(100), 20);
+        assert_eq!((page.starts, page.ends), (1, 0), "one stream, live");
+        assert!(page.frames >= 10, "carried by its frames: {}", page.frames);
+        let (sent, frames) = (page.progressives, page.frames);
+        let coarse = page.distance(&pixels);
+        assert!(coarse > 0, "at the walk's dial, lossy");
+        settle(&mut encoder, &mut page, last);
+        assert_eq!(
+            (page.frames, page.ends),
+            (frames + 1, 1),
+            "one frame refines it, and the stream ends"
+        );
+        assert_eq!(page.progressives, sent, "no progressive pass over it");
+        assert!(!encoder.owed(), "its tiles settled");
+        assert!(
+            page.distance(&pixels) < coarse / 2,
+            "refined: {} from {coarse}",
+            page.distance(&pixels)
+        );
+
+        encoder.set_pace(crate::rfb::QUALITY, false);
+        let last = play(
+            &mut encoder,
+            &mut page,
+            &mut pixels,
+            video,
+            last + ms(2000),
+            20,
+        );
+        let (sent, frames) = (page.progressives, page.frames);
+        assert_eq!((page.starts, page.ends), (2, 1), "a second stream, live");
+        settle(&mut encoder, &mut page, last);
+        assert_eq!(
+            (page.frames, page.ends, page.progressives),
+            (frames, 2, sent),
+            "at the ceiling it ends with no frame more or progressive pass"
+        );
+        assert!(!encoder.owed());
+    }
+
+    /// While the walk is slowed a stream that stopped is not refined, as no
+    /// upgrade is paid, and lives on until the desktop has been still for
+    /// [`COARSE_QUIET`]: then it is refined, and ends.
+    #[test]
+    fn a_walked_stream_is_refined_once_a_slowed_walk_is_quiet() {
+        let (w, h) = (512u16, 256u16);
+        let mut pixels = soft(w, h, 0);
+        let mut encoder = TilesEncoder::new(w, h, progressive(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        step(&mut encoder, &mut page, &pixels, None, ms(0));
+        settle(&mut encoder, &mut page, ms(0));
+
+        let video = Rect {
+            x: 64,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        encoder.set_pace(20, true);
+        let last = play(&mut encoder, &mut page, &mut pixels, video, ms(100), 20);
+        let frames = page.frames;
+        let mut out = Vec::new();
+        for at in [600, 1200, 1900] {
+            out.clear();
+            let update = encoder.encode(last + ms(at), &mut out).unwrap();
+            page.draw(update.rects, &out);
+        }
+        assert_eq!(
+            (page.frames, page.ends),
+            (frames, 0),
+            "not refined or ended while slowed and lately changed"
+        );
+        let at = settle(&mut encoder, &mut page, last + ms(1900));
+        assert!(at >= last + COARSE_QUIET, "refined at {at:?}");
+        assert_eq!((page.frames, page.ends), (frames + 1, 1), "refined, ended");
+        assert!(!encoder.owed());
     }
 
     /// A lossless list is sent planar bitmaps alone, still or moving: what
