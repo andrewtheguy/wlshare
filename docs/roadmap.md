@@ -81,16 +81,12 @@ What is left of the lossless picture, every tile that changed a planar bitmap
 It is for a desktop client on a LAN, never a phone, a tablet or a page zDesk
 flags as tight on memory, none of which it accommodates, so a client decoder
 that takes more memory or more of the processor than RDP's planar codec is no
-cost against it. Where the desktop is still it is already
-about a ninth of the held picture's bytes or less; where it moves it is 6 to 12 times them,
-nearly all of its 15 GB over the samples
-([measured](tiles-performance.md#lossless-tiles)). Of the encoder's time over
-a video at 1920x1080 (lab1, 2026-11-05, `perf`, before the moving frames'
-zstd stepped past what it found no match at), that zstd was about half, its
-match search and its entropy coding each a quarter, the planar coder 29%,
-comparing the tiles 17% and the cache's hashes 6%. Each item is measured as
-the lossless tiles were: `motion-bench --tiles-only --lossless`
-over the samples on lab1, against [Lossless
+cost against it. Where the desktop is still it is already about a ninth of the
+held picture's bytes or less; where it moves it is 6 to 12 times them, nearly
+all of its 15 GB over the samples
+([measured](tiles-performance.md#lossless-tiles), with what the encoder's time
+went to). Each item is measured as the lossless tiles were: `motion-bench
+--tiles-only --lossless` over the samples on lab1, against [Lossless
 tiles](tiles-performance.md#lossless-tiles).
 
 ### Under consideration

@@ -1106,15 +1106,19 @@ the processor's time over every thread, the mean of the two runs:
 | flood | 44.0 → 36.1 s | 3,142 → 3,446 MB |
 | all but flood | 197 → 170 s (0.87×) | 15,064 → 15,027 MB |
 
-- **The moving frames' step.** A frame of its own now steps 8 bytes past
-  a place where the fast strategy found no match, its literals forced to
-  be Huffman coded still (zstd's `literalCompressionMode`, which a step
+- **The moving frames' step.** A frame of its own now steps 8 bytes past a
+  place where the fast strategy found no match, its literals forced to be
+  Huffman coded still (zstd's `literalCompressionMode`, which a step
   otherwise turns off): a moving picture's frame is its literals' entropy
-  coding more than its matches. Alone it took the processor from 197 s
-  to 169 over all but flood for 0.19% more bytes, a flat run of tiles, a
-  few hundred bytes either way, costing the most; with the table below, a
-  video at 1920×1080 is 9.9 ms a frame where it was 11.6, its 95th
-  percentile 12.6 where it was 15.3, and at 4K 39.2 where it was 45.9. The still stream keeps every look: on a page of text a step of 2
+  coding more than its matches. Before it, of the encoder's time over a
+  video at 1920×1080 by `perf`, the frames' zstd was about half, its match
+  search and its entropy coding each a quarter, the planar coder 29%,
+  comparing the tiles 17% and the cache's hashes 6%. Alone it took the
+  processor from 197 s to 169 over all but flood for 0.19% more bytes, a
+  flat run of tiles, a few hundred bytes either way, costing the most; with
+  the table below, a video at 1920×1080 is 9.9 ms a frame where it was 11.6,
+  its 95th percentile 12.6 where it was 15.3, and at 4K 39.2 where it was
+  45.9. The still stream keeps every look: on a page of text a step of 2
   cost 3 to 4% more bytes.
 - **The still stream's table.** The 4096-entry table it shared with the
   frames forgets a match from more than a few thousand places back, so the
