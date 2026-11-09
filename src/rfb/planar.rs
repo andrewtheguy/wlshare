@@ -526,11 +526,34 @@ mod tests {
         let (pixels, stride) = picture(w, h, f);
         let body = pack(&pixels, stride, w as u16, h as u16).unwrap();
         assert_eq!(
-            decoder::unpack(&body, w, h).unwrap_or_else(|e| panic!("{w}x{h}: {e}")),
+            decoder::unpack_each(&[(&body, w, h)])
+                .pop()
+                .expect("a result for the one body")
+                .unwrap_or_else(|e| panic!("{w}x{h}: {e}")),
             rgb(&pixels, stride, w, h),
             "{w}x{h}"
         );
         body
+    }
+
+    /// A body read as zDesk's page reads it is one zstd frame and nothing
+    /// else: not a skippable frame or another frame after it, nor a skippable
+    /// frame before it, which the decoders would read past.
+    #[test]
+    fn a_body_of_more_than_its_frame_is_refused() {
+        let body = packed(17, 5, |x, y| [x as u8, y as u8, 7]);
+        let skippable = [&0x184D_2A50u32.to_le_bytes()[..], &1u32.to_le_bytes(), &[0]].concat();
+        let after = [&body[..], &skippable].concat();
+        let two = [&body[..], &body].concat();
+        let before = [&skippable[..], &body].concat();
+        let read = decoder::unpack_each(&[
+            (&after, 17, 5),
+            (&two, 17, 5),
+            (&before, 17, 5),
+            (&body, 17, 5),
+        ]);
+        let refused: Vec<bool> = read.iter().map(Result::is_err).collect();
+        assert_eq!(refused, [true, true, true, false]);
     }
 
     /// A body is one zstd frame of the bitmap, read back by ruzstd-decompress: every

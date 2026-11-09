@@ -255,6 +255,21 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             match msg {
                 ServerMsg::Update(rects) => {
                     updates += 1;
+                    // An update's planar bodies read together, as the page reads a batch's.
+                    let mut unpacked = planar_decoder::unpack_each(
+                        &rects
+                            .iter()
+                            .filter_map(|rect| match &rect.body {
+                                RectBody::Tiles(TileBody::Planar(body)) => Some((
+                                    &body[..],
+                                    usize::from(rect.width),
+                                    usize::from(rect.height),
+                                )),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .into_iter();
                     for rect in rects {
                         let place = (rect.x, rect.y, rect.width, rect.height);
                         match rect.body {
@@ -287,11 +302,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 progressive_bytes += block.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Planar(body)) => {
-                                planar_decoder::unpack(
-                                    &body,
-                                    usize::from(rect.width),
-                                    usize::from(rect.height),
-                                )?;
+                                unpacked.next().expect("a result for every planar body")?;
                                 planars += 1;
                                 planar_bytes += body.len() as u64;
                             }

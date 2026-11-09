@@ -47,8 +47,9 @@
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
 //! by the client's parser, a PNG by the `png` crate and a planar bitmap by
-//! the tests' reader (`src/rfb/planar_decoder.rs`, its zstd frame by
-//! ruzstd-decompress's streaming decoder and the still stream by ruzstd-decompress's
+//! the tests' reader (`src/rfb/planar_decoder.rs`, an update's zstd frames
+//! side by side by ruzstd-decompress's `decode_each_parallel`, as the page
+//! reads them, and the still stream by ruzstd-decompress's
 //! `FrameDecoder` a block at a time, the fork handing out its newest bytes as
 //! soon as their blocks are decoded)
 //! — and compared with the
@@ -384,6 +385,19 @@ impl Page {
         if used != wire.len() {
             return Err("bytes past the update's rectangles".into());
         }
+        // An update's planar bodies read together, as the page reads a batch's.
+        let mut planars = planar_decoder::unpack_each(
+            &rects
+                .iter()
+                .filter_map(|rect| match &rect.body {
+                    RectBody::Tiles(TileBody::Planar(body)) => {
+                        Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_iter();
         for rect in rects {
             let RectBody::Tiles(body) = rect.body else {
                 return Err("a rectangle of another encoding".into());
@@ -488,7 +502,7 @@ impl Page {
                 }
                 TileBody::Planar(body) => {
                     sent.planar += body.len() as u64;
-                    let rgb = planar_decoder::unpack(&body, w, h)?;
+                    let rgb = planars.next().expect("a result for every planar body")?;
                     self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Still(body) => {
