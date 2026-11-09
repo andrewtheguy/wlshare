@@ -1143,3 +1143,92 @@ the processor's time over every thread, the mean of the two runs:
   the zstd's time. A decoded video's frames are close but seldom byte for
   byte the same, which only a prediction that codes the difference, as a
   video codec's does, takes off.
+
+## Other coders for the lossless tiles' moving runs
+
+What might code a moving run in place of planar and its zstd frame, measured
+on 2026-11-09 for the roadmap's [Lossless tiles](roadmap.md#lossless-tiles);
+none of it is in the daemon. A scratch bench on one thread, over the
+1920×1080 samples: every run the encoder codes, a row of changed tiles at a
+time, the tiles compared with the frame before, coded by the daemon's
+`planar::pack` and by each coder, each run decoded again and compared with
+what went in. A coder's time includes cutting the run to R,G,B, which
+planar's does not. lab1 (four cores of EPYC Rome), alone, wlshare at 0.0.122.
+Archived in the artifacts as `bench/lossless-codecs-20261109/`, beside
+`bench/lossless-codecs-20261105/`, which first measured JPEG-LS.
+
+Bytes and encoding time, each against planar's, the mixed session over every
+run, still or moving:
+
+| Capture | JPEG-LS | HTJ2K | JPEG XL, effort 1 | Median, zstd | Median by context, zstd |
+|---|---:|---:|---:|---:|---:|
+| video | 0.55, 13.5× | 0.62, 5.1× | 0.65, 5.2× | 0.64, 2.1× | 0.61, 3.8× |
+| walk | 0.56, 13.3× | 0.64, 5.0× | 0.66, 5.1× | 0.66, 2.0× | 0.62, 3.8× |
+| window | 0.56, 14.5× | 0.65, 6.0× | 0.65, 6.6× | 0.64, 2.3× | 0.61, 4.6× |
+| mixed | 0.62, 12.5× | 0.74, 5.1× | not exact | 0.71, 2.1× | 0.67, 4.2× |
+| browser | 1.21, 6.4× | 2.78, 7.3× | 1.23, 11.6× | 0.90, 4.3× | 0.96, 9.1× |
+| drag | 1.55, 5.8× | 3.19, 7.0× | 1.67, 13.7× | 0.76, 3.6× | 1.05, 7.6× |
+| uncover | 1.47, 5.6× | 3.06, 6.3× | 1.64, 14.3× | 0.80, 3.3× | 1.05, 7.0× |
+| terminal | 1.96, 5.9× | 4.01, 6.9× | 2.14, 19.3× | 1.11, 4.0× | 1.23, 7.9× |
+
+Every run of every coder came back exact but five of JPEG XL's in the mixed
+session, below. A video is 4.7 ms a frame by planar, 9.7 by the median and
+63 by JPEG-LS, and decoded in native code in 9.9 ms by the median, 12 by
+HTJ2K, 22 by the median's contexts, 35 by JPEG XL and 49 by JPEG-LS.
+
+- **A median predictor ahead of zstd.** G, R−G and B−G as planes, each
+  sample's residual from the median of the sample left, the one above and
+  left + above − above-left, which is JPEG-LS's predictor, a zstd frame a
+  component with the parameters a planar bitmap's frame has. Two thirds of
+  planar's bytes where the desktop moves for twice its time, nine points
+  short of JPEG-LS for a sixth of its time; and where the desktop is a
+  page, each run framed alone, smaller than planar but on the terminal,
+  for 3.3 to 4.3 times planar's time, which codes a row the same as the row
+  above at once. The still stream, whose matches are across bitmaps, was
+  not measured with it. Only the encoder's inner loop was written for
+  speed, a row at a time from the pixels themselves.
+- **Its residuals by context.** The same residuals in eight streams a
+  component by how busy a sample's neighbours are (|left − above-left| +
+  |above − above-left| + |above-right − above|, cut at 0, 2, 5, 10, 20, 40
+  and 80), each stream a zstd frame: three or four points fewer where the
+  desktop moves for nearly twice the median's time, and more than the
+  median alone on a page. Under an adaptive table for each stream in place
+  of zstd's Huffman, whose shortest code is a bit, the residuals' bits come
+  to 0.58 of planar's bytes on the video, 0.59 on the walk and the window
+  and 0.65 on the mixed session, counted and never coded; under one table
+  a component, 0.64, 0.66, 0.69 and 0.73.
+- **JPEG-LS.** CharLS 2.4.2 (Debian's `libcharls-dev`), a line at a time,
+  with its HP1 colour transform; HP2 and HP3 came to the same, a sample at
+  a time to 0.54 of the video for 14 times planar's time, and no transform
+  to 0.69 (measured 2026-11-05). The fewest bytes where the desktop moves
+  and the most time, and 1.2 to 2 times planar's bytes on a page, which
+  zstd's matches of what repeats take off. A run starts over what it has
+  learned of its contexts: the video's frames whole are 81.9 MB and in
+  strips a tile high, each coded alone, 83.4, 1.8% more, as the walk's are;
+  in strips 768 wide 2.5%, as single tiles 6.7%, and the browser's 12%, 16%
+  and 57% (this machine, bytes alone).
+- **HTJ2K.** OpenJPH 0.21.2 (`libopenjph-dev`), reversible, 64×64 blocks,
+  five decompositions; three were 1% more. The median's bytes where the
+  desktop moves for two and a half times its time, and 2.8 to 4 times
+  planar's bytes on a page. It decodes in a quarter of JPEG-LS's time.
+- **JPEG XL.** libjxl 0.11.2 (`libjxl-dev`), lossless at effort 1, its fast
+  path. The median's bytes for two and a half times its time, slower to
+  decode than to code, and not lossless: five of the mixed session's 47,062
+  runs, each one to three tiles, came back with one pixel wrong, and
+  libjxl's own `cjxl` and `djxl` do the same with them, where effort 2 is
+  exact. Every run of the other seven samples was exact; the mixed
+  session's bytes with those five are 0.72 of planar's. At effort 2 the
+  video is 0.59 for 11 times planar's time (this machine).
+- **Whole frames, by ffmpeg.** The video's 120 frames, still picture and
+  all, by ffmpeg 7.1 on one thread (this machine), against planar's 148 MB
+  over its runs: FFV1 78 to 81 MB in the time of ffmpeg's JPEG-LS, which
+  with no transform is 102; x264 lossless at 4:4:4 101 to 118, its
+  prediction from the frame before 8% of that, and at ultrafast a quarter
+  of that time; lossless WebP 106, PNG 125, QOI 136. Ut Video and MagicYUV,
+  Huffman coders of a median's residuals, are 153 and 158 whether the table
+  is the frame's or a slice's, where the same residuals over the runs are
+  0.64 of planar's: a table's shortest code is a bit, paid for every
+  sample of the still picture, 145 of the frames' 249 Mpixel, which the
+  runs leave out. ffmpeg's JPEG-LS `-pred` is the error a sample may be
+  left with, not a predictor: at 1 it is 65 MB and off by one in a third of
+  its samples.
