@@ -1,7 +1,9 @@
 # Roadmap
 
 Work that is planned but not started. Once something here is done, its design
-moves to [`architecture.md`](architecture.md) and it comes off this list. What
+moves to [`architecture.md`](architecture.md) and it comes off this list; once
+it is measured and set aside, it comes off too, its figures kept in the
+measurements' documents. What
 a section puts *under consideration* is not planned: it is held back by what
 it costs, which it says, until that is settled.
 
@@ -71,31 +73,6 @@ configuration (a 1.1, a 1.7) reaches the daemon rounded to 1/256.
   `unbound-pointer`, e2e-tested on labwc and Sway with a declared 2.75 and a
   configured 1.1 and 1.7, and held back as more than 1x and 2x need; it is
   taken up when zDesk offers a fractional density.
-
-## The tiles' cache
-
-What is left of what RDP's graphics pipeline does without AVC, once the
-client keeps a cache of tiles ([What it was shown is a cached
-tile](architecture.md#the-tiles-encoding)). Each is measured as the cache
-was: `tile-recurrence` for what a rule would serve, then the tiles-only
-passes of motion-bench against [the cache's
-rows](tiles-performance.md#the-cache).
-
-### Measured and set aside
-
-So not tried again as they were.
-
-- **A larger cache kept as the coded stills.** 16384 slots serve 20% of the
-  mixed session's stills at 2880x1800@2 where 4096 serve 14%, but stills are
-  little of what a session sends beside its regions: held, the larger cache
-  took 1.4% off that session and 0.47% off every sample; lossless, nothing;
-  walked, the frame rate and the link within what two runs differ by
-  ([measured](tiles-performance.md#the-cache)). As pixels they are 256 MiB
-  in a tab, and only a held list's PNGs could be kept as the stills that
-  were sent: a walked tile's first pass is often a difference from what the
-  client held, and a still in the lossless still stream decodes only after
-  the bodies before it, so for those the page would code each tile it
-  stores again, read back from the canvas.
 
 ## Progressive tiles
 
@@ -177,20 +154,3 @@ effort 1 89, x264 lossless at 4:4:4 101 to 118 (its prediction from the frame
 before 8% of that), lossless WebP 106, PNG 125. FFV1 took as long as ffmpeg's
 JPEG-LS for a fifth more bytes, and x264 at ultrafast a quarter of the time
 for 1.8 times them.
-
-### Measured and set aside
-
-So not tried again as they were.
-
-- **The planes as they are.** A bitmap goes as its planes untouched where
-  the planes' segments come to more, which would have thrown away the rows'
-  differences on a video; over the samples no bitmap did.
-- **A larger table, window or level for the moving frames.** A table of
-  2^16, a 1 MiB window or level 3: 1% fewer bytes at most, for 1.7 to 5
-  times the zstd's time.
-- **The frame before, by zstd.** A zstd stream for each tile row, each
-  bitmap matched against the rows' last, with a 2 MiB window and a table of
-  2^17 to 2^19: 1 to 3% off a video, a walk or a window, for 3 to 5 times
-  the zstd's time. A decoded video's frames are close but seldom byte for
-  byte the same, which only a prediction that codes the difference, as a
-  video codec's does, takes off.

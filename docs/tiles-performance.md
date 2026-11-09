@@ -1038,3 +1038,18 @@ the processor's time over every thread, the mean of the two runs:
   0.0.119's table it cost the mixed session 4% more of the processor
   (76.4 → 79.4 s, the step in both), the stream being coded in order on
   the encoder's thread, and the stills alone nothing.
+
+**Measured and not taken**, each over the samples as the steps above:
+
+- **The planes as they are.** A bitmap sent as its planes untouched where
+  the planes' segments come to more would have thrown away the rows'
+  differences on a video; over the samples no bitmap did.
+- **A larger table, window or level for the moving frames.** A table of
+  2^16, a 1 MiB window or level 3: 1% fewer bytes at most, for 1.7 to 5
+  times the zstd's time.
+- **The frame before, by zstd.** A zstd stream for each tile row, each
+  bitmap matched against the rows' last, with a 2 MiB window and a table of
+  2^17 to 2^19: 1 to 3% off a video, a walk or a window, for 3 to 5 times
+  the zstd's time. A decoded video's frames are close but seldom byte for
+  byte the same, which only a prediction that codes the difference, as a
+  video codec's does, takes off.
