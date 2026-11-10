@@ -7,7 +7,7 @@
 //! ```text
 //! tiles-walk-sim CAPTURE [CAPTURE...] [--link MBPS[,MBPS@SECS...]] [--rtt MS]
 //!                [--hop MS] [--paint MS] [--jitter MS]
-//!                [--held | --lossless | --median] [--libx264] [--encode MS]
+//!                [--held | --lossless] [--libx264] [--encode MS]
 //!                [--timeline FILE]
 //! ```
 //!
@@ -25,13 +25,13 @@
 //! `--held` holds the dial there instead, as a client that lists `WLSD`
 //! beside the tiles, every still lossless and the regions streamed; and
 //! `--lossless` asks for every tile lossless, as a client that lists `WLSL`,
-//! planar still or moving, the walk slowing its frames alone, and `--median`
-//! for that with what moves by the median predictor, as one that lists `WLMD`.
+//! planar where it is still and a median predictor's residuals where it
+//! moves, the walk slowing its frames alone.
 //! `--timeline` writes every update as a JSON object a line: `t_ms`,
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,
 //! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs,
-//! progressive tiles, planar bitmaps and median residuals, and of its streams' frames), `encode_ms`, `cpu_ms` (the
+//! progressive tiles, planar stills and median residuals, and of its streams' frames), `encode_ms`, `cpu_ms` (the
 //! processor time of that encode, on every thread, which `encoder_cpu_pct`
 //! sums), `delivery_ms`,
 //! `latency_ms`, `psnr_db` (how close it left the page to the desktop it was
@@ -86,7 +86,7 @@ mod decode;
 #[allow(dead_code)]
 #[path = "../src/h264/mod.rs"]
 mod h264;
-// The tests' reader of the lossless tiles' bodies.
+// The tests' reader of the lossless tiles' still stream.
 #[path = "../src/rfb/planar_decoder.rs"]
 mod planar_decoder;
 // And of their moving tiles' by the median predictor.
@@ -125,7 +125,7 @@ const FRAMING: usize = 4 + 13;
 /// An RFB rectangle's header, ahead of each tiles body.
 const RECT_HEADER: usize = 12;
 
-/// The bodies of an update's stills, PNG, progressive, planar, median and the still stream's, and of its streams' frames.
+/// The bodies of an update's stills, PNG, progressive, median and the still stream's, and of its streams' frames.
 fn split(out: &[u8]) -> Result<(usize, usize), Error> {
     let (mut stills, mut streams, mut at) = (0, 0, 0);
     while at < out.len() {
@@ -135,7 +135,6 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
         let body = match header {
             TileHeader::Png { len }
             | TileHeader::Progressive { len }
-            | TileHeader::Planar { len }
             | TileHeader::Median { len }
             | TileHeader::Still { len } => {
                 stills += len;
@@ -171,7 +170,6 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             | TileHeader::Start { len, .. }
             | TileHeader::Frame { len, .. }
             | TileHeader::Progressive { len }
-            | TileHeader::Planar { len }
             | TileHeader::Median { len }
             | TileHeader::Still { len } => len,
             TileHeader::End { .. }
@@ -279,20 +277,7 @@ impl Page {
         let Some((ServerMsg::Update(rects), _)) = client::parse(&wire)? else {
             return Err("an update the client cannot read".into());
         };
-        // An update's planar bodies read together, as the page reads a batch's.
-        let mut planars = planar_decoder::unpack_each(
-            &rects
-                .iter()
-                .filter_map(|rect| match &rect.body {
-                    RectBody::Tiles(TileBody::Planar(body)) => {
-                        Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_iter();
-        // And its median bodies, as the page reads them.
+        // An update's median bodies read together, as the page reads a batch's.
         let mut medians = median_decoder::unpack_each(
             &rects
                 .iter()
@@ -320,10 +305,6 @@ impl Page {
                     let info = reader.next_frame(&mut buf)?;
                     let bgrx = Self::rgb(&buf[..info.buffer_size()]);
                     self.paste(place, &bgrx, w);
-                }
-                TileBody::Planar(_) => {
-                    let rgb = planars.next().expect("a result for every planar body")?;
-                    self.paste(place, &Self::rgb(&rgb), w);
                 }
                 TileBody::Median(_) => {
                     let rgb = medians.next().expect("a result for every median body")?;
@@ -467,7 +448,6 @@ fn main() -> Result<(), Error> {
             "--hop" => hop = millis(&arg, value()?)?,
             "--held" => picture = TilesPicture::Held,
             "--lossless" => picture = TilesPicture::Lossless,
-            "--median" => picture = TilesPicture::Median,
             "--libx264" => libx264 = true,
             "--encode" => encode_ms = Some(millis(&arg, value()?)?),
             "--paint" => paint = millis(&arg, value()?)?,
@@ -688,7 +668,6 @@ fn main() -> Result<(), Error> {
             TilesPicture::Held => "tiles",
             TilesPicture::Progressive => "progressive",
             TilesPicture::Lossless => "lossless",
-            TilesPicture::Median => "median",
         },
         f64::from(frames) / span,
         qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,

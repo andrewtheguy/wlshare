@@ -3,7 +3,7 @@
 //! gateway, the way `video-sink` checks the video encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--held | --lossless | --median]
+//! tiles-sink ADDR --size WxH [--held | --lossless]
 //!            [--seconds N] [--streams DIR] [--keys]
 //! ```
 //!
@@ -17,12 +17,11 @@
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
 //! client's parser; a PNG, a progressive tile (all a list whose dial walks
-//! is sent; `--held` holds it, for PNGs and streams), a planar bitmap (all a
-//! lossless list is sent, `--lossless`), a median predictor's residuals (what
-//! one that asks for the predictor is sent where the desktop moves,
-//! `--median`), a copy and a region's START are
-//! counted, a copy's source and a progressive tile's tile checked, a planar
-//! or a median body read back whole at its rectangle's size, and with
+//! is sent; `--held` holds it, for PNGs and streams), a still and a median
+//! predictor's residuals (all a lossless list is sent, `--lossless`), a copy
+//! and a region's START are counted, a copy's source and a progressive
+//! tile's tile checked, a still or a median body read back whole at its
+//! rectangle's size, and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -47,7 +46,7 @@ use crate::rfb::{
     ENCODING_CONTINUOUS_UPDATES, ENCODING_CURSOR, ENCODING_EXTENDED_DESKTOP_SIZE, ENCODING_FENCE,
 };
 
-// The tests' reader of the lossless tiles' bodies.
+// The tests' reader of the lossless tiles' still stream.
 #[path = "../src/rfb/planar_decoder.rs"]
 mod planar_decoder;
 // And of their moving tiles' by the median predictor.
@@ -66,8 +65,8 @@ struct Args {
     streams: Option<String>,
     keys: bool,
     /// The picture asked for: progressive tiles unless `--held` (PNGs and
-    /// streams), `--lossless` (planar tiles) or `--median` (planar tiles,
-    /// what moves a median predictor's residuals).
+    /// streams) or `--lossless` (planar stills, what moves a median
+    /// predictor's residuals).
     picture: TilesPicture,
 }
 
@@ -102,7 +101,7 @@ fn size(s: &str) -> Result<(u16, u16), String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held | --lossless | --median] [--seconds N] [--streams DIR] [--keys]")?;
+    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held | --lossless] [--seconds N] [--streams DIR] [--keys]")?;
     let mut parsed = Args {
         addr,
         size: (0, 0),
@@ -122,7 +121,6 @@ fn parse_args() -> Result<Args, String> {
             "--keys" => parsed.keys = true,
             "--held" => parsed.picture = TilesPicture::Held,
             "--lossless" => parsed.picture = TilesPicture::Lossless,
-            "--median" => parsed.picture = TilesPicture::Median,
             other => return Err(format!("{other}: unknown flag")),
         }
     }
@@ -207,8 +205,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
-    let (mut progressives, mut progressive_bytes, mut planars, mut planar_bytes) =
-        (0u64, 0u64, 0u64, 0u64);
+    let (mut progressives, mut progressive_bytes) = (0u64, 0u64);
     let (mut medians, mut median_bytes) = (0u64, 0u64);
     let (mut stills, mut still_bytes, mut still_stream) =
         (0u64, 0u64, planar_decoder::StillReader::default());
@@ -263,22 +260,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             match msg {
                 ServerMsg::Update(rects) => {
                     updates += 1;
-                    // An update's planar bodies read together, as the page reads a batch's.
-                    let mut unpacked = planar_decoder::unpack_each(
-                        &rects
-                            .iter()
-                            .filter_map(|rect| match &rect.body {
-                                RectBody::Tiles(TileBody::Planar(body)) => Some((
-                                    &body[..],
-                                    usize::from(rect.width),
-                                    usize::from(rect.height),
-                                )),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .into_iter();
-                    // And its median bodies, as the page reads them.
+                    // An update's median bodies read together, as the page reads a batch's.
                     let mut unpredicted = median_decoder::unpack_each(
                         &rects
                             .iter()
@@ -323,11 +305,6 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 progressives += 1;
                                 progressive_bytes += block.len() as u64;
-                            }
-                            RectBody::Tiles(TileBody::Planar(body)) => {
-                                unpacked.next().expect("a result for every planar body")?;
-                                planars += 1;
-                                planar_bytes += body.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Median(body)) => {
                                 unpredicted
@@ -428,7 +405,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         if elapsed > second {
             second = elapsed;
             eprintln!(
-                "tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
+                "tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
                 live.len()
             );
         }
@@ -446,7 +423,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     eprintln!(
-        "tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {planars} planar {planar_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
+        "tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
     );
 
     Ok(())

@@ -16,8 +16,7 @@ a client that asks, as zDesk does for its browsers, as one H.264 stream whose
 quality and frame rate follow the link, or for a link with room to spare as lossless PNG
 tiles with a video stream for each region that moves, each H.264 by the host's hardware or libx264,
 or, following the link, as RemoteFX Progressive tiles, still or moving (alpha),
-or for a LAN as lossless planar tiles, still or moving, as a Windows host draws under its Lossless policy (experimental),
-or as those with what moves coded by a median predictor instead, in about two thirds of the bytes (experimental) — injects input through the virtual keyboard and pointer protocols,
+or for a LAN as lossless tiles, still or moving, planar where the desktop is still and by a median predictor where it moves, with no H.264 stream as a Windows host draws under its Lossless policy (experimental) — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
 framebuffer is drawn at, which standard RFB cannot, so a `scale 2` output is
@@ -59,8 +58,7 @@ login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; zDesk asks for both,
 and for the video stream, or with the picker's *Tiles (alpha)*, *Settles to
-lossless*, *Fully lossless (experimental)* or *Fully lossless, median predictor
-(experimental)* the tiles, on a
+lossless* or *Fully lossless (experimental)* the tiles, on a
 `vnc` target with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
 that zDesk asks for in a session on such a target started with sound: while it

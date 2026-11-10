@@ -37,14 +37,14 @@ def mb(n):
 def bench_section(name, rows):
     out = [f"## {name}", "", "| capture | coder | frames | seconds | CPU ms | ms/frame | p95 ms/frame | MB | Mbit/s | while it ran | frames lossless | ends at | detail |", "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|"]
     for r in rows:
-        coder = {"wlsv": "WLSV", "tiles": "tiles", "lossless": "lossless tiles", "median": "lossless tiles, median"}[r["coder"]]
+        coder = {"wlsv": "WLSV", "tiles": "tiles", "lossless": "lossless tiles"}[r["coder"]]
         rate = f"{r['bytes'] * 8 / r['seconds'] / 1e6:.1f}" if r["seconds"] > 0 else "–"
         lossless = 100 * r["lossless_frames"] / r["frames"] if r["frames"] else 0
         ends = "lossless" if r["end_off"] == 0 else f"{r['end_off']} px off, {db(r['end_mse'])}"
         if r["coder"] == "wlsv":
             detail = f"{r['keyframes']} keyframes"
-        elif r["coder"] in ("lossless", "median"):
-            detail = f"framed {mb(r['planar'] + r.get('median', 0)):.2f} MB, stream {mb(r.get('still', 0)):.2f} MB"
+        elif r["coder"] == "lossless":
+            detail = f"median {mb(r['median']):.2f} MB, stream {mb(r['still']):.2f} MB"
         else:
             detail = f"PNG {mb(r['png']):.2f} MB, H.264 {mb(r['video']):.2f} MB in {r['streams']} streams; {'settled' if r['settled'] else 'NOT settled'} in {r['tail_s']:.2f} s after, {r['tail_cpu_ms']:.1f} ms"
         out.append(f"| {r['capture']} | {coder} | {r['frames']} | {r['seconds']:.1f} | {r['cpu_ms']:.0f} | {r['frame_ms']:.2f} | {r['p95_ms']:.2f} | {mb(r['bytes']):.2f} | {rate} | {db(r['held_mse'])} | {lossless:.0f}% | {ends} | {detail} |")
@@ -71,7 +71,7 @@ def walk_section(rows):
         ceiling = r["quality"] if video else r["ceiling"]
         mean, p10 = (ceiling, ceiling) if video else (r["motion_q_mean"], r["motion_q_p10"])
         picture = "WLSV" if video else r["picture"]
-        walk = "lossless" if r["picture"] in ("lossless", "median") else "held" if r.get("held") else "walked"
+        walk = "lossless" if r["picture"] == "lossless" else "held" if r.get("held") else "walked"
         out.append(f"| {r['capture']} | {picture} | {link} | {r['rtt_ms']:g} | {ceiling} | {walk} | {r['fps']:.1f} | {mean:.1f} | {p10:.0f} | {r['shown_mean_ms']:.0f} | {r['shown_p50_ms']:.0f} | {r['shown_p95_ms']:.0f} | {r['shown_max_ms']:.0f} | {r['delivery_p50_ms']:.0f} | {r['delivery_p95_ms']:.0f} | {r['mbps']:.2f} | {r['moves']} | {r['downs']} |")
     return out
 

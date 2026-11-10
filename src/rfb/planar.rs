@@ -1,11 +1,11 @@
-//! The lossless tiles' coding: RDP 6.0 bitmap compression, the planar codec
-//! of RDP's graphics pipeline ([MS-RDPEGDI] 2.2.2.5.1, [MS-RDPEGFX]
+//! The lossless tiles' still coding: RDP 6.0 bitmap compression, the planar
+//! codec of RDP's graphics pipeline ([MS-RDPEGDI] 2.2.2.5.1, [MS-RDPEGFX]
 //! `RDPGFX_CODECID_PLANAR`), which a Windows host whose policy asks for a
 //! lossless picture draws everything with, each bitmap then zstd, as the
-//! host's own bulk compression wraps its pipeline: one frame of its own
-//! ([`pack`]), a [`wlshare_proto::tiles::KIND_PLANAR`] rectangle's body, or
-//! the still stream's next bytes ([`StillStream`]), a
-//! [`wlshare_proto::tiles::KIND_STILL`]'s.
+//! host's own bulk compression wraps its pipeline: the still stream's next
+//! bytes ([`StillStream`]), a [`wlshare_proto::tiles::KIND_STILL`]
+//! rectangle's body. What moves is the median predictor's
+//! ([`super::median`]).
 //!
 //! A rectangle's pixels are cut into a red, a green and a blue plane, and
 //! each plane is coded row by row: the top row as it is, every row below as
@@ -22,28 +22,19 @@
 //! instead, with no `RLE` flag and the padding byte the format ends that
 //! form with.
 //!
-//! **zstd.** Where the desktop moves, each bitmap is one zstd frame,
-//! depending on no frame before it, so a rectangle is packed on any thread
-//! and read on its own: the planes' runs leave a text's or a window's
-//! repeats and a photograph's skewed bytes, which the frame takes a further
-//! 1.5 to 10 times off, and more where a rectangle repeats itself. Where it
-//! is still, each is the still stream's, one zstd stream across the
+//! **zstd.** Each bitmap is the still stream's: one zstd stream across the
 //! session flushed at each bitmap, with an 8 MiB window and a larger table
-//! than a frame's: a page, a terminal or a menu shown again is matched
-//! against what it already carried, a half to seven eighths more off. It is
-//! state both ends keep, coded in order and started over together. Its
-//! parameters are level 1's fast strategy with a smaller table and longer
-//! matches ([`zstd_parameters`]):
-//! a moving picture's frames are the literals' entropy coding more than its
-//! matches, and these coded a video's nearly twice as fast as level 1 for
-//! 1.67 times off the planes against 1.69, a page of text 4.9 times against
-//! 5.2. Levels below 1, which code no literal, gave a moving picture back
-//! almost nothing over the planes, and above it cost twice the time for a
-//! percent. A frame of its own also steps over most of the places the fast
-//! strategy would look for a match, its literals still Huffman coded
-//! ([`compressor`]): what a level below 1 does, but for the literals,
-//! a sixth off a moving picture's processor for under half a percent more
-//! bytes, where the still stream, a page's matches, keeps every look.
+//! than a frame of its own would have: the planes' runs leave a text's or a
+//! window's repeats, and a page, a terminal or a menu shown again is matched
+//! against what the stream already carried. It is state both ends keep,
+//! coded in order and started over together. Its parameters are level 1's
+//! fast strategy with a smaller table and longer matches
+//! ([`zstd_parameters`]), which the median predictor's frames are coded with
+//! too ([`super::median`]): they coded a planar video's nearly twice as fast
+//! as level 1 for 1.67 times off the planes against 1.69, a page of text 4.9
+//! times against 5.2. Levels below 1, which code no literal, gave a moving
+//! picture back almost nothing over the planes, and above it cost twice the
+//! time for a percent.
 //!
 //! Its tests decode with a reader written here from the specifications,
 //! which shares nothing with the encoder, the zstd by ruzstd-decompress, a
@@ -56,11 +47,12 @@
 use std::cell::RefCell;
 use std::io;
 
-/// The zstd parameters a bitmap is coded with: the fast strategy, a
-/// 128 KiB window, a 4096-entry table and matches of 7 bytes or more, a
-/// match looked for at every place. A frame of its own steps further
-/// ([`compressor`]); the still stream's window is its own ([`StillStream`]).
-fn zstd_parameters() -> [zstd::zstd_safe::CParameter; 7] {
+/// The zstd parameters the lossless tiles are coded with: the fast strategy,
+/// a 128 KiB window, a 4096-entry table and matches of 7 bytes or more, a
+/// match looked for at every place. The still stream's window and table are
+/// its own ([`StillStream`]); a median predictor's frame steps further
+/// ([`super::median`]).
+pub(super) fn zstd_parameters() -> [zstd::zstd_safe::CParameter; 7] {
     use zstd::zstd_safe::{CParameter, Strategy};
     [
         CParameter::Strategy(Strategy::ZSTD_fast),
@@ -73,78 +65,21 @@ fn zstd_parameters() -> [zstd::zstd_safe::CParameter; 7] {
     ]
 }
 
-/// How far the fast strategy steps past a place it found no match at, in a
-/// frame of its own: 8 bytes, with the literals Huffman coded still.
-const FRAME_STEP: u32 = 8;
-
-/// A zstd context for a frame of its own: [`zstd_parameters`], stepping
-/// [`FRAME_STEP`] past a place with no match. A step is what a level below
-/// 1 takes, and zstd then codes no literal unless told to, which a moving
-/// picture's frame is mostly made of. The median predictor's planes are
-/// framed with it too ([`super::median`]).
-pub(super) fn compressor() -> io::Result<zstd::bulk::Compressor<'static>> {
-    use zstd::zstd_safe::{CParameter, ParamSwitch};
-    let mut zstd = zstd::bulk::Compressor::new(1)?;
-    for parameter in zstd_parameters() {
-        zstd.set_parameter(parameter)?;
-    }
-    zstd.set_parameter(CParameter::TargetLength(FRAME_STEP))?;
-    zstd.set_parameter(CParameter::LiteralCompressionMode(ParamSwitch::Enable))?;
-    Ok(zstd)
-}
-
-/// What a thread packs a rectangle with: the planar coder's rows, the bitmap
-/// it codes, and a zstd context, made on the thread's first rectangle and
-/// kept for the process.
-struct Packer {
-    rows: Rows,
-    bitmap: Vec<u8>,
-    zstd: zstd::bulk::Compressor<'static>,
-}
-
 thread_local! {
-    static PACKER: RefCell<Option<Packer>> = const { RefCell::new(None) };
-}
-
-/// The body of a [`wlshare_proto::tiles::KIND_PLANAR`] rectangle of the
-/// `w`×`h` rectangle of `pixels`, `B, G, R, X` whose rows are `stride` bytes
-/// apart from its top-left: its planar bitmap ([`encode`]) as one zstd frame,
-/// which says its size. On whichever thread calls it, with that thread's
-/// working space. An error is zstd's, which a frame of a bitmap this size
-/// has none of.
-pub fn pack(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8>> {
-    PACKER.with_borrow_mut(|packer| {
-        let packer = match packer {
-            Some(packer) => packer,
-            None => packer.insert(Packer {
-                rows: Rows::default(),
-                bitmap: Vec::new(),
-                zstd: compressor()?,
-            }),
-        };
-        packer.bitmap.clear();
-        encode(pixels, stride, w, h, &mut packer.rows, &mut packer.bitmap);
-        packer.zstd.compress(&packer.bitmap)
-    })
+    /// A thread's planar coder rows, made on its first rectangle and kept
+    /// for the process.
+    static ROWS: RefCell<Rows> = RefCell::default();
 }
 
 /// The planar bitmap ([`encode`]) of the `w`×`h` rectangle of `pixels`,
 /// `B, G, R, X` whose rows are `stride` bytes apart from its top-left, for
 /// the still stream ([`StillStream`]). On whichever thread calls it, with
 /// that thread's working space.
-pub fn bitmap(pixels: &[u8], stride: usize, w: u16, h: u16) -> io::Result<Vec<u8>> {
-    PACKER.with_borrow_mut(|packer| {
-        let packer = match packer {
-            Some(packer) => packer,
-            None => packer.insert(Packer {
-                rows: Rows::default(),
-                bitmap: Vec::new(),
-                zstd: compressor()?,
-            }),
-        };
+pub fn bitmap(pixels: &[u8], stride: usize, w: u16, h: u16) -> Vec<u8> {
+    ROWS.with_borrow_mut(|rows| {
         let mut bitmap = Vec::new();
-        encode(pixels, stride, w, h, &mut packer.rows, &mut bitmap);
-        Ok(bitmap)
+        encode(pixels, stride, w, h, rows, &mut bitmap);
+        bitmap
     })
 }
 
@@ -522,84 +457,6 @@ mod tests {
             .collect()
     }
 
-    /// Pack and unpack, asserting the round trip exact, and return the body.
-    fn packed(w: usize, h: usize, f: impl Fn(usize, usize) -> [u8; 3]) -> Vec<u8> {
-        let (pixels, stride) = picture(w, h, f);
-        let body = pack(&pixels, stride, w as u16, h as u16).unwrap();
-        assert_eq!(
-            decoder::unpack_each(&[(&body, w, h)])
-                .pop()
-                .expect("a result for the one body")
-                .unwrap_or_else(|e| panic!("{w}x{h}: {e}")),
-            rgb(&pixels, stride, w, h),
-            "{w}x{h}"
-        );
-        body
-    }
-
-    /// A body read as zDesk's page reads it is one zstd frame and nothing
-    /// else: not a skippable frame or another frame after it, nor a skippable
-    /// frame before it, which the decoders would read past.
-    #[test]
-    fn a_body_of_more_than_its_frame_is_refused() {
-        let body = packed(17, 5, |x, y| [x as u8, y as u8, 7]);
-        let skippable = [&0x184D_2A50u32.to_le_bytes()[..], &1u32.to_le_bytes(), &[0]].concat();
-        let after = [&body[..], &skippable].concat();
-        let two = [&body[..], &body].concat();
-        let before = [&skippable[..], &body].concat();
-        let read = decoder::unpack_each(&[
-            (&after, 17, 5),
-            (&two, 17, 5),
-            (&before, 17, 5),
-            (&body, 17, 5),
-        ]);
-        let refused: Vec<bool> = read.iter().map(Result::is_err).collect();
-        assert_eq!(refused, [true, true, true, false]);
-    }
-
-    /// A body is one zstd frame of the bitmap, read back by ruzstd-decompress: every
-    /// shape exact, a flat or a repeating picture a few bytes, and noise
-    /// little more than its bitmap.
-    #[test]
-    fn a_body_is_the_bitmap_in_one_zstd_frame() {
-        for (w, h) in [(1, 1), (17, 5), (64, 64), (200, 64), (1920, 64)] {
-            packed(w, h, |x, y| [x as u8, y as u8, (x * y) as u8]);
-            packed(w, h, noise(w as u32 + h as u32));
-        }
-        let flat = packed(1920, 64, |_, _| [40, 50, 60]);
-        assert!(
-            flat.len() < 512,
-            "a flat run of tiles is {} bytes",
-            flat.len()
-        );
-        // A line of text, the same glyph every 8 pixels: the planes' runs
-        // leave the glyph, and the frame its repeats.
-        let text = |x: usize, y: usize| {
-            if (x % 8 < 2 || y % 16 == 3) && y % 16 < 12 {
-                [0, 0, 0]
-            } else {
-                [255, 255, 255]
-            }
-        };
-        let mut bitmap = Vec::new();
-        let (pixels, stride) = picture(1920, 64, text);
-        encode(&pixels, stride, 1920, 64, &mut Rows::default(), &mut bitmap);
-        let body = packed(1920, 64, text);
-        assert!(
-            body.len() * 4 < bitmap.len(),
-            "{} bytes framed of a {}-byte bitmap",
-            body.len(),
-            bitmap.len()
-        );
-        let (pixels, stride) = picture(64, 64, noise(3));
-        let mut bitmap = Vec::new();
-        encode(&pixels, stride, 64, 64, &mut Rows::default(), &mut bitmap);
-        assert!(
-            packed(64, 64, noise(3)).len() <= bitmap.len() + 32,
-            "noise framed is the bitmap and a frame's few bytes"
-        );
-    }
-
     /// Every STILL's body is the stream's bytes of its bitmap, read after the
     /// ones before it: the first a new frame and none after it, each read
     /// exact by the client's reader, ruzstd-decompress a block at a time, a picture shown
@@ -625,7 +482,7 @@ mod tests {
         let mut bodies = Vec::new();
         for (i, (w, h, (pixels, stride))) in pictures.iter().enumerate() {
             let (pixels, stride) = (pixels, *stride);
-            let bitmap = bitmap(pixels, stride, *w as u16, *h as u16).unwrap();
+            let bitmap = bitmap(pixels, stride, *w as u16, *h as u16);
             let mut body = vec![0xAB];
             stream.push(&bitmap, &mut body).unwrap();
             let body = body.split_off(1);
@@ -652,7 +509,7 @@ mod tests {
         let mut body = Vec::new();
         StillStream::new()
             .unwrap()
-            .push(&bitmap(&pixels, stride, 64, 64).unwrap(), &mut body)
+            .push(&bitmap(&pixels, stride, 64, 64), &mut body)
             .unwrap();
         assert!(body.starts_with(&decoder::ZSTD_MAGIC));
         assert_eq!(

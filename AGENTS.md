@@ -60,9 +60,8 @@
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
   the hardware's is run for real.
 - The lossless pictures — the lossless tiles (`WLSL`: every changed tile
-  planar, no H.264 stream), those by the median predictor (`WLMD`: the same,
-  what moves the predictor's residuals in place of a planar bitmap) and the
-  tiles with motion (`WLSD`: lossless PNG
+  exact, planar where the desktop is still and the median predictor's
+  residuals where it moves, no H.264 stream) and the tiles with motion (`WLSD`: lossless PNG
   where the desktop is still) — are not meant for a mobile client or
   a page zDesk flags as tight on memory (`tight_memory`: an iPhone, an iPad,
   or a browser that reports 4 GB or less). Nothing in them accommodates one,

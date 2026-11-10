@@ -988,6 +988,11 @@ and a large desktop the frame rate falls, as the host's does without H.264.
 
 ## Lossless tiles
 
+Since protocol 12 the lossless picture's moving runs are the median
+predictor's ([below](#the-median-predictor)), and the planar moving runs
+measured here are gone: these figures are of the picture as it was on
+2026-10-31, its still stream what `WLSL` still sends.
+
 The lossless picture (experimental), every tile that changed a planar
 bitmap, what moves each in a zstd frame of its own and what is still in
 the still stream, against the held picture, every
@@ -1149,6 +1154,11 @@ the processor's time over every thread, the mean of the two runs:
   video codec's does, takes off.
 
 ## The median predictor
+
+What chose the median predictor as the lossless picture's own moving runs:
+since protocol 12 it is what `WLSL` sends where the desktop moves, `WLMD` and
+the planar moving runs gone, and `motion-bench --lossless` codes it. The
+runs below name the two pictures as they were then.
 
 The lossless tiles by the median predictor (`WLMD`, experimental), what
 moves the predictor's residuals in three zstd frames where a lossless
