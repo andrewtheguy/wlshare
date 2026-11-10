@@ -14,7 +14,8 @@
 //!   tiles where it is still and an H.264 stream for each region that moves
 //!   ([`tiles`]); or, where the dial walks, every tile RemoteFX Progressive,
 //!   whose tables and stream are [`progressive`]'s; or every tile lossless,
-//!   RDP's planar codec, still or moving.
+//!   RDP's planar codec, still or moving; or lossless with what moves a
+//!   median predictor's residuals in place of a planar bitmap.
 //! - **The density extension** ([`ENCODING_DENSITY`]), the scale the
 //!   framebuffer is drawn at ([`density`]).
 //! - **The outputs extension** ([`ENCODING_OUTPUTS`]), which outputs the
@@ -60,8 +61,10 @@ pub const ENCODING_VIDEO: i32 = 0x574c_5356;
 /// the desktop as RemoteFX Progressive tiles; with [`ENCODING_HELD`] beside
 /// it as lossless PNG tiles where it is still and a video stream for each
 /// region that moves; with [`ENCODING_LOSSLESS`] beside it as lossless planar
-/// tiles, still or moving ([`tiles`]). It wins over ZRLE wherever it is listed; listed
-/// beside [`ENCODING_VIDEO`] it is fatal.
+/// tiles, still or moving; with [`ENCODING_MEDIAN`] beside it as lossless
+/// tiles whose moving ones are a median predictor's residuals ([`tiles`]). It
+/// wins over ZRLE wherever it is listed; listed beside [`ENCODING_VIDEO`] it
+/// is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;
@@ -99,8 +102,15 @@ pub const ENCODING_HELD: i32 = 0x574c_5344;
 /// and nothing else ([`tiles::TilesPicture`]). The ASCII bytes `WLSL`.
 pub const ENCODING_LOSSLESS: i32 = 0x574c_534c;
 
+/// Listed beside [`ENCODING_TILES`], asks for the tiles picture lossless as
+/// [`ENCODING_LOSSLESS`] does, but for what moves: each moving tile its
+/// pixels as a median predictor's residuals, three zstd frames of its own,
+/// where the still ones are RDP's planar codec in the session's zstd stream
+/// as they are there ([`tiles::TilesPicture`]). The ASCII bytes `WLMD`.
+pub const ENCODING_MEDIAN: i32 = 0x574c_4d44;
+
 /// The most bytes one video frame, and one tiles rectangle's PNG, planar
-/// bitmap or region frame, may be. An IDR of the largest desktop at the finest quantizer is a
+/// bitmap, median residuals or region frame, may be. An IDR of the largest desktop at the finest quantizer is a
 /// few megabytes; a length past this is a server that has lost its framing,
 /// and the server sends none.
 pub const MAX_BODY: usize = 64 << 20;

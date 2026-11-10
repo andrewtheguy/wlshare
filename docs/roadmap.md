@@ -76,52 +76,49 @@ configuration (a 1.1, a 1.7) reaches the daemon rounded to 1/256.
 
 ## Lossless tiles
 
-What is left of the lossless picture, every tile that changed a planar bitmap
+What is left of the lossless pictures, the lossless tiles and those by the
+median predictor
 ([On a lossless list, every tile planar](architecture.md#the-tiles-encoding)).
-It is for a desktop client on a LAN, never a phone, a tablet or a page zDesk
-flags as tight on memory, none of which it accommodates, so a client decoder
+They are for a desktop client on a LAN, never a phone, a tablet or a page zDesk
+flags as tight on memory, none of which they accommodate, so a client decoder
 that takes more memory or more of the processor than RDP's planar codec is no
-cost against it. Where the desktop is still it is already about a ninth of the
-held picture's bytes or less; where it moves it is 6 to 12 times them, nearly
-all of its 15 GB over the samples
+cost against them. Where the desktop is still they are already about a ninth of the
+held picture's bytes or less; where it moves the planar tiles are 6 to 12
+times them, nearly all of their 15 GB over the samples, and the median
+predictor's two thirds of that
 ([measured](tiles-performance.md#lossless-tiles), with what the encoder's time
-went to). An item is measured as the lossless tiles were before it is
-planned: `motion-bench --tiles-only --lossless` over the samples at every
-size on lab1, against [Lossless tiles](tiles-performance.md#lossless-tiles).
+went to, and [the predictor's](tiles-performance.md#the-median-predictor)). An
+item is measured as the lossless tiles were before it is
+planned: `motion-bench --tiles-only --lossless`, or `--median`, over the
+samples at every size on lab1, against those two.
 
 ### Under consideration
 
-Each was measured in the daemon's encoder without being built into it: a
-scratch copy of the tree whose moving runs go to the coder, through
-`motion-bench` over the samples at every size on lab1, every frame exact
-([Through motion-bench](tiles-performance.md#through-motion-bench), after
-[the other codecs](tiles-performance.md#other-coders-for-the-lossless-tiles-moving-runs)
-that came no nearer). The still stream is planar under each. The page's
-decoding is not measured for either.
+#### The median predictor as the lossless list's own moving runs
 
-#### A median predictor ahead of zstd for the moving runs
-
-Most of what a better codec takes off a moving picture is planar's predictor,
-and a better one costs little. Each sample is predicted from the median of the
-pixel left, the pixel above and their gradient, which is JPEG-LS's own
-predictor, over green, red less green and blue less green, and the residuals
-go to zstd as a planar bitmap does. Over the samples it is two thirds of the
-lossless tiles' bytes for 4% more of the host's processor: a video at
-1920x1080 96 MB where planar's is 149, for 8.2 ms a frame where planar's is
-7.6. A page goes through the still stream, so it codes every moving run with
-no choice between two codecs, a terminal's few moving runs 3% more of its
-bytes. It leaves RDP's planar codec, with a body kind in the protocol and
-`PROTOCOL_VERSION` for it, but it needs no library: the coder would be the
-daemon's own, and the page's decoder a loop beside the zstd it already has.
-What holds it back is that loop alone: the page's decoding in WebAssembly at
-the frame rate, measured on testdesktop2's Chrome against planar's, before
-it is planned.
+The predictor is a picture of its own beside the lossless list's, chosen by
+the client (`WLMD`), because it leaves RDP's planar codec where the desktop
+moves and its decoding in the page had not been lived with. It costs the
+host about what planar does and the page a tenth to a third more of its
+processor an update, for two thirds of the bytes
+([measured](tiles-performance.md#the-median-predictor)). Should sessions
+bear that out, a lossless list's moving runs become the predictor's and the
+choice goes with the PLANAR kind: one lossless picture, `PROTOCOL_VERSION`
+with it, and a row fewer in zDesk's picker. Its decoder in the page is
+written plainly, a sample at a time down each plane, and has not been
+profiled.
 
 #### JPEG-LS by CharLS for the moving runs
 
+Measured in the daemon's encoder without being built into it: a scratch copy
+of the tree whose moving runs go to CharLS, through `motion-bench` over the
+samples at every size on lab1, every frame exact
+([Through motion-bench](tiles-performance.md#through-motion-bench), after
+[the other codecs](tiles-performance.md#other-coders-for-the-lossless-tiles-moving-runs)
+that came no nearer). The page's decoding is not measured.
 Its cost is what holds it back: six times the lossless tiles' processor on the
 host, a video at 1920x1080 65 ms a frame, for 0.56 of their bytes, ten points
-fewer than the median predictor above for six times its processor. Planar
+fewer than the median predictor's picture for six times its processor. Planar
 predicts each byte from the pixel above alone, codes red, green and blue apart
 with no transform between them, and leaves the entropy coding to zstd: a weak
 predictor and no context. JPEG-LS is a codec built for lossless pictures, as

@@ -2,7 +2,10 @@
 //! is still, and a video stream of its own for each region that moves, for a
 //! client on a link with room to spare — or, on a list whose dial walks, every
 //! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
-//! client that wants the walk more than a picture that ends lossless.
+//! client that wants the walk more than a picture that ends lossless — or, on
+//! a list that asks for it lossless, every tile that changed exact as it is
+//! sent, planar where it is still and planar or a median predictor's
+//! residuals where it moves, as the list asks ([`planar`], [`median`]).
 //!
 //! The encoding — the rectangles and their kinds — is
 //! [`wlshare_proto::tiles`]'s. It sits beside [`crate::rfb::video`]'s rather than in
@@ -159,7 +162,7 @@ const TILE: u16 = wlshare_proto::tiles::TILE;
 
 use rayon::prelude::*;
 
-use super::{planar, progressive};
+use super::{median, planar, progressive};
 
 /// A progressive first pass whole costs at most this many times the one at
 /// its stage.
@@ -1198,7 +1201,8 @@ pub struct TilesEncoder {
     picture: TilesPicture,
     /// The progressive encoder, where the list walks and every tile is a
     /// progressive tile; where it holds every still is a PNG, and where it
-    /// is lossless every tile a planar bitmap.
+    /// is lossless every tile a planar bitmap, or what moves a median
+    /// predictor's residuals.
     progressive: Option<progressive::Encoder>,
     /// A lossless list's still stream, from its first STILL; none where it
     /// starts over, with the picture or the client's cache.
@@ -2302,7 +2306,7 @@ impl TilesEncoder {
     /// covers whole, and so does a draw.
     fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
         debug_assert!(
-            self.picture != TilesPicture::Lossless,
+            !self.picture.lossless(),
             "a lossless list's stills are packed together"
         );
         if self.progressive.is_some() {
@@ -2354,7 +2358,7 @@ impl TilesEncoder {
         now: Duration,
         out: &mut Out,
     ) -> Result<(), TilesError> {
-        if self.picture == TilesPicture::Lossless {
+        if self.picture.lossless() {
             let sent = self.lossless_stills(stills, now, out);
             if sent.is_err() {
                 // Its bytes are the stream's, and what a client was sent of it is not.
@@ -2374,7 +2378,9 @@ impl TilesEncoder {
     /// keeps a draw of its slot, the run coded around it, and every whole
     /// tile of a run not one colour stored after it. A run is cut where its
     /// tiles go from moving to still: a moving one is a PLANAR, its bitmap in
-    /// a zstd frame of its own, and a still one a STILL, its bitmap in the
+    /// a zstd frame of its own, or on a list that asks for the median
+    /// predictor a MEDIAN, its residuals ([`median::pack`]), and a still one
+    /// a STILL, its bitmap in the
     /// still stream ([`planar::StillStream`]). Laid out first, in order, the
     /// cache's record moved as the rectangles will move the client's; then
     /// every run coded on rayon's threads where there are two or more and
@@ -2455,11 +2461,14 @@ impl TilesEncoder {
             run_of(&tiles[run..], &mut plan);
         }
         let (mirror, stride) = (&self.mirror, self.stride);
+        let by_median = self.picture == TilesPicture::Median;
         // A moving run's body, framed, or a still one's bitmap, for the stream.
         let code = |&(area, still): &(Area, bool)| {
             let pixels = &mirror[usize::from(area.top) * stride + usize::from(area.left) * 4..];
             if still {
                 planar::bitmap(pixels, stride, area.w(), area.h())
+            } else if by_median {
+                median::pack(pixels, stride, area.w(), area.h())
             } else {
                 planar::pack(pixels, stride, area.w(), area.h())
             }
@@ -2495,6 +2504,8 @@ impl TilesEncoder {
                     let from = out.out.len();
                     let header = if still {
                         TileHeader::Still { len: 0 }
+                    } else if by_median {
+                        TileHeader::Median { len: 0 }
                     } else {
                         TileHeader::Planar { len: 0 }
                     };
@@ -3185,6 +3196,7 @@ mod tests {
         decoder: super::progressive::decoder::Decoder,
         progressives: usize,
         planars: usize,
+        medians: usize,
         /// The still stream as the page reads it.
         stills: super::planar::decoder::StillReader,
         still_count: usize,
@@ -3210,6 +3222,7 @@ mod tests {
                 decoder: Default::default(),
                 progressives: 0,
                 planars: 0,
+                medians: 0,
                 stills: Default::default(),
                 still_count: 0,
                 still_starts: 0,
@@ -3256,6 +3269,19 @@ mod tests {
                     .iter()
                     .filter_map(|rect| match &rect.body {
                         RectBody::Tiles(TileBody::Planar(body)) => {
+                            Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .into_iter();
+            // And its median bodies, as the page reads them.
+            let mut medians = super::median::decoder::unpack_each(
+                &rects
+                    .iter()
+                    .filter_map(|rect| match &rect.body {
+                        RectBody::Tiles(TileBody::Median(body)) => {
                             Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
                         }
                         _ => None,
@@ -3368,6 +3394,14 @@ mod tests {
                             .next()
                             .expect("a result for every planar body")
                             .expect("a planar body of the rectangle");
+                        self.paste((x, y, w, h), &rgb);
+                    }
+                    TileBody::Median(_) => {
+                        self.medians += 1;
+                        let rgb = medians
+                            .next()
+                            .expect("a result for every median body")
+                            .expect("a median body of the rectangle");
                         self.paste((x, y, w, h), &rgb);
                     }
                     TileBody::Still(body) => {
@@ -3987,6 +4021,96 @@ mod tests {
         assert!(
             page.cached > cached && page.planars == planars && page.still_count == stills,
             "a tile shown before is a slot drawn"
+        );
+    }
+
+    /// A list that asks for the median predictor is sent what a lossless
+    /// one is, every update exact and nothing owed, but for what moves: a
+    /// MEDIAN in place of each PLANAR, the stills in the still stream as they
+    /// are there, and the cache's tiles drawn as they are there. The picture
+    /// starts over, the cache kept, where a list goes from one to the other.
+    #[test]
+    fn a_median_list_is_sent_median_residuals_where_it_moves() {
+        let (w, h) = (256u16, 150u16);
+        let busy = Rect {
+            x: 64,
+            y: 0,
+            width: 128,
+            height: 64,
+        };
+        // The same desktop to a lossless list and to one that asks for the
+        // predictor: `(stills, planars, medians, cached, bytes)` of each.
+        let sent = |picture: TilesPicture| {
+            let mut pixels = soft(w, h, 0);
+            let mut encoder = TilesEncoder::new(w, h, picture, Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            update(&mut encoder, &mut page, &pixels, None, ms(0));
+            assert_eq!(page.off(&pixels), 0, "exact");
+            for n in 0..20 {
+                paint(&mut pixels, w, busy, n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[busy]),
+                    ms(100 + 50 * u64::from(n)),
+                );
+                assert_eq!(page.off(&pixels), 0, "every frame exact");
+            }
+            assert!(
+                !encoder.owed() && encoder.tick_at().is_none(),
+                "a lossless picture owes nothing"
+            );
+            assert_eq!(
+                (page.starts, page.pngs, page.progressives, page.still_starts),
+                (0, 0, 0, 1),
+                "no stream, and one still stream"
+            );
+            paint(&mut pixels, w, busy, 0);
+            step(&mut encoder, &mut page, &pixels, Some(&[busy]), ms(2000));
+            assert_eq!(page.off(&pixels), 0);
+            (
+                (page.still_count, page.planars, page.medians, page.cached),
+                (encoder, page, pixels),
+            )
+        };
+        let ((stills, planars, none, cached), _) = sent(TilesPicture::Lossless);
+        let ((median_stills, no_planars, medians, median_cached), (mut encoder, mut page, pixels)) =
+            sent(TilesPicture::Median);
+        assert!(planars > 0 && none == 0, "a lossless list's are planar");
+        assert_eq!(
+            (median_stills, no_planars, medians, median_cached),
+            (stills, 0, planars, cached),
+            "a MEDIAN wherever a lossless list is sent a PLANAR, and no PLANAR"
+        );
+
+        // The list names the other picture: the picture whole again, from
+        // the cache where it keeps a tile, and what moves planar from then.
+        let (stored, bytes) = (page.cached, page.bytes);
+        encoder.set_picture(TilesPicture::Lossless);
+        step(&mut encoder, &mut page, &pixels, None, ms(3000));
+        assert_eq!(page.off(&pixels), 0);
+        assert!(
+            page.cached > stored && page.bytes - bytes < 4096,
+            "drawn from the cache: {} tiles in {} bytes",
+            page.cached - stored,
+            page.bytes - bytes
+        );
+        let mut pixels = pixels;
+        for n in 0..20 {
+            paint(&mut pixels, w, busy, n + 30);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[busy]),
+                ms(3100 + 50 * u64::from(n)),
+            );
+            assert_eq!(page.off(&pixels), 0, "every frame exact");
+        }
+        assert!(
+            page.planars > 0 && page.medians == medians,
+            "a lossless list's moving tiles are planar"
         );
     }
 

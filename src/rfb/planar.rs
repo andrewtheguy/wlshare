@@ -80,8 +80,9 @@ const FRAME_STEP: u32 = 8;
 /// A zstd context for a frame of its own: [`zstd_parameters`], stepping
 /// [`FRAME_STEP`] past a place with no match. A step is what a level below
 /// 1 takes, and zstd then codes no literal unless told to, which a moving
-/// picture's frame is mostly made of.
-fn compressor() -> io::Result<zstd::bulk::Compressor<'static>> {
+/// picture's frame is mostly made of. The median predictor's planes are
+/// framed with it too ([`super::median`]).
+pub(super) fn compressor() -> io::Result<zstd::bulk::Compressor<'static>> {
     use zstd::zstd_safe::{CParameter, ParamSwitch};
     let mut zstd = zstd::bulk::Compressor::new(1)?;
     for parameter in zstd_parameters() {
@@ -357,7 +358,7 @@ fn difference(row: &[u8], above: &[u8], red: &mut [u8], green: &mut [u8], blue: 
 
 /// Whether two rows of `B, G, R, X` pixels are the same colours, whatever their `X`.
 #[inline(always)]
-fn same_colours(row: &[u8], above: &[u8]) -> bool {
+pub(super) fn same_colours(row: &[u8], above: &[u8]) -> bool {
     let colour = |px: &[u8; 4]| u32::from_le_bytes(*px) & 0x00FF_FFFF;
     // A word of pixels at a time, so the loop stops at a block that differs.
     let (row, above) = (row.as_chunks::<4>().0, above.as_chunks::<4>().0);

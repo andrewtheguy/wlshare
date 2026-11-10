@@ -1048,6 +1048,10 @@ impl Session {
                                 "client {}: asked for lossless tiles, their frames walked by its lag",
                                 self.id.0
                             ),
+                            TilesPicture::Median => info!(
+                                "client {}: asked for lossless tiles, what moves by the median predictor, their frames walked by its lag",
+                                self.id.0
+                            ),
                         }
                     }
                     if !self.use_tiles && self.config.capture_frames.is_some() {
