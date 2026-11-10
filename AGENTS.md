@@ -30,9 +30,9 @@
   The daemon has no cross-target check to run: nothing in it is
   architecture-specific but the progressive tiles' coder (`code_tile` in
   `src/rfb/progressive.rs`) and the lossless tiles' (`encode` in
-  `src/rfb/planar.rs`), each compiled a second time for AVX2 on x86-64 and
-  chosen at run time, the same source, which a test holds to the baseline's
-  bytes; and the release builds each suite (Debian trixie, Ubuntu 26.04) and
+  `src/rfb/planar.rs`, and `residuals` in `src/rfb/median.rs`), each compiled
+  a second time for AVX2 on x86-64 and chosen at run time, the same source,
+  which a test holds to the baseline's bytes; and the release builds each suite (Debian trixie, Ubuntu 26.04) and
   architecture in Docker on its architecture's native runner.
   Linking the daemon and its tests needs `libpam0g-dev` and
   `libxkbcommon-dev`, and building it needs
@@ -60,7 +60,9 @@
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
   the hardware's is run for real.
 - The lossless pictures — the lossless tiles (`WLSL`: every changed tile
-  planar, no H.264 stream) and the tiles with motion (`WLSD`: lossless PNG
+  planar, no H.264 stream), those by the median predictor (`WLMD`: the same,
+  what moves the predictor's residuals in place of a planar bitmap) and the
+  tiles with motion (`WLSD`: lossless PNG
   where the desktop is still) — are not meant for a mobile client or
   a page zDesk flags as tight on memory (`tight_memory`: an iPhone, an iPad,
   or a browser that reports 4 GB or less). Nothing in them accommodates one,

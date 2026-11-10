@@ -286,13 +286,13 @@ impl QualityWalk {
     /// The walk a tiles picture is paced by, `frame` apart at most: a
     /// progressive one's walks the dial from wlshare's down by the lag its
     /// fences show, and the frames once the dial is on its floor; a lossless
-    /// one's has no dial to walk, so its ceiling is the floor and the lag
-    /// slows its frames alone; a held one's hears no lag, only a blocked
-    /// write.
+    /// one's, whichever way its moving tiles are coded, has no dial to walk,
+    /// so its ceiling is the floor and the lag slows its frames alone; a held
+    /// one's hears no lag, only a blocked write.
     pub fn tiles(picture: TilesPicture, frame: Duration) -> Self {
         match picture {
             TilesPicture::Progressive => Self::new(crate::rfb::QUALITY, frame, true),
-            TilesPicture::Lossless => Self::new(QUALITY_FLOOR, frame, true),
+            TilesPicture::Lossless | TilesPicture::Median => Self::new(QUALITY_FLOOR, frame, true),
             TilesPicture::Held => Self::new(crate::rfb::QUALITY, frame, false),
         }
     }
@@ -306,7 +306,9 @@ impl QualityWalk {
     pub fn tiles_pace(&self, picture: TilesPicture) -> (u8, bool) {
         match picture {
             TilesPicture::Progressive => (self.quality, self.slowed()),
-            TilesPicture::Held | TilesPicture::Lossless => (crate::rfb::QUALITY, false),
+            TilesPicture::Held | TilesPicture::Lossless | TilesPicture::Median => {
+                (crate::rfb::QUALITY, false)
+            }
         }
     }
 

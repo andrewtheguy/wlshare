@@ -321,6 +321,10 @@ pub enum TileBody {
     /// The still stream's bytes of a planar bitmap of the rectangle's
     /// pixels, on a lossless list where the desktop is still.
     Still(Vec<u8>),
+    /// A median predictor's residuals of the rectangle's pixels in three
+    /// zstd frames, on a list that asks for the predictor where the desktop
+    /// moves.
+    Median(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -598,6 +602,12 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                     };
                     (RectBody::Tiles(TileBody::Still(bytes)), at + len)
                 }
+                TileHeader::Median { len } => {
+                    let Some(planes) = body(len)? else {
+                        return Ok(None);
+                    };
+                    (RectBody::Tiles(TileBody::Median(planes)), at + len)
+                }
             }
         }
         ENCODING_DESKTOP_SIZE => (RectBody::DesktopSize, 12),
@@ -672,8 +682,8 @@ mod tests {
         AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect,
     };
     use wlshare_proto::tiles::{
-        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_PLANAR, KIND_PNG, KIND_PROGRESSIVE,
-        KIND_START, KIND_STILL, KIND_STORE,
+        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MEDIAN, KIND_PLANAR, KIND_PNG,
+        KIND_PROGRESSIVE, KIND_START, KIND_STILL, KIND_STORE,
     };
 
     use crate::rfb::audio::FlacEncoder;
@@ -933,7 +943,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(17).to_vec();
+        let mut wire = msg::update_header(18).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -970,6 +980,8 @@ mod tests {
         wire.extend_from_slice(&[KIND_PLANAR, 0, 0, 0, 3, 0x30, 0x10, 0x07]);
         wire.extend_from_slice(&msg::rect_header(128, 128, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_STILL, 0, 0, 0, 2, 0x28, 0xB5]);
+        wire.extend_from_slice(&msg::rect_header(192, 128, 64, 64, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_MEDIAN, 0, 0, 0, 3, 0x28, 0xB5, 0x2F]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -1117,6 +1129,16 @@ mod tests {
                 body: RectBody::Tiles(TileBody::Still(vec![0x28, 0xB5]))
             }
         );
+        assert_eq!(
+            rects[17],
+            Rect {
+                x: 192,
+                y: 128,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Median(vec![0x28, 0xB5, 0x2F]))
+            }
+        );
     }
 
     #[test]
@@ -1133,10 +1155,10 @@ mod tests {
         );
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 1, 1, ENCODING_TILES));
-        wire.push(10);
+        wire.push(11);
         assert_eq!(
             parse(&wire),
-            Err(ParseError::Tiles(TilesParseError::UnknownKind(10)))
+            Err(ParseError::Tiles(TilesParseError::UnknownKind(11)))
         );
         let mut wire = msg::update_header(1).to_vec();
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_TILES));

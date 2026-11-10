@@ -5,6 +5,7 @@ fn the_encodings_are_their_ascii_names() {
     assert_eq!(ENCODING_VIDEO, i32::from_be_bytes(*b"WLSV"));
     assert_eq!(ENCODING_HELD, i32::from_be_bytes(*b"WLSD"));
     assert_eq!(ENCODING_LOSSLESS, i32::from_be_bytes(*b"WLSL"));
+    assert_eq!(ENCODING_MEDIAN, i32::from_be_bytes(*b"WLMD"));
     assert_eq!(ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
     assert_eq!(ENCODING_DENSITY, i32::from_be_bytes(*b"WLSH"));
     assert_eq!(ENCODING_OUTPUTS, i32::from_be_bytes(*b"WLSO"));
@@ -27,6 +28,7 @@ fn every_encoding_here_is_private() {
         ENCODING_AUDIO_OPUS,
         ENCODING_HELD,
         ENCODING_LOSSLESS,
+        ENCODING_MEDIAN,
         version::encoding(1),
     ] {
         assert!(private(e), "{e:#x}");

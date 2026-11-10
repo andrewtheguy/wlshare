@@ -62,6 +62,7 @@ pub mod audio;
 pub mod client;
 pub mod clipboard;
 pub mod cursor;
+pub mod median;
 pub mod msg;
 pub mod pixel;
 pub mod planar;
