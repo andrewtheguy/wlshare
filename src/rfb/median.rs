@@ -1,9 +1,8 @@
 //! The lossless tiles' moving runs by a median predictor: the body of a
-//! [`wlshare_proto::tiles::KIND_MEDIAN`] rectangle ([`pack`]), what a list
-//! that asks for the predictor ([`wlshare_proto::tiles::TilesPicture::Median`])
-//! is sent where the desktop moves, in place of the planar bitmap a lossless
-//! list is sent there ([`super::planar`]). The still stream is planar under
-//! both.
+//! [`wlshare_proto::tiles::KIND_MEDIAN`] rectangle ([`pack`]), what a
+//! lossless list ([`wlshare_proto::tiles::TilesPicture::Lossless`]) is sent
+//! where the desktop moves. What is still is planar, in the still stream
+//! ([`super::planar`]).
 //!
 //! Most of what a codec built for lossless pictures takes off a moving one
 //! is the predictor. Planar's is the pixel above alone, over red, green and
@@ -15,24 +14,47 @@
 //! The top row is predicted from the left alone, the left column from above
 //! alone, and the first sample goes as it is. There is no context and no
 //! entropy coder of its own: each plane's residuals are one zstd frame with
-//! the parameters a planar bitmap's frame has ([`super::planar::compressor`]),
-//! the three one after another, so the literals' Huffman coding is all of
-//! it where the picture is a video's and its matches still find a window's
-//! flat rows.
+//! the still stream's parameters but a step past a place with no match
+//! ([`compressor`]), the three one after another, so the literals' Huffman
+//! coding is all of it where the picture is a video's and its matches still
+//! find a window's flat rows.
 //!
-//! Over the samples it is two thirds of the planar frames' bytes for 4% more
-//! of the host's processor (`docs/tiles-performance.md`). A row the same
+//! Over the samples it was two thirds of the bytes of each moving run's
+//! planar bitmap in a zstd frame of its own, the lossless picture's moving
+//! tiles before it, for 4% more of the host's processor
+//! (`docs/tiles-performance.md`). A row the same
 //! colours as the row above is a row of zero residuals in every plane, taken
 //! at once, as planar's coder takes it.
 //!
 //! Its tests decode with a reader written from the protocol's text
 //! (`median_decoder.rs`), which shares nothing with the encoder, the zstd by
-//! ruzstd-decompress as the planar tiles' is.
+//! ruzstd-decompress as the still stream's is.
 
 use std::cell::RefCell;
 use std::io;
 
-use super::planar::{compressor, same_colours};
+use super::planar::{same_colours, zstd_parameters};
+
+/// How far the fast strategy steps past a place it found no match at, in a
+/// plane's frame: 8 bytes, with the literals Huffman coded still.
+const FRAME_STEP: u32 = 8;
+
+/// A zstd context for a plane's frame: the lossless tiles' parameters
+/// ([`zstd_parameters`]), stepping [`FRAME_STEP`] past a place with no
+/// match. A step is what a level below 1 takes, and zstd then codes no
+/// literal unless told to, which a moving picture's frame is mostly made of:
+/// a sixth off a moving picture's processor for under half a percent more
+/// bytes, where the still stream, a page's matches, keeps every look.
+fn compressor() -> io::Result<zstd::bulk::Compressor<'static>> {
+    use zstd::zstd_safe::{CParameter, ParamSwitch};
+    let mut zstd = zstd::bulk::Compressor::new(1)?;
+    for parameter in zstd_parameters() {
+        zstd.set_parameter(parameter)?;
+    }
+    zstd.set_parameter(CParameter::TargetLength(FRAME_STEP))?;
+    zstd.set_parameter(CParameter::LiteralCompressionMode(ParamSwitch::Enable))?;
+    Ok(zstd)
+}
 
 /// A thread's working space: the planes' rows of the row being coded and of
 /// the row above, the planes' residuals, and a zstd context, made on the
@@ -409,8 +431,8 @@ mod tests {
     }
 
     /// A flat or a repeating picture is a few bytes, a picture with slopes
-    /// fewer than its planar bitmap's frame, and noise little more than its
-    /// planes.
+    /// fewer than its planar bitmap in a frame of the same parameters, and
+    /// noise little more than its planes.
     #[test]
     fn a_body_is_small_where_the_picture_is_plain_or_smooth() {
         let flat = packed(1920, 64, |_, _| [40, 50, 60]);
@@ -433,7 +455,10 @@ mod tests {
             body.len()
         );
         let (pixels, stride) = picture(1920, 64, soft(5));
-        let planar = super::super::planar::pack(&pixels, stride, 1920, 64).unwrap();
+        let planar = compressor()
+            .unwrap()
+            .compress(&super::super::planar::bitmap(&pixels, stride, 1920, 64))
+            .unwrap();
         let body = packed(1920, 64, soft(5));
         assert!(
             body.len() * 10 < planar.len() * 9,

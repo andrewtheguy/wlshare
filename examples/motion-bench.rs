@@ -3,8 +3,8 @@
 //! coded both ways, and what each cost the encoder and the link.
 //!
 //! ```text
-//! motion-bench [--libx264] [--tiles-only] [--lossless | --median] [--quality Q] [--frames FILE] CAPTURE...
-//! motion-bench check [--libx264] [--lossless | --median] CAPTURE...
+//! motion-bench [--libx264] [--tiles-only] [--lossless] [--quality Q] [--frames FILE] CAPTURE...
+//! motion-bench check [--libx264] [--lossless] CAPTURE...
 //! ```
 //!
 //! An example of the daemon's crate, since both pictures are the daemon's
@@ -28,9 +28,8 @@
 //! follows. Its dial is wlshare's, held there, the picture lossless as a list that holds the dial asks: a walked
 //! list's is progressive tiles, which `tiles-walk-sim` walks over a link.
 //! `--lossless` codes the picture a lossless list asks for instead, every
-//! tile planar, still or moving, and no region: its coder is `lossless`; and
-//! `--median` the one a list that asks for the median predictor does, what
-//! moves its residuals in place of a planar bitmap: its coder is `median`. Its
+//! tile exact, planar where it is still and a median predictor's residuals
+//! where it moves, and no region: its coder is `lossless`. Its
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
@@ -48,24 +47,24 @@
 //! **Checked**: both pictures are decoded as a page would — `WLSV` and each
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
-//! by the client's parser, a PNG by the `png` crate and a planar bitmap by
-//! the tests' reader (`src/rfb/planar_decoder.rs`, an update's zstd frames
-//! side by side by ruzstd-decompress's `decode_each_parallel`, as the page
-//! reads them, and the still stream by ruzstd-decompress's
-//! `FrameDecoder` a block at a time, the fork handing out its newest bytes as
-//! soon as their blocks are decoded), a median predictor's residuals by the
-//! tests' reader of those (`src/rfb/median_decoder.rs`)
+//! by the client's parser, a PNG by the `png` crate, a still by the tests'
+//! planar reader (`src/rfb/planar_decoder.rs`, the still stream by
+//! ruzstd-decompress's `FrameDecoder` a block at a time, the fork handing out
+//! its newest bytes as soon as their blocks are decoded) and a median
+//! predictor's residuals by the tests' reader of those
+//! (`src/rfb/median_decoder.rs`, an update's zstd frames side by side by
+//! ruzstd-decompress's `decode_each_parallel`, as the page reads them)
 //! — and compared with the
 //! capture's: the PSNR over B, G and R, and for the tiles how many pixels
 //! differ, which once settled is none.
 //!
 //! The output is JSON lines, a JSON object a line, one per capture per coder,
 //! which `scripts/motion-tables.py` makes tables of: `capture`, `coder`
-//! (`wlsv`, `tiles`, `lossless` or `median`), `quality` (the dial it was coded at),
+//! (`wlsv`, `tiles` or `lossless`), `quality` (the dial it was coded at),
 //! `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
-//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `planar`
-//! (framed alone), `median` (the predictor's residuals), `still` (the still stream's) and
+//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `median`
+//! (the predictor's residuals), `still` (the still stream's) and
 //! `video` (the regions' H.264, or `WLSV`'s), the tiles' `copies`, which
 //! carry no payload, `streams` started and
 //! `keyframes`; what the page held while the capture ran, `held_mse`, the mean
@@ -75,7 +74,7 @@
 //! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
-//! `tiles_bytes`, `png`, `planar`, `median`, `still`, `h264`, `streams` (live), `copies`, `tick_us` and
+//! `tiles_bytes`, `png`, `median`, `still`, `h264`, `streams` (live), `copies`, `tick_us` and
 //! `tick_bytes`, a tick's what the ticks since the frame before cost; and
 //! after the last frame one object per tick of the tail, `tick` true, with
 //! `ms`, `tick_us`, `tick_bytes`, `png` and `h264`.
@@ -116,7 +115,7 @@ mod decode;
 #[allow(dead_code)]
 #[path = "../src/h264/mod.rs"]
 mod h264;
-// The tests' reader of the lossless tiles' bodies.
+// The tests' reader of the lossless tiles' still stream.
 #[path = "../src/rfb/planar_decoder.rs"]
 mod planar_decoder;
 // And of their moving tiles' by the median predictor.
@@ -131,8 +130,8 @@ mod wlcap;
 
 type Error = Box<dyn std::error::Error>;
 
-const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--lossless | --median] [--quality Q] [--frames FILE] CAPTURE...
-       motion-bench check [--libx264] [--lossless | --median] CAPTURE...";
+const USAGE: &str = "usage: motion-bench [--libx264] [--tiles-only] [--lossless] [--quality Q] [--frames FILE] CAPTURE...
+       motion-bench check [--libx264] [--lossless] CAPTURE...";
 
 /// How long the tick runs on after a capture's last frame, at most.
 const TAIL: Duration = Duration::from_secs(60);
@@ -144,8 +143,7 @@ struct Args {
     /// The tiles alone, no `WLSV` coded.
     tiles_only: bool,
     /// The tiles picture coded: a held list's, or a lossless one's with
-    /// `--lossless`, or with `--median` one's that asks for the median
-    /// predictor.
+    /// `--lossless`.
     picture: TilesPicture,
     /// The dial `WLSV` is coded at.
     quality: u8,
@@ -171,7 +169,6 @@ fn parse_args() -> Result<Args, String> {
             "--libx264" => parsed.libx264 = true,
             "--tiles-only" => parsed.tiles_only = true,
             "--lossless" => parsed.picture = TilesPicture::Lossless,
-            "--median" => parsed.picture = TilesPicture::Median,
             "--quality" => {
                 parsed.quality = value()?
                     .parse()
@@ -319,7 +316,6 @@ impl Drop for Source {
 #[derive(Default)]
 struct Sent {
     png: u64,
-    planar: u64,
     /// The median predictor's residuals.
     median: u64,
     /// The still stream's bytes.
@@ -335,12 +331,11 @@ struct Sent {
 
 impl Sent {
     fn bytes(&self) -> u64 {
-        self.png + self.planar + self.median + self.still + self.video
+        self.png + self.median + self.still + self.video
     }
 
     fn add(&mut self, other: &Sent) {
         self.png += other.png;
-        self.planar += other.planar;
         self.median += other.median;
         self.still += other.still;
         self.video += other.video;
@@ -393,20 +388,7 @@ impl Page {
         if used != wire.len() {
             return Err("bytes past the update's rectangles".into());
         }
-        // An update's planar bodies read together, as the page reads a batch's.
-        let mut planars = planar_decoder::unpack_each(
-            &rects
-                .iter()
-                .filter_map(|rect| match &rect.body {
-                    RectBody::Tiles(TileBody::Planar(body)) => {
-                        Some((&body[..], usize::from(rect.width), usize::from(rect.height)))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_iter();
-        // And its median bodies, as the page reads them.
+        // An update's median bodies read together, as the page reads a batch's.
         let mut medians = median_decoder::unpack_each(
             &rects
                 .iter()
@@ -520,11 +502,6 @@ impl Page {
                     for (row, from) in (y..y + h).zip(kept.chunks_exact(w * 4)) {
                         self.canvas[row * self.stride + x * 4..][..w * 4].copy_from_slice(from);
                     }
-                }
-                TileBody::Planar(body) => {
-                    sent.planar += body.len() as u64;
-                    let rgb = planars.next().expect("a result for every planar body")?;
-                    self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Median(body) => {
                     sent.median += body.len() as u64;
@@ -931,7 +908,7 @@ fn bench(
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"planar\":{},\"median\":{},\"still\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
+                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"median\":{},\"still\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
                 json(&name),
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
@@ -942,7 +919,6 @@ fn bench(
                 tiles_cpu.as_micros(),
                 sent.bytes(),
                 sent.png,
-                sent.planar,
                 sent.median,
                 sent.still,
                 sent.video,
@@ -1006,7 +982,6 @@ fn bench(
         &name,
         match args.picture {
             TilesPicture::Lossless => "lossless",
-            TilesPicture::Median => "median",
             _ => "tiles",
         },
         crate::rfb::QUALITY,
@@ -1141,7 +1116,7 @@ fn row(
         tally.mse / tally.frames as f64
     };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"planar\":{},\"median\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"median\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         quality,
@@ -1150,7 +1125,6 @@ fn row(
         ms(p95),
         tally.sent.bytes(),
         tally.sent.png,
-        tally.sent.planar,
         tally.sent.median,
         tally.sent.still,
         tally.sent.video,

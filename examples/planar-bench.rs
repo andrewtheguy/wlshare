@@ -1,7 +1,7 @@
 //! Scratch: the lossless tiles' planar coder alone over a capture, one
 //! thread. `planar-bench CAPTURE [FRAMES]`: every run of tiles a frame
-//! changed, a row of them at a time, coded as a planar bitmap, and then
-//! coded and framed as a body; prints the time of each and a hash of every byte coded.
+//! changed, a row of them at a time, coded as a planar bitmap; prints the
+//! time it took and a hash of every byte coded.
 
 #![allow(clippy::zombie_processes)]
 
@@ -17,7 +17,7 @@ mod rfb;
 #[path = "../src/wlcap.rs"]
 mod wlcap;
 
-use rfb::planar::{Rows, encode, pack};
+use rfb::planar::{Rows, encode};
 use rfb::progressive::TILE;
 
 fn main() {
@@ -38,8 +38,8 @@ fn main() {
     let mut hash = xxhash_rust::xxh3::Xxh3Default::new();
     let mut rows = Rows::default();
     let mut bitmap = Vec::new();
-    let (mut coding, mut framing) = (Duration::ZERO, Duration::ZERO);
-    let (mut runs, mut coded, mut framed, mut frames) = (0u64, 0u64, 0u64, 0u64);
+    let mut coding = Duration::ZERO;
+    let (mut runs, mut coded, mut frames) = (0u64, 0u64, 0u64);
     while let Some(frame) = reader.next().unwrap() {
         if frames == most {
             break;
@@ -83,21 +83,16 @@ fn main() {
                 bitmap.clear();
                 let began = Instant::now();
                 encode(at, stride, rw as u16, rh as u16, &mut rows, &mut bitmap);
-                let coded_at = Instant::now();
-                let body = pack(at, stride, rw as u16, rh as u16).unwrap();
-                framing += coded_at.elapsed();
-                coding += coded_at - began;
+                coding += began.elapsed();
                 hash.write(&bitmap);
                 runs += 1;
                 coded += bitmap.len() as u64;
-                framed += body.len() as u64;
             }
         }
     }
     println!(
-        "{frames} frames {runs} runs coded {coded} bytes {:.1} ms packed {framed} bytes {:.1} ms (coded again and framed) hash {:016x}",
+        "{frames} frames {runs} runs coded {coded} bytes {:.1} ms hash {:016x}",
         coding.as_secs_f64() * 1e3,
-        framing.as_secs_f64() * 1e3,
         hash.digest()
     );
 }

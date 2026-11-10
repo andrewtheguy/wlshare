@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn the_list_names_one_picture_and_whether_it_walks() {
     let listed = TilesPicture::listed;
-    let (lossless, median) = (crate::ENCODING_LOSSLESS, crate::ENCODING_MEDIAN);
+    let lossless = crate::ENCODING_LOSSLESS;
     assert_eq!(
         listed(&[crate::ENCODING_TILES, 16]),
         Ok(Some(TilesPicture::Progressive))
@@ -13,34 +13,19 @@ fn the_list_names_one_picture_and_whether_it_walks() {
         Ok(Some(TilesPicture::Held))
     );
     assert_eq!(
-        listed(&[16, lossless, crate::ENCODING_TILES]),
+        listed(&[lossless, 16, crate::ENCODING_TILES]),
         Ok(Some(TilesPicture::Lossless))
-    );
-    assert_eq!(
-        listed(&[median, 16, crate::ENCODING_TILES]),
-        Ok(Some(TilesPicture::Median))
     );
     assert_eq!(
         listed(&[crate::ENCODING_TILES, crate::ENCODING_VIDEO]),
         Err(TilesListError::Both)
     );
-    for two in [
-        [ENCODING_HELD, lossless],
-        [ENCODING_HELD, median],
-        [lossless, median],
-    ] {
-        assert_eq!(
-            listed(&[crate::ENCODING_TILES, two[0], two[1]]),
-            Err(TilesListError::Several)
-        );
-    }
     assert_eq!(
-        listed(&[crate::ENCODING_TILES, ENCODING_HELD, lossless, median]),
-        Err(TilesListError::Several)
+        listed(&[crate::ENCODING_TILES, ENCODING_HELD, lossless]),
+        Err(TilesListError::HeldAndLossless)
     );
     assert_eq!(listed(&[16, ENCODING_HELD]), Ok(None));
     assert_eq!(listed(&[16, lossless]), Ok(None));
-    assert_eq!(listed(&[16, median]), Ok(None));
     assert_eq!(
         TilesPicture::Progressive.encodings(),
         [crate::ENCODING_TILES]
@@ -53,18 +38,12 @@ fn the_list_names_one_picture_and_whether_it_walks() {
         TilesPicture::Lossless.encodings(),
         [crate::ENCODING_TILES, lossless]
     );
-    assert_eq!(
-        TilesPicture::Median.encodings(),
-        [crate::ENCODING_TILES, median]
-    );
-    for (picture, lossless) in [
-        (TilesPicture::Progressive, false),
-        (TilesPicture::Held, false),
-        (TilesPicture::Lossless, true),
-        (TilesPicture::Median, true),
+    for picture in [
+        TilesPicture::Progressive,
+        TilesPicture::Held,
+        TilesPicture::Lossless,
     ] {
         assert_eq!(listed(&picture.encodings()), Ok(Some(picture)));
-        assert_eq!(picture.lossless(), lossless, "{picture:?}");
     }
 }
 
@@ -98,9 +77,8 @@ fn each_header_has_the_documented_layout() {
         (TileHeader::Cached { slot: 0x0102 }, vec![5, 1, 2]),
         (TileHeader::Store { slot: 0x0FFF }, vec![6, 0x0F, 0xFF]),
         (TileHeader::Progressive { len: 0x0102 }, vec![7, 0, 0, 1, 2]),
-        (TileHeader::Planar { len: 0x01_0203 }, vec![8, 0, 1, 2, 3]),
-        (TileHeader::Still { len: 0x01_0203 }, vec![9, 0, 1, 2, 3]),
-        (TileHeader::Median { len: 0x01_0203 }, vec![10, 0, 1, 2, 3]),
+        (TileHeader::Still { len: 0x01_0203 }, vec![8, 0, 1, 2, 3]),
+        (TileHeader::Median { len: 0x01_0203 }, vec![9, 0, 1, 2, 3]),
     ] {
         assert_eq!(header.to_bytes(), bytes);
         assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -127,7 +105,6 @@ fn a_length_filled_in_keeps_the_header_its_size() {
         TileHeader::Cached { slot: 3 },
         TileHeader::Store { slot: 4 },
         TileHeader::Progressive { len: 0 },
-        TileHeader::Planar { len: 0 },
         TileHeader::Still { len: 0 },
         TileHeader::Median { len: 0 },
     ] {
@@ -162,14 +139,14 @@ fn a_length_filled_in_keeps_the_header_its_size() {
 #[test]
 fn a_bad_kind_length_or_slot_is_fatal() {
     assert_eq!(
-        TileHeader::parse(&[11]),
-        Err(TilesParseError::UnknownKind(11))
+        TileHeader::parse(&[10]),
+        Err(TilesParseError::UnknownKind(10))
     );
     assert_eq!(
         TileHeader::parse(&[7, 0, 0, 0, 0]),
         Err(TilesParseError::Length(0))
     );
-    for kind in [8, 9, 10] {
+    for kind in [8, 9] {
         assert_eq!(
             TileHeader::parse(&[kind, 0, 0, 0, 0]),
             Err(TilesParseError::Length(0))

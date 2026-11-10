@@ -621,12 +621,11 @@ that lets its dial walk, it follows the link as `WLSV` does, every tile a
 RemoteFX Progressive tile, still or moving, with no stream and nothing owed a
 lossless picture, so a client that wants the walk more than a picture that
 ends lossless gets that too; and on a list that asks for it lossless, every
-tile that changed, still or moving, is RDP's planar codec of its pixels, with
-no H.264 stream, so a client on a LAN that wants every picture it is shown exact,
+tile that changed, still or moving, is exact, with no H.264 stream — what is
+still RDP's planar codec of its pixels, what moves a median predictor's
+residuals — so a client on a LAN that wants every picture it is shown exact,
 as a Windows host draws its pipeline under the Lossless policy, gets that
-(experimental), or the same with what moves coded by a median predictor in
-place of the planar codec, in about two thirds of the bytes (experimental
-too). It is zDesk's Motion, which that gateway dropped
+(experimental). It is zDesk's Motion, which that gateway dropped
 because it sat between a native protocol and the page — on RDP it decoded what
 the host had encoded only to encode it again, on a Mac it was layered over
 ZRLE — and which belongs here, where the compositor's pixels and damage are
@@ -635,17 +634,14 @@ coded once. `src/rfb/tiles.rs` is the encoder, and
 
 A client that lists it, with `WLSD` (`0x574c5344`) beside it where it wants
 the dial held rather than walked, or `WLSL` (`0x574c534c`) where it wants
-every tile lossless, or `WLMD` (`0x574c4d44`) where it wants that with what
-moves by the median predictor, gets it instead of a standard pixel
-encoding, wherever in the list it is; a walked list, which names none of
-them, gets every tile progressive, a lossless one every tile planar, and one
-that asks for the predictor its residuals where the desktop moves, below.
+every tile lossless, gets it instead of a standard pixel encoding, wherever
+in the list it is; a walked list, which names neither, gets every tile
+progressive, and a lossless one every tile planar where the desktop is still
+and the median predictor's residuals where it moves, below.
 The dial is wlshare's, as the video's is
 ([above](#the-video-encoding)): nothing in the list names one. A list that
 names both it and `WLSV` is fatal: they are two pictures, of which a client
-wants one; and so is one that names more than one of `WLSD`, `WLSL` and
-`WLMD`. A
-pixel update is then any number of rectangles of the encoding, drawn in
+wants one; and so is one that names both `WLSD` and `WLSL`. A pixel update is then any number of rectangles of the encoding, drawn in
 order, each a rectangle of the desktop whose body begins with a kind:
 
 ```text
@@ -658,9 +654,8 @@ u8 kind
 5 CACHED  u16 slot                                         the tile kept in slot N, drawn here
 6 STORE   u16 slot                                         what the client holds here, kept in slot N
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
-8 PLANAR  u32 length | u8[length]                          a zstd frame of a planar bitmap of exactly the rectangle's pixels
-9 STILL   u32 length | u8[length]                          the still stream's next planar bitmap, of exactly the rectangle's pixels
-10 MEDIAN u32 length | u8[length]                          three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
+8 STILL   u32 length | u8[length]                          the still stream's next planar bitmap, of exactly the rectangle's pixels
+9 MEDIAN  u32 length | u8[length]                          three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
 ```
 
 A PNG is the desktop's pixels there, lossless, 8-bit RGB or a palette of it,
@@ -694,16 +689,13 @@ sent — `wlshare-proto`'s `progressive` module holds them, and the stream a
 standard decoder reads a block from — and the client decodes every block in
 order, keeping each tile's coefficients from one to the next. It is every
 rectangle of a walked list but a COPY, a CACHED and a STORE.
-A PLANAR is the desktop's pixels there, lossless, as RDP 6.0 bitmap
+A STILL is the desktop's pixels there, lossless, as RDP 6.0 bitmap
 compression codes them ([MS-RDPEGDI] 2.2.2.5.1), the graphics pipeline's
 planar codec: a format header of no alpha plane and no colour loss or
 subsampling, then the red, green and blue planes, top row first, each
 run-length coded over its rows' differences, or plain with the padding byte
-that form ends with; the body is that bitmap as one zstd frame, and nothing
-after it. It depends on nothing before it, and is every rectangle of a
-lossless list where the desktop moves but a COPY, a CACHED and a STORE. A
-STILL is the same bitmap in the still stream, one zstd stream across every
-STILL of the session, its body the stream's bytes through a flush after the
+that form ends with. That bitmap is carried in the still stream, one zstd
+stream across every STILL of the session, its body the stream's bytes through a flush after the
 bitmap, which read after the bodies before it is that bitmap exactly; a body
 that begins a zstd frame starts the stream over, and its window is at most
 8 MiB. It is every rectangle of a lossless list where the desktop is still
@@ -718,10 +710,9 @@ elsewhere the median of the sample to the left, the one above and
 left + above − above-left, JPEG-LS's predictor ([ITU-T T.87] A.4.2). The
 body is the three planes' residuals, green's first, each one zstd frame of
 exactly the rectangle's width times its height bytes, one after another and
-nothing after them. It depends on nothing before it, and is what a PLANAR is
-on a lossless list, on a list that asks for the predictor: every rectangle
-where the desktop moves but a COPY, a CACHED and a STORE, the stills in the
-still stream as a lossless list's are.
+nothing after them. It depends on nothing before it, and is every rectangle
+of a lossless list where the desktop moves but a COPY, a CACHED and a
+STORE.
 A PNG over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
@@ -731,8 +722,8 @@ the picture.
   lock into a picture the encoder keeps, and compared there tile by tile with
   what the client holds, so a compositor redrawing what it shows sends
   nothing. A tile that changed and that no stream carries goes as a still —
-  on a held list a PNG, on a lossless one a planar bitmap or, where the list
-  asks and the tile moves, a median predictor's residuals, on a walked one
+  on a held list a PNG, on a lossless one a planar bitmap or, where the
+  tile moves, a median predictor's residuals, on a walked one
   each tile progressive, below — a row's
   run of them, cut where the tile rows meet into bands of at most 64 rows,
   one image, so that a tile the damage covers is in one still whole. A picture that
@@ -892,7 +883,7 @@ the picture.
   would only ever stand at the ceiling, and a picture that ends lossless. The
   walk is `WLSV`'s rather than one of its own because the verdict is the same
   — an update's queueing on the link — and a second set of thresholds would
-  be a second thing to measure. With `WLSL` or `WLMD` beside the list there is no dial
+  be a second thing to measure. With `WLSL` beside the list there is no dial
   to walk: the walk's ceiling is its floor, so the lag its fences show slows
   the updates and nothing else, as the frames of a walk on its floor are
   slowed.
@@ -936,83 +927,69 @@ the picture.
   decoder of their own, and `examples/tiles-walk-sim.rs` walks it
   ([measured](tiles-performance.md#progressive-tiles)).
 
-- **On a lossless list, every tile planar (experimental).** A list with
+- **On a lossless list, every tile exact (experimental).** A list with
   `WLSL` gets no PNG, progressive tile or H.264 stream: every tile that
-  changed, still or moving, goes as a still, a row's run of them one planar
-  bitmap, a STILL where its tiles are still and a PLANAR where they move,
-  by the churn a held list lays its regions out by, and copies and the
-  cache as above, as a Windows host whose policy asks for a
-  lossless picture draws its whole pipeline with the planar codec, H.264 and
-  RemoteFX Progressive refused. What the client is shown is exact from the
-  first update, so nothing is owed and nothing settles: a desktop that moves
-  is sent as often as the link takes it, each update the pixels, and a link
+  changed, still or moving, goes as a still, a row's run of them one body, a
+  STILL where its tiles are still and a MEDIAN where they move, by the churn
+  a held list lays its regions out by, and copies and the cache as above, as
+  a Windows host whose policy asks for a lossless picture refuses H.264 and
+  RemoteFX Progressive. What the client is shown is exact from the first
+  update, so nothing is owed and nothing settles: a desktop that moves is
+  sent as often as the link takes it, each update the pixels, and a link
   short of the bytes gets fewer updates, never coarser ones.
-  `src/rfb/planar.rs` is the coder: a rectangle's pixels cut into red, green
-  and blue planes, each row below the first as its difference from the row
-  above, folded so a small step either way is a small byte, and each row of
-  those as segments of bytes as they are and a run of the last of them; a
-  flat 64×64 tile is a few hundred bytes, and a rectangle whose segments would
-  come to more than its planes as they are, noise or a photograph's grain,
-  goes plain. A row the same colours as the row above is one coding of a
-  row of zeroes, and the planes are cut from the pixels with AVX2 where the
-  processor has it. Each bitmap is then zstd, as a Windows host's bulk
-  compression wraps its pipeline — level 1's fast strategy with a small
-  table and long matches, a moving picture's frame being its literals'
-  entropy coding. Where the desktop moves, it is a frame of its own, so
-  every moving run of an update is packed at once on every core and read
-  alone, and the fast strategy steps 8 bytes past a place with no match
-  with its literals still Huffman coded (zstd's `experimental` parameters).
-  Where it is still, it is the still stream's, across the session and
-  flushed at each bitmap, looking at every place for a page's matches, with
-  the 8 MiB window the protocol allows and a 65536-entry table, as a smaller
-  one forgets a match from further back than a few thousand places whatever
-  the window, coded in order after the bitmaps are cut on every core: a page, a terminal or a menu shown again is matched
-  against what the stream carried, which takes a half to seven eighths off
-  what a desktop of pages comes to in frames of their own, and a moving picture,
-  which it would take nothing off, stays framed and on every core. The
+  Where the desktop is still, `src/rfb/planar.rs` is the coder, RDP's planar
+  codec, what a Windows host draws its lossless pipeline with: a
+  rectangle's pixels cut into red, green and blue planes, each row below the
+  first as its difference from the row above, folded so a small step either
+  way is a small byte, and each row of those as segments of bytes as they
+  are and a run of the last of them; a flat 64×64 tile is a few hundred
+  bytes, and a rectangle whose segments would come to more than its planes
+  as they are, noise or a photograph's grain, goes plain. A row the same
+  colours as the row above is one coding of a row of zeroes, and the planes
+  are cut from the pixels with AVX2 where the processor has it. Each bitmap
+  is then the still stream's, as a Windows host's bulk compression wraps its
+  pipeline: one zstd stream across the session, flushed at each bitmap,
+  level 1's fast strategy with long matches, looking at every place for a
+  page's matches, with the 8 MiB window the protocol allows and a
+  65536-entry table, as a smaller one forgets a match from further back than
+  a few thousand places whatever the window, coded in order after the
+  bitmaps are cut on every core: a page, a terminal or a menu shown again is
+  matched against what the stream carried, which takes a half to seven
+  eighths off what a desktop of pages comes to in frames of their own. The
   stream is state both ends keep, so it starts over with the picture, and
   with a client's `CacheEmpty`, which a page that cannot read a STILL sends
-  as one that missed a rectangle does. A still or a scroll is then about a ninth
-  of a PNG's bytes or less, and a desktop that moves several times the held
-  tiles' bytes and a fifth more of their processor, for a LAN
-  ([measured](tiles-performance.md#lossless-tiles)). Its tests read every
-  body back with a reader of their own, written from the specification,
-  the zstd by ruzstd-decompress, a decoder that shares nothing with libzstd,
-  andrewtheguy's fork of ruzstd, which hands out the still stream's newest
-  bytes as soon as their blocks are decoded, where ruzstd holds them back
-  while its frame goes on, and decodes an update's moving frames side by
-  side; the page decodes a batch's the same way, with the planar codec of
-  the compositor that draws an RDP host's pipeline.
-
-- **What moves by a median predictor, where the list asks (experimental).**
-  A list with `WLMD` is a lossless list in everything but its moving runs:
-  the same runs, cut by the same churn, the same copies, cache and still
-  stream, every update exact and nothing owed, but each run that moves a
-  MEDIAN in place of a PLANAR. Most of what a codec built for lossless
-  pictures takes off a moving one is its predictor, and planar's is the pixel
-  above alone, over red, green and blue apart. `src/rfb/median.rs` cuts a
-  rectangle's pixels into green, red less green and blue less green, and
-  codes each sample as its residual from the median of the sample to its
+  as one that missed a rectangle does. A still or a scroll is then about a
+  ninth of a PNG's bytes or less ([measured](tiles-performance.md#lossless-tiles)).
+  Where it moves, `src/rfb/median.rs` is the coder. Most of what a codec
+  built for lossless pictures takes off a moving one is its predictor, and
+  planar's is the pixel above alone, over red, green and blue apart; this one
+  cuts a rectangle's pixels into green, red less green and blue less green,
+  and codes each sample as its residual from the median of the sample to its
   left, the one above and their gradient, which follows an edge either way
   and carries a slope on; the top row is predicted from the left alone and
   the left column from above. It has no contexts and no entropy coder of its
-  own: each plane's residuals are a zstd frame with the parameters a planar
-  bitmap's frame has, so a run is still packed on any core and read alone,
-  and the still stream, whose matches are a page's, stays planar. A row the
-  same colours as the row above is a row of zero residuals in every plane,
-  taken at once, and the planes are cut and the medians taken with AVX2
-  where the processor has it. Over the samples it is two thirds of a
-  lossless list's bytes where the desktop moves for about the same of the
-  host's processor, a video at 1920×1080 96 MB where planar's is 149, and
-  the page's decoding of an update in WebAssembly a tenth to a third more
-  than planar's, both well inside a frame at 1920×1080
-  ([measured](tiles-performance.md#the-median-predictor)). A page, which
-  goes through the still stream, is the same bytes under both, and a
-  terminal's few moving runs 3% more of its bytes. It is a picture of its own beside the
-  lossless list's, not a change to it: that one is RDP's planar codec
-  throughout, what a Windows host draws, and this one leaves it where the
-  desktop moves, so the client chooses. Its tests read every body back with
-  a reader written from the protocol's text, as the planar tiles' do.
+  own: each plane's residuals are a zstd frame of its own, the still
+  stream's strategy with a 128 KiB window and a 4096-entry table, stepping
+  8 bytes past a place with no match with the literals still Huffman coded
+  (zstd's `experimental` parameters), a moving picture's frame being its
+  literals' entropy coding; so every moving run of an update is packed at
+  once on every core and read alone. A row the same colours as the row above is a
+  row of zero residuals in every plane, taken at once, and the planes are
+  cut and the medians taken with AVX2 where the processor has it. Over the
+  samples it is two thirds of the bytes of each moving run planar in a
+  frame of its own, the lossless list's moving runs before it, for about the
+  same of the host's processor, a video at 1920×1080 96 MB against 149, and
+  the page's decoding of an update in WebAssembly a tenth to a third more,
+  well inside a frame at 1920×1080
+  ([measured](tiles-performance.md#the-median-predictor)). Its tests read
+  every body back with readers of their own, written from the
+  specification and the protocol's text, the zstd by ruzstd-decompress, a
+  decoder that shares nothing with libzstd, andrewtheguy's fork of ruzstd,
+  which hands out the still stream's newest bytes as soon as their blocks
+  are decoded, where ruzstd holds them back while its frame goes on, and
+  decodes an update's moving frames side by side; the page decodes a
+  batch's the same way, the stills with the planar codec of the compositor
+  that draws an RDP host's pipeline.
 
 - **H.264, which wlshare chooses: the host's hardware, or libx264.** Every
   region of a held list is H.264, by an encoder found once at startup; the client has no
@@ -1118,7 +1095,8 @@ through this encoder and through `WLSV`, both decoded as a page would, the
 tiles' updates through the client's parser, a copy from the page's own
 picture, and `WLSV` and each region by libavcodec's software H.264 decoder,
 the dial held and every still lossless, or with `--lossless` every tile
-planar, or with `--median` what moves by the median predictor. It writes JSON lines as `walk-sim` does,
+exact, planar where it is still and by the median predictor where it moves.
+It writes JSON lines as `walk-sim` does,
 and `scripts/motion-tables.py` makes Markdown tables of either's logs. Its
 regions and `WLSV` are the daemon's own H.264 — `h264/`, found as the
 daemon finds it, or libx264 with `--libx264` — so it runs where the daemon

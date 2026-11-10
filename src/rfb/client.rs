@@ -315,15 +315,11 @@ pub enum TileBody {
     /// A RemoteFX Progressive tile block of the rectangle's tile, on a
     /// progressive list.
     Progressive(Vec<u8>),
-    /// A planar bitmap of the rectangle's pixels in a zstd frame, on a
-    /// lossless list where the desktop moves.
-    Planar(Vec<u8>),
     /// The still stream's bytes of a planar bitmap of the rectangle's
     /// pixels, on a lossless list where the desktop is still.
     Still(Vec<u8>),
     /// A median predictor's residuals of the rectangle's pixels in three
-    /// zstd frames, on a list that asks for the predictor where the desktop
-    /// moves.
+    /// zstd frames, on a lossless list where the desktop moves.
     Median(Vec<u8>),
 }
 
@@ -590,12 +586,6 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                     };
                     (RectBody::Tiles(TileBody::Progressive(block)), at + len)
                 }
-                TileHeader::Planar { len } => {
-                    let Some(bitmap) = body(len)? else {
-                        return Ok(None);
-                    };
-                    (RectBody::Tiles(TileBody::Planar(bitmap)), at + len)
-                }
                 TileHeader::Still { len } => {
                     let Some(bytes) = body(len)? else {
                         return Ok(None);
@@ -682,8 +672,8 @@ mod tests {
         AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect,
     };
     use wlshare_proto::tiles::{
-        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MEDIAN, KIND_PLANAR, KIND_PNG,
-        KIND_PROGRESSIVE, KIND_START, KIND_STILL, KIND_STORE,
+        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MEDIAN, KIND_PNG, KIND_PROGRESSIVE,
+        KIND_START, KIND_STILL, KIND_STORE,
     };
 
     use crate::rfb::audio::FlacEncoder;
@@ -943,7 +933,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(18).to_vec();
+        let mut wire = msg::update_header(17).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -976,8 +966,6 @@ mod tests {
         wire.extend_from_slice(&[KIND_CACHED, 0, 7]);
         wire.extend_from_slice(&msg::rect_header(192, 64, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_PROGRESSIVE, 0, 0, 0, 2, 0xC6, 0xCC]);
-        wire.extend_from_slice(&msg::rect_header(0, 128, 128, 64, ENCODING_TILES));
-        wire.extend_from_slice(&[KIND_PLANAR, 0, 0, 0, 3, 0x30, 0x10, 0x07]);
         wire.extend_from_slice(&msg::rect_header(128, 128, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_STILL, 0, 0, 0, 2, 0x28, 0xB5]);
         wire.extend_from_slice(&msg::rect_header(192, 128, 64, 64, ENCODING_TILES));
@@ -1112,16 +1100,6 @@ mod tests {
         assert_eq!(
             rects[15],
             Rect {
-                x: 0,
-                y: 128,
-                width: 128,
-                height: 64,
-                body: RectBody::Tiles(TileBody::Planar(vec![0x30, 0x10, 0x07]))
-            }
-        );
-        assert_eq!(
-            rects[16],
-            Rect {
                 x: 128,
                 y: 128,
                 width: 64,
@@ -1130,7 +1108,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rects[17],
+            rects[16],
             Rect {
                 x: 192,
                 y: 128,
