@@ -20,7 +20,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl pkg-config \
         libxkbcommon-dev libpam0g-dev \
-        libpipewire-0.3-dev libspa-0.2-dev libavcodec-dev libx264-dev libva-dev libclang-dev dpkg-dev && \
+        libpipewire-0.3-dev libspa-0.2-dev libavcodec-dev libx264-dev libva-dev libclang-dev dpkg-dev xz-utils && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \
@@ -42,7 +42,9 @@ COPY . /build
 # (trixie, or Ubuntu 26.04's resolute), so the release asset is
 # wlshare-<suite>-<arch>.deb whatever the version. cargo-deb's $auto names the
 # suite's own sonames (libavcodec61 on trixie, libavcodec62 on resolute), so a
-# package installs only on the suite it was built on.
+# package installs only on the suite it was built on. It also names libva2 and
+# libva-drm2 at a floor of its own beside Cargo.toml's, and merge-depends.sh
+# keeps the higher of the two (it needs xz-utils, to rewrite control.tar.xz).
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
     protocol="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare-proto","version":"\([0-9]*\)\.0\.0".*/\1/p' | head -n 1)"; \
@@ -53,6 +55,7 @@ RUN set -eux; \
     [ "$(target/release/wlshare --version)" = "wlshare ${version} (wlshare protocol ${protocol})" ]; \
     mkdir -p /out; \
     cargo deb -p wlshare --no-build -o "/out/wlshare-${suite}-${arch}.deb"; \
+    docker/merge-depends.sh "/out/wlshare-${suite}-${arch}.deb"; \
     [ "$(dpkg-deb --field "/out/wlshare-${suite}-${arch}.deb" Version)" = "${version/-/\~}-1" ]; \
     cd /out && sha256sum ./*.deb | sed 's#  \./#  #' > SHA256SUMS && cat SHA256SUMS
 

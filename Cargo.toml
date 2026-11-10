@@ -191,7 +191,9 @@ priority = "optional"
 # the headers built against, and hold for libva 2.1.0 onward: $auto's floor is
 # only the oldest version exporting each function, so this one is stated.
 # Trixie has 2.22, Ubuntu 26.04 2.23; libva2 is libva.so.2 alone, so a libva
-# whose ABI broke would be another package.
+# whose ABI broke would be another package. $auto names libva2 and libva-drm2
+# too, at its lower floor, and docker/merge-depends.sh drops that second entry
+# from the built package.
 depends = "$auto, libva2 (>= 2.1.0), libva-drm2 (>= 2.1.0), libwlroots-0.19 (>= 0.19.0), pipewire, wireplumber, pipewire-pulse"
 # The VA-API drivers the hardware H.264 encoder reaches the GPU through: Intel's
 # and Mesa's. Without one the video stream and the tiles' regions are libx264's,
