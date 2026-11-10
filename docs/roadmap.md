@@ -76,9 +76,8 @@ configuration (a 1.1, a 1.7) reaches the daemon rounded to 1/256.
 
 ## Lossless tiles
 
-What is left of the lossless pictures, every tile that changed exact as it
-is sent: a planar bitmap, or, on a list that asks for the median predictor
-and where the desktop moves, that predictor's residuals
+What is left of the lossless pictures, the lossless tiles and those by the
+median predictor
 ([On a lossless list, every tile planar](architecture.md#the-tiles-encoding)).
 They are for a desktop client on a LAN, never a phone, a tablet or a page zDesk
 flags as tight on memory, none of which they accommodate, so a client decoder
