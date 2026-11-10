@@ -1148,11 +1148,125 @@ the processor's time over every thread, the mean of the two runs:
   byte the same, which only a prediction that codes the difference, as a
   video codec's does, takes off.
 
+## The median predictor
+
+The lossless tiles by the median predictor (`WLMD`, experimental), what
+moves the predictor's residuals in three zstd frames where a lossless
+list's is a planar bitmap in one, against the lossless tiles, measured on
+2026-11-10 as built: the host's encoder through `motion-bench`, and the
+page's decoder in Chrome, which what chose it
+([Through motion-bench](#through-motion-bench)) left unmeasured. Archived in
+the artifacts as `bench/median-tiles-20261110/`.
+
+**The host's encoder.** lab1 (four cores of EPYC Rome, rebuilt that day, so
+its planar figures are not the eight cores' of
+[Lossless tiles](#lossless-tiles)), alone: `motion-bench --tiles-only
+--lossless` and `--tiles-only --median` over every sample at every size,
+twice each, one after the other. Every frame of every capture was exact on
+the bench's page under both, and a picture's bytes were the same in both
+its runs. Summed over the sizes, flood for reference, the processor's time
+over every thread, the mean of the two runs:
+
+| Scenario | CPU, lossless → median | Bytes, lossless → median |
+|---|---:|---:|
+| browser | 11.0 → 10.9 s | 3.58 → 3.58 MB |
+| drag | 3.9 → 3.9 s | 0.52 → 0.52 MB |
+| terminal | 0.5 → 0.5 s | 0.91 → 0.94 MB (1.03×) |
+| uncover | 2.1 → 2.0 s | 2.72 → 2.72 MB |
+| still | 0.2 → 0.2 s | 0.60 → 0.60 MB |
+| video | 20.3 → 21.1 s (1.04×) | 2,679 → 1,670 MB (0.62×) |
+| walk | 32.0 → 31.5 s (0.99×) | 3,623 → 2,222 MB (0.61×) |
+| window | 4.7 → 4.9 s (1.05×) | 706 → 457 MB (0.65×) |
+| mixed | 60.0 → 62.0 s (1.03×) | 8,011 → 5,522 MB (0.69×) |
+| flood | 28.8 → 30.3 s (1.05×) | 3,446 → 2,713 MB (0.79×) |
+| all but flood | 135 → 137 s (1.02×) | 15,027 → 9,879 MB (0.66×) |
+
+The milliseconds a frame with their 95th percentile, and the link at the
+capture's frame rate:
+
+| Capture | Lossless: ms a frame, MB, Mbit/s | Median: ms a frame, MB, Mbit/s |
+|---|---:|---:|
+| window, 1920×1080 | 2.47 (3.2), 49, 91 | 2.62 (3.6), 31, 58 |
+| video, 1920×1080 | 7.67 (9.9), 149, 249 | 8.08 (10.7), 96, 160 |
+| walk, 1920×1080 | 8.62 (15.1), 219, 116 | 8.96 (16.5), 148, 78 |
+| mixed, 1920×1080 | 4.77 (11.6), 2,498, 89 | 4.96 (12.4), 1,730, 62 |
+| mixed, 2880×1800 | 12.99 (27.3), 5,513, 196 | 13.39 (29.2), 3,792, 135 |
+| video, 2880×1800 | 22.23 (28.9), 377, 588 | 23.98 (32.3), 246, 383 |
+| video, 3840×2160 | 32.63 (42.9), 432, 722 | 32.10 (43.2), 244, 408 |
+
+- **The link.** Two thirds of the lossless tiles' bytes: the moving frames
+  14,515 MB to 9,367 over all but flood, the still stream's 512 MB as they
+  were. By capture, where the desktop moves, 0.48 to 0.71 of the lossless
+  tiles' bytes, the least at 4K: a video at 1920×1080 160 Mbit/s at its
+  frame rate where theirs is 249, at 4K 408 where theirs is 722, and the
+  mixed session 62 where theirs is 89.
+- **The processor.** 2% more over all but flood, inside what two runs
+  differ by: the lossless tiles' two 134.4 and 134.9 s, the predictor's
+  137.8 and 136.0. By capture, where the desktop moves, 0.88 to 1.10 of the
+  lossless tiles', the most on a small video and the least at 4K: a video
+  at 1920×1080 0.4 ms more a frame, its 95th percentile 0.8 more.
+- **A page.** A browser, a drag and an uncovering go through the still
+  stream whole, the same bytes under both. A terminal has moving runs, 7 to
+  11 KB a capture, which the predictor codes 2 to 4 KB larger: 3% of the
+  terminal's bytes.
+- **Against the scratch copy.** The bytes are the scratch copy's of the day
+  before, capture for capture, and the lossless tiles' as well; its
+  processor was 4% more than planar's, its runs 139.2 s both.
+
+**The page's decoder.** zDesk's WebAssembly module as its page loads it
+(`zdesk-egfx` of the branch that brought the picture, its threads with it),
+in a worker of a page of its own in Chrome 156: the updates
+`motion-bench` sent over five samples, written out as they were sent under
+each picture, each update's tiles handed to the module in one call as a
+batch's are in a session, and the call timed. That is the zstd frames, the
+still stream, the planar bitmaps or the planes' samples, and the pixels as
+R,G,B,A; drawing them, the same under both, is not in it. Each sample three
+times a run, and every update's pixels the same under both pictures. Two
+machines: a Windows desktop (six cores of i5-8500T, the module's four
+threads, in use meanwhile, two runs taken together), and testdesktop2 (two
+cores of i5-8400T, two threads, idle, its three passes within 1%). The milliseconds an update with their 95th percentile:
+
+| Sample | Mpixel an update | The desktop, four threads: lossless, median | testdesktop2, two threads: lossless, median |
+|---|---:|---:|---:|
+| window, 1920×1080 | 0.30 | 1.96 (2.9), 2.45 (3.6), 1.25× | 2.58 (3.6), 3.39 (4.9), 1.31× |
+| video, 1920×1080 | 0.87 | 6.53 (11.2), 6.96 (11.3), 1.07× | 7.79 (11.0), 9.76 (13.8), 1.25× |
+| walk, 1920×1080 | 0.90 | 6.83 (12.8), 7.81 (13.3), 1.14× | 8.39 (13.7), 9.92 (15.9), 1.18× |
+| video, 2880×1800 | 2.31 | 13.46 (20.4), 15.55 (22.8), 1.16× | 21.36 (30.4), 26.41 (38.5), 1.24× |
+| video, 3840×2160 | 3.12 | 19.00 (28.2), 21.98 (32.9), 1.16× | 29.83 (43.9), 36.71 (55.8), 1.23× |
+
+- **What it costs the page.** A tenth to a third more than the lossless
+  tiles an update: 0.4 to 2 ms at 1920×1080, and at 4K 3 ms on four
+  threads and 7 on two. A video's frames are 40 ms apart, so at 1920×1080
+  either is a quarter of a frame at most on the mean; at 4K on two cores the
+  predictor's update is 37 ms on the mean and 56 at its 95th percentile
+  where the lossless tiles' are 30 and 44, so that page falls behind under
+  either and sooner under the predictor.
+- **The threads.** On the desktop, a video at 1920×1080 on one thread
+  is 12.4 ms an update by the lossless tiles and 16.4 by the predictor
+  (1.32×), on two 7.3 and 8.7 (1.20×), on four 6.5 and 7.0 (1.07×); at 4K
+  48.9 and 60.5 (1.24×), 27.9 and 33.7 (1.21×), 19.0 and 22.0 (1.16×). A
+  run's three frames are read beside the other runs', and its three planes'
+  samples are taken side by side, so the predictor's more is spread over
+  the cores a page has.
+- **In a session.** zDesk's page itself, driven by Playwright, started with
+  the picker's choice on a daemon sharing a headless labwc with a test
+  pattern moving at 30 frames a second: in Chromium on testdesktop2's
+  display (ANGLE on Mesa, its UHD 630), 20 s brought 534 MEDIAN tiles, no
+  PLANAR, 282 STILL, in 261 batches, every one acknowledged, no repaint
+  asked for and nothing logged by the page; in a Chromium drawing in
+  software, 719, none, 295, in 313. A check that it draws, not a figure.
+- **Not measured.** Any browser but Chrome and Chromium; what the decoder's
+  time goes to, which is written plainly, a sample at a time down each
+  plane, and has not been profiled; and a session's rate on a link, which
+  the walk paces as it does the lossless tiles'.
+
 ## Other coders for the lossless tiles' moving runs
 
 What might code a moving run in place of planar and its zstd frame, measured
 on 2026-11-09 for the roadmap's [Lossless tiles](roadmap.md#lossless-tiles);
-none of it is in the daemon. First a scratch bench of every coder, then
+none of it in the daemon then; the median predictor was built the day
+after, a picture of its own ([The median predictor](#the-median-predictor)).
+First a scratch bench of every coder, then
 the two the roadmap keeps through `motion-bench`
 ([below](#through-motion-bench)). The scratch bench is on one thread, over
 the 1920×1080 samples: every run the encoder codes, a row of changed tiles
@@ -1243,7 +1357,7 @@ HTJ2K, 22 by the median's contexts, 35 by JPEG XL and 49 by JPEG-LS.
 ### Through motion-bench
 
 The median predictor and JPEG-LS in the daemon's own encoder, measured on
-2026-11-09 and neither built into it: a scratch copy of the tree at 0.0.122
+2026-11-09 with neither built into it: a scratch copy of the tree at 0.0.122
 whose `planar::pack` hands a moving run to the coder the environment names,
 the bench decoding each with its decoder. The median coder is written as
 planar's is: cut from a row of pixels, compiled for AVX2 too and chosen at
@@ -1301,4 +1415,5 @@ At 1920×1080, the milliseconds a frame with their 95th percentile:
   moving runs, 7 to 11 KB a capture, which the median codes 2 to 4 KB
   larger and JPEG-LS 3 to 9: 3% and 6% of the terminal's bytes.
 - **Not measured.** The page's decoding: the bench's times are the
-  encoder's alone, and its decoder is native code.
+  encoder's alone, and its decoder is native code. The median predictor's
+  is measured as built, [above](#the-median-predictor).
