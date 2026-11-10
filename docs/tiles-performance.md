@@ -1152,9 +1152,11 @@ the processor's time over every thread, the mean of the two runs:
 
 What might code a moving run in place of planar and its zstd frame, measured
 on 2026-11-09 for the roadmap's [Lossless tiles](roadmap.md#lossless-tiles);
-none of it is in the daemon. A scratch bench on one thread, over the
-1920×1080 samples: every run the encoder codes, a row of changed tiles at a
-time, the tiles compared with the frame before, coded by the daemon's
+none of it is in the daemon. First a scratch bench of every coder, then
+the two the roadmap keeps through `motion-bench`
+([below](#through-motion-bench)). The scratch bench is on one thread, over
+the 1920×1080 samples: every run the encoder codes, a row of changed tiles
+at a time, the tiles compared with the frame before, coded by the daemon's
 `planar::pack` and by each coder, each run decoded again and compared with
 what went in. A coder's time includes cutting the run to R,G,B, which
 planar's does not. lab1 (four cores of EPYC Rome), alone, wlshare at 0.0.122.
@@ -1188,9 +1190,10 @@ HTJ2K, 22 by the median's contexts, 35 by JPEG XL and 49 by JPEG-LS.
   short of JPEG-LS for a sixth of its time; and where the desktop is a
   page, each run framed alone, smaller than planar but on the terminal,
   for 3.3 to 4.3 times planar's time, which codes a row the same as the row
-  above at once. The still stream, whose matches are across bitmaps, was
-  not measured with it. Only the encoder's inner loop was written for
-  speed, a row at a time from the pixels themselves.
+  above at once. In the daemon a page's runs go to the still stream, whose
+  matches are across bitmaps, and never to it (below). Only the encoder's
+  inner loop was written for speed, a row at a time from the pixels
+  themselves.
 - **Its residuals by context.** The same residuals in eight streams a
   component by how busy a sample's neighbours are (|left − above-left| +
   |above − above-left| + |above-right − above|, cut at 0, 2, 5, 10, 20, 40
@@ -1236,3 +1239,66 @@ HTJ2K, 22 by the median's contexts, 35 by JPEG XL and 49 by JPEG-LS.
   runs leave out. ffmpeg's JPEG-LS `-pred` is the error a sample may be
   left with, not a predictor: at 1 it is 65 MB and off by one in a third of
   its samples.
+
+### Through motion-bench
+
+The median predictor and JPEG-LS in the daemon's own encoder, measured on
+2026-11-09 and neither built into it: a scratch copy of the tree at 0.0.122
+whose `planar::pack` hands a moving run to the coder the environment names,
+the bench decoding each with its decoder. The median coder is written as
+planar's is: cut from a row of pixels, compiled for AVX2 too and chosen at
+run time, a row the same colours as the row above taken at once as a row of
+zero residuals. CharLS is as above. A still run is a planar bitmap in the
+still stream under each. lab1 (four cores of EPYC Rome, so its planar
+figures are not the eight cores' of [Lossless tiles](#lossless-tiles)),
+alone: `motion-bench --tiles-only --lossless` over every sample at every
+size, planar and the median twice each, JPEG-LS once. Archived in the
+artifacts as `bench/lossless-median-20261109/`.
+
+Every frame of every capture came back exact under each coder. Summed over
+the sizes, flood for reference, the processor's time over every thread, the
+mean of the runs:
+
+| Scenario | CPU: planar, median, JPEG-LS | Bytes: planar, median, JPEG-LS |
+|---|---:|---:|
+| browser | 10.7, 10.8, 10.6 s | 3.6, 3.6, 3.6 MB |
+| drag | 3.9, 3.9, 4.0 s | 0.52, 0.52, 0.52 MB |
+| terminal | 0.5, 0.5, 0.5 s | 0.91, 0.94, 0.97 MB |
+| uncover | 2.1, 2.0, 2.0 s | 2.7, 2.7, 2.7 MB |
+| still | 0.2, 0.2, 0.2 s | 0.6, 0.6, 0.6 MB |
+| video | 20.4, 21.5 (1.05×), 134.4 (6.6×) s | 2,679, 1,670 (0.62×), 1,370 (0.51×) MB |
+| walk | 32.1, 31.8 (0.99×), 172.5 (5.4×) s | 3,623, 2,222 (0.61×), 1,919 (0.53×) MB |
+| window | 4.8, 4.9 (1.04×), 36.9 (7.8×) s | 706, 457 (0.65×), 398 (0.56×) MB |
+| mixed | 59.9, 63.6 (1.06×), 458.0 (7.6×) s | 8,011, 5,522 (0.69×), 4,671 (0.58×) MB |
+| flood | 28.7, 30.7 (1.07×), 173.7 (6.1×) s | 3,446, 2,713 (0.79×), 3,554 (1.03×) MB |
+| all but flood | 135, 139 (1.04×), 819 (6.1×) s | 15,027, 9,879 (0.66×), 8,367 (0.56×) MB |
+
+At 1920×1080, the milliseconds a frame with their 95th percentile:
+
+| Capture | Planar: ms a frame, MB | Median: ms a frame, MB | JPEG-LS: ms a frame, MB |
+|---|---:|---:|---:|
+| window | 2.57 (3.4), 49 | 2.77 (3.8), 31 | 20.7 (31), 28 |
+| video | 7.56 (9.9), 149 | 8.18 (10.9), 96 | 65.5 (99), 82 |
+| walk | 8.79 (14.7), 219 | 9.27 (17.2), 148 | 64.0 (111), 129 |
+| mixed | 4.88 (12.2), 2,498 | 5.03 (12.4), 1,730 | 39.6 (118), 1,495 |
+
+- **The median predictor.** Two thirds of the lossless tiles' bytes for 4%
+  more of the processor: the moving frames 14,515 MB to 9,367 over all but
+  flood, the still stream's 512 MB as they were. By capture, where the
+  desktop moves, 0.48 to 0.71 of planar's bytes for 0.88 to 1.11 of its
+  processor, the two planar runs 133.9 and 135.1 s over all but flood and
+  the median's both 139.2. A video at 1920×1080 is 159 Mbit/s at its frame
+  rate where planar's is 248, and at 4K 244 MB for 32.5 ms a frame where
+  planar's is 432 for 32.7. Written as planar's coder is, it adds 0.6 ms
+  to a video's frame at 1920×1080, where the scratch bench's added 5.
+- **JPEG-LS.** 0.56 of the bytes, ten points fewer than the median, for 6.1
+  times the processor, 5.9 times the median's: a video at 1920×1080 65 ms of
+  the processor a frame, at 2880×1800 172. On flood it is more than
+  planar's bytes.
+- **A page.** A browser, a drag and an uncovering go through the still
+  stream whole, the same bytes under each coder, so what the scratch bench
+  found of a page's runs framed alone does not arise. The terminal has
+  moving runs, 7 to 11 KB a capture, which the median codes 2 to 4 KB
+  larger and JPEG-LS 3 to 9: 3% and 6% of the terminal's bytes.
+- **Not measured.** The page's decoding: the bench's times are the
+  encoder's alone, and its decoder is native code.

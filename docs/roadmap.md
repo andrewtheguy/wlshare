@@ -91,12 +91,13 @@ size on lab1, against [Lossless tiles](tiles-performance.md#lossless-tiles).
 
 ### Under consideration
 
-Held back by the host's processor. The figures below are preliminary: a
-scratch bench outside the daemon, on one thread, over the runs the encoder
-codes at 1920x1080 alone, with the other codecs that came no nearer ([Other
-coders for the lossless tiles' moving
-runs](tiles-performance.md#other-coders-for-the-lossless-tiles-moving-runs)).
-Neither item has been through `motion-bench`.
+Each was measured in the daemon's encoder without being built into it: a
+scratch copy of the tree whose moving runs go to the coder, through
+`motion-bench` over the samples at every size on lab1, every frame exact
+([Through motion-bench](tiles-performance.md#through-motion-bench), after
+[the other codecs](tiles-performance.md#other-coders-for-the-lossless-tiles-moving-runs)
+that came no nearer). The still stream is planar under each. The page's
+decoding is not measured for either.
 
 #### A median predictor ahead of zstd for the moving runs
 
@@ -104,39 +105,39 @@ Most of what a better codec takes off a moving picture is planar's predictor,
 and a better one costs little. Each sample is predicted from the median of the
 pixel left, the pixel above and their gradient, which is JPEG-LS's own
 predictor, over green, red less green and blue less green, and the residuals
-go to zstd as a planar bitmap does. As a scratch coder it is two thirds of
-planar's bytes where the desktop moves for twice planar's time, and smaller
-than planar on a page too, a terminal apart, so it might code every moving
-run with no choice between two codecs. It leaves RDP's planar codec, with a
-body kind in the protocol and `PROTOCOL_VERSION` for it, but it needs no
-library: the coder would be the daemon's own, and the page's decoder a loop
-beside the zstd it already has. What is left before it is planned: the coder
-as the daemon would have it, compiled for AVX2 as planar's is and measured by
-`motion-bench` over the samples, the still stream with it, and the page's
-decoding in WebAssembly.
+go to zstd as a planar bitmap does. Over the samples it is two thirds of the
+lossless tiles' bytes for 4% more of the host's processor: a video at
+1920x1080 96 MB where planar's is 149, for 8.2 ms a frame where planar's is
+7.6. A page goes through the still stream, so it codes every moving run with
+no choice between two codecs, a terminal's few moving runs 3% more of its
+bytes. It leaves RDP's planar codec, with a body kind in the protocol and
+`PROTOCOL_VERSION` for it, but it needs no library: the coder would be the
+daemon's own, and the page's decoder a loop beside the zstd it already has.
+What holds it back is that loop alone: the page's decoding in WebAssembly at
+the frame rate, measured on testdesktop2's Chrome against planar's, before
+it is planned.
 
 #### JPEG-LS by CharLS for the moving runs
 
-Its cost is what holds it back: 12 to 15 times planar's processor on the host
-for a little over half of planar's bytes where the desktop moves, nine points
-fewer than the median predictor above for six times its time. Planar predicts
-each byte from the pixel above alone, codes red, green and blue apart with no
-transform between them, and leaves the entropy coding to zstd: a weak
+Its cost is what holds it back: six times the lossless tiles' processor on the
+host, a video at 1920x1080 65 ms a frame, for 0.56 of their bytes, ten points
+fewer than the median predictor above for six times its processor. Planar
+predicts each byte from the pixel above alone, codes red, green and blue apart
+with no transform between them, and leaves the entropy coding to zstd: a weak
 predictor and no context. JPEG-LS is a codec built for lossless pictures, as
 FLAC is for sound: a predictor from the pixels left, above and above-left, a
 reversible colour transform, and Golomb-Rice coding by context, which is the
 most there is to take off where the desktop moves. CharLS is its library, in
 Debian and Ubuntu as `libcharls-dev`, linked from the system as libx264 and
-libva are. Where the desktop is a page or a terminal it is more than planar's
-bytes, which zstd's matches of what repeats take off, so it would be chosen
-run by run, a moving picture JPEG-LS and the rest planar, by how little
-planar's segments took off: a video's bitmaps 0.8 of their planes, a page's
-0.15. It leaves RDP's planar codec, the one a Windows host draws its lossless
-pipeline with, so the page needs a decoder of its own (CharLS in WebAssembly)
-beside its RDP compositor's, and the protocol a body kind for it,
-`PROTOCOL_VERSION` with it. A run is coded on any thread, as a planar one is,
-so an update's wait is its largest run's. It is planned only once the host's
-processor at the frame rate is settled, a faster coder or fewer of the runs;
-then the page's decoding in WebAssembly, measured on testdesktop2's Chrome,
-and a cut between the two codecs that loses nothing where the desktop is a
-page.
+libva are. A page's run framed alone is more than planar's bytes by it, which
+zstd's matches of what repeats take off, so it would be chosen run by run, a
+moving picture JPEG-LS and the rest planar, by how little planar's segments
+took off: a video's bitmaps 0.8 of their planes, a page's 0.15. It leaves
+RDP's planar codec, the one a Windows host draws its lossless pipeline with,
+so the page needs a decoder of its own (CharLS in WebAssembly) beside its RDP
+compositor's, and the protocol a body kind for it, `PROTOCOL_VERSION` with it.
+A run is coded on any thread, as a planar one is, so an update's wait is its
+largest run's. It is planned only once the host's processor at the frame rate
+is settled, a faster coder or fewer of the runs; then the page's decoding in
+WebAssembly, measured on testdesktop2's Chrome, and a cut between the two
+codecs that loses nothing where the desktop is a page.
