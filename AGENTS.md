@@ -61,7 +61,7 @@
   the hardware's is run for real.
 - The lossless pictures — the lossless tiles (`WLSL`: every changed tile
   exact, planar where the desktop is still and the median predictor's
-  residuals where it moves, no H.264 stream) and the tiles with motion (`WLSD`: lossless PNG
+  residuals where it moves, no H.264 stream) and the tiles with motion (`WLSD`: lossless WebP
   where the desktop is still) — are not meant for a mobile client or
   a page zDesk flags as tight on memory (`tight_memory`: an iPhone, an iPad,
   or a browser that reports 4 GB or less). Nothing in them accommodates one,

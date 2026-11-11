@@ -1,4 +1,4 @@
-//! The tiles encoding: the desktop as lossless PNG tiles where it is still,
+//! The tiles encoding: the desktop as lossless WebP tiles where it is still,
 //! and a video stream of its own for each region that moves, for a client on
 //! a link with room to spare — or, on a list that lets the dial walk, every
 //! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
@@ -18,7 +18,7 @@
 //!
 //! ```text
 //! u8 kind
-//! 0 PNG     u32 length | u8[length]  a PNG of exactly the rectangle's pixels
+//! 0 WEBP    u32 length | u8[length]  a lossless WebP of exactly the rectangle's pixels
 //! 1 START   u8 stream | u32 length | u8[length]  a region's first frame
 //! 2 FRAME   u8 stream | u32 length | u8[length]  a region's next frame
 //! 3 END     u8 stream                            the region's stream is over
@@ -30,9 +30,9 @@
 //! 9 MEDIAN  u32 length | u8[length]  three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
 //! ```
 //!
-//! - A **PNG** is the desktop's pixels in the rectangle, lossless, 8-bit RGB or
-//!   a palette of it, and the picture there until a later rectangle draws
-//!   over it. It depends on nothing before it. It is every still of a list
+//! - A **WEBP** is the desktop's pixels in the rectangle as a WebP file, lossless
+//!   (`VP8L`) and with no alpha, and the picture there until a later rectangle
+//!   draws over it. It depends on nothing before it. It is every still of a list
 //!   that holds the dial, and nothing else's.
 //! - A **PROGRESSIVE** is the rectangle's tile — one [`TILE`] square on the
 //!   tile grid from the desktop's top-left, cut by the desktop's edge — as a
@@ -42,7 +42,7 @@
 //!   client decodes every one in order and holds each tile's coefficients from
 //!   one to the next; what it draws is the tile as those coefficients show
 //!   it. It is every rectangle of a list whose dial walks but a COPY, a CACHED
-//!   and a STORE: no PNG or stream. A first pass below the full stage is
+//!   and a STORE: no WebP or stream. A first pass below the full stage is
 //!   owed its upgrades once the link has room, and the full stage is the
 //!   settled picture, lossy still: nothing is owed a lossless picture.
 //! - A **MEDIAN** is the desktop's pixels in the rectangle, lossless, as
@@ -61,7 +61,7 @@
 //!   bytes, one after another and nothing after them. It depends on nothing
 //!   before it, and is the picture there until a later rectangle draws over
 //!   it. It is every rectangle of a lossless list where the desktop moves
-//!   but a COPY, a CACHED and a STORE: no PNG, progressive tile or H.264
+//!   but a COPY, a CACHED and a STORE: no WebP, progressive tile or H.264
 //!   stream, and nothing is owed, since what the client is shown is already
 //!   exact.
 //! - A **STILL** is the desktop's pixels in the rectangle, lossless, as
@@ -114,7 +114,7 @@
 //!   that a tile shown again — a window switched back to, a menu opened
 //!   again, a page scrolled back — is a few bytes and not a still.
 //!
-//! A PNG over a stream's rectangle only ever follows the stream's END, so a
+//! A WebP over a stream's rectangle only ever follows the stream's END, so a
 //! client draws every rectangle where it says, in order, and the picture is
 //! right. A change of the desktop's size, which is sent first as an update of
 //! its own, ends every stream with no END, and the next update sends the
@@ -139,8 +139,8 @@ use thiserror::Error;
 
 use crate::ENCODING_HELD;
 
-/// A PNG of the rectangle's pixels.
-pub const KIND_PNG: u8 = 0;
+/// A lossless WebP of the rectangle's pixels.
+pub const KIND_WEBP: u8 = 0;
 /// A region's first frame, which begins its stream.
 pub const KIND_START: u8 = 1;
 /// A region's next frame.
@@ -204,7 +204,7 @@ pub enum TilesPicture {
     /// link keeps up, walked down while it does not, nothing owed a lossless
     /// picture.
     Progressive,
-    /// `WLSD` ([`ENCODING_HELD`]) beside it: every still a lossless PNG and
+    /// `WLSD` ([`ENCODING_HELD`]) beside it: every still a lossless WebP and
     /// each region that moves a stream at the server's dial, whatever the
     /// link does.
     Held,
@@ -265,7 +265,7 @@ pub enum TilesListError {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
     #[error(
-        "a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE, STILL and MEDIAN"
+        "a tiles rectangle of kind {0}, which is none of WEBP, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE, STILL and MEDIAN"
     )]
     UnknownKind(u8),
     #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
@@ -278,8 +278,8 @@ pub enum TilesParseError {
 /// the length of what follows where anything does, and a copy's source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileHeader {
-    /// A PNG of `len` bytes follows.
-    Png { len: usize },
+    /// A WebP of `len` bytes follows.
+    Webp { len: usize },
     /// The first frame of a stream on `stream`, `len` bytes, follows.
     Start { stream: u8, len: usize },
     /// The next frame of the stream on `stream`, `len` bytes, follows.
@@ -308,7 +308,7 @@ impl TileHeader {
     /// The bytes of a header that begins with `kind`, the kind included.
     pub fn len_of(kind: u8) -> Result<usize, TilesParseError> {
         match kind {
-            KIND_PNG | KIND_COPY | KIND_PROGRESSIVE | KIND_STILL | KIND_MEDIAN => Ok(5),
+            KIND_WEBP | KIND_COPY | KIND_PROGRESSIVE | KIND_STILL | KIND_MEDIAN => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
             KIND_CACHED | KIND_STORE => Ok(3),
@@ -322,7 +322,7 @@ impl TileHeader {
     /// header in again with, [`Self::to_bytes`] being as long either way.
     pub fn with_len(self, len: usize) -> Self {
         match self {
-            Self::Png { .. } => Self::Png { len },
+            Self::Webp { .. } => Self::Webp { len },
             Self::Start { stream, .. } => Self::Start { stream, len },
             Self::Frame { stream, .. } => Self::Frame { stream, len },
             Self::End { stream } => Self::End { stream },
@@ -340,7 +340,7 @@ impl TileHeader {
     pub fn to_bytes(self) -> Vec<u8> {
         let length = |len: usize| (len as u32).to_be_bytes();
         match self {
-            Self::Png { len } => [&[KIND_PNG][..], &length(len)].concat(),
+            Self::Webp { len } => [&[KIND_WEBP][..], &length(len)].concat(),
             Self::Start { stream, len } => [&[KIND_START, stream][..], &length(len)].concat(),
             Self::Frame { stream, len } => [&[KIND_FRAME, stream][..], &length(len)].concat(),
             Self::End { stream } => vec![KIND_END, stream],
@@ -374,7 +374,7 @@ impl TileHeader {
             }
         };
         let header = match kind {
-            KIND_PNG => Self::Png { len: len(1)? },
+            KIND_WEBP => Self::Webp { len: len(1)? },
             KIND_START => Self::Start {
                 stream: buf[1],
                 len: len(2)?,

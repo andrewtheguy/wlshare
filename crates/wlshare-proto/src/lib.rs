@@ -10,7 +10,7 @@
 //!
 //! - **The video encoding** ([`ENCODING_VIDEO`]), the whole framebuffer as one
 //!   H.264 stream, and what the client lists beside it ([`video`]).
-//! - **The tiles encoding** ([`ENCODING_TILES`]), the desktop as lossless PNG
+//! - **The tiles encoding** ([`ENCODING_TILES`]), the desktop as lossless WebP
 //!   tiles where it is still and an H.264 stream for each region that moves
 //!   ([`tiles`]); or, where the dial walks, every tile RemoteFX Progressive,
 //!   whose tables and stream are [`progressive`]'s; or every tile lossless,
@@ -59,7 +59,7 @@ pub use version::PROTOCOL_VERSION;
 pub const ENCODING_VIDEO: i32 = 0x574c_5356;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it is sent
 /// the desktop as RemoteFX Progressive tiles; with [`ENCODING_HELD`] beside
-/// it as lossless PNG tiles where it is still and a video stream for each
+/// it as lossless WebP tiles where it is still and a video stream for each
 /// region that moves; with [`ENCODING_LOSSLESS`] beside it as lossless tiles,
 /// still or moving, whose moving ones are a median predictor's residuals
 /// ([`tiles`]). It
@@ -90,7 +90,7 @@ pub const fn private(encoding: i32) -> bool {
 }
 
 /// Listed beside [`ENCODING_TILES`], asks for the tiles picture held rather
-/// than walked: every still a lossless PNG and each region that moves a stream
+/// than walked: every still a lossless WebP and each region that moves a stream
 /// of its own, at the server's dial whatever the link does
 /// ([`tiles::TilesPicture`]). The ASCII bytes `WLSD`.
 pub const ENCODING_HELD: i32 = 0x574c_5344;
@@ -103,7 +103,7 @@ pub const ENCODING_HELD: i32 = 0x574c_5344;
 /// ([`tiles::TilesPicture`]). The ASCII bytes `WLSL`.
 pub const ENCODING_LOSSLESS: i32 = 0x574c_534c;
 
-/// The most bytes one video frame, and one tiles rectangle's PNG, still,
+/// The most bytes one video frame, and one tiles rectangle's WebP, still,
 /// median residuals or region frame, may be. An IDR of the largest desktop at
 /// the finest quantizer is a
 /// few megabytes; a length past this is a server that has lost its framing,

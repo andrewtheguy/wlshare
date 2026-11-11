@@ -19,6 +19,11 @@ are measured by `tiles-walk-sim` on a link and by `progressive-bench` and
 `progressive-stills` on the samples ([Progressive
 tiles](#progressive-tiles)).
 
+The held picture's stills in every section before [WebP stills and the
+eased settle](#webp-stills-and-the-eased-settle) are the fast PNG they were
+until 2026-11-11, and its settle the one that went at the pace from its
+first tick; their figures stay as what they were measured at.
+
 `WLSV` in every figure here is the VP9 stream it was until 2026-10-29,
 4:4:4 or 4:2:0, its dial walked on the link, which H.264 replaced, its
 dial walked on the link as VP9's was ([The video encoding](architecture.md#the-video-encoding)); its
@@ -1431,3 +1436,160 @@ At 1920×1080, the milliseconds a frame with their 95th percentile:
 - **Not measured.** The page's decoding: the bench's times are the
   encoder's alone, and its decoder is native code. The median predictor's
   is measured as built, [above](#the-median-predictor).
+
+## WebP stills and the eased settle
+
+Measured 2026-11-11 on a four-vCPU AMD EPYC (Rome) VM, idle and with no
+swap, `motion-bench --libx264 --tiles-only --frames` over the 1080p samples
+and the larger ones named, against main at `8a83c5f`, whose held stills were
+a fast PNG and whose settle went at the pace from its first tick. Two
+changes, one for each thing a user asked for: fewer bytes for a still, and
+no step up in what the link carries when a video stops.
+
+**The stills are WebP.** A held list's still is a lossless WebP by libwebp
+in place of the `png` crate's fast PNG. The coders like for like, the
+update's budget of stills lifted for both so that each codes the same tiles
+and nothing starts as a region that the churn did not make one, bytes of
+stills and the encoder's CPU over the capture, libwebp at its lossless
+presets:
+
+| Capture | Fast PNG | Preset 0 | Preset 1 | Preset 3 |
+|---|---:|---:|---:|---:|
+| still-1920x1080 | 264 kB, 21 ms | 170 kB, 44 ms | 96 kB, 58 ms | 82 kB, 76 ms |
+| terminal-1920x1080 | 640 kB, 30 ms | 167 kB, 71 ms | 132 kB, 77 ms | 104 kB, 127 ms |
+| browser-1920x1080 | 4.01 MB, 0.63 s | 2.34 MB, 0.90 s | 1.30 MB, 0.89 s | 1.10 MB, 1.20 s |
+| uncover-1920x1080 | 1.34 MB, 0.12 s | 0.39 MB, 0.17 s | 0.29 MB, 0.17 s | 0.27 MB, 0.27 s |
+| drag-1920x1080 | 267 kB, 0.15 s | 46 kB, 0.16 s | 31 kB, 0.17 s | 28 kB, 0.18 s |
+| mixed-1920x1080 | 71.2 MB, 26.1 s | 39.7 MB, 29.0 s | 30.5 MB, 35.0 s | 28.3 MB, 44.8 s |
+
+The mixed session's time is the whole encoder's, its regions' 117 MB of
+H.264 with it, the same in every column. Preset 1 is the knee and the one
+taken: 43% of the PNG's bytes over the session for a third more of the
+encoder's time, three quarters of preset 0's for a fifth more, and presets
+2 to 6 are a twentieth to a tenth fewer for a tenth to a third more time. Text
+and an interface are where WebP gains, a fifth to a half of the PNG; a
+photograph is where it gains least and costs most, since nothing lossless
+is far under its entropy: the settle of a 1080p video's last frame is
+1.58 MB as PNG in 15 ms, 1.19 MB at preset 0 in 56 and 1.12 MB at preset 1
+in 247, a quarter of a second of one core, once, when a video stops.
+
+**The settle eases in.** On main the settle after the 1080p video sent its
+first tick of 191 kB half a second after the stream's END and 200 kB every
+50 ms from there: 33 Mbit/s over its busiest quarter second where the
+stream had been 20. Two things made it more than the pace it was meant to
+keep to: a tick checked its bytes between runs, and a run is a row, 30
+tiles of a photograph, more than a tick's bytes by itself; and the ticks'
+own bytes counted toward the pace, so a settle raised the rate it kept to.
+Now the pace is the reads' bytes alone; a run is cut to what is left of
+the tick's bytes, each tile taken to cost what its pixels that differ from
+the one to their left cost in the piece before, a piece half of what is
+left at most; and the settle's rate rises to the pace over the second
+after it began paying
+— the pace measured at every update while anything is owed, the update's
+own bytes in it, whether or not a tick had a tile to pay then, so a
+settle that begins more than a second after a video's last frame still
+keeps to the video's rate —
+([architecture](architecture.md#the-tiles-encoding)). As the encoder is
+now, WebP and the eased settle together, against main:
+
+| Capture | Bytes | CPU | Settle's busiest 250 ms | Its first tick | Settled after |
+|---|---:|---:|---:|---:|---:|
+| video-1920x1080 | 13.0 → 12.1 MB | 1.58 → 2.64 s | 32.9 → 16.7 Mbit/s | 191 → 8 kB | 0.95 → 1.48 s |
+| video-2880x1800@2 | 26.3 → 24.7 MB | 5.29 → 6.96 s | 29.0 → 21.2 Mbit/s | 138 → 14 kB | 1.77 → 1.93 s |
+| window-1920x1080 | 4.32 → 5.16 MB | 0.59 → 0.93 s | 10.4 → 6.1 Mbit/s | 150 → 16 kB | 1.39 → 1.20 s |
+| window-2880x1800@2 | 7.14 → 8.37 MB | 1.78 → 1.62 s | 21.2 → 8.7 Mbit/s | 7 → 11 kB | 1.62 → 1.56 s |
+| browser-1920x1080 | 2.27 → 1.30 MB | 0.95 → 0.84 s | 4.7 Mbit/s → none | 146 kB → none | 0.81 s → at once |
+| uncover-1920x1080 | 1.30 → 0.29 MB | 0.23 → 0.18 s | none | none | at once |
+| still-1920x1080 | 455 → 96 kB | 45 → 44 ms | none | none | at once |
+| still-2880x1800@2 | 1.19 → 0.46 MB | 0.15 → 0.17 s | 5.3 Mbit/s → none | 6 kB → none | 1.64 s → at once |
+| still-3840x2160@2 | 1.80 → 0.71 MB | 0.22 → 0.25 s | 11.9 Mbit/s → none | 6 kB → none | 1.63 s → at once |
+| terminal-1920x1080 | 1.11 → 0.13 MB | 78 → 81 ms | 2.3 Mbit/s → none | 71 kB → none | 0.10 s → at once |
+| drag-1920x1080 | 550 → 31 kB | 0.27 → 0.16 s | 2.5 Mbit/s → none | 77 kB → none | 1.94 s → at once |
+
+The stream's rate over each video's last second was 19.5 Mbit/s at 1080p
+and 42 at 2880x1800@2, 8 and 12 in the windows: the settle is now under
+the stream it follows at every size, from a first tick of 8 to 16 kB, and
+no tick is past 135 kB where the largest was 253. What it pays is the time
+to lossless, half a second more after the 1080p video, a sixth after the
+larger, and none after a window.
+
+Where no settle is left at all, the smaller still is why: a page of text
+at 1080p is 96 kB, within the 128 KiB of stills an update carries, so it
+is lossless at once and never a region; the terminal, the browser, the
+drag and the window uncovered send no H.264 at all, every frame of theirs
+lossless on the page where 0 to 108 of 120 were. The two larger pages of
+text are still past the budget, and start over once where they did twice.
+
+What rose is a video in a window. Its page was past the budget as PNG, so
+the first picture began a region the video then played in, one stream for
+the whole capture; as WebP the page is lossless at once, and the video
+that fades in grows under the update's stills for most of a second
+until a region carries all of it, up to 110 kB a frame, 0.8 MB more at
+1080p and 1.2 at 2880x1800@2. That is the budget's known cost
+([above](#the-settles-pace)), which a still a quarter the size now meets
+in another place.
+
+The budget was swept again for WebP the same day, the same way: the stills
+an update carries, which is also the most a tick sends, at 32, 64, 128 and
+256 KiB, the rest as above. Bytes, the busiest quarter second, and the
+frames the page held lossless:
+
+| Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
+|---|---:|---:|---:|---:|
+| video-1920x1080 | 10.7 MB, 21 Mbit/s | 11.3 MB, 23 | 12.1 MB, 30 | 13.2 MB, 43 |
+| video-2880x1800@2 | 24.4 MB, 68 | 23.1 MB, 43 | 24.7 MB, 47 | 26.9 MB, 65 |
+| walk-1920x1080 | 16.1 MB, 20 | 17.0 MB, 22 | 18.0 MB, 32 | 19.4 MB, 55 |
+| window-1920x1080 | 3.87 MB, 8 | 4.85 MB, 13 | 5.16 MB, 15 | 5.16 MB, 15 |
+| window-2880x1800@2 | 6.39 MB, 13 | 6.38 MB, 13 | 8.37 MB, 21 | 8.37 MB, 21 |
+| browser-1920x1080 | 2.02 MB, 10, 0 of 120 | 2.05 MB, 11, 0 | 1.30 MB, 4, 120 | 1.30 MB, 4, 120 |
+| uncover-1920x1080 | 0.53 MB, 9, 2 of 48 | 0.54 MB, 10, 2 | 0.29 MB, 3, 48 | 0.29 MB, 3, 48 |
+| terminal-1920x1080 | 0.52 MB, 14, 108 of 120 | 0.52 MB, 15, 111 | 0.13 MB, 3, 120 | 0.13 MB, 3, 120 |
+| still-1920x1080 | 0.52 MB, 16 | 0.30 MB, 10 | 0.10 MB, 3 | 0.10 MB, 3 |
+| still-2880x1800@2 | 0.78 MB, 22 | 0.77 MB, 24 | 0.46 MB, 15 | 0.16 MB, 5 |
+| still-3840x2160@2 | 1.22 MB, 33 | 1.19 MB, 35 | 0.71 MB, 23 | 0.24 MB, 8 |
+| mixed-1920x1080 | 134.9 MB, 22 | 134.4 MB, 22 | 134.7 MB, 22 | 134.5 MB, 22 |
+| mixed-2880x1800@2 | 273.4 MB, 46 | 273.2 MB, 46 | 273.5 MB, 46 | 273.9 MB, 46 |
+
+The budget stays 128 KiB. Below it a page at 1080p is past the stills
+again — the browser, the terminal, the window uncovered and the page of
+text each start as a region, lossy, for 1.6 to 5 times the bytes and
+about three to five times the busiest quarter second — for 7 Mbit/s off the
+1080p video's busiest and 11 off the walk's; at 32 KiB the larger video
+lays its regions out 27 times where it did 11, and a settle of 36 kB a
+tick takes 4.7 s. Above it the two larger pages of text are lossless at
+once, a third of their bytes, and a video's growth under the stills is
+two fifths more of the link's busiest quarter second, 43 and 65 Mbit/s. The
+windows' video is one stream again only where the page is past the
+budget, at 32 KiB, or at 64 at 2880x1800@2. The sessions at the desk are
+within a half of one per cent at every budget: the constant decides how
+a picture starts and how a video begins, and little of what a session
+sends.
+
+That sweep moved one constant that did two things. They are two now, the
+stills an update carries (`HELD_BYTES`) and the most a tick sends
+(`SETTLE_MOST`), and were swept apart the same day, each with the other at
+128 KiB. The stills alone give the table above again, to within a
+hundredth, whatever the tick: how a picture starts and how a video begins
+are theirs, and the tick has no part in them. The tick alone, the stills
+at 128 KiB, changes the settle and nothing else — the bytes, the streams
+and the busiest quarter second of every capture are the same at each — so
+what it decides is the settle's own busiest quarter second, its largest
+tick, and the time to lossless:
+
+| Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
+|---|---:|---:|---:|---:|
+| video-1920x1080 | 5.6 Mbit/s, 36 kB, 2.37 s | 10.8, 70 kB, 1.67 s | 16.7, 118 kB, 1.48 s | 18.9, 209 kB, 1.43 s |
+| video-2880x1800@2 | 5.6, 36 kB, 4.66 s | 10.9, 69 kB, 2.76 s | 21.2, 134 kB, 1.93 s | 35.8, 249 kB, 1.63 s |
+| walk-1920x1080 | 5.7, 37 kB, 2.00 s | 10.8, 69 kB, 1.43 s | 15.2, 116 kB, 1.26 s | 16.1, 192 kB, 1.21 s |
+| window-1920x1080 | 5.5, 36 kB, 1.29 s | 6.1, 50 kB, 1.27 s | 6.1, 85 kB, 1.20 s | 7.5, 142 kB, 1.21 s |
+| window-2880x1800@2 | 5.7, 36 kB, 1.92 s | 10.3, 67 kB, 1.63 s | 8.7, 94 kB, 1.57 s | 10.4, 170 kB, 1.57 s |
+
+Both stay 128 KiB. A tick of 256 KiB settles a twentieth of a second
+sooner at 1080p and 0.3 s after the larger video, for an update twice the
+size and a settle of 36 Mbit/s there beside the stream's 42; one of 64 KiB
+is an update half the size for 0.2 s more to lossless at 1080p and 0.8 s
+after the larger video, whose settle the 50 ms between ticks then holds
+to 11 Mbit/s; one of 32 KiB takes 4.7 s there. Apart, neither finds a better place than
+together: the pairs off the axes, 64 and 64 and 256 and 64, are their
+stills' row and their tick's column, and the windows' video is one stream
+only where the stills are too few for a page.

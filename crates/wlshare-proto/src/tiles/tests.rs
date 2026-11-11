@@ -57,7 +57,7 @@ fn a_cache_empty_is_its_type_alone() {
 #[test]
 fn each_header_has_the_documented_layout() {
     for (header, bytes) in [
-        (TileHeader::Png { len: 0x0102 }, vec![0, 0, 0, 1, 2]),
+        (TileHeader::Webp { len: 0x0102 }, vec![0, 0, 0, 1, 2]),
         (
             TileHeader::Start { stream: 3, len: 7 },
             vec![1, 3, 0, 0, 0, 7],
@@ -97,7 +97,7 @@ fn each_header_has_the_documented_layout() {
 #[test]
 fn a_length_filled_in_keeps_the_header_its_size() {
     for header in [
-        TileHeader::Png { len: 0 },
+        TileHeader::Webp { len: 0 },
         TileHeader::Start { stream: 2, len: 0 },
         TileHeader::Frame { stream: 2, len: 0 },
         TileHeader::End { stream: 2 },

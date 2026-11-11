@@ -59,7 +59,7 @@
 //! the client has is a lossy one.
 //!
 //! A client that lists the tiles encoding instead gets each pixel update as
-//! lossless PNG tiles where the desktop changed and a frame of a stream of its own
+//! lossless WebP tiles where the desktop changed and a frame of a stream of its own
 //! for each region that moves ([`crate::rfb::tiles`]): H.264 by the encoder
 //! the daemon found at startup ([`crate::h264`]), the host's hardware or
 //! libx264, on a coder the session opens for each tiles picture it makes; a
@@ -77,7 +77,7 @@
 //! no stream; a list that holds the dial is sent every still lossless. A
 //! slowed walk paces the updates as it paces the video's frames. What the
 //! encoder still owes once the desktop stops — a stream to end, a tile a
-//! stream carried to send as a PNG, a progressive tile's upgrade — is
+//! stream carried to send as a WebP, a progressive tile's upgrade — is
 //! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
 //! waits for a request and the fence as any other. A new size starts it over,
 //! and so does a non-incremental request, which ends every stream; a list that

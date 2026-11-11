@@ -297,8 +297,8 @@ pub enum RectBody {
 /// What a rectangle of the tiles encoding is, by its kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TileBody {
-    /// A PNG of the rectangle's pixels, lossless.
-    Png(Vec<u8>),
+    /// A WebP of the rectangle's pixels, lossless.
+    Webp(Vec<u8>),
     /// The first frame of a region's stream on `stream`, a keyframe.
     Start { stream: u8, frame: Vec<u8> },
     /// The next frame of the stream on `stream`.
@@ -558,11 +558,11 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
             let at = 12 + used;
             let body = |len: usize| take(at, len);
             match header {
-                TileHeader::Png { len } => {
-                    let Some(png) = body(len)? else {
+                TileHeader::Webp { len } => {
+                    let Some(webp) = body(len)? else {
                         return Ok(None);
                     };
-                    (RectBody::Tiles(TileBody::Png(png)), at + len)
+                    (RectBody::Tiles(TileBody::Webp(webp)), at + len)
                 }
                 TileHeader::Start { stream, len } => {
                     let Some(frame) = body(len)? else {
@@ -672,8 +672,8 @@ mod tests {
         AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect,
     };
     use wlshare_proto::tiles::{
-        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MEDIAN, KIND_PNG, KIND_PROGRESSIVE,
-        KIND_START, KIND_STILL, KIND_STORE,
+        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MEDIAN, KIND_PROGRESSIVE, KIND_START,
+        KIND_STILL, KIND_STORE, KIND_WEBP,
     };
 
     use crate::rfb::audio::FlacEncoder;
@@ -951,7 +951,7 @@ mod tests {
         wire.extend_from_slice(&msg::rect_header(0, 0, 800, 600, ENCODING_VIDEO));
         wire.extend_from_slice(&[0, 0, 0, 2, 0x82, 0x49]);
         wire.extend_from_slice(&msg::rect_header(64, 0, 64, 64, ENCODING_TILES));
-        wire.extend_from_slice(&[KIND_PNG, 0, 0, 0, 2, 0x89, 0x50]);
+        wire.extend_from_slice(&[KIND_WEBP, 0, 0, 0, 2, 0x52, 0x49]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_START, 2, 0, 0, 0, 1, 0x82]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
@@ -1036,7 +1036,7 @@ mod tests {
                 y: 0,
                 width: 64,
                 height: 64,
-                body: RectBody::Tiles(TileBody::Png(vec![0x89, 0x50]))
+                body: RectBody::Tiles(TileBody::Webp(vec![0x52, 0x49]))
             }
         );
         assert_eq!(

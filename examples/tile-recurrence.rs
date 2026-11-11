@@ -18,7 +18,7 @@
 //! it does not, which only a cache serves. Flat tiles, of one colour, are
 //! never cached, as the encoder stores none, and are counted apart among the
 //! stills, since they are cheap anyway. Bytes are each still coded alone as a
-//! fast PNG, a held list's, so they overstate the per-image overhead of a run
+//! fast PNG, a held list's until it was WebP, so they overstate the per-image overhead of a run
 //! of tiles coded as one.
 //! A whole picture — the first frame, or a keyframe asked — is counted as
 //! `whole` and not as stills, and starts the cache over with its tiles, as
