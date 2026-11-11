@@ -377,9 +377,9 @@ const SETTLE_TILES: usize = 320;
 /// the updates that carried a settle took to cross
 /// ([`TilesEncoder::delivered`]).
 const SETTLE_BYTES: usize = 256 * 1024;
-/// A held list's bytes: the stills an update carries at once where nothing
-/// moved, a change past it going as video ([`TilesEncoder::held_stills`]),
-/// and the most its tick sends at any pace. The least of the three measured
+/// A held list's stills: the bytes of them an update carries at once where
+/// nothing moved, a change past it going as video
+/// ([`TilesEncoder::held_stills`]). The least of the three measured
 /// — 128, 256 and 512 KiB — that flattens what the link sees: a change
 /// growing under it is this much of stills a frame until the churn calls it
 /// moving, at 25 frames a second 26 Mbit/s where 256 KiB was 52. Measured
@@ -387,6 +387,12 @@ const SETTLE_BYTES: usize = 256 * 1024;
 /// 230 KiB, which started as a region rather than lossless at once; as a
 /// WebP that page is 96 kB and within it (`docs/tiles-performance.md`).
 const HELD_BYTES: usize = 128 * 1024;
+/// The most a held list's tick sends at any pace, and what the pace has
+/// going between two ticks where that is sooner than [`CLEANUP_TICK`]
+/// ([`TilesEncoder::tick_interval`]): its own figure, apart from the stills
+/// an update carries, which decide how a picture starts where this decides
+/// how fast one settles (measured in `docs/tiles-performance.md`).
+const SETTLE_MOST: usize = 128 * 1024;
 /// The fewest bytes a tick may send before it stops, and what it starts at:
 /// 13 ms of a 5 Mbit/s link.
 const SETTLE_BYTES_LEAST: usize = 8 * 1024;
@@ -416,7 +422,7 @@ const SETTLE_RATE_GUESS: f64 = 2.0;
 /// header, its store, or its draw from the cache.
 const SETTLE_TILE_LEAST: f64 = 32.0;
 /// The least time between two of a held list's ticks, where the pace would
-/// have one of [`HELD_BYTES`] sooner than [`CLEANUP_TICK`].
+/// have one of [`SETTLE_MOST`] sooner than [`CLEANUP_TICK`].
 const SETTLE_TICK_LEAST: Duration = Duration::from_millis(50);
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
@@ -2860,19 +2866,19 @@ impl TilesEncoder {
     }
 
     /// How far apart a held list's ticks come: [`CLEANUP_TICK`], or as soon
-    /// as the pace has [`HELD_BYTES`] going where that is sooner, down to
+    /// as the pace has [`SETTLE_MOST`] going where that is sooner, down to
     /// [`SETTLE_TICK_LEAST`].
     fn tick_interval(&self) -> Duration {
         if self.pace == 0 {
             return CLEANUP_TICK;
         }
-        Duration::from_secs_f64(HELD_BYTES as f64 / self.pace as f64)
+        Duration::from_secs_f64(SETTLE_MOST as f64 / self.pace as f64)
             .clamp(SETTLE_TICK_LEAST, CLEANUP_TICK)
     }
 
     /// The bytes a held list's tick may send: the eased pace's share of the
     /// tick's interval, less what the reads sent in it, between
-    /// [`SETTLE_FLOOR`]'s share of it and [`HELD_BYTES`]. The pace is the
+    /// [`SETTLE_FLOOR`]'s share of it and [`SETTLE_MOST`]. The pace is the
     /// most the desktop's own changes were found sending over a second since
     /// something was last owed — a stream's frames, a picture's keyframe and
     /// stills, and none of the ticks, which would raise the rate they keep
@@ -2894,7 +2900,7 @@ impl TilesEncoder {
             (SETTLE_FLOOR as f64 * interval.as_secs_f64() / CLEANUP_TICK.as_secs_f64()) as usize;
         share
             .saturating_sub(self.brought_within(now, interval))
-            .clamp(floor, HELD_BYTES)
+            .clamp(floor, SETTLE_MOST)
     }
 
     /// What a held list's settle takes `part` of the tile `cell` to cost: how
@@ -4394,12 +4400,12 @@ mod tests {
         // A tile of noise is its pixels and a little.
         let tile = usize::from(TILE) * usize::from(TILE) * 3 + 1024;
         assert!(
-            largest <= HELD_BYTES + tile,
-            "a tick of {largest} bytes, past {HELD_BYTES} and a tile of {tile}"
+            largest <= SETTLE_MOST + tile,
+            "a tick of {largest} bytes, past {SETTLE_MOST} and a tile of {tile}"
         );
         assert!(stills >= HELD_BYTES, "the first update's stills: {stills}");
         assert!(
-            paid.len() >= 6 && paid[0] <= HELD_BYTES / 4 && paid[0] * 3 <= largest,
+            paid.len() >= 6 && paid[0] <= SETTLE_MOST / 4 && paid[0] * 3 <= largest,
             "the settle eases in: {paid:?}"
         );
         assert!(
@@ -4617,7 +4623,7 @@ mod tests {
         // beyond the floor's share of the interval while they are in it.
         encoder.sent.clear();
         encoder.sent.push_back((ms(950), 2_000_000));
-        let interval = Duration::from_secs_f64(HELD_BYTES as f64 / 2e6);
+        let interval = Duration::from_secs_f64(SETTLE_MOST as f64 / 2e6);
         let floor =
             (SETTLE_FLOOR as f64 * interval.as_secs_f64() / CLEANUP_TICK.as_secs_f64()) as usize;
         assert_eq!(
@@ -4634,7 +4640,7 @@ mod tests {
         encoder.sent.clear();
         assert_eq!(
             encoder.paced_budget(ms(1200)),
-            HELD_BYTES,
+            SETTLE_MOST,
             "the full budget once the reads are out of the interval, the pace kept"
         );
 
@@ -4648,7 +4654,7 @@ mod tests {
             "eased from its first tick"
         );
         assert!(
-            first >= floor && first < HELD_BYTES / 8,
+            first >= floor && first < SETTLE_MOST / 8,
             "the first tick of a settle: {first}"
         );
         let mut last = first;
@@ -4656,17 +4662,17 @@ mod tests {
             let budget = encoder.paced_budget(ms(at));
             assert!(budget >= last, "never a step down: {budget} at {at}");
             assert!(
-                budget - last <= HELD_BYTES / 10,
+                budget - last <= SETTLE_MOST / 10,
                 "nor a step up of more than a tick's twentieth of the pace: {last} to {budget} at {at}"
             );
             last = budget;
         }
         let half = encoder.paced_budget(ms(1700));
         assert!(
-            half > HELD_BYTES * 2 / 5 && half < HELD_BYTES * 2 / 3,
+            half > SETTLE_MOST * 2 / 5 && half < SETTLE_MOST * 2 / 3,
             "half a second on: {half}"
         );
-        assert_eq!(encoder.paced_budget(ms(2200)), HELD_BYTES, "a second on");
+        assert_eq!(encoder.paced_budget(ms(2200)), SETTLE_MOST, "a second on");
 
         // The pace is the most found: a slower second does not lower it; a
         // faster one raises it, and the interval shortens to its least.

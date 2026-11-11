@@ -1522,4 +1522,68 @@ that fades in grows under the update's stills for most of a second
 until a region carries all of it, up to 110 kB a frame, 0.8 MB more at
 1080p and 1.2 at 2880x1800@2. That is the budget's known cost
 ([above](#the-settles-pace)), which a still a quarter the size now meets
-in another place; the budget was not swept again for WebP.
+in another place.
+
+The budget was swept again for WebP the same day, the same way: the stills
+an update carries, which is also the most a tick sends, at 32, 64, 128 and
+256 KiB, the rest as above. Bytes, the busiest quarter second, and the
+frames the page held lossless:
+
+| Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
+|---|---:|---:|---:|---:|
+| video-1920x1080 | 10.7 MB, 21 Mbit/s | 11.3 MB, 23 | 12.1 MB, 30 | 13.2 MB, 43 |
+| video-2880x1800@2 | 24.4 MB, 68 | 23.1 MB, 43 | 24.7 MB, 47 | 26.9 MB, 65 |
+| walk-1920x1080 | 16.1 MB, 20 | 17.0 MB, 22 | 18.0 MB, 32 | 19.4 MB, 55 |
+| window-1920x1080 | 3.87 MB, 8 | 4.85 MB, 13 | 5.16 MB, 15 | 5.16 MB, 15 |
+| window-2880x1800@2 | 6.39 MB, 13 | 6.38 MB, 13 | 8.37 MB, 21 | 8.37 MB, 21 |
+| browser-1920x1080 | 2.02 MB, 10, 0 of 120 | 2.05 MB, 11, 0 | 1.30 MB, 4, 120 | 1.30 MB, 4, 120 |
+| uncover-1920x1080 | 0.53 MB, 9, 2 of 48 | 0.54 MB, 10, 2 | 0.29 MB, 3, 48 | 0.29 MB, 3, 48 |
+| terminal-1920x1080 | 0.52 MB, 14, 108 of 120 | 0.52 MB, 15, 111 | 0.13 MB, 3, 120 | 0.13 MB, 3, 120 |
+| still-1920x1080 | 0.52 MB, 16 | 0.30 MB, 10 | 0.10 MB, 3 | 0.10 MB, 3 |
+| still-2880x1800@2 | 0.78 MB, 22 | 0.77 MB, 24 | 0.46 MB, 15 | 0.16 MB, 5 |
+| still-3840x2160@2 | 1.22 MB, 33 | 1.19 MB, 35 | 0.71 MB, 23 | 0.24 MB, 8 |
+| mixed-1920x1080 | 134.9 MB, 22 | 134.4 MB, 22 | 134.7 MB, 22 | 134.5 MB, 22 |
+| mixed-2880x1800@2 | 273.4 MB, 46 | 273.2 MB, 46 | 273.5 MB, 46 | 273.9 MB, 46 |
+
+The budget stays 128 KiB. Below it a page at 1080p is past the stills
+again — the browser, the terminal, the window uncovered and the page of
+text each start as a region, lossy, for 1.6 to 5 times the bytes and
+about three to five times the busiest quarter second — for 7 Mbit/s off the
+1080p video's busiest and 11 off the walk's; at 32 KiB the larger video
+lays its regions out 27 times where it did 11, and a settle of 36 kB a
+tick takes 4.7 s. Above it the two larger pages of text are lossless at
+once, a third of their bytes, and a video's growth under the stills is
+two fifths more of the link's busiest quarter second, 43 and 65 Mbit/s. The
+windows' video is one stream again only where the page is past the
+budget, at 32 KiB, or at 64 at 2880x1800@2. The sessions at the desk are
+within a half of one per cent at every budget: the constant decides how
+a picture starts and how a video begins, and little of what a session
+sends.
+
+That sweep moved one constant that did two things. They are two now, the
+stills an update carries (`HELD_BYTES`) and the most a tick sends
+(`SETTLE_MOST`), and were swept apart the same day, each with the other at
+128 KiB. The stills alone give the table above again, to within a
+hundredth, whatever the tick: how a picture starts and how a video begins
+are theirs, and the tick has no part in them. The tick alone, the stills
+at 128 KiB, changes the settle and nothing else — the bytes, the streams
+and the busiest quarter second of every capture are the same at each — so
+what it decides is the settle's own busiest quarter second, its largest
+tick, and the time to lossless:
+
+| Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
+|---|---:|---:|---:|---:|
+| video-1920x1080 | 5.6 Mbit/s, 36 kB, 2.57 s | 10.8, 68 kB, 1.97 s | 11.8, 131 kB, 1.96 s | 16.6, 265 kB, 1.86 s |
+| video-2880x1800@2 | 5.8, 36 kB, 4.96 s | 10.9, 69 kB, 3.16 s | 16.8, 133 kB, 2.58 s | 16.8, 263 kB, 2.45 s |
+| walk-1920x1080 | 5.6, 36 kB, 2.23 s | 9.5, 68 kB, 1.81 s | 8.8, 132 kB, 1.72 s | 8.4, 263 kB, 1.74 s |
+| window-1920x1080 | 4.1, 33 kB, 1.73 s | 4.0, 66 kB, 1.73 s | 3.8, 119 kB, 1.61 s | 4.7, 147 kB, 1.72 s |
+| window-2880x1800@2 | 4.4, 36 kB, 2.49 s | 4.6, 68 kB, 2.49 s | 7.3, 133 kB, 2.37 s | 4.4, 137 kB, 2.42 s |
+
+Both stay 128 KiB. A tick of 256 KiB settles a tenth of a second sooner
+for an update twice the size; one of 64 KiB is an update half the size
+and the same time to lossless at 1080p, 0.6 s more after the larger
+video, whose settle the 50 ms between ticks then holds to 10 Mbit/s; one
+of 32 KiB takes 5 s there. Apart, neither finds a better place than
+together: the pairs off the axes, 64 and 64 and 256 and 64, are their
+stills' row and their tick's column, and the windows' video is one stream
+only where the stills are too few for a page.
