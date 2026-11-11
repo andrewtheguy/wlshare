@@ -95,6 +95,29 @@ impl Decoder {
     /// returned; a unit that completed none returns `None`. An error is a unit
     /// the decoder could not take, after which the stream wants a keyframe.
     pub fn decode(&mut self, unit: &[u8], out: &mut Vec<u8>) -> anyhow::Result<Option<Picture>> {
+        self.decode_as(unit, out, false)
+    }
+
+    /// Decode one access unit of a 4:4:4 stream, as [`Self::decode`] does one
+    /// of 4:2:0: the three planes in `out` are each the picture's size. For
+    /// the H.264 encoder's tests and benches, whose video stream can be High
+    /// 4:4:4 Predictive; a picture at another chroma is an error. The daemon
+    /// itself decodes none.
+    #[allow(dead_code)]
+    pub fn decode_444(
+        &mut self,
+        unit: &[u8],
+        out: &mut Vec<u8>,
+    ) -> anyhow::Result<Option<Picture>> {
+        self.decode_as(unit, out, true)
+    }
+
+    fn decode_as(
+        &mut self,
+        unit: &[u8],
+        out: &mut Vec<u8>,
+        full: bool,
+    ) -> anyhow::Result<Option<Picture>> {
         let len = i32::try_from(unit.len())
             .map_err(|_| anyhow::anyhow!("an access unit of {} bytes", unit.len()))?;
         // SAFETY: `av_new_packet` allocates `len` bytes plus the input padding
@@ -115,7 +138,7 @@ impl Decoder {
                     break;
                 }
                 check(received, "receiving a picture")?;
-                let copied = self.copy_frame(out);
+                let copied = self.copy_frame(out, full);
                 ff::av_frame_unref(self.frame);
                 picture = Some(copied?);
             }
@@ -186,24 +209,48 @@ impl Decoder {
 
     /// Copy the current frame's three planes into `out`, dropping each line's
     /// padding. Only 4:2:0 at eight bits is taken, which is every stream a
-    /// Constrained Baseline encoder can produce.
-    unsafe fn copy_frame(&self, out: &mut Vec<u8>) -> anyhow::Result<Picture> {
+    /// Constrained Baseline encoder can produce, or with `full` only 4:4:4,
+    /// its chroma planes the picture's size.
+    unsafe fn copy_frame(&self, out: &mut Vec<u8>, full: bool) -> anyhow::Result<Picture> {
         // SAFETY: the caller has a frame the decoder just filled.
         unsafe {
             let frame = &*self.frame;
             let format = frame.format;
+            let (taken, name) = if full {
+                (
+                    [
+                        ff::AVPixelFormat::AV_PIX_FMT_YUV444P,
+                        ff::AVPixelFormat::AV_PIX_FMT_YUVJ444P,
+                    ],
+                    "4:4:4",
+                )
+            } else {
+                (
+                    [
+                        ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                        ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P,
+                    ],
+                    "4:2:0",
+                )
+            };
             anyhow::ensure!(
-                format == ff::AVPixelFormat::AV_PIX_FMT_YUV420P as i32
-                    || format == ff::AVPixelFormat::AV_PIX_FMT_YUVJ420P as i32,
-                "the decoder produced pixel format {format}, not 4:2:0"
+                taken.iter().any(|&f| format == f as i32),
+                "the decoder produced pixel format {format}, not {name}"
             );
             let picture = Picture {
                 width: usize::try_from(frame.width)?,
                 height: usize::try_from(frame.height)?,
             };
-            let (cw, ch) = picture.chroma();
+            let ((cw, ch), bytes) = if full {
+                (
+                    (picture.width, picture.height),
+                    3 * picture.width * picture.height,
+                )
+            } else {
+                (picture.chroma(), picture.bytes())
+            };
             out.clear();
-            out.reserve(picture.bytes());
+            out.reserve(bytes);
             for (plane, (width, height)) in [(picture.width, picture.height), (cw, ch), (cw, ch)]
                 .into_iter()
                 .enumerate()

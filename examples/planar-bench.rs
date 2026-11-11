@@ -18,7 +18,8 @@ mod rfb;
 mod wlcap;
 
 use rfb::planar::{Rows, encode};
-use rfb::progressive::TILE;
+/// A tile's side, the encoding's.
+const TILE: usize = wlshare_proto::tiles::TILE as usize;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

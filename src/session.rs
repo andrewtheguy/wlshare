@@ -67,17 +67,14 @@
 //! client's last update is copied out of the framebuffer under the lock into
 //! the encoder's own picture, and coded on the worker once it is let go, as a
 //! video frame is; a damage that changes nothing the client holds sends nothing.
-//! wlshare's dial is a ceiling the same walk of the link moves the encoder
-//! below, unless the list holds it: each update's fence is the
+//! wlshare's dial is the streams', held there: each update's fence is the
 //! walk's verdict as a video frame's is, a picture sent whole counting as a
 //! keyframe and one of the tick alone as no verdict, a settle once the
-//! desktop has stopped, and every
-//! tile a RemoteFX Progressive tile whose first pass follows the dial,
-//! owed its upgrades to the full stage ([`TilesEncoder::set_pace`]), with
-//! no stream; a list that holds the dial is sent every still lossless. A
+//! desktop has stopped, and what the walk gives up is the picture's frames,
+//! never what a tile shows. A
 //! slowed walk paces the updates as it paces the video's frames. What the
 //! encoder still owes once the desktop stops — a stream to end, a tile a
-//! stream carried to send as a PNG, a progressive tile's upgrade — is
+//! stream carried to send as a PNG — is
 //! looked for on its tick ([`TilesEncoder::tick_at`]), each an update that
 //! waits for a request and the fence as any other. A new size starts it over,
 //! and so does a non-incremental request, which ends every stream; a list that
@@ -584,6 +581,8 @@ struct Session {
     /// The video stream's encoder, at the framebuffer's size and the stream's
     /// dial once a frame has been sent.
     video: Option<VideoEncoder>,
+    /// The chroma the client's list asks the video stream to be.
+    video_chroma: crate::rfb::Chroma,
     /// What the video encoder is handed, written as it is handed it, while the
     /// daemon was started with a capture directory: opened at the session's
     /// first frame, and spanning every encoder the session makes.
@@ -604,6 +603,9 @@ struct Session {
     /// The last tiles update was the tick's alone with the desktop stopped:
     /// it is quiet, and the walk was told so at the first.
     tiles_quiet: bool,
+    /// The last video frame was a settle frame: the desktop is quiet, and
+    /// the walk was told so at the first.
+    video_quiet: bool,
     /// The next video frame must be an IDR.
     keyframe_owed: bool,
     /// The frame rate this client's link will bear, and for the tiles
@@ -717,9 +719,11 @@ impl Session {
             use_video: false,
             tiles: None,
             use_tiles: false,
-            tiles_picture: TilesPicture::Progressive,
+            tiles_picture: TilesPicture::Held,
+            video_chroma: crate::rfb::Chroma::Yuv420,
             tiles_origin: Instant::now(),
             tiles_quiet: false,
+            video_quiet: false,
             keyframe_owed: false,
             walk,
             in_flight: None,
@@ -766,6 +770,7 @@ impl Session {
             self.maybe_update(&mut writer).await?;
             let frame_at = self.frame_at();
             let tick_at = self.tick_at();
+            let settle_at = self.settle_at();
             tokio::select! {
                 read = reader.read_buf(&mut inbuf) => {
                     let n = read.context("reading from the client")?;
@@ -801,6 +806,8 @@ impl Session {
                 () = until(frame_at) => {}
                 // The tiles picture's tick: the top of the loop sends what it owes.
                 () = until(tick_at) => {}
+                // The video stream's settle frame: the top of the loop sends it.
+                () = until(settle_at) => {}
                 // Woken to drain the capture at the top of the loop.
                 () = audio_ready(&self.audio) => {}
                 signal = camera_signal(&mut self.camera) => self.send_camera_signal(signal, &mut writer).await?,
@@ -1003,15 +1010,28 @@ impl Session {
                 if self.use_zrle && self.zrle.is_none() {
                     self.zrle = Some(ZrleEncoder::default());
                 }
-                let video = has(ENCODING_VIDEO);
-                if video && !self.use_video {
+                let chroma = crate::rfb::Chroma::listed(&encodings);
+                let video = chroma.is_some();
+                let chroma = chroma.unwrap_or(self.video_chroma);
+                // Another chroma is another stream: its encoder is made again,
+                // and its first frame is an IDR.
+                let rechromaed = video && self.use_video && chroma != self.video_chroma;
+                if video && (!self.use_video || rechromaed) {
                     info!(
-                        "client {}: asked for video, H.264 by {} up to quality {}, walked by its lag",
+                        "client {}: asked for video at {}, H.264 by {} up to quality {}, walked by its lag",
                         self.id.0,
-                        self.config.h264.name(),
+                        match chroma {
+                            crate::rfb::Chroma::Yuv420 => "4:2:0",
+                            crate::rfb::Chroma::Yuv444 => "4:4:4",
+                        },
+                        self.config.h264.name_at(chroma),
                         crate::rfb::QUALITY
                     );
                 }
+                if rechromaed {
+                    self.video = None;
+                }
+                self.video_chroma = chroma;
                 if video && (!self.use_video || self.use_tiles) {
                     // The walk was the tiles picture's, where that was listed.
                     self.walk = QualityWalk::new(crate::rfb::QUALITY, self.config.capture, true);
@@ -1033,11 +1053,6 @@ impl Session {
                     let changed = !self.use_tiles || picture != self.tiles_picture;
                     if changed {
                         match picture {
-                            TilesPicture::Progressive => info!(
-                                "client {}: asked for progressive tiles up to quality {}, walked by its lag",
-                                self.id.0,
-                                crate::rfb::QUALITY
-                            ),
                             TilesPicture::Held => info!(
                                 "client {}: asked for tiles at quality {}, held there, H.264 by {}",
                                 self.id.0,
@@ -1060,8 +1075,8 @@ impl Session {
                         self.tiles = None;
                         self.seen = 0;
                     } else if picture != self.tiles_picture {
-                        // A new walk is a new picture: what the
-                        // client holds was coded against the old one, so it
+                        // The other picture: what the
+                        // client holds was coded as the old one, so it
                         // starts over whole at the next update, whether or not
                         // the desktop changed, every live stream ended first.
                         if let Some(encoder) = &mut self.tiles {
@@ -1071,13 +1086,8 @@ impl Session {
                     }
                     self.tiles_picture = picture;
                     if changed {
-                        // A fresh walk from the ceiling, which the running
-                        // streams follow with no keyframe.
+                        // A fresh walk, the picture's own.
                         self.walk = QualityWalk::tiles(picture, self.config.capture);
-                        let (quality, coarse) = self.tiles_pace();
-                        if let Some(encoder) = &mut self.tiles {
-                            encoder.set_pace(quality, coarse);
-                        }
                     }
                 } else if self.use_tiles {
                     // What the client holds may be a stream's lossy picture
@@ -1267,9 +1277,6 @@ impl Session {
                         let now = Instant::now();
                         let delivery = now.saturating_duration_since(sent);
                         let moved = self.walk.fenced(delivery, verdict, now);
-                        if let Some(encoder) = self.tiles.as_mut().filter(|_| self.use_tiles) {
-                            encoder.delivered(delivery.saturating_sub(self.walk.floor()));
-                        }
                         if moved.is_some() {
                             debug!(
                                 "client {}: the frame before took {}ms to deliver",
@@ -1765,6 +1772,8 @@ impl Session {
         let full;
         // Where a video frame's picture changed, or `None` for a whole one.
         let changed: Option<Vec<crate::rfb::Rect>>;
+        // The video stream is owed a settle frame and its time has come.
+        let settling;
         {
             // A video stream is made for the desktop's size with the lock let
             // go, since opening an encoder takes the compositor's time while
@@ -1812,8 +1821,6 @@ impl Session {
                             .with_context(|| {
                                 format!("starting the tiles picture of a {width}x{height} desktop")
                             })?;
-                    let (quality, coarse) = self.tiles_pace();
-                    encoder.set_pace(quality, coarse);
                     // The client keeps its cache of tiles through the new
                     // size, and so does the record of it.
                     if let Some(old) = self.tiles.take() {
@@ -1834,6 +1841,7 @@ impl Session {
                 drop(fb);
                 // Opening a VA-API device and an encoder on it blocks, as coding does.
                 let h264 = &self.config.h264;
+                let chroma = self.video_chroma;
                 let encoder = tokio::task::block_in_place(|| {
                     let mut coder = h264.coder().with_context(|| {
                         format!(
@@ -1841,7 +1849,7 @@ impl Session {
                             h264.name()
                         )
                     })?;
-                    VideoEncoder::new(&mut coder, width, height).with_context(|| {
+                    VideoEncoder::new(&mut coder, width, height, chroma).with_context(|| {
                         format!("starting the video stream of a {width}x{height} desktop")
                     })
                 })?;
@@ -1850,6 +1858,11 @@ impl Session {
             };
             if !fb.painted {
                 drop(fb);
+                // No picture, so none to settle: the frame that paints the
+                // desktop owes its own.
+                if let Some(video) = &mut self.video {
+                    video.settled();
+                }
                 answered(self);
                 return Ok(());
             }
@@ -1871,11 +1884,12 @@ impl Session {
                     .as_ref()
                     .and_then(TilesEncoder::tick_at)
                     .is_some_and(|at| at <= now);
+            settling = self.use_video && self.settle_due().is_some_and(|at| at <= Instant::now());
             let damage = if full || starting {
                 None
             } else {
                 match fb.damage_since(self.seen) {
-                    Some(rects) if rects.is_empty() && !ticking => {
+                    Some(rects) if rects.is_empty() && !ticking && !settling => {
                         drop(fb);
                         answered(self);
                         return Ok(());
@@ -2013,8 +2027,11 @@ impl Session {
         // Whether the update is a video frame, and if so whether it is an IDR,
         // which is no verdict about the link: it is the whole picture again,
         // slow by its nature.
+        // A settle frame is one of no damage: the desktop as the last frame
+        // read it, coded again at the dial's fine end.
+        let settle = settling && changed.as_ref().is_some_and(Vec::is_empty);
         let keyframe = if self.use_video {
-            let Some(keyframe) = self.encode_video(full, changed.as_deref())? else {
+            let Some(keyframe) = self.encode_video(full, changed.as_deref(), settle)? else {
                 // Nothing to send, and nothing changes hands: the damage stays
                 // unseen, the request pending and the IDR owed, for the frame
                 // the next change brings.
@@ -2044,8 +2061,15 @@ impl Session {
                 // The frames behind it queue behind its crossing.
                 self.walk.keyframe(sent);
             }
+            // The desktop stopping settles the walk, at the first settle
+            // frame; none of them is a verdict, the link having borne what
+            // moved and these being what it is owed after.
+            if settle && !self.video_quiet {
+                self.walk.settle(sent);
+            }
+            self.video_quiet = settle;
             self.frame_sent = Some(sent);
-            let verdict = !keyframe;
+            let verdict = !keyframe && !settle;
             if verdict {
                 // How long the socket had no room for the frame, which the
                 // walk hears now or leaves to the fence.
@@ -2071,11 +2095,14 @@ impl Session {
     /// damage the frame carries, or `None` for a whole picture, which is what
     /// a capture is told; the stream knows what it read. Returns whether the
     /// frame was an IDR, or `None` when the encoder made no frame of it: `out`
-    /// is left as it was, and so is the IDR owed.
+    /// is left as it was, and so is the IDR owed. `settle` makes it a settle
+    /// frame ([`VideoEncoder::settle`]), of no damage and at the dial's fine end,
+    /// which a capture is not told of: it is the session's, not the desktop's.
     fn encode_video(
         &mut self,
         full: bool,
         changed: Option<&[crate::rfb::Rect]>,
+        settle: bool,
     ) -> anyhow::Result<Option<bool>> {
         let (width, height) = self.known_size;
         let rect_at = self.out.len();
@@ -2087,7 +2114,8 @@ impl Session {
         );
         let keyframe = full || self.keyframe_owed;
         let quality = self.walk.quality();
-        if let Some(dir) = &self.config.capture_frames {
+        let settle = settle && !keyframe;
+        if let Some(dir) = self.config.capture_frames.as_ref().filter(|_| !settle) {
             let capture = match &mut self.capture {
                 Some(capture) => capture,
                 None => {
@@ -2124,8 +2152,14 @@ impl Session {
         }
         // Tens of milliseconds for a large desktop that changed all over, which
         // is the worker's to spend and not the runtime's to wait on.
-        let encoded = tokio::task::block_in_place(|| encoder.encode(keyframe, quality, out))
-            .with_context(|| format!("encoding a {width}x{height} video frame"))?;
+        let encoded = tokio::task::block_in_place(|| {
+            if settle {
+                encoder.settle(out)
+            } else {
+                encoder.encode(keyframe, quality, out)
+            }
+        })
+        .with_context(|| format!("encoding a {width}x{height} video frame"))?;
         if !encoded {
             self.out.truncate(rect_at);
             return Ok(None);
@@ -2151,6 +2185,37 @@ impl Session {
         self.frame_sent
             .map(|sent| sent + self.walk.interval())
             .filter(|at| Instant::now() < *at)
+    }
+
+    /// When the video stream's next settle frame is due
+    /// ([`VideoEncoder::settle`]), or `None` while it is owed none: half a
+    /// second after the last frame of the desktop
+    /// ([`crate::rfb::video::SETTLE_AFTER`]), and each one after the first as
+    /// soon as the one before is fenced. The damage a frame carries owes them
+    /// all again, so a desktop that goes on changing is sent none.
+    fn settle_due(&self) -> Option<Instant> {
+        if !self.video.as_ref().is_some_and(VideoEncoder::settle_owed) {
+            return None;
+        }
+        let sent = self.frame_sent?;
+        Some(if self.video_quiet {
+            sent
+        } else {
+            sent + crate::rfb::video::SETTLE_AFTER
+        })
+    }
+
+    /// When the loop is to wake for the video stream's settle frame, or
+    /// `None` while none is owed or no update may go: nothing is wanted, or a
+    /// fence is outstanding. Not before a held frame's turn
+    /// ([`Self::frame_at`]), as the tiles picture's tick is not.
+    fn settle_at(&self) -> Option<Instant> {
+        if !self.use_video || self.fence_outstanding || !(self.continuous || self.pending.is_some())
+        {
+            return None;
+        }
+        let at = self.settle_due()?;
+        Some(self.frame_at().map_or(at, |held| at.max(held)))
     }
 
     /// Encode what the tiles picture owes and send it as one update, with its
@@ -2212,12 +2277,6 @@ impl Session {
         self.tiles_quiet = update.stopped;
         self.frame_sent = Some(sent);
         let now = Instant::now();
-        if !self.fence_supported {
-            self.tiles
-                .as_mut()
-                .expect("made for the read")
-                .delivered(now.saturating_duration_since(sent));
-        }
         if verdict {
             let moved = self.walk.written(
                 now.saturating_duration_since(sent),
@@ -2248,11 +2307,11 @@ impl Session {
         Some(self.frame_at().map_or(at, |held| at.max(held)))
     }
 
-    /// Move the tiles picture's dial to where the walk went, if it went
-    /// anywhere; an encoder made later starts there anyway. The video stream
-    /// reads the walk's quality as it codes each frame, and the interval the
-    /// walk asks for is read when a frame goes out, the video stream's as the
-    /// tiles picture's.
+    /// Say where the walk went, if it went anywhere. Nothing is moved to it
+    /// here: the video stream reads the walk's quality as it codes each
+    /// frame, and the interval the walk asks for is read when a frame goes
+    /// out, the video stream's as the tiles picture's, whose dial no walk
+    /// moves.
     fn follow_walk(&mut self, moved: Option<Pace>) {
         let Some(pace) = moved else {
             return;
@@ -2266,16 +2325,6 @@ impl Session {
         } else {
             debug!("client {}: quality {}", self.id.0, pace.quality);
         }
-        let (quality, coarse) = self.tiles_pace();
-        if let Some(encoder) = &mut self.tiles {
-            encoder.set_pace(quality, coarse);
-        }
-    }
-
-    /// The dial and the coarseness the tiles picture is coded at
-    /// ([`QualityWalk::tiles_pace`]).
-    fn tiles_pace(&self) -> (u8, bool) {
-        self.walk.tiles_pace(self.tiles_picture)
     }
 
     /// The damaged rectangles, each as ZRLE or — for a client that never listed
@@ -2579,11 +2628,12 @@ mod pacing_tests {
     use crate::shared::{Displays, Geometry};
     use crate::walk::QUALITY_FLOOR;
 
-    /// A session on a 256x128 desktop that lists the tiles picture and asked
-    /// for continuous updates, its picture sent and its stills owed their
-    /// refinement: a tick owed.
+    /// A session on a 512x256 desktop of noise that lists the tiles picture
+    /// and asked for continuous updates, its picture sent, more than an
+    /// update's stills and so a region's stream, which is owed its end: a
+    /// tick owed.
     fn ticking() -> Session {
-        let (w, h) = (256u16, 128u16);
+        let (w, h) = (512u16, 256u16);
         let (commands, _rx) = calloop::channel::channel();
         let shared = Arc::new(Shared::new(
             Framebuffer::new(w, h),
@@ -2625,8 +2675,14 @@ mod pacing_tests {
         let mut tiles =
             TilesEncoder::new(w, h, session.tiles_picture, Box::new(h264.coder().unwrap()))
                 .unwrap();
+        let mut state = 0x9E37_79B9u32;
         let pixels: Vec<u8> = (0..usize::from(w) * usize::from(h) * 4)
-            .map(|i| (i * 7 % 251) as u8)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
             .collect();
         tiles
             .read(&pixels, usize::from(w) * 4, None, Duration::ZERO)
@@ -2634,6 +2690,51 @@ mod pacing_tests {
         tiles.encode(Duration::ZERO, &mut Vec::new()).unwrap();
         session.tiles = Some(tiles);
         session
+    }
+
+    /// The video stream's settle frames are due half a second after the last
+    /// frame of the desktop and then one behind the other, while an update
+    /// may go, and no more once the picture has had them all.
+    #[test]
+    fn a_settle_frame_is_due_half_a_second_after_the_last_frame() {
+        use crate::rfb::video::SETTLE_AFTER;
+        let mut session = ticking();
+        session.use_tiles = false;
+        session.tiles = None;
+        session.use_video = true;
+        let (w, h) = (256u16, 128u16);
+        let mut coder = session.config.h264.coder().unwrap();
+        let mut video = VideoEncoder::new(&mut coder, w, h, crate::rfb::Chroma::Yuv420).unwrap();
+        assert_eq!(session.settle_at(), None, "no stream, nothing owed");
+        let pixels = vec![0x55u8; usize::from(w) * usize::from(h) * 4];
+        video.read(&pixels, usize::from(w) * 4, None).unwrap();
+        let mut out = Vec::new();
+        assert!(video.encode(true, 40, &mut out).unwrap());
+        session.video = Some(video);
+        assert_eq!(session.settle_at(), None, "no frame went out");
+
+        let sent = Instant::now();
+        session.frame_sent = Some(sent);
+        assert_eq!(session.settle_at(), Some(sent + SETTLE_AFTER));
+        session.fence_outstanding = true;
+        assert_eq!(session.settle_at(), None, "not while a frame is in flight");
+        session.fence_outstanding = false;
+
+        // The first settle frame went out: the next is due at once.
+        assert!(session.video.as_mut().unwrap().settle(&mut out).unwrap());
+        session.video_quiet = true;
+        assert_eq!(session.settle_at(), Some(sent));
+        assert!(session.video.as_mut().unwrap().settle(&mut out).unwrap());
+        assert_eq!(session.settle_at(), None, "settled");
+
+        // A frame of the desktop owes them again, and a desktop with no
+        // picture owes none.
+        let video = session.video.as_mut().unwrap();
+        assert!(video.encode(false, 90, &mut out).unwrap());
+        session.video_quiet = false;
+        assert_eq!(session.settle_at(), Some(sent + SETTLE_AFTER));
+        session.video.as_mut().unwrap().settled();
+        assert_eq!(session.settle_at(), None);
     }
 
     /// A client that says its cache of tiles is empty is sent the picture

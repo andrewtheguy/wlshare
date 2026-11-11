@@ -16,9 +16,28 @@
 //! framebuffer's pixels in, and the frame framed as
 //! [`wlshare_proto::video::frame_header`] lays it out.
 
+use std::time::Duration;
+
 use thiserror::Error;
 
-use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
+use crate::rfb::{Chroma, H264Coder, H264Error, H264Stream, Rect};
+
+/// How long after a stream's last frame, the desktop not having changed, it
+/// settles ([`VideoEncoder::settle`]): the half second the tiles picture
+/// takes a desktop to have stopped in.
+pub const SETTLE_AFTER: Duration = Duration::from_millis(500);
+
+/// How many frames settle a picture: the first brings it to the settle's
+/// quantizer, and the next refines what that left; a third found nothing
+/// more.
+const SETTLE_FRAMES: u8 = 2;
+
+/// The dial a settle frame is coded at: its fine end, past wlshare's dial
+/// ([`crate::rfb::QUALITY`]), which is what a picture that moves is coded
+/// at. A desktop that has stopped is owed the finest the stream has, once,
+/// as the tiles picture's stills are owed theirs: 0.7 to 1.9 dB closer than
+/// wlshare's dial left the samples, for a frame of a few tens of kilobytes.
+const SETTLE_QUALITY: u8 = crate::rfb::QUALITY_MAX;
 
 /// Why a picture could not be encoded.
 #[derive(Debug, Error)]
@@ -38,18 +57,30 @@ pub enum VideoError {
 pub struct VideoEncoder {
     stream: Box<dyn H264Stream>,
     size: (u16, u16),
+    /// The settle frames the picture is owed: all of them after any frame of
+    /// the desktop.
+    settles: u8,
 }
 
 impl VideoEncoder {
-    /// An encoder for a `width`×`height` picture, on a stream `coder` opens.
-    pub fn new(coder: &mut dyn H264Coder, width: u16, height: u16) -> Result<Self, VideoError> {
+    /// An encoder for a `width`×`height` picture at `chroma`, on a stream
+    /// `coder` opens.
+    pub fn new(
+        coder: &mut dyn H264Coder,
+        width: u16,
+        height: u16,
+        chroma: Chroma,
+    ) -> Result<Self, VideoError> {
         if width == 0 || height == 0 {
             return Err(VideoError::Empty(width, height));
         }
-        let stream = coder.open(width, height).map_err(VideoError::Codec)?;
+        let stream = coder
+            .open(width, height, chroma)
+            .map_err(VideoError::Codec)?;
         Ok(Self {
             stream,
             size: (width, height),
+            settles: 0,
         })
     }
 
@@ -95,6 +126,43 @@ impl VideoEncoder {
         quality: u8,
         out: &mut Vec<u8>,
     ) -> Result<bool, VideoError> {
+        let made = self.code(keyframe, quality, out)?;
+        if made {
+            self.settles = SETTLE_FRAMES;
+        }
+        Ok(made)
+    }
+
+    /// Whether the picture is owed a settle frame: it has been sent a frame
+    /// of the desktop, and not yet every frame that settles it.
+    pub fn settle_owed(&self) -> bool {
+        self.settles > 0
+    }
+
+    /// The picture is owed no settle frame after all: there is no desktop to
+    /// take one from.
+    pub fn settled(&mut self) {
+        self.settles = 0;
+    }
+
+    /// Encode a settle frame, for a desktop that has not changed for
+    /// [`SETTLE_AFTER`] since the last frame: the picture as it was last
+    /// read, at the dial's fine end ([`SETTLE_QUALITY`]) whatever the walk
+    /// holds, the whole of it coded again, so what the walk left coarse and
+    /// what wlshare's dial left are both brought to the finest picture the
+    /// stream has. The frames before the
+    /// desktop stopped are what a link bore; this is what it is owed once it
+    /// has the room, as the tiles picture's stills are theirs. Appended to
+    /// `out` as [`Self::encode`] appends a frame, and one fewer is owed
+    /// after, a frame made or not.
+    pub fn settle(&mut self, out: &mut Vec<u8>) -> Result<bool, VideoError> {
+        self.stream.refine();
+        self.settles = self.settles.saturating_sub(1);
+        self.code(false, SETTLE_QUALITY, out)
+    }
+
+    /// One frame of the stream, framed.
+    fn code(&mut self, keyframe: bool, quality: u8, out: &mut Vec<u8>) -> Result<bool, VideoError> {
         let body_at = out.len();
         out.extend_from_slice(&wlshare_proto::video::frame_header(0));
         match self.stream.encode(keyframe, quality, out) {
@@ -134,9 +202,11 @@ mod tests {
     /// what changed and encode as `(keyframe, quality)`, in order.
     #[derive(Default)]
     struct Log {
-        opened: Vec<(u16, u16)>,
+        opened: Vec<(u16, u16, Chroma)>,
         reads: Vec<Option<Vec<Rect>>>,
         encodes: Vec<(bool, u8)>,
+        /// How many frames had been asked for when each refine was.
+        refines: Vec<usize>,
     }
 
     /// A coder whose frames are `frame` copied out, an empty one for `None`
@@ -154,8 +224,17 @@ mod tests {
     }
 
     impl H264Coder for Fake {
-        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
-            self.log.lock().unwrap().opened.push((width, height));
+        fn open(
+            &mut self,
+            width: u16,
+            height: u16,
+            chroma: Chroma,
+        ) -> Result<Box<dyn H264Stream>, H264Error> {
+            self.log
+                .lock()
+                .unwrap()
+                .opened
+                .push((width, height, chroma));
             Ok(Box::new(FakeStream {
                 log: self.log.clone(),
                 frame: self.frame.clone(),
@@ -177,6 +256,12 @@ mod tests {
                 .reads
                 .push(changed.map(<[Rect]>::to_vec));
             Ok(())
+        }
+
+        fn refine(&mut self) {
+            let mut log = self.log.lock().unwrap();
+            let frames = log.encodes.len();
+            log.refines.push(frames);
         }
 
         fn encode(
@@ -219,7 +304,7 @@ mod tests {
     fn a_frame_is_the_length_and_the_access_unit() {
         let unit = vec![0, 0, 0, 1, 0x65, 0x88, 0x84];
         let (mut coder, log) = fake(Some(unit.clone()), false);
-        let mut encoder = VideoEncoder::new(&mut coder, 64, 48).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 64, 48, Chroma::Yuv444).unwrap();
         assert_eq!(encoder.size(), (64, 48));
         let damage = [Rect {
             x: 2,
@@ -240,7 +325,7 @@ mod tests {
         );
         assert_eq!(&out[5..], unit);
         let log = log.lock().unwrap();
-        assert_eq!(log.opened, [(64, 48)]);
+        assert_eq!(log.opened, [(64, 48, Chroma::Yuv444)]);
         assert_eq!(log.reads, [Some(damage.to_vec())]);
         assert_eq!(log.encodes, [(true, 47)]);
     }
@@ -250,7 +335,7 @@ mod tests {
     fn an_empty_desktop_is_refused() {
         let (mut coder, log) = fake(Some(vec![1]), false);
         assert!(matches!(
-            VideoEncoder::new(&mut coder, 0, 16),
+            VideoEncoder::new(&mut coder, 0, 16, Chroma::Yuv420),
             Err(VideoError::Empty(0, 16))
         ));
         assert!(log.lock().unwrap().opened.is_empty());
@@ -260,7 +345,7 @@ mod tests {
     #[test]
     fn no_frame_or_an_error_leaves_nothing_behind() {
         let (mut coder, _) = fake(None, false);
-        let mut encoder = VideoEncoder::new(&mut coder, 16, 16).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 16, 16, Chroma::Yuv420).unwrap();
         let mut out = vec![0xEE];
         assert!(
             !encoder
@@ -271,11 +356,51 @@ mod tests {
         assert_eq!(out, [0xEE]);
 
         let (mut coder, _) = fake(Some(vec![1]), true);
-        let mut encoder = VideoEncoder::new(&mut coder, 16, 16).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 16, 16, Chroma::Yuv420).unwrap();
         assert!(matches!(
             encoder.encode(false, crate::rfb::QUALITY, &mut out),
             Err(VideoError::Codec(_))
         ));
         assert_eq!(out, [0xEE], "a failed frame left something behind");
+    }
+
+    /// A picture is owed its settle frames after any frame of the desktop,
+    /// and none before one: each a frame at the dial's fine end whatever the
+    /// last was coded at, no keyframe, the stream told to code the whole picture
+    /// again first, and a frame of the desktop between them owes them all
+    /// over.
+    #[test]
+    fn a_frame_of_the_desktop_owes_its_settle_frames() {
+        let (mut coder, log) = fake(Some(vec![0, 0, 0, 1, 0x41, 0x9A]), false);
+        let mut encoder = VideoEncoder::new(&mut coder, 64, 48, Chroma::Yuv444).unwrap();
+        assert!(!encoder.settle_owed(), "nothing sent, nothing to settle");
+        let mut out = Vec::new();
+        encoder.read(&[0; 64 * 48 * 4], 64 * 4, None).unwrap();
+        assert!(encoder.encode(true, 40, &mut out).unwrap());
+        assert!(encoder.settle_owed());
+
+        assert!(encoder.settle(&mut out).unwrap());
+        assert!(encoder.settle_owed(), "one settle frame is not all of them");
+        // The desktop changes before the second: both are owed again.
+        assert!(encoder.encode(false, 55, &mut out).unwrap());
+        for _ in 0..SETTLE_FRAMES {
+            assert!(encoder.settle_owed());
+            assert!(encoder.settle(&mut out).unwrap());
+        }
+        assert!(!encoder.settle_owed(), "settled");
+
+        let log = log.lock().unwrap();
+        let fine = crate::rfb::QUALITY_MAX;
+        assert_eq!(
+            log.encodes,
+            [
+                (true, 40),
+                (false, fine),
+                (false, 55),
+                (false, fine),
+                (false, fine)
+            ]
+        );
+        assert_eq!(log.refines, [1, 3, 4], "told before each settle frame");
     }
 }
