@@ -13,9 +13,9 @@ A VNC server for wlroots-based Wayland compositors, built for the
 [zDesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
 a client that asks, as zDesk does for its browsers, as one H.264 stream whose
-quality and frame rate follow the link, or for a link with room to spare as lossless PNG
+quality and frame rate follow the link, at 4:2:0 or, where the client's decoder
+takes it, at 4:4:4, which keeps coloured text crisp (beta), or for a link with room to spare as lossless PNG
 tiles with a video stream for each region that moves, each H.264 by the host's hardware or libx264,
-or, following the link, as RemoteFX Progressive tiles, still or moving (alpha),
 or for a LAN as lossless tiles, still or moving, planar where the desktop is still and by a median predictor where it moves, with no H.264 stream as a Windows host draws under its Lossless policy (experimental) — injects input through the virtual keyboard and pointer protocols,
 shares the clipboard through wlr-data-control, carries the desktop's sound from
 PipeWire over the connection itself — and tells the client what pixel density the
@@ -57,8 +57,9 @@ tiles. A configured
 login additionally requires RSA-AES. Cursor support is required because wlshare
 never puts the pointer in framebuffer pixels. The density and outputs extensions
 are asked for by the client and stay silent otherwise; zDesk asks for both,
-and for the video stream, or with the picker's *Tiles (alpha)*, *Settles to
-lossless* or *Fully lossless (experimental)* the tiles, on a
+and for the video stream, at 4:4:4 with the picker's *Crisp video (beta)*,
+or with its *Settles to lossless* or *Fully lossless (experimental)* the
+tiles, on a
 `vnc` target with `subtype = "wlshare"`, and reads
 wlshare as any VNC server on a target without it. Audio is a private extension
 that zDesk asks for in a session on such a target started with sound: while it

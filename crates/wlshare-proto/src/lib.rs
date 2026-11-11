@@ -9,13 +9,12 @@
 //! own.
 //!
 //! - **The video encoding** ([`ENCODING_VIDEO`]), the whole framebuffer as one
-//!   H.264 stream, and what the client lists beside it ([`video`]).
+//!   H.264 stream, at 4:2:0 or, where the list asks ([`ENCODING_VIDEO_444`]),
+//!   4:4:4 ([`video`]).
 //! - **The tiles encoding** ([`ENCODING_TILES`]), the desktop as lossless PNG
 //!   tiles where it is still and an H.264 stream for each region that moves
-//!   ([`tiles`]); or, where the dial walks, every tile RemoteFX Progressive,
-//!   whose tables and stream are [`progressive`]'s; or every tile lossless,
-//!   what is still RDP's planar codec and what moves a median predictor's
-//!   residuals.
+//!   ([`tiles`]); or every tile lossless, what is still RDP's planar codec
+//!   and what moves a median predictor's residuals.
 //! - **The density extension** ([`ENCODING_DENSITY`]), the scale the
 //!   framebuffer is drawn at ([`density`]).
 //! - **The outputs extension** ([`ENCODING_OUTPUTS`]), which outputs the
@@ -43,7 +42,6 @@ pub mod camera;
 pub mod density;
 pub mod microphone;
 pub mod outputs;
-pub mod progressive;
 pub mod scroll;
 pub mod tiles;
 pub mod version;
@@ -54,17 +52,19 @@ pub use version::PROTOCOL_VERSION;
 /// The video encoding, the ASCII bytes `WLSV`: a client that lists it is sent
 /// every picture as one rectangle over the whole framebuffer, a frame of one
 /// H.264 stream ([`video`]). It wins over ZRLE wherever it is listed, and
-/// nothing beside it says what the stream is to be: there is one way to code
-/// it.
+/// what is listed beside it says the stream's chroma and nothing else: there
+/// is one way to code it.
 pub const ENCODING_VIDEO: i32 = 0x574c_5356;
+/// Listed beside [`ENCODING_VIDEO`], asks for the stream at 4:4:4, High
+/// 4:4:4 Predictive, a colour sample for every pixel, in place of 4:2:0
+/// ([`video::Chroma`]). The ASCII bytes `WLS4`.
+pub const ENCODING_VIDEO_444: i32 = 0x574c_5334;
 /// The tiles encoding, the ASCII bytes `WLST`: a client that lists it is sent
-/// the desktop as RemoteFX Progressive tiles; with [`ENCODING_HELD`] beside
-/// it as lossless PNG tiles where it is still and a video stream for each
-/// region that moves; with [`ENCODING_LOSSLESS`] beside it as lossless tiles,
-/// still or moving, whose moving ones are a median predictor's residuals
-/// ([`tiles`]). It
-/// wins over ZRLE wherever it is listed; listed beside [`ENCODING_VIDEO`] it
-/// is fatal.
+/// the desktop as lossless PNG tiles where it is still and a video stream for
+/// each region that moves; with [`ENCODING_LOSSLESS`] beside it as lossless
+/// tiles, still or moving, whose moving ones are a median predictor's
+/// residuals ([`tiles`]). It wins over ZRLE wherever it is listed; listed
+/// beside [`ENCODING_VIDEO`] it is fatal.
 pub const ENCODING_TILES: i32 = 0x574c_5354;
 /// The density extension's pseudo-encoding, the ASCII bytes `WLSH`.
 pub const ENCODING_DENSITY: i32 = 0x574c_5348;
@@ -88,12 +88,6 @@ pub const ENCODING_AUDIO_OPUS: i32 = 0x574c_4f50;
 pub const fn private(encoding: i32) -> bool {
     encoding >> 16 == 0x574c
 }
-
-/// Listed beside [`ENCODING_TILES`], asks for the tiles picture held rather
-/// than walked: every still a lossless PNG and each region that moves a stream
-/// of its own, at the server's dial whatever the link does
-/// ([`tiles::TilesPicture`]). The ASCII bytes `WLSD`.
-pub const ENCODING_HELD: i32 = 0x574c_5344;
 
 /// Listed beside [`ENCODING_TILES`], asks for the tiles picture lossless:
 /// every tile that changed, still or moving, exact, and no H.264 stream, the

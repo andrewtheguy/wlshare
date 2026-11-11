@@ -42,7 +42,10 @@ The constant quantizer took 0.0.107's processor time or less — 25% less at
 most, 5% more at worst — with 0.0.107's bytes, a 4K drag's 14% more: what x264's API saves is
 libavcodec's copy of every picture. CRF was kept: a 4K drag at 30 frames a
 second is about 3 Mbit/s with it and 18 without, which the walk would pay
-for in quality on a link short of them. The tiles' regions are the same
+for in quality on a link short of them. That was `ultrafast`'s search; once
+the search reached 128 pixels a drag no longer needed the half-size
+picture's motion to start from, and the constant quantizer came back
+([below](#the-encoders-settings-again)). The tiles' regions are the same
 encoder; their cost moved with `WLSV`'s, less, since most of a tiles
 picture's time is its PNGs.
 
@@ -214,3 +217,161 @@ and on one uncovered at 2× scale (1.5–3.6 at speeds 6 to 9, 1.0–1.2 at 5). 
 every sample but the terminal: at speed 9, the cheapest, 1.5–2.1 times on
 video and walk, at speed 5, the only one that saves bytes overall, 4–6
 times on video (4K, 240 ms a frame against 56). Software stays libx264.
+
+## The stream at 4:4:4
+
+Measured on 2026-11-10 and 2026-11-11. The question was whether `WLSV` as
+High 4:4:4 Predictive, a colour sample for every pixel
+([The video encoding](architecture.md#the-video-encoding)), was good enough
+to take the place of the walked tiles, every tile RemoteFX Progressive,
+which were then the picture for a link that is not always wide and text
+that is to stay crisp ([Progressive tiles](tiles-performance.md#progressive-tiles)).
+It was, and did, in protocol 13. RDP's AVC444, the same chroma as two 4:2:0
+pictures a client puts back together, was weighed first and left: it codes
+on any 4:2:0 encoder and decodes on any decoder, but the page would have to
+copy both pictures' samples out of the decoder to combine them, which costs
+it more than the decode.
+
+**How.** `walk-sim` and `tiles-walk-sim` over the window captures at
+1920x1080, 2880x1800@2 and 3840x2160@2 and the mixed sessions at 1920x1080
+and 2880x1800@2, at 5, 10 and 25 Mbit/s, libx264 by `--libx264`: on lab1
+(four vCPUs of an AMD EPYC Rome, two cores of two threads, 8 GB, idle and
+alone, swap off) with its own encode times, so libx264 had two threads, and
+on the desktop with `--encode 20`, which is the same every run. Each update
+is decoded as a page would and compared with the desktop it was coded from,
+the PSNR over B, G and R: the mean over the updates while the desktop
+moves, and the page once nothing more is owed. Flood is left out. The runs,
+their scripts and every table are the artifacts' `bench/wlsv-444-20261110/`.
+
+**What it showed.** lab1's walks, the progressive tiles then the 4:4:4
+stream as it is now:
+
+| Capture | Link | Frames/s | dB moving | dB at rest | Mbit/s | Encoder |
+|---|---|---|---|---|---|---|
+| window-1920x1080 | 5 | 24.1 → 23.4 | 38.0 → 43.7 | 45.7 → 47.4 | 3.96 → 3.80 | 10 → 10% |
+| window-1920x1080 | 10 | 25.6 → 25.2 | 41.1 → 45.2 | 45.7 → 45.5 | 5.75 → 6.69 | 11 → 11% |
+| window-1920x1080 | 25 | 25.6 → 25.3 | 41.2 → 45.2 | 45.7 → 45.4 | 5.75 → 6.70 | 11 → 12% |
+| window-2880x1800@2 | 5 | 18.7 → 19.7 | 37.2 → 44.7 | 48.4 → 49.3 | 4.04 → 3.76 | 14 → 28% |
+| window-2880x1800@2 | 10 | 24.4 → 21.9 | 40.7 → 47.1 | 48.4 → 49.3 | 6.75 → 6.92 | 17 → 33% |
+| window-2880x1800@2 | 25 | 24.0 → 23.5 | 43.8 → 48.4 | 48.4 → 50.0 | 8.98 → 10.19 | 18 → 38% |
+| window-3840x2160@2 | 5 | 7.2 → 18.6 | 36.0 → 42.2 | 47.7 → 50.1 | 3.33 → 3.56 | 12 → 47% |
+| window-3840x2160@2 | 10 | 20.6 → 20.2 | 36.1 → 45.5 | 47.7 → 50.2 | 7.91 → 6.77 | 23 → 54% |
+| window-3840x2160@2 | 25 | 23.0 → 22.1 | 43.8 → 48.9 | 47.7 → 50.1 | 14.23 → 14.97 | 27 → 62% |
+| mixed-1920x1080 | 5 | 12.3 → 14.8 | 38.4 → 44.4 | 47.0 → 51.8 | 2.06 → 1.90 | 7 → 11% |
+| mixed-1920x1080 | 10 | 15.6 → 15.1 | 39.1 → 46.3 | 47.0 → 51.6 | 3.48 → 3.35 | 9 → 13% |
+| mixed-1920x1080 | 25 | 16.0 → 15.9 | 41.3 → 47.1 | 47.0 → 50.9 | 5.36 → 5.39 | 11 → 14% |
+| mixed-2880x1800@2 | 5 | 6.4 → 12.6 | 40.5 → 42.4 | 47.6 → 49.9 | 2.12 → 1.99 | 10 → 31% |
+| mixed-2880x1800@2 | 10 | 11.3 → 13.6 | 38.8 → 44.8 | 47.6 → 49.9 | 4.17 → 3.65 | 17 → 35% |
+| mixed-2880x1800@2 | 25 | 15.0 → 13.9 | 41.8 → 47.8 | 47.6 → 50.2 | 9.00 → 8.03 | 23 → 40% |
+
+- **While the desktop moves** it is 1.9 to 9.3 dB closer, at 0.86 to 1.17
+  times the bytes, and holds its frame rate on a slow link and a large
+  desktop, where the progressive tiles' fell: the 4K window at 5 Mbit/s at
+  18.6 frames a second against 7.2, the mixed session at 2880x1800 at 12.6
+  against 6.4. With room on the link it is level or up to 2.5 frames a
+  second under, an encode being 4 to 6 ms at the median at 1920x1080 and
+  15 to 17 at 3840x2160 where a progressive update took 2 and 5 to 8.
+- **At rest** it ends from 0.3 dB under to 4.8 over, the two walks it ends
+  under the window at 1920x1080 with room on the link; with the fixed
+  encode time, 0.2 under to 5.1 over. Before the settle frame it ended as
+  the walk had left it, up to 9.2 dB under on a slow link.
+- **The processor**: the encoder's share of a core is level with the
+  progressive tiles' at 1920x1080 on the window, 1.3 to 1.6 times theirs on
+  the mixed session there, about twice at 2880x1800, and an update 1.6 to
+  2.4 times at 3840x2160. Most of it is the whole picture's whatever
+  changed: a keystroke at 4K is 15 ms of the processor where the
+  progressive tiles, which touched only what changed, took a tenth of one.
+- **Coloured text**, on the flood, which is in no other figure: at the
+  ceiling at 1920x1080, 4:2:0 shows 24.6 dB, 4:4:4 36.6, and the
+  progressive tiles 25.9 moving and 34.8 settled.
+- **4:2:0 beside it**, as first measured, before the settings below: 4:4:4
+  took 1.3 to 1.7 times its share of a core for 0.87 to 1.20 times its
+  bytes, from 1.1 dB under to 4.3 over while moving.
+
+**A browser decodes it in software**, where it decodes it at all. Chrome 156
+on Windows (an i5-8500T, six cores, a UHD 630), through WebCodecs, the
+samples' streams at the ceiling, each frame drawn through WebGL2, a frame:
+
+| Stream | 4:2:0, hardware | 4:2:0, software | 4:4:4, software |
+|---|---:|---:|---:|
+| browser 1920x1080 | 2.8 ms | 7.9 | 9.6 |
+| video 1920x1080 | 2.7 | 14.4 | 14.5 |
+| browser 2880x1800@2 | 6.6 | 18.3 | 23.2 |
+| video 2880x1800@2 | 6.9 | 23.2 | 34.5 |
+| browser 3840x2160@2 | 10.1 | 26.4 | 34.4 |
+| video 3840x2160@2 | 9.8 | 28.9 | 45.0 |
+
+Chrome offers no hardware decoder for it. Chrome 156 and 157, on Windows
+and a Mac, decode it through WebCodecs with a colour for every pixel;
+Safari 27.2 on a Mac and Safari on an iPhone (iOS 18.7) refuse it there,
+though their video element plays it; Firefox 160 refuses both. So the
+gateway asks its page's decoder, and offers the stream where the answer is
+yes: nothing here hangs on how many browsers that is.
+
+### What did not change
+
+A profile of the 4K terminal sample, where a frame is a keystroke, had
+about nine tenths of libx264's time on macroblocks that had not changed:
+the half-pel planes of all three planes, and each macroblock visited,
+transformed and quantized to find it could be skipped, then copied forward.
+Telling x264 which macroblocks the reads left alone
+(`X264_MBINFO_CONSTANT`) took the second of those away. On the samples at
+3840x2160, the processor time a frame:
+
+| Sample | Before | Told | Told, and the settings below | Progressive tiles |
+|---|---:|---:|---:|---:|
+| terminal | 25.5 ms | 19.2 | 15.1 | 1.9 |
+| drag | 30.1 | 24.7 | 17.7 | 4.9 |
+| uncover | 33.9 | 29.7 | 23.0 | 7.2 |
+| browser | 65.7 | 63.3 | 51.0 | 23.0 |
+| video | 86.4 | 84.2 | 78.3 | 34.3 |
+
+The picture is as it was, to 0.2 dB, as long as a macroblock is flagged
+only once two frames have coded it as it stands. Flagged from the frame
+after its change it stayed as its first coding left it: the terminal 2.3 to
+5.4 dB coarser, for the same saving.
+
+### The encoder's settings, again
+
+The progressive tiles had been tuned over weeks and the 4:4:4 stream ran on
+what the 4:2:0 one had been given, so libx264's settings were swept for it:
+on lab1, the samples at the ceiling at 1920x1080 and 3840x2160, each
+setting twice and the lower processor time kept, as geometric means over
+terminal, drag, uncover, browser and video against the settings before it.
+
+| Setting | CPU a frame | Bytes | dB moving |
+|---|---:|---:|---:|
+| weighted prediction off | 0.92 | 0.99 | +0.04 |
+| and a constant quantizer, in CRF's place | 0.81 of that | 1.03 | −0.01 |
+| no sub-pixel search | 1.04 | 1.03 | −0.05 |
+| chroma three steps coarser than luma | 1.00 | 0.98 | −0.19 |
+| chroma six coarser, x264's own for 4:4:4 | 1.02 | 0.97 | −0.54 |
+| the deblocking filter off | 1.00 | 0.99 | +0.31 |
+| no intra partitions | 0.99 | 1.05 | −0.25 |
+| no 8×8 transform | 1.01 | 0.99 | +0.18 |
+| `ultrafast` | 0.86 | 1.27 | −0.26 |
+| four threads where two | 1.52 | 1.05 | −0.07 |
+
+The first two were taken, for both chromas, the encoder being one: at
+4:2:0 the same pair is 0.69 of the processor time for 0.98 of the bytes.
+Every picture's quantizer is still forced; under the constant quantizer,
+with nothing to weigh, x264 makes no half-size picture and estimates no
+rate on one, and with the search over 128 pixels a dragged window is a
+quarter more of very few bytes where under `ultrafast`'s search it was five
+times. The filter was left on, its 0.3 dB being this dial's and not looked
+at lower. Four threads on four processors code a 4K video frame in 29 ms
+where two take 44, for half as much processor time again: the daemon's
+rule, the machine's less two, was left as it is.
+
+### The settle frame
+
+`WLSV` sent nothing once the desktop stopped, so a page was left as the
+walk had left it. It is now sent two frames more, half a second on, of no
+damage, at the dial's fine end. At wlshare's own dial one frame ended 0.2
+to 0.3 dB short of two and a third added nothing; at the fine end, QP 16
+where a picture that moves is at 18, the page ends 0.7 to 1.9 dB closer
+again, for a frame of 12 to 73 KB at 1920x1080. Over the mixed session at
+2880x1800 at 5 Mbit/s they are 78 frames in five minutes, 2 MB, the largest
+206 KB, and the changes shown are as late as they were: 245 ms at the 95th
+percentile where 234. What a settle can add to a picture already at its
+quantizer is little, x264 dropping a residual that small.

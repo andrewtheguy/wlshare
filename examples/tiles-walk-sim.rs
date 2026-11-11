@@ -7,8 +7,8 @@
 //! ```text
 //! tiles-walk-sim CAPTURE [CAPTURE...] [--link MBPS[,MBPS@SECS...]] [--rtt MS]
 //!                [--hop MS] [--paint MS] [--jitter MS]
-//!                [--held | --lossless] [--libx264] [--encode MS]
-//!                [--timeline FILE]
+//!                [--lossless] [--libx264] [--encode MS]
+//!                [--timeline FILE] [--shot MS:FILE | end:FILE]...
 //! ```
 //!
 //! Its regions are the daemon's H.264 ([`h264`]), as `walk-sim`'s stream is;
@@ -19,19 +19,17 @@
 //! the round trip between the session and the gateway, 1 ms; `--paint` how
 //! long the browser takes to paint an update once it has it and the one before
 //! is painted, 5 ms, and `--jitter` up to how much more, at random.
-//! The walk starts at wlshare's dial ([`rfb::QUALITY`]) and never passes it,
-//! over every tile progressive, as a client that lists the tiles with no
-//! `WLSD` is sent them, and the passes are counted by kind on stderr;
-//! `--held` holds the dial there instead, as a client that lists `WLSD`
-//! beside the tiles, every still lossless and the regions streamed; and
-//! `--lossless` asks for every tile lossless, as a client that lists `WLSL`,
-//! planar where it is still and a median predictor's residuals where it
-//! moves, the walk slowing its frames alone.
+//! The picture is the one a client that lists the tiles alone is sent, every
+//! still lossless and the regions streamed at wlshare's dial
+//! ([`rfb::QUALITY`]), held there; `--lossless` asks for every tile lossless,
+//! as a client that lists `WLSL` beside them, planar where it is still and a
+//! median predictor's residuals where it moves. The walk slows either one's
+//! frames alone.
 //! `--timeline` writes every update as a JSON object a line: `t_ms`,
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,
 //! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs,
-//! progressive tiles, planar stills and median residuals, and of its streams' frames), `encode_ms`, `cpu_ms` (the
+//! planar stills and median residuals, and of its streams' frames), `encode_ms`, `cpu_ms` (the
 //! processor time of that encode, on every thread, which `encoder_cpu_pct`
 //! sums), `delivery_ms`,
 //! `latency_ms`, `psnr_db` (how close it left the page to the desktop it was
@@ -64,6 +62,8 @@
 //! of its own, read from the process's clock around each read and encode, as
 //! a share of one core over the session: what a daemon spends coding it,
 //! allocating through the daemon's jemalloc.
+//! `--shot` is `walk-sim`'s: the page as the first update sent `MS` into the
+//! session or after left it, or at its `end`, and the desktop beside it.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -76,7 +76,7 @@ use crate::rfb::Rect;
 use crate::rfb::client::{self, RectBody, ServerMsg, TileBody};
 use crate::rfb::tiles::TilesEncoder;
 use crate::walk::QualityWalk;
-use sim::{Desk, Error, Gateway, Source, json, millis, pct};
+use sim::{Desk, Error, Gateway, Shots, Source, json, millis, pct};
 
 // The daemon's own modules, of which the simulation uses the encoders and
 // nothing more, the decoder the H.264 encoder's tests read it back with, and
@@ -125,7 +125,7 @@ const FRAMING: usize = 4 + 13;
 /// An RFB rectangle's header, ahead of each tiles body.
 const RECT_HEADER: usize = 12;
 
-/// The bodies of an update's stills, PNG, progressive, median and the still stream's, and of its streams' frames.
+/// The bodies of an update's stills, PNG, median and the still stream's, and of its streams' frames.
 fn split(out: &[u8]) -> Result<(usize, usize), Error> {
     let (mut stills, mut streams, mut at) = (0, 0, 0);
     while at < out.len() {
@@ -133,10 +133,7 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len }
-            | TileHeader::Progressive { len }
-            | TileHeader::Median { len }
-            | TileHeader::Still { len } => {
+            TileHeader::Png { len } | TileHeader::Median { len } | TileHeader::Still { len } => {
                 stills += len;
                 len
             }
@@ -169,7 +166,6 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             TileHeader::Png { len }
             | TileHeader::Start { len, .. }
             | TileHeader::Frame { len, .. }
-            | TileHeader::Progressive { len }
             | TileHeader::Median { len }
             | TileHeader::Still { len } => len,
             TileHeader::End { .. }
@@ -188,8 +184,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
 type Bounds = (u16, u16, u16, u16);
 
 /// What the page draws of the updates: each PNG, each region's
-/// H.264 by libavcodec, each copy and cached tile, and each progressive tile
-/// as the encoder's model of zDesk's decoder shows it.
+/// H.264 by libavcodec, each copy and cached tile.
 struct Page {
     w: usize,
     canvas: Vec<u8>,
@@ -199,41 +194,6 @@ struct Page {
     planes: Vec<u8>,
     /// The still stream as the page reads it.
     stills: planar_decoder::StillReader,
-}
-
-/// The progressive tiles sent, count and bytes, by pass: first passes at each
-/// stage below full, whole, as differences, upgrades.
-#[derive(Default)]
-struct Passes {
-    first: [(u64, u64); 3],
-    whole: (u64, u64),
-    differences: (u64, u64),
-    upgrades: (u64, u64),
-}
-
-impl Passes {
-    /// A tile block's pass, read from its bytes: a first pass's flags and
-    /// quality byte, or an upgrade.
-    fn add(&mut self, block: &[u8]) {
-        let tally = |t: &mut (u64, u64)| {
-            t.0 += 1;
-            t.1 += block.len() as u64;
-        };
-        match (
-            u16::from_le_bytes([block[0], block[1]]),
-            block.get(13),
-            block.get(14),
-        ) {
-            (wlshare_proto::progressive::WBT_TILE_FIRST, Some(flags), _) if flags & 1 == 1 => {
-                tally(&mut self.differences)
-            }
-            (wlshare_proto::progressive::WBT_TILE_FIRST, _, Some(0xFF)) => tally(&mut self.whole),
-            (wlshare_proto::progressive::WBT_TILE_FIRST, _, Some(&stage)) => {
-                tally(&mut self.first[usize::from(stage).min(2)])
-            }
-            _ => tally(&mut self.upgrades),
-        }
-    }
 }
 
 impl Page {
@@ -265,13 +225,7 @@ impl Page {
             .collect()
     }
 
-    fn draw(
-        &mut self,
-        count: u16,
-        rects: &[u8],
-        encoder: &mut TilesEncoder,
-        passes: &mut Passes,
-    ) -> Result<(), Error> {
+    fn draw(&mut self, count: u16, rects: &[u8]) -> Result<(), Error> {
         let mut wire = crate::rfb::msg::update_header(count).to_vec();
         wire.extend_from_slice(rects);
         let Some((ServerMsg::Update(rects), _)) = client::parse(&wire)? else {
@@ -313,16 +267,6 @@ impl Page {
                 TileBody::Still(body) => {
                     let rgb = self.stills.unpack(&body, w, h)?;
                     self.paste(place, &Self::rgb(&rgb), w);
-                }
-                TileBody::Progressive(block) => {
-                    let cell = wlshare_proto::progressive::tile_of(&block)
-                        .ok_or("a progressive body that is no tile block")?;
-                    // A tile something later in the update drew over is
-                    // held no more; what drew over it is pasted in its turn.
-                    if let Some(shown) = encoder.progressive_shown(cell) {
-                        self.paste(place, &shown, 64);
-                    }
-                    passes.add(&block);
                 }
                 TileBody::Start { stream, frame } => {
                     self.streams.insert(
@@ -435,10 +379,11 @@ fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
     let (mut hop, mut picture, mut libx264, mut encode_ms) =
-        (1.0, TilesPicture::Progressive, false, None::<f64>);
+        (1.0, TilesPicture::Held, false, None::<f64>);
     let (mut rtt, mut paint, mut jitter) = (40.0, 5.0, 0.0);
     let ceiling = rfb::QUALITY;
     let mut timeline = None;
+    let mut shots = Shots::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} takes a value"));
@@ -446,13 +391,13 @@ fn main() -> Result<(), Error> {
             "--link" => rates = sim::link_steps(&value()?)?,
             "--rtt" => rtt = millis(&arg, value()?)?,
             "--hop" => hop = millis(&arg, value()?)?,
-            "--held" => picture = TilesPicture::Held,
             "--lossless" => picture = TilesPicture::Lossless,
             "--libx264" => libx264 = true,
             "--encode" => encode_ms = Some(millis(&arg, value()?)?),
             "--paint" => paint = millis(&arg, value()?)?,
             "--jitter" => jitter = millis(&arg, value()?)?,
             "--timeline" => timeline = Some(std::io::BufWriter::new(File::create(value()?)?)),
+            "--shot" => shots.add(&value()?)?,
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}").into()),
             _ => paths.push(arg),
         }
@@ -480,13 +425,9 @@ fn main() -> Result<(), Error> {
     // A 30 Hz capture, the daemon's default.
     let base = Instant::now();
     let mut walk = QualityWalk::tiles(picture, Duration::from_micros(33_333));
-    // Where the walk stands, as the session hands it the encoder.
-    let pace = |walk: &QualityWalk| walk.tiles_pace(picture);
-    let held = picture == TilesPicture::Held;
     let mut encoder: Option<TilesEncoder> = None;
     let mut encoder_cpu = Duration::ZERO;
     let mut page: Option<Page> = None;
-    let mut passes = Passes::default();
     let mut psnrs = Vec::new();
     let mut now = Duration::ZERO;
     // The desktop as it stands and what changed since the client's last update.
@@ -555,10 +496,7 @@ fn main() -> Result<(), Error> {
         let started = Instant::now();
         let cpu_started = process_cpu();
         if encoder.as_ref().is_none_or(|e| e.size() != d.size) {
-            let mut made = TilesEncoder::new(w, h, picture, Box::new(coders.coder()?))?;
-            let (quality, coarse) = pace(&walk);
-            made.set_pace(quality, coarse);
-            encoder = Some(made);
+            encoder = Some(TilesEncoder::new(w, h, picture, Box::new(coders.coder()?))?);
             page = Some(Page::new(w, h));
             damage = None;
         } else if whole {
@@ -585,11 +523,17 @@ fn main() -> Result<(), Error> {
             continue;
         }
         let page = page.as_mut().unwrap();
-        page.draw(update.rects, &out, encoder, &mut passes)?;
+        page.draw(update.rects, &out)?;
         let close = psnr(page.mse(&d.pixels));
         psnrs.push(close);
         let sent = now + encode;
-        let coded_at = encoder.quality();
+        shots.update(
+            sent,
+            &page.canvas,
+            &d.pixels,
+            (page.w, page.canvas.len() / 4 / page.w),
+        )?;
+        let coded_at = walk.quality();
         let size = out.len() + FRAMING;
         let (painted, back) = gateway.frame(sent, &records(&out)?, paint + jitter());
         if update.keyframe {
@@ -621,7 +565,6 @@ fn main() -> Result<(), Error> {
         // The fence comes back; the next update waits for it.
         now = back;
         let moved = walk.fenced(delivery, verdict, base + now);
-        encoder.delivered(delivery.saturating_sub(walk.floor()));
         if let Some(t) = &mut timeline {
             let kind = if update.keyframe {
                 "key"
@@ -645,28 +588,32 @@ fn main() -> Result<(), Error> {
                 latency.as_secs_f64() * 1e3,
             )?;
         }
-        if let Some(moved) = moved {
-            let (quality, coarse) = pace(&walk);
-            encoder.set_pace(quality, coarse);
-            if moved.quality != quality_was {
-                moves += 1;
-                downs += u32::from(moved.quality < quality_was);
-                quality_was = moved.quality;
-            }
+        if let Some(moved) = moved
+            && moved.quality != quality_was
+        {
+            moves += 1;
+            downs += u32::from(moved.quality < quality_was);
+            quality_was = moved.quality;
         }
     }
     // Through the last update's paint, which its own fence can come back before.
     let span = now.max(gateway.painted).as_secs_f64();
     let end = match (&page, &desk) {
-        (Some(page), Some(desk)) => psnr(page.mse(&desk.pixels)),
+        (Some(page), Some(desk)) => {
+            shots.end(
+                &page.canvas,
+                &desk.pixels,
+                (page.w, page.canvas.len() / 4 / page.w),
+            )?;
+            psnr(page.mse(&desk.pixels))
+        }
         _ => 0.0,
     };
     println!(
-        "{{\"capture\":{},\"picture\":\"{}\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"held\":{held},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2},\"encoder_cpu_pct\":{:.1}}}",
+        "{{\"capture\":{},\"picture\":\"{}\",\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{ceiling},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"ticks\":{ticks},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2},\"encoder_cpu_pct\":{:.1}}}",
         json(&name),
         match picture {
             TilesPicture::Held => "tiles",
-            TilesPicture::Progressive => "progressive",
             TilesPicture::Lossless => "lossless",
         },
         f64::from(frames) / span,
@@ -683,16 +630,5 @@ fn main() -> Result<(), Error> {
         pct(&psnrs, 0.1),
         encoder_cpu.as_secs_f64() / span * 100.0,
     );
-    if picture == TilesPicture::Progressive {
-        let Passes {
-            first: [f25, f50, f75],
-            whole,
-            differences,
-            upgrades,
-        } = passes;
-        eprintln!(
-            "progressive tiles, count and bytes: first at 25 {f25:?}, first at 50 {f50:?}, first at 75 {f75:?}, whole {whole:?}, differences {differences:?}, upgrades {upgrades:?}"
-        );
-    }
     Ok(())
 }

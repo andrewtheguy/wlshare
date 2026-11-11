@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufWriter, Read};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -312,6 +312,83 @@ pub fn jitter(jitter: f64) -> impl FnMut() -> Duration {
         seed ^= seed << 17;
         Duration::from_secs_f64((seed >> 11) as f64 / (1u64 << 53) as f64 * jitter / 1e3)
     }
+}
+
+/// The pictures `--shot` asks for: the page as an update left it, a PNG, and
+/// beside it the desktop that update was coded from, `-desk` before the
+/// extension, so what a picture loses can be looked at.
+#[derive(Default)]
+pub struct Shots {
+    /// Each shot's time in the session, soonest first, and its file.
+    at: VecDeque<(Duration, String)>,
+    /// The file of the page as the session's last update left it.
+    end: Option<String>,
+}
+
+impl Shots {
+    /// A `--shot` flag's value: `MS:FILE`, the first update sent at `MS` or
+    /// after, or `end:FILE`, the session's last.
+    pub fn add(&mut self, value: &str) -> Result<(), Error> {
+        let (when, file) = value
+            .split_once(':')
+            .ok_or_else(|| format!("--shot {value}: MS:FILE or end:FILE"))?;
+        if when == "end" {
+            self.end = Some(file.into());
+        } else {
+            let at = Duration::from_secs_f64(millis("--shot", when.into())? / 1e3);
+            self.at.push_back((at, file.into()));
+            self.at.make_contiguous().sort();
+        }
+        Ok(())
+    }
+
+    /// An update sent at `sent` left the page at `canvas`, coded from `desk`:
+    /// both `B, G, R, X` of `size`. Every shot that was due is written.
+    pub fn update(
+        &mut self,
+        sent: Duration,
+        canvas: &[u8],
+        desk: &[u8],
+        size: (usize, usize),
+    ) -> Result<(), Error> {
+        while self.at.front().is_some_and(|(at, _)| *at <= sent) {
+            let (_, file) = self.at.pop_front().unwrap();
+            shot(&file, canvas, desk, size)?;
+        }
+        Ok(())
+    }
+
+    /// The session is over, the page at `canvas` and the desktop at `desk`.
+    pub fn end(&mut self, canvas: &[u8], desk: &[u8], size: (usize, usize)) -> Result<(), Error> {
+        match self.end.take() {
+            Some(file) => shot(&file, canvas, desk, size),
+            None => Ok(()),
+        }
+    }
+}
+
+fn shot(file: &str, canvas: &[u8], desk: &[u8], size: (usize, usize)) -> Result<(), Error> {
+    let beside = match file.rsplit_once('.') {
+        Some((stem, extension)) => format!("{stem}-desk.{extension}"),
+        None => format!("{file}-desk"),
+    };
+    for (file, pixels) in [(file, canvas), (beside.as_str(), desk)] {
+        let mut encoder = png::Encoder::new(
+            BufWriter::new(File::create(file)?),
+            size.0 as u32,
+            size.1 as u32,
+        );
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let rgb: Vec<u8> = pixels[..size.0 * size.1 * 4]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect();
+        encoder.write_header()?.write_image_data(&rgb)?;
+    }
+    Ok(())
 }
 
 pub fn pct(v: &[f64], p: f64) -> f64 {

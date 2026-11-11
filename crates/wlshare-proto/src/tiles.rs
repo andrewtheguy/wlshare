@@ -1,16 +1,14 @@
 //! The tiles encoding: the desktop as lossless PNG tiles where it is still,
 //! and a video stream of its own for each region that moves, for a client on
-//! a link with room to spare — or, on a list that lets the dial walk, every
-//! tile a RemoteFX Progressive tile, still or moving, and no stream, for a
-//! client that wants the walk more than a picture that ends lossless — or,
-//! on a list that asks for it lossless, every tile that changed exact, still
-//! or moving, and no H.264 stream, for a client on a LAN that wants every
-//! picture it is shown exact: what is still a planar bitmap of its pixels,
-//! and what moves a median predictor's residuals.
+//! a link with room to spare — or, on a list that asks for it lossless,
+//! every tile that changed exact, still or moving, and no H.264 stream, for
+//! a client on a LAN that wants every picture it is shown exact: what is
+//! still a planar bitmap of its pixels, and what moves a median predictor's
+//! residuals.
 //!
 //! A private encoding, [`crate::ENCODING_TILES`], beside the video encoding
 //! ([`crate::video`]) rather than in place of it: a client lists one or the
-//! other, and beside it which of the three pictures ([`TilesPicture`]).
+//! other, and beside it which of the two pictures ([`TilesPicture`]).
 //!
 //! A pixel update in this encoding is any number of rectangles of it, drawn in
 //! order, each a rectangle of the desktop whose body begins with a kind
@@ -25,26 +23,14 @@
 //! 4 COPY    u16 x | u16 y        the picture at (x, y) the rectangle's size
 //! 5 CACHED  u16 slot             the tile kept in slot N, drawn at the rectangle
 //! 6 STORE   u16 slot             what the client holds at the rectangle, kept in slot N
-//! 7 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
-//! 8 STILL   u32 length | u8[length]  the still stream's next planar bitmap, of exactly the rectangle's pixels
-//! 9 MEDIAN  u32 length | u8[length]  three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
+//! 7 STILL   u32 length | u8[length]  the still stream's next planar bitmap, of exactly the rectangle's pixels
+//! 8 MEDIAN  u32 length | u8[length]  three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
 //! ```
 //!
 //! - A **PNG** is the desktop's pixels in the rectangle, lossless, 8-bit RGB or
 //!   a palette of it, and the picture there until a later rectangle draws
 //!   over it. It depends on nothing before it. It is every still of a list
-//!   that holds the dial, and nothing else's.
-//! - A **PROGRESSIVE** is the rectangle's tile — one [`TILE`] square on the
-//!   tile grid from the desktop's top-left, cut by the desktop's edge — as a
-//!   RemoteFX Progressive tile block ([`crate::progressive`]): a first pass at
-//!   a stage, which replaces what the client held of the tile or adds to it as
-//!   a difference, or an upgrade, the bits the stage before held back. The
-//!   client decodes every one in order and holds each tile's coefficients from
-//!   one to the next; what it draws is the tile as those coefficients show
-//!   it. It is every rectangle of a list whose dial walks but a COPY, a CACHED
-//!   and a STORE: no PNG or stream. A first pass below the full stage is
-//!   owed its upgrades once the link has room, and the full stage is the
-//!   settled picture, lossy still: nothing is owed a lossless picture.
+//!   that names the encoding alone, and nothing else's.
 //! - A **MEDIAN** is the desktop's pixels in the rectangle, lossless, as
 //!   three planes of a byte a pixel, top row first: green, then red less
 //!   green, then blue less green, each modulo 256. A plane is carried as its
@@ -61,7 +47,7 @@
 //!   bytes, one after another and nothing after them. It depends on nothing
 //!   before it, and is the picture there until a later rectangle draws over
 //!   it. It is every rectangle of a lossless list where the desktop moves
-//!   but a COPY, a CACHED and a STORE: no PNG, progressive tile or H.264
+//!   but a COPY, a CACHED and a STORE: no PNG or H.264
 //!   stream, and nothing is owed, since what the client is shown is already
 //!   exact.
 //! - A **STILL** is the desktop's pixels in the rectangle, lossless, as
@@ -97,8 +83,8 @@
 //!   rectangles before it left it, at the same size from `(x, y)`, which is
 //!   inside the desktop: a scroll, or a window moved, as RFB's CopyRect draws
 //!   one. The two may overlap, and the picture is then as if the source were
-//!   copied out before any of it was drawn. Whatever the source held — lossless,
-//!   a progressive tile's, a stream's picture — the rectangle holds the same, and is owed
+//!   copied out before any of it was drawn. Whatever the source held — lossless
+//!   or a stream's picture — the rectangle holds the same, and is owed
 //!   what the source was owed. It has no body past its header.
 //! - A **STORE** keeps what the client holds at the rectangle, as the
 //!   rectangles before it left it, in slot `slot` of its cache of tiles,
@@ -106,8 +92,8 @@
 //!   and on the tile grid from the desktop's top-left, and the slot one of
 //!   [`CACHE_SLOTS`]. A **CACHED** draws the tile slot `slot` keeps at the
 //!   rectangle, the same size, and the rectangle is owed what that tile was
-//!   owed when it was stored: a tile stored lossless, or at the full stage, is
-//!   settled, and one stored below it is owed the full stage, as a copy's is.
+//!   owed when it was stored: a tile stored lossless is settled, and one
+//!   stored as a stream's picture left it is owed its still, as a copy's is.
 //!   A slot nothing was stored in is fatal to draw from. Neither has a body
 //!   past its header. What is stored, and when, is the server's to decide:
 //!   the cache is the server's record of what the client was shown, kept so
@@ -122,7 +108,7 @@
 //! bytes.
 //!
 //! The cache outlives a picture that starts over — a new size, a
-//! non-incremental request, a list that names another walk — and
+//! non-incremental request, a list that names the other picture — and
 //! the server draws from what it stored before, as long as the list names
 //! the encoding. A client whose cache is gone, or that missed a rectangle,
 //! says so with a [`cache_empty`], and the server stores from nothing again,
@@ -136,8 +122,6 @@
 //! | 0 | U8 | `0xE6` |
 
 use thiserror::Error;
-
-use crate::ENCODING_HELD;
 
 /// A PNG of the rectangle's pixels.
 pub const KIND_PNG: u8 = 0;
@@ -153,15 +137,12 @@ pub const KIND_COPY: u8 = 4;
 pub const KIND_CACHED: u8 = 5;
 /// What the client holds at the rectangle, kept in a cache slot.
 pub const KIND_STORE: u8 = 6;
-/// A RemoteFX Progressive tile block of the rectangle's tile, on a list
-/// whose dial walks.
-pub const KIND_PROGRESSIVE: u8 = 7;
 /// The still stream's next planar bitmap of the rectangle's pixels, on a
 /// lossless list where the desktop is still.
-pub const KIND_STILL: u8 = 8;
+pub const KIND_STILL: u8 = 7;
 /// Three zstd frames of a median predictor's residuals of the rectangle's
 /// pixels, on a lossless list where the desktop moves.
-pub const KIND_MEDIAN: u8 = 9;
+pub const KIND_MEDIAN: u8 = 8;
 
 /// A tile's side: the desktop is in tiles this square from its top-left, and
 /// a STORE or a CACHED rectangle is one of them.
@@ -199,14 +180,9 @@ pub fn parse_cache_empty(buf: &[u8]) -> usize {
 /// [`crate::ENCODING_TILES`]. The dial is the server's alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TilesPicture {
-    /// The encoding alone: every tile a RemoteFX Progressive tile, the
-    /// server's dial the ceiling its first passes are coded toward while the
-    /// link keeps up, walked down while it does not, nothing owed a lossless
-    /// picture.
-    Progressive,
-    /// `WLSD` ([`ENCODING_HELD`]) beside it: every still a lossless PNG and
-    /// each region that moves a stream at the server's dial, whatever the
-    /// link does.
+    /// The encoding alone: every still a lossless PNG and each region that
+    /// moves a stream at the server's dial, held there whatever the link
+    /// does.
     Held,
     /// `WLSL` ([`crate::ENCODING_LOSSLESS`]) beside it: every tile that changed
     /// lossless, still or moving, and no H.264 stream, every still one a
@@ -219,8 +195,7 @@ pub enum TilesPicture {
 impl TilesPicture {
     /// The picture `encodings` asks for, or `None` where the list does not
     /// name the encoding. A list that names the video encoding beside it is
-    /// fatal: they are two pictures, of which a client wants one; and so is
-    /// one that names both `WLSD` and `WLSL`.
+    /// fatal: they are two pictures, of which a client wants one.
     pub fn listed(encodings: &[i32]) -> Result<Option<Self>, TilesListError> {
         let has = |e: i32| encodings.contains(&e);
         if !has(crate::ENCODING_TILES) {
@@ -229,23 +204,19 @@ impl TilesPicture {
         if has(crate::ENCODING_VIDEO) {
             return Err(TilesListError::Both);
         }
-        Ok(Some(
-            match (has(ENCODING_HELD), has(crate::ENCODING_LOSSLESS)) {
-                (false, false) => Self::Progressive,
-                (true, false) => Self::Held,
-                (false, true) => Self::Lossless,
-                (true, true) => return Err(TilesListError::HeldAndLossless),
-            },
-        ))
+        Ok(Some(if has(crate::ENCODING_LOSSLESS) {
+            Self::Lossless
+        } else {
+            Self::Held
+        }))
     }
 
-    /// The list that asks for this picture: the encoding, and `WLSD` where it
-    /// is held or `WLSL` where it is lossless. A client puts it ahead of the
-    /// rest of its list, and lists no video beside it.
+    /// The list that asks for this picture: the encoding, and `WLSL` where it
+    /// is lossless. A client puts it ahead of the rest of its list, and lists
+    /// no video beside it.
     pub fn encodings(self) -> Vec<i32> {
         match self {
-            Self::Progressive => vec![crate::ENCODING_TILES],
-            Self::Held => vec![crate::ENCODING_TILES, ENCODING_HELD],
+            Self::Held => vec![crate::ENCODING_TILES],
             Self::Lossless => vec![crate::ENCODING_TILES, crate::ENCODING_LOSSLESS],
         }
     }
@@ -257,15 +228,13 @@ impl TilesPicture {
 pub enum TilesListError {
     #[error("the list names both the tiles and the video encoding")]
     Both,
-    #[error("the list asks for the tiles both held and lossless")]
-    HeldAndLossless,
 }
 
 /// Why a tiles rectangle's body is not one.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
     #[error(
-        "a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE, STILL and MEDIAN"
+        "a tiles rectangle of kind {0}, which is none of PNG, START, FRAME, END, COPY, CACHED, STORE, STILL and MEDIAN"
     )]
     UnknownKind(u8),
     #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
@@ -295,8 +264,6 @@ pub enum TileHeader {
     /// What the client holds at the rectangle, kept in `slot`; nothing
     /// follows.
     Store { slot: u16 },
-    /// A progressive tile block of `len` bytes follows.
-    Progressive { len: usize },
     /// The still stream's bytes of a planar bitmap, `len` of them, follow.
     Still { len: usize },
     /// Three zstd frames of a median predictor's residuals, `len` bytes,
@@ -308,7 +275,7 @@ impl TileHeader {
     /// The bytes of a header that begins with `kind`, the kind included.
     pub fn len_of(kind: u8) -> Result<usize, TilesParseError> {
         match kind {
-            KIND_PNG | KIND_COPY | KIND_PROGRESSIVE | KIND_STILL | KIND_MEDIAN => Ok(5),
+            KIND_PNG | KIND_COPY | KIND_STILL | KIND_MEDIAN => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
             KIND_CACHED | KIND_STORE => Ok(3),
@@ -329,7 +296,6 @@ impl TileHeader {
             Self::Copy { x, y } => Self::Copy { x, y },
             Self::Cached { slot } => Self::Cached { slot },
             Self::Store { slot } => Self::Store { slot },
-            Self::Progressive { .. } => Self::Progressive { len },
             Self::Still { .. } => Self::Still { len },
             Self::Median { .. } => Self::Median { len },
         }
@@ -347,7 +313,6 @@ impl TileHeader {
             Self::Copy { x, y } => [&[KIND_COPY][..], &x.to_be_bytes(), &y.to_be_bytes()].concat(),
             Self::Cached { slot } => [&[KIND_CACHED][..], &slot.to_be_bytes()].concat(),
             Self::Store { slot } => [&[KIND_STORE][..], &slot.to_be_bytes()].concat(),
-            Self::Progressive { len } => [&[KIND_PROGRESSIVE][..], &length(len)].concat(),
             Self::Still { len } => [&[KIND_STILL][..], &length(len)].concat(),
             Self::Median { len } => [&[KIND_MEDIAN][..], &length(len)].concat(),
         }
@@ -383,7 +348,6 @@ impl TileHeader {
                 stream: buf[1],
                 len: len(2)?,
             },
-            KIND_PROGRESSIVE => Self::Progressive { len: len(1)? },
             KIND_STILL => Self::Still { len: len(1)? },
             KIND_MEDIAN => Self::Median { len: len(1)? },
             KIND_COPY => Self::Copy {

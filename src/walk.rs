@@ -192,8 +192,9 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(4);
 /// than configured, as every adaptive stream's is — WebRTC's quality scaler
 /// hands off to resolution and frame rate at a built-in quantizer threshold,
 /// TigerVNC's AutoSelect has a built-in bottom rung — because past it a finer
-/// quantizer step buys nothing a viewer can see, and a quiet desktop's tiles
-/// are upgraded to the ceiling whatever the walk holds. A ceiling below it
+/// quantizer step buys nothing a viewer can see, and a quiet desktop is
+/// settled at the dial's fine end whatever the walk holds
+/// ([`crate::rfb::video::VideoEncoder::settle`]). A ceiling below it
 /// starts in the frame-rate handoff and gives up frames alone.
 pub const QUALITY_FLOOR: u8 = 20;
 
@@ -283,29 +284,15 @@ pub struct QualityWalk {
 }
 
 impl QualityWalk {
-    /// The walk a tiles picture is paced by, `frame` apart at most: a
-    /// progressive one's walks the dial from wlshare's down by the lag its
-    /// fences show, and the frames once the dial is on its floor; a lossless
-    /// one's has no dial to walk, so its ceiling is the floor and the lag slows its frames alone; a held
-    /// one's hears no lag, only a blocked write.
+    /// The walk a tiles picture is paced by, `frame` apart at most, which
+    /// moves neither picture's dial: a lossless one's has no dial, so its
+    /// ceiling is the floor and the lag its fences show slows its frames
+    /// alone; a held one's, every still lossless and the streams at wlshare's
+    /// dial whatever the link does, hears no lag, only a blocked write.
     pub fn tiles(picture: TilesPicture, frame: Duration) -> Self {
         match picture {
-            TilesPicture::Progressive => Self::new(crate::rfb::QUALITY, frame, true),
             TilesPicture::Lossless => Self::new(QUALITY_FLOOR, frame, true),
             TilesPicture::Held => Self::new(crate::rfb::QUALITY, frame, false),
-        }
-    }
-
-    /// The dial and the coarseness a tiles picture paced by this walk is
-    /// coded at ([`crate::rfb::tiles::TilesEncoder::set_pace`]): the walk's
-    /// where it walks; wlshare's dial and never coarse where the client
-    /// holds it — every still lossless and the streams at the dial whatever
-    /// the link does, the walk slowing the frames alone — and where it is
-    /// lossless, which no dial touches.
-    pub fn tiles_pace(&self, picture: TilesPicture) -> (u8, bool) {
-        match picture {
-            TilesPicture::Progressive => (self.quality, self.slowed()),
-            TilesPicture::Held | TilesPicture::Lossless => (crate::rfb::QUALITY, false),
         }
     }
 
