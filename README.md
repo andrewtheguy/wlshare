@@ -13,7 +13,7 @@ A VNC server for wlroots-based Wayland compositors, built for the
 [zDesk](https://github.com/andrewtheguy/zdesk) gateway. It captures one
 output through wlr-screencopy, serves it over RFB 3.8 with Raw or ZRLE — or, to
 a client that asks, as zDesk does for its browsers, as one H.264 stream whose
-quality and frame rate follow the link, or for a link with room to spare as lossless PNG
+quality and frame rate follow the link, or for a link with room to spare as lossless WebP
 tiles with a video stream for each region that moves, each H.264 by the host's hardware or libx264,
 or, following the link, as RemoteFX Progressive tiles, still or moving (alpha),
 or for a LAN as lossless tiles, still or moving, planar where the desktop is still and by a median predictor where it moves, with no H.264 stream as a Windows host draws under its Lossless policy (experimental) — injects input through the virtual keyboard and pointer protocols,

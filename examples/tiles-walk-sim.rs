@@ -30,7 +30,7 @@
 //! `--timeline` writes every update as a JSON object a line: `t_ms`,
 //! `kind` (`key` for one that crosses the link as a keyframe does, `tick` for
 //! one of the tick alone, what the desktop stopping owes, or `frame`), `quality`,
-//! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its PNGs,
+//! `interval_ms`, `bytes`, `stills` and `streams` (the bodies of its WebPs,
 //! progressive tiles, planar stills and median residuals, and of its streams' frames), `encode_ms`, `cpu_ms` (the
 //! processor time of that encode, on every thread, which `encoder_cpu_pct`
 //! sums), `delivery_ms`,
@@ -127,7 +127,7 @@ const FRAMING: usize = 4 + 13;
 /// An RFB rectangle's header, ahead of each tiles body.
 const RECT_HEADER: usize = 12;
 
-/// The bodies of an update's stills, PNG, progressive, median and the still stream's, and of its streams' frames.
+/// The bodies of an update's stills, WebP, progressive, median and the still stream's, and of its streams' frames.
 fn split(out: &[u8]) -> Result<(usize, usize), Error> {
     let (mut stills, mut streams, mut at) = (0, 0, 0);
     while at < out.len() {
@@ -135,7 +135,7 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len }
+            TileHeader::Webp { len }
             | TileHeader::Progressive { len }
             | TileHeader::Median { len }
             | TileHeader::Still { len } => {
@@ -168,7 +168,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             return Err("a tiles rectangle cut short".into());
         };
         let body = match header {
-            TileHeader::Png { len }
+            TileHeader::Webp { len }
             | TileHeader::Start { len, .. }
             | TileHeader::Frame { len, .. }
             | TileHeader::Progressive { len }
@@ -189,7 +189,7 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
 /// A rectangle: left, top, width, height.
 type Bounds = (u16, u16, u16, u16);
 
-/// What the page draws of the updates: each PNG, each region's
+/// What the page draws of the updates: each WebP, each region's
 /// H.264 by libavcodec, each copy and cached tile, and each progressive tile
 /// as the encoder's model of zDesk's decoder shows it.
 struct Page {
@@ -299,13 +299,11 @@ impl Page {
             let place = (rect.x, rect.y, rect.width, rect.height);
             let (w, h) = (usize::from(rect.width), usize::from(rect.height));
             match body {
-                TileBody::Png(png) => {
-                    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
-                    decoder.set_transformations(png::Transformations::EXPAND);
-                    let mut reader = decoder.read_info()?;
-                    let mut buf = vec![0; reader.output_buffer_size().ok_or("a PNG too large")?];
-                    let info = reader.next_frame(&mut buf)?;
-                    let bgrx = Self::rgb(&buf[..info.buffer_size()]);
+                TileBody::Webp(webp) => {
+                    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(webp))?;
+                    let mut buf = vec![0; decoder.output_buffer_size().ok_or("a WebP too large")?];
+                    decoder.read_image(&mut buf)?;
+                    let bgrx = Self::rgb(&buf);
                     self.paste(place, &bgrx, w);
                 }
                 TileBody::Median(_) => {

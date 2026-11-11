@@ -13,7 +13,7 @@
 //! second is moving, a 4-connected group of at least 5 moving tiles is a
 //! stream's, and every other changed tile is a still, counted by why it is
 //! sent (`fresh`, `warming`, `small`, `stopped`). Every still is coded alone
-//! as a fast PNG, as a held list's.
+//! as a fast PNG, what a held list's stills were until they were WebP.
 //!
 //! Then the session is played through three progressive encoders, one per
 //! first stage — the host's stage of quality 50, of 75, and full — each
@@ -373,7 +373,7 @@ impl Fidelity {
     }
 }
 
-/// The stills' bytes as a held list's PNGs.
+/// The stills' bytes as the fast PNGs a held list's were.
 #[derive(Default, Clone, Copy)]
 struct Classic {
     tiles: u64,

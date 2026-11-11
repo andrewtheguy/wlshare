@@ -306,7 +306,7 @@ client's own deflate stream, or Raw for a client whose list names none of
 ZRLE, the video and tiles — or, for a client that
 lists the video encoding, one rectangle of the whole framebuffer
 ([below](#the-video-encoding)), and for one that lists the tiles encoding
-its PNG tiles and region streams ([below](#the-tiles-encoding)).
+its WebP tiles and region streams ([below](#the-tiles-encoding)).
 
 With Fence negotiated, every pixel update ends with a fence the client echoes,
 and the next pixel round waits for the echo. Cursor, audio and geometry
@@ -637,7 +637,7 @@ is held past 500 ms — zDesk's `FENCE_HOLD_LIMIT`, its paint window's grace.
 ## The tiles encoding
 
 A second private picture encoding beside `WLSV`, `WLST` (`0x574c5354`), for
-the zDesk gateway on a link with room to spare: the desktop as lossless PNG
+the zDesk gateway on a link with room to spare: the desktop as lossless WebP
 tiles where it is still, and a video stream of its own for each region that
 moves, H.264 — the host's hardware, or libx264. It is a choice the gateway makes per target, not a replacement:
 `WLSV`, one stream over the whole desktop walked on the link, stays the
@@ -673,7 +673,7 @@ order, each a rectangle of the desktop whose body begins with a kind:
 
 ```text
 u8 kind
-0 PNG     u32 length | u8[length]                          a PNG of exactly the rectangle's pixels
+0 WEBP    u32 length | u8[length]                          a lossless WebP of exactly the rectangle's pixels
 1 START   u8 stream | u32 length | u8[length]              a region stream's first frame
 2 FRAME   u8 stream | u32 length | u8[length]              the stream's next frame
 3 END     u8 stream                                        the stream is over
@@ -685,8 +685,8 @@ u8 kind
 9 MEDIAN  u32 length | u8[length]                          three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
 ```
 
-A PNG is the desktop's pixels there, lossless, 8-bit RGB or a palette of it,
-depending on nothing before it; it is every still of a list that holds its
+A WEBP is the desktop's pixels there as a WebP file, lossless (`VP8L`) and
+with no alpha, depending on nothing before it; it is every still of a list that holds its
 dial, and sent on no other. A START begins a stream on its id over its
 rectangle, an H.264 keyframe of that size rounded up to even sides, a picture
 a client cuts to the rectangle from its top-left; each FRAME on the id is the
@@ -740,7 +740,7 @@ exactly the rectangle's width times its height bytes, one after another and
 nothing after them. It depends on nothing before it, and is every rectangle
 of a lossless list where the desktop moves but a COPY, a CACHED and a
 STORE.
-A PNG over a stream's rectangle only
+A WebP over a stream's rectangle only
 ever follows its END, so drawing every rectangle where it says, in order, is
 the picture.
 
@@ -749,7 +749,7 @@ the picture.
   lock into a picture the encoder keeps, and compared there tile by tile with
   what the client holds, so a compositor redrawing what it shows sends
   nothing. A tile that changed and that no stream carries goes as a still —
-  on a held list a PNG, on a lossless one a planar bitmap or, where the
+  on a held list a WebP, on a lossless one a planar bitmap or, where the
   tile moves, a median predictor's residuals, on a walked one
   each tile progressive, below — a row's
   run of them, cut where the tile rows meet into bands of at most 64 rows,
@@ -766,13 +766,13 @@ the picture.
   the settle pays at the link's pace, below, the cache's from their slots —
   the stills the update carried among them, which the frame draws over and
   which filled their slots. A whole desktop that starts over within the
-  budget is lossless at once as before; one past it — a page of text at
-  1080p is 0.24 MB — is lossy for the second its region lives and then
-  settles. The budget is the PNG a frame may carry while a change grows
-  under it, before the churn calls it moving: 128 KiB is the least of the
-  three measured that flattens what the link sees, at the cost of that page
-  of text. The first frames of a video are the same change: they went as
-  the desktop whole in PNG until the churn said moving, 1.9 MB an update on
+  budget is lossless at once as before — a page of text at 1080p is 96 kB —
+  and one past it, that page at 2880x1800 or 4K, is lossy for the second
+  its region lives and then settles. The budget is the stills a frame may
+  carry while a change grows under it, before the churn calls it moving:
+  128 KiB is the least of the three measured, while a still was a PNG, that
+  flattens what the link sees. The first frames of a video are the same change: they went as
+  the desktop whole in stills until the churn said moving, 1.9 MB an update on
   a 1080p video frame against the 0.2 of its keyframe, 15 times the rate its
   stream then carried, the one spike a link carrying the stream saw, and now
   they are its region from the first frame, the frames after it the
@@ -783,9 +783,13 @@ the picture.
   where the coder refuses the stream or every stream is taken. Motion
   streamed its first picture and sent every tile as a still after it, which
   here is the point rather than the waste: fewer bytes at once, not fewer
-  bytes. The PNG is the gateway's tile coder: a palette
-  unfiltered where the pixels have at most 256 colours, RGB with each row's
-  filter chosen otherwise, at `png`'s fast compression.
+  bytes. The WebP is libwebp's (`src/rfb/webp.rs`), compiled from
+  `libwebp-sys`'s copy of its source and linked in, at its lossless preset
+  1, read from the encoder's picture in place: over a session at the desk
+  43% of the bytes of the fast PNG the stills were before, for a third more
+  of the encoder's time, and three quarters of the bytes of preset 0 for a
+  fifth more; the presets past it are a tenth fewer at most for a tenth to a third
+  more again ([measured](tiles-performance.md#webp-stills-and-the-eased-settle)).
 - **What moved is a copy.** Where a read changed enough tiles that no
   stream carries and that have not been changing in place — 4, none of them
   changed in 2 of the last 8 tenths, unless a copy was found within those
@@ -839,7 +843,7 @@ the picture.
   progressive tile stored below the full stage is owed it, as a copy of one
   is; once its upgrades settle it, it is stored again in its slot, settled.
   A flat tile is never stored:
-  its PNG is a few bytes and a slot is worth more. The client keeps only
+  its WebP is a few bytes and a slot is worth more. The client keeps only
   what it is told to and draws only what it is told, so the record decides
   everything and the two agree by construction. A picture that starts over
   keeps the record, as the client keeps its slots, so the whole picture is a
@@ -856,7 +860,7 @@ the picture.
   ([measured](tiles-performance.md#the-cache)).
 - **On a held list, what moves is video.** Motion's rules: a tile is moving when it changed in
   4 of the last 8 tenths of a second; moving tiles join into 4-connected
-  components, one under 5 tiles' area of the layout is left to PNG — 5 at
+  components, one under 5 tiles' area of the layout is left to WebP — 5 at
   scale 1, 20 at 2, `ceil(5 × scale²)` and never fewer than 5, the scale the
   session's output is drawn at, so a spinner or a progress bar drawn at 2,
   four times the tiles it covers at 1, is no more a video for it — boxes merge unless the merged
@@ -916,7 +920,7 @@ the picture.
   slowed.
 
 - **On a walked list, every tile progressive (alpha).** A list whose dial walks
-  gets no PNG or stream: every tile that changed, still or moving, is a
+  gets no WebP or stream: every tile that changed, still or moving, is a
   PROGRESSIVE, as a Windows host draws its desktop where it has no H.264,
   and copies and the cache as above. It has no stream by design: the page
   draws it with the module that composes an RDP host's pipeline alone, no
@@ -955,7 +959,7 @@ the picture.
   ([measured](tiles-performance.md#progressive-tiles)).
 
 - **On a lossless list, every tile exact (experimental).** A list with
-  `WLSL` gets no PNG, progressive tile or H.264 stream: every tile that
+  `WLSL` gets no WebP, progressive tile or H.264 stream: every tile that
   changed, still or moving, goes as a still, a row's run of them one body, a
   STILL where its tiles are still and a MEDIAN where they move, by the churn
   a held list lays its regions out by, and copies and the cache as above, as
@@ -986,7 +990,7 @@ the picture.
   stream is state both ends keep, so it starts over with the picture, and
   with a client's `CacheEmpty`, which a page that cannot read a STILL sends
   as one that missed a rectangle does. A still or a scroll is then about a
-  ninth of a PNG's bytes or less ([measured](tiles-performance.md#lossless-tiles)).
+  ninth of a fast PNG's bytes or less, what a held list's stills were then ([measured](tiles-performance.md#lossless-tiles)).
   Where it moves, `src/rfb/median.rs` is the coder. Most of what a codec
   built for lossless pictures takes off a moving one is its predictor, and
   planar's is the pixel above alone, over red, green and blue apart; this one
@@ -1071,7 +1075,7 @@ the picture.
   since a driver's macroblocks are its own; the hardware's passes with a
   word on a machine with no encoder. ffmpeg's `trace_headers` reads the
   daemon's headers back field by field.
-- **It settles.** Every tile a stream carried is owed a PNG, and every
+- **It settles.** Every tile a stream carried is owed a WebP, and every
   progressive tile below the full stage its next stage's upgrade, once it
   has been still for half a second. What
   is owed is looked for every quarter of a
@@ -1079,19 +1083,29 @@ the picture.
   other: the 320 tiles owed longest at most, as runs along a row, the
   coarsest stage first, then the oldest, until the look's bytes have gone —
   an upgrade is no change, so a tile's next stage is ready at once. On a
-  held list the look's bytes keep to the link's pace: the most the picture
-  was found sending over any one second since something was last owed — a
-  region's frames, a picture's stills, the looks themselves — the look's
-  share of its interval less what the reads sent in it, from 32 KiB to
-  128 KiB, and the looks come sooner than a quarter of a second, down to
+  held list the look's bytes keep to the link's pace and ease in to it. The
+  pace is the most the desktop's own changes were found sending over any
+  one second since something was last owed — a region's frames, a
+  picture's stills, and none of the looks, which would raise the rate they
+  keep to. The settle's rate rises to it over the second after it began
+  paying, from nothing, and starts over once a look finds nothing ready to
+  pay; a look's bytes are that rate's share of its interval less what the
+  reads sent in it, at most 128 KiB and at least 32 KiB a quarter of a
+  second, and the looks come sooner than a quarter of a second, down to
   every 50 ms, where the pace has 128 KiB going in less than that; never
-  one on the heels of the last, however much is owed. So a desktop that
-  stops settles at the rate its motion had of the link, and never faster,
-  where a settle at whatever the link would take was a burst of 256 KiB a
-  round trip until it was done, and a change that went as video settles at
-  the rate its region set; the link sees no more than it did a
-  moment before, and what the picture pays for that is the time to
-  lossless ([measured](tiles-performance.md#the-settles-pace)). On a
+  one on the heels of the last, however much is owed. A run is cut to what
+  is left of the look's bytes, half of it a piece at most: each tile is
+  taken to cost what its pixels that differ from the one to their left
+  cost in the piece before, and one the cache keeps its draw, so a row of
+  a photograph, which is more than a look's bytes, is not sent whole. So a
+  desktop that stops settles at no more than the rate its motion had of
+  the link, with no step up to it, where a settle at whatever the link
+  would take was a burst of 256 KiB a round trip until it was done, and
+  one at the pace from its first look, a row at a time, was 33 Mbit/s for
+  a quarter of a second after a 1080p video's 20 and is now 12 at its
+  most, its first look 15 kB where it was 191; what the picture pays for
+  that is the time to lossless, about a second more
+  ([measured](tiles-performance.md#webp-stills-and-the-eased-settle)). On a
   walked list the look's bytes follow the walk: while
   the walk is at the ceiling those are 256 KiB. Below it, where the link is
   short of bytes, they are 8 KiB while the desktop moves; once it has been

@@ -39,7 +39,7 @@
 //! in one pass over the capture: reading it, `zstd`, and the decoders that
 //! check the result all run outside. libx264's streams, `WLSV`'s and the
 //! regions', have the daemon's threads, the machine's less two at most 8, and
-//! the regions are coded one after another with the PNGs, so the CPU time is
+//! the regions are coded one after another with the WebPs, so the CPU time is
 //! the measure and not the wall clock. The hardware's cost the processor
 //! the conversion and the upload, which is what is counted of them. As every
 //! measurement of the encoder, run it on an idle machine and alone.
@@ -47,7 +47,7 @@
 //! **Checked**: both pictures are decoded as a page would — `WLSV` and each
 //! region by a libavcodec software H.264 decoder of its own, its picture
 //! turned back from BT.601 at studio swing by `yuv`; the tiles' update parsed
-//! by the client's parser, a PNG by the `png` crate, a still by the tests'
+//! by the client's parser, a WebP by `image-webp`, a still by the tests'
 //! planar reader (`src/rfb/planar_decoder.rs`, the still stream by
 //! ruzstd-decompress's `FrameDecoder` a block at a time, the fork handing out
 //! its newest bytes as soon as their blocks are decoded) and a median
@@ -63,7 +63,7 @@
 //! (`wlsv`, `tiles` or `lossless`), `quality` (the dial it was coded at),
 //! `frames`, `seconds`; its CPU time all of it, `cpu_ms`, the
 //! tiles' ticks and tail included, and the time a frame took the frames'
-//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `png`, `median`
+//! alone, `frame_ms` and `p95_ms`; `bytes`, and of them `webp`, `median`
 //! (the predictor's residuals), `still` (the still stream's) and
 //! `video` (the regions' H.264, or `WLSV`'s), the tiles' `copies`, which
 //! carry no payload, `streams` started and
@@ -74,10 +74,10 @@
 //! tick and its largest, `tail_tick_ms` and `tail_tick_bytes`. `--frames`
 //! writes one object per frame to FILE: `capture`, `frame`, `ms`, `changed`,
 //! `wlsv_us`, `wlsv_bytes` (`null` with `--tiles-only`), `tiles_us`,
-//! `tiles_bytes`, `png`, `median`, `still`, `h264`, `streams` (live), `copies`, `tick_us` and
+//! `tiles_bytes`, `webp`, `median`, `still`, `h264`, `streams` (live), `copies`, `tick_us` and
 //! `tick_bytes`, a tick's what the ticks since the frame before cost; and
 //! after the last frame one object per tick of the tail, `tick` true, with
-//! `ms`, `tick_us`, `tick_bytes`, `png` and `h264`.
+//! `ms`, `tick_us`, `tick_bytes`, `webp` and `h264`.
 //!
 //! **`check`** holds the tiles to what a picture that stops owes, on any
 //! capture and on the `still` ones above all, which are for this and no
@@ -315,7 +315,7 @@ impl Drop for Source {
 /// less the rectangles' headers.
 #[derive(Default)]
 struct Sent {
-    png: u64,
+    webp: u64,
     /// The median predictor's residuals.
     median: u64,
     /// The still stream's bytes.
@@ -331,11 +331,11 @@ struct Sent {
 
 impl Sent {
     fn bytes(&self) -> u64 {
-        self.png + self.median + self.still + self.video
+        self.webp + self.median + self.still + self.video
     }
 
     fn add(&mut self, other: &Sent) {
-        self.png += other.png;
+        self.webp += other.webp;
         self.median += other.median;
         self.still += other.still;
         self.video += other.video;
@@ -412,22 +412,23 @@ impl Page {
                 usize::from(rect.height),
             );
             match body {
-                TileBody::Png(png) => {
-                    sent.png += png.len() as u64;
-                    let mut decoder = png::Decoder::new(std::io::Cursor::new(&png));
-                    decoder.set_transformations(png::Transformations::EXPAND);
-                    let mut reader = decoder.read_info()?;
-                    let mut rgb = vec![0; reader.output_buffer_size().ok_or("a PNG too large")?];
-                    let info = reader.next_frame(&mut rgb)?;
-                    if (info.width as usize, info.height as usize, info.color_type)
-                        != (w, h, png::ColorType::Rgb)
+                TileBody::Webp(webp) => {
+                    sent.webp += webp.len() as u64;
+                    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(&webp))?;
+                    let (pw, ph) = decoder.dimensions();
+                    if (pw as usize, ph as usize) != (w, h)
+                        || decoder.is_lossy()
+                        || decoder.has_alpha()
                     {
                         return Err(format!(
-                            "a PNG of {}x{} {:?} for {w}x{h}",
-                            info.width, info.height, info.color_type
+                            "a WebP of {pw}x{ph}, lossy {}, alpha {}, for {w}x{h}",
+                            decoder.is_lossy(),
+                            decoder.has_alpha()
                         )
                         .into());
                     }
+                    let mut rgb = vec![0; decoder.output_buffer_size().ok_or("a WebP too large")?];
+                    decoder.read_image(&mut rgb)?;
                     self.paste((x, y, w, h), &rgb);
                 }
                 TileBody::Start { stream, frame } => {
@@ -908,7 +909,7 @@ fn bench(
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"png\":{},\"median\":{},\"still\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
+                "{{\"capture\":{},\"frame\":{},\"ms\":{},\"changed\":{},\"wlsv_us\":{},\"wlsv_bytes\":{},\"tiles_us\":{},\"tiles_bytes\":{},\"webp\":{},\"median\":{},\"still\":{},\"h264\":{},\"streams\":{},\"copies\":{},\"cached\":{},\"tick_us\":{},\"tick_bytes\":{}}}",
                 json(&name),
                 frame.index,
                 (now - first_at.expect("set")).as_millis(),
@@ -918,7 +919,7 @@ fn bench(
                 wlsv_spent.map_or_else(|| "null".to_owned(), |(_, bytes)| bytes.to_string()),
                 tiles_cpu.as_micros(),
                 sent.bytes(),
-                sent.png,
+                sent.webp,
                 sent.median,
                 sent.still,
                 sent.video,
@@ -950,12 +951,12 @@ fn bench(
         if let Some(frames) = frames.as_deref_mut() {
             writeln!(
                 frames,
-                "{{\"capture\":{},\"tick\":true,\"ms\":{},\"tick_us\":{},\"tick_bytes\":{},\"png\":{},\"h264\":{}}}",
+                "{{\"capture\":{},\"tick\":true,\"ms\":{},\"tick_us\":{},\"tick_bytes\":{},\"webp\":{},\"h264\":{}}}",
                 json(&name),
                 (at - first_at.expect("set")).as_millis(),
                 cost.as_micros(),
                 sent.bytes(),
-                sent.png,
+                sent.webp,
                 sent.video,
             )?;
         }
@@ -1116,7 +1117,7 @@ fn row(
         tally.mse / tally.frames as f64
     };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"png\":{},\"median\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"webp\":{},\"median\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         quality,
@@ -1124,7 +1125,7 @@ fn row(
         ms(tally.cpu),
         ms(p95),
         tally.sent.bytes(),
-        tally.sent.png,
+        tally.sent.webp,
         tally.sent.median,
         tally.sent.still,
         tally.sent.video,

@@ -16,8 +16,8 @@
 //! `--size` can be sent as a SetDesktopSize before the first picture,
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
-//! client's parser; a PNG, a progressive tile (all a list whose dial walks
-//! is sent; `--held` holds it, for PNGs and streams), a still and a median
+//! client's parser; a WebP, a progressive tile (all a list whose dial walks
+//! is sent; `--held` holds it, for WebPs and streams), a still and a median
 //! predictor's residuals (all a lossless list is sent, `--lossless`), a copy
 //! and a region's START are counted, a copy's source and a progressive
 //! tile's tile checked, a still or a median body read back whole at its
@@ -64,7 +64,7 @@ struct Args {
     seconds: u64,
     streams: Option<String>,
     keys: bool,
-    /// The picture asked for: progressive tiles unless `--held` (PNGs and
+    /// The picture asked for: progressive tiles unless `--held` (WebPs and
     /// streams) or `--lossless` (planar stills, what moves a median
     /// predictor's residuals).
     picture: TilesPicture,
@@ -210,8 +210,8 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (mut stills, mut still_bytes, mut still_stream) =
         (0u64, 0u64, planar_decoder::StillReader::default());
     let (
-        mut pngs,
-        mut png_bytes,
+        mut webps,
+        mut webp_bytes,
         mut copies,
         mut cached,
         mut starts,
@@ -278,9 +278,9 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     for rect in rects {
                         let place = (rect.x, rect.y, rect.width, rect.height);
                         match rect.body {
-                            RectBody::Tiles(TileBody::Png(png)) => {
-                                pngs += 1;
-                                png_bytes += png.len() as u64;
+                            RectBody::Tiles(TileBody::Webp(webp)) => {
+                                webps += 1;
+                                webp_bytes += webp.len() as u64;
                             }
                             RectBody::Tiles(TileBody::Copy { x, y }) => {
                                 if u32::from(x) + u32::from(rect.width) > u32::from(width)
@@ -405,7 +405,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         if elapsed > second {
             second = elapsed;
             eprintln!(
-                "tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
+                "tiles-sink: {second}s {updates} updates, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
                 live.len()
             );
         }
@@ -423,7 +423,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     eprintln!(
-        "tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
+        "tiles-sink: done, {updates} updates, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
     );
 
     Ok(())
