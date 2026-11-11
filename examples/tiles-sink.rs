@@ -3,7 +3,7 @@
 //! gateway, the way `video-sink` checks the video encoding.
 //!
 //! ```text
-//! tiles-sink ADDR --size WxH [--lossless]
+//! tiles-sink ADDR --size WxH [--held | --lossless]
 //!            [--seconds N] [--streams DIR] [--keys]
 //! ```
 //!
@@ -16,10 +16,12 @@
 //! `--size` can be sent as a SetDesktopSize before the first picture,
 //! Cursor because the daemon requires it, and the protocol version, whose
 //! answer is read before anything else and must be this build's. Every rectangle is parsed by the
-//! client's parser; a PNG, a still and a median
+//! client's parser; a PNG, a progressive tile (all a list whose dial walks
+//! is sent; `--held` holds it, for PNGs and streams), a still and a median
 //! predictor's residuals (all a lossless list is sent, `--lossless`), a copy
-//! and a region's START are counted, a copy's source checked, a still or a
-//! median body read back whole at its rectangle's size, and with
+//! and a region's START are counted, a copy's source and a progressive
+//! tile's tile checked, a still or a median body read back whole at its
+//! rectangle's size, and with
 //! `--streams` each region's stream is written to
 //! `DIR/stream-<n>-<WxH>.h264` as it came, Annex B access units one after
 //! another, for a decoder that is not this repository's to read back and
@@ -62,8 +64,9 @@ struct Args {
     seconds: u64,
     streams: Option<String>,
     keys: bool,
-    /// The picture asked for: PNGs and streams unless `--lossless` (planar
-    /// stills, what moves a median predictor's residuals).
+    /// The picture asked for: progressive tiles unless `--held` (PNGs and
+    /// streams) or `--lossless` (planar stills, what moves a median
+    /// predictor's residuals).
     picture: TilesPicture,
 }
 
@@ -98,16 +101,14 @@ fn size(s: &str) -> Result<(u16, u16), String> {
 
 fn parse_args() -> Result<Args, String> {
     let mut args = std::env::args().skip(1);
-    let addr = args.next().ok_or(
-        "usage: tiles-sink ADDR --size WxH [--lossless] [--seconds N] [--streams DIR] [--keys]",
-    )?;
+    let addr = args.next().ok_or("usage: tiles-sink ADDR --size WxH [--held | --lossless] [--seconds N] [--streams DIR] [--keys]")?;
     let mut parsed = Args {
         addr,
         size: (0, 0),
         seconds: 10,
         streams: None,
         keys: false,
-        picture: TilesPicture::Held,
+        picture: TilesPicture::Progressive,
     };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} takes a value"));
@@ -118,6 +119,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--streams" => parsed.streams = Some(value()?),
             "--keys" => parsed.keys = true,
+            "--held" => parsed.picture = TilesPicture::Held,
             "--lossless" => parsed.picture = TilesPicture::Lossless,
             other => return Err(format!("{other}: unknown flag")),
         }
@@ -203,6 +205,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .then(|| BufReader::new(tokio::io::stdin()).lines());
     let mut buf = Vec::with_capacity(1 << 20);
     let mut chunk = vec![0u8; 1 << 16];
+    let (mut progressives, mut progressive_bytes) = (0u64, 0u64);
     let (mut medians, mut median_bytes) = (0u64, 0u64);
     let (mut stills, mut still_bytes, mut still_stream) =
         (0u64, 0u64, planar_decoder::StillReader::default());
@@ -288,6 +291,21 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 copies += 1;
                             }
                             RectBody::Tiles(TileBody::Cached { .. }) => cached += 1,
+                            RectBody::Tiles(TileBody::Progressive(block)) => {
+                                let cell = wlshare_proto::progressive::tile_of(&block)
+                                    .ok_or("a progressive body that is no tile block")?;
+                                if (u32::from(cell.0) * 64, u32::from(cell.1) * 64)
+                                    != (u32::from(rect.x), u32::from(rect.y))
+                                {
+                                    return Err(format!(
+                                        "a progressive tile {cell:?} at {},{}",
+                                        rect.x, rect.y
+                                    )
+                                    .into());
+                                }
+                                progressives += 1;
+                                progressive_bytes += block.len() as u64;
+                            }
                             RectBody::Tiles(TileBody::Median(body)) => {
                                 unpredicted
                                     .next()
@@ -387,7 +405,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         if elapsed > second {
             second = elapsed;
             eprintln!(
-                "tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
+                "tiles-sink: {second}s {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
                 live.len()
             );
         }
@@ -405,7 +423,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     eprintln!(
-        "tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
+        "tiles-sink: done, {updates} updates, {pngs} PNGs {png_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
     );
 
     Ok(())

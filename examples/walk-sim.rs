@@ -6,15 +6,13 @@
 //!
 //! ```text
 //! walk-sim CAPTURE [CAPTURE...] [--link MBPS[,MBPS@SECS...]] [--rtt MS]
-//!          [--hop MS] [--paint MS] [--jitter MS] [--libx264] [--444]
+//!          [--hop MS] [--paint MS] [--jitter MS] [--libx264]
 //!          [--encode MS] [--timeline FILE] [--stream FILE]
 //!          [--shot MS:FILE | end:FILE]...
 //! ```
 //!
 //! The stream is the daemon's H.264 ([`h264`]): the hardware's where the
-//! machine has a VA-API encoder, unless `--libx264` takes libx264; `--444`
-//! codes it at 4:4:4, High 4:4:4 Predictive, which is libx264's on every
-//! machine. `--link`
+//! machine has a VA-API encoder, unless `--libx264` takes libx264. `--link`
 //! is the browser's link in Mbit/s, 10 by default, and the rate it changes to
 //! from each `@` second on; `--rtt` its round trip, 40 ms; `--hop` the round
 //! trip between the session and the gateway, 1 ms; `--paint` how long the
@@ -51,8 +49,8 @@
 //! (`moves`, and `downs` of them toward coarser or fewer) and
 //! the processor time the encoder took as a share of one core over the
 //! session (`encoder_cpu_pct`), beside what it was run with: `capture`,
-//! `picture` (`video`), `chroma` (`420` or `444`), `encoder`, `link` (each
-//! rate in Mbit/s and the second it starts at), `rtt_ms` and `ceiling`.
+//! `picture` (`video`), `encoder`, `link` (each rate in Mbit/s and the second
+//! it starts at), `rtt_ms` and `ceiling`.
 //! Every frame is decoded as a page decodes it, by libavcodec's software
 //! decoder ([`decode`]), its picture turned back from BT.601 at studio swing
 //! by `yuv`, outside the time counted: `psnr_mean_db` and `psnr_p10_db` are
@@ -72,8 +70,8 @@ use std::time::{Duration, Instant};
 
 use yuv::{YuvPlanarImage, YuvRange, YuvStandardMatrix};
 
+use crate::rfb::Rect;
 use crate::rfb::video::{SETTLE_AFTER, VideoEncoder};
-use crate::rfb::{Chroma, Rect};
 use crate::walk::QualityWalk;
 use sim::{Desk, Error, Gateway, Shots, Source, json, millis, pct};
 
@@ -115,7 +113,6 @@ fn process_cpu() -> Duration {
 /// software decoder and turned back to `B, G, R, X`, cut to the desktop.
 struct Page {
     decoder: decode::Decoder,
-    chroma: Chroma,
     planes: Vec<u8>,
     scratch: Vec<u8>,
     size: (usize, usize),
@@ -123,10 +120,9 @@ struct Page {
 }
 
 impl Page {
-    fn new(chroma: Chroma) -> Result<Self, Error> {
+    fn new() -> Result<Self, Error> {
         Ok(Self {
             decoder: decode::Decoder::new()?,
-            chroma,
             planes: Vec::new(),
             scratch: Vec::new(),
             size: (0, 0),
@@ -136,18 +132,15 @@ impl Page {
 
     /// Decode `unit`, a frame of a `w`×`h` desktop, and draw it.
     fn draw(&mut self, unit: &[u8], (w, h): (usize, usize)) -> Result<(), Error> {
-        let full = self.chroma == Chroma::Yuv444;
-        let picture = if full {
-            self.decoder.decode_444(unit, &mut self.planes)
-        } else {
-            self.decoder.decode(unit, &mut self.planes)
-        }?
-        .ok_or("a frame decoded to no picture")?;
+        let picture = self
+            .decoder
+            .decode(unit, &mut self.planes)?
+            .ok_or("a frame decoded to no picture")?;
         let (pw, ph) = (picture.width, picture.height);
         if (pw, ph) != (w.next_multiple_of(2), h.next_multiple_of(2)) {
             return Err(format!("a {w}x{h} desktop decoded as {pw}x{ph}").into());
         }
-        let (cw, ch) = if full { (pw, ph) } else { picture.chroma() };
+        let (cw, ch) = picture.chroma();
         let (luma, chroma) = self.planes.split_at(pw * ph);
         let (u, v) = chroma.split_at(cw * ch);
         let planar = YuvPlanarImage {
@@ -161,12 +154,7 @@ impl Page {
             height: ph as u32,
         };
         self.scratch.resize(pw * ph * 4, 0);
-        let back = if full {
-            yuv::yuv444_to_bgra
-        } else {
-            yuv::yuv420_to_bgra
-        };
-        back(
+        yuv::yuv420_to_bgra(
             &planar,
             &mut self.scratch,
             (pw * 4) as u32,
@@ -210,7 +198,6 @@ impl Page {
 
 fn main() -> Result<(), Error> {
     let mut paths = Vec::new();
-    let mut chroma = Chroma::Yuv420;
     let mut rates = vec![(Duration::ZERO, 10e6 / 8.0)];
     let (mut hop, mut libx264, mut encode_ms) = (1.0, false, None::<f64>);
     let (mut rtt, mut paint, mut jitter) = (40.0, 5.0, 0.0);
@@ -225,7 +212,6 @@ fn main() -> Result<(), Error> {
             "--rtt" => rtt = millis(&arg, value()?)?,
             "--hop" => hop = millis(&arg, value()?)?,
             "--libx264" => libx264 = true,
-            "--444" => chroma = Chroma::Yuv444,
             "--encode" => encode_ms = Some(millis(&arg, value()?)?),
             "--paint" => paint = millis(&arg, value()?)?,
             "--jitter" => jitter = millis(&arg, value()?)?,
@@ -276,7 +262,7 @@ fn main() -> Result<(), Error> {
     let mut quiet = false;
     let (mut settles, mut settle_bytes) = (0u32, 0usize);
     let mut cpu = Duration::ZERO;
-    let mut page = Page::new(chroma)?;
+    let mut page = Page::new()?;
     let mut psnrs = Vec::new();
     let mut end = 0.0;
 
@@ -338,7 +324,7 @@ fn main() -> Result<(), Error> {
         let (w, h) = d.size;
         if encoder.as_ref().is_none_or(|e| e.size() != d.size) {
             let mut coder = h264.coder().map_err(|e| format!("{e:#}"))?;
-            encoder = Some(VideoEncoder::new(&mut coder, w, h, chroma)?);
+            encoder = Some(VideoEncoder::new(&mut coder, w, h)?);
             asked_key = true;
             damage = None;
         }
@@ -452,16 +438,9 @@ fn main() -> Result<(), Error> {
     // Through the last frame's paint, which its own fence can come back before.
     let span = now.max(gateway.painted).as_secs_f64();
     println!(
-        "{{\"capture\":{},\"picture\":\"video\",\"chroma\":\"{}\",\"encoder\":{},\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"settles\":{settles},\"settle_bytes\":{settle_bytes},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2},\"encoder_cpu_pct\":{:.1}}}",
+        "{{\"capture\":{},\"picture\":\"video\",\"encoder\":{},\"link\":{link_json},\"rtt_ms\":{rtt},\"ceiling\":{},\"frames\":{frames},\"motion_frames\":{motion_frames},\"keyframes\":{keyframes},\"settles\":{settles},\"settle_bytes\":{settle_bytes},\"fps\":{},\"motion_q_mean\":{},\"motion_q_p10\":{},\"shown_mean_ms\":{},\"shown_p50_ms\":{},\"shown_p95_ms\":{},\"shown_max_ms\":{},\"delivery_p50_ms\":{},\"delivery_p95_ms\":{},\"mbps\":{},\"moves\":{moves},\"downs\":{downs},\"psnr_mean_db\":{:.2},\"psnr_p10_db\":{:.2},\"psnr_end_db\":{end:.2},\"encoder_cpu_pct\":{:.1}}}",
         json(&name),
-        match chroma {
-            Chroma::Yuv420 => "420",
-            Chroma::Yuv444 => "444",
-        },
-        json(match chroma {
-            Chroma::Yuv420 => h264.name(),
-            Chroma::Yuv444 => "libx264",
-        }),
+        json(h264.name()),
         rfb::QUALITY,
         f64::from(frames) / span,
         qualities.iter().sum::<f64>() / qualities.len().max(1) as f64,

@@ -71,7 +71,7 @@ pub fn find() -> Option<Encoder> {
                 device: node.clone(),
                 low_power,
             };
-            match encoder.try_frames(crate::rfb::Chroma::Yuv420) {
+            match encoder.try_frames() {
                 Ok(()) => {
                     info!(
                         "hardware H.264: {} through VA-API, its {} encoder",

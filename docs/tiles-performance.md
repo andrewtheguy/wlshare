@@ -13,11 +13,7 @@ tiles](#progressive-tiles) is the one wlshare sent until 2026-10-28, zDesk's
 Adaptive tiles: every still a lossy WebP at the dial, and a region that
 moves an H.264 stream walked with it. Progressive tiles replaced it, and
 its figures stay as what they were measured against; motion-bench's
-`--walk-at`, which coded it, went with it. The progressive tiles went in
-their turn on 2026-11-11, protocol 13: the picture that follows a link is
-`WLSV`'s alone, at 4:2:0 or 4:4:4, and a list that names the tiles gets
-them held or lossless ([below](#the-progressive-tiles-replaced)). Every
-section here about a walked list is of a picture wlshare no longer sends.
+`--walk-at`, which coded it, went with it.
 
 `WLSV` in every figure here is the VP9 stream it was until 2026-10-29,
 4:4:4 or 4:2:0, its dial walked on the link, which H.264 replaced, its
@@ -1431,24 +1427,3 @@ At 1920×1080, the milliseconds a frame with their 95th percentile:
 - **Not measured.** The page's decoding: the bench's times are the
   encoder's alone, and its decoder is native code. The median predictor's
   is measured as built, [above](#the-median-predictor).
-
-## The progressive tiles, replaced
-
-Measured on 2026-11-10 and 2026-11-11, and taken: a list that named the
-tiles alone was sent every tile RemoteFX Progressive, the picture for a
-link that is not always wide and text that is to stay crisp
-([above](#progressive-tiles)), until `WLSV` at 4:4:4 was set beside it on
-the same walks. The stream was 1.9 to 9.3 dB closer while the desktop
-moved, at 0.86 to 1.17 times the bytes; held its frame rate on a slow link
-and a large desktop, where the tiles' fell to a third of it; and, once it
-was sent a settle frame, ended from 0.3 dB under the tiles' full stage to
-4.8 over. It cost the encoder as much as the tiles at 1920x1080 and about
-twice at 2880x1800 and above. The table, the method and what was tuned
-first are in [The stream at 4:4:4](video-performance.md#the-stream-at-444).
-
-What went with them: `src/rfb/progressive.rs` and `wlshare-proto`'s
-`progressive` module, the PROGRESSIVE kind, `WLSD`, which a list named to
-have its dial held and which the tiles alone now mean, and the walk of a
-tiles picture's dial, with the settle that followed it. What a page that
-cannot decode the stream is left is the gateway's to say: the 4:2:0 stream,
-which every decoder takes, or the tiles.

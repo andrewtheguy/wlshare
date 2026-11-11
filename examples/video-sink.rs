@@ -7,7 +7,7 @@
 //! ```text
 //! video-sink ADDR --size WxH [--seconds N]
 //!            [--frames N] [--resize SECS:WxH] [--slow SECS:SECS:MILLIS]
-//!            [--keyframe SECS] [--keys] [--h264 FILE] [--beside] [--444]
+//!            [--keyframe SECS] [--keys] [--h264 FILE] [--beside]
 //!            [--login USER --fingerprint FINGERPRINT]
 //! ```
 //!
@@ -41,8 +41,6 @@
 //! as a zDesk second display's tab is: its ClientInit byte is
 //! `wlshare_proto::CLIENT_INIT_BESIDE` where RFB has the shared flag, and it is
 //! shown the output that client is not on, with a pointer of its own there.
-//! With `--444` the list asks for the stream at 4:4:4, `WLS4` beside the
-//! encoding, where it is otherwise 4:2:0.
 //! With `--h264` the frames are not thrown away but written to that file as
 //! an Annex B elementary stream, in the order they came, for a decoder that
 //! is not this repository's to be run on what a session was sent. A stream is
@@ -85,8 +83,6 @@ struct Args {
     keyframe: Option<f64>,
     keys: bool,
     beside: bool,
-    /// Ask for the stream at 4:4:4, `WLS4` beside the encoding.
-    full_chroma: bool,
     h264: Option<String>,
     login: Option<String>,
     fingerprint: Option<String>,
@@ -195,7 +191,6 @@ fn parse_args() -> Result<Args, String> {
         keyframe: None,
         keys: false,
         beside: false,
-        full_chroma: false,
         h264: None,
         login: None,
         fingerprint: None,
@@ -216,7 +211,6 @@ fn parse_args() -> Result<Args, String> {
             }
             "--keys" => parsed.keys = true,
             "--beside" => parsed.beside = true,
-            "--444" => parsed.full_chroma = true,
             "--h264" => parsed.h264 = Some(value()?),
             "--login" => parsed.login = Some(value()?),
             "--fingerprint" => parsed.fingerprint = Some(value()?),
@@ -331,12 +325,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Cursor because the daemon requires it of every client; its rectangles
     // are parsed and dropped like everything but the frames.
-    let mut encodings = if args.full_chroma {
-        wlshare_proto::video::Chroma::Yuv444
-    } else {
-        wlshare_proto::video::Chroma::Yuv420
-    }
-    .encodings();
+    let mut encodings = vec![wlshare_proto::ENCODING_VIDEO];
     encodings.extend([
         ENCODING_FENCE,
         ENCODING_CONTINUOUS_UPDATES,

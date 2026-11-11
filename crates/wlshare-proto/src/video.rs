@@ -2,9 +2,8 @@
 //! that would rather have a picture that moves than one that is lossless.
 //!
 //! A private encoding, [`crate::ENCODING_VIDEO`], which only a client that
-//! lists it is ever sent. What the list says of the stream is its chroma
-//! ([`Chroma`]) and nothing else: the rest is the server's, which has one way
-//! to code it. Its rectangle
+//! lists it is ever sent, and nothing beside it in the list says what the
+//! stream is to be: there is one way to code it, the server's. Its rectangle
 //! always covers the whole framebuffer, and its body is a length word and one
 //! access unit ([`frame_header`]):
 //!
@@ -21,17 +20,12 @@
 //! framebuffer size, and the one that answers a non-incremental request. No
 //! frame is held back for another: each one in is one out, in the order coded.
 //!
-//! Every frame is 8 bits a sample, converted from the framebuffer as BT.601
-//! at studio swing, which the stream's VUI says so a decoder does not guess,
-//! of the framebuffer's size rounded up to even sides: a decoder draws the
-//! picture at the rectangle, cut to it from its top-left. At 4:2:0 the
-//! stream is High profile, one colour sample for each 2×2 block of pixels,
-//! which every decoder takes, the hardware's among them; at 4:4:4, which a
-//! list asks for with [`crate::ENCODING_VIDEO_444`] beside the encoding, it
-//! is High 4:4:4 Predictive, a colour sample for every pixel, so coloured
-//! text keeps its edges, for a client whose decoder takes that. The client's
-//! pixel format does not apply to this encoding; what it decodes to is its
-//! own business.
+//! Every frame is 8-bit 4:2:0 converted from the framebuffer as BT.601 at
+//! studio swing, which the stream's VUI says so a decoder does not guess, of
+//! the framebuffer's size rounded up to even sides: a decoder draws the
+//! picture at the rectangle, cut to it from its top-left. The client's pixel
+//! format does not apply to this encoding; what it decodes to is its own
+//! business.
 //!
 //! A stream whose desktop has stopped changing is sent frames of no damage
 //! that refine the picture it was left with, as any other frame of the
@@ -39,42 +33,6 @@
 //! them as it does the rest.
 
 use thiserror::Error;
-
-/// How much of a picture's colour the stream carries, which is all a list
-/// says of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Chroma {
-    /// The encoding alone: 4:2:0, High profile.
-    Yuv420,
-    /// `WLS4` ([`crate::ENCODING_VIDEO_444`]) beside it: 4:4:4, High 4:4:4
-    /// Predictive.
-    Yuv444,
-}
-
-impl Chroma {
-    /// The chroma `encodings` asks the stream to be, or `None` where the list
-    /// does not name the video encoding.
-    pub fn listed(encodings: &[i32]) -> Option<Self> {
-        let has = |e: i32| encodings.contains(&e);
-        has(crate::ENCODING_VIDEO).then(|| {
-            if has(crate::ENCODING_VIDEO_444) {
-                Self::Yuv444
-            } else {
-                Self::Yuv420
-            }
-        })
-    }
-
-    /// The list that asks for the stream at this chroma: the encoding, and
-    /// `WLS4` where it is 4:4:4. A client puts it ahead of the rest of its
-    /// list, and lists no tiles beside it.
-    pub fn encodings(self) -> Vec<i32> {
-        match self {
-            Self::Yuv420 => vec![crate::ENCODING_VIDEO],
-            Self::Yuv444 => vec![crate::ENCODING_VIDEO, crate::ENCODING_VIDEO_444],
-        }
-    }
-}
 
 /// The bytes of a rectangle's body before its access unit: the length.
 pub const FRAME_HEADER_LEN: usize = 4;

@@ -13,10 +13,10 @@
 //! prediction off, which a desktop has no fades for, x264 makes no half-size
 //! picture and estimates no rate on one: with the wide search below, which
 //! finds a window dragged far in a frame without that picture's motion to
-//! start from, about a fifth of the processor time off a frame at 4:4:4 and
-//! three tenths at 4:2:0, in the bytes it had, a dragged window's a quarter
-//! more of very few. libavcodec's wrapper would not do: it ignores a
-//! quantizer changed between frames, and copies every picture besides.
+//! start from, about three tenths of the processor time off a frame, in the
+//! bytes it had, a dragged window's a quarter more of very few. libavcodec's
+//! wrapper would not do: it ignores a quantizer changed between frames, and
+//! copies every picture besides.
 //!
 //! **What did not change is taken on trust.** x264 is handed the whole
 //! picture and, left to itself, works out macroblock by macroblock that most
@@ -46,7 +46,6 @@ use std::ptr;
 use x264_sys as x;
 
 use super::{Backend, FPS, Planes, encoder_threads};
-use crate::rfb::Chroma;
 
 /// libx264's preset.
 pub const PRESET: &str = "superfast";
@@ -70,7 +69,6 @@ const MOTION_RANGE: i32 = 128;
 /// One libx264 encoder over a stream's coded picture.
 pub struct Stream {
     encoder: *mut x::x264_t,
-    chroma: Chroma,
     pts: i64,
     /// A flag for each macroblock of the picture, row by row, written for
     /// each P frame: constant where nothing changed for [`REFINED`] frames. x264 keeps the pointer in
@@ -83,10 +81,8 @@ pub struct Stream {
 unsafe impl Send for Stream {}
 
 impl Stream {
-    /// An encoder over a `width`×`height` picture, both even, at `chroma`:
-    /// High profile at 4:2:0, and High 4:4:4 Predictive at 4:4:4, which is
-    /// x264's for that picture with nothing asked.
-    pub fn open((width, height): (usize, usize), chroma: Chroma) -> anyhow::Result<Self> {
+    /// An encoder over a `width`×`height` picture, both even.
+    pub fn open((width, height): (usize, usize)) -> anyhow::Result<Self> {
         // SAFETY: the parameters are filled by x264's own default before any
         // field is set, and the encoder it opens is checked and owned by the
         // value returned.
@@ -106,14 +102,7 @@ impl Stream {
             param.i_threads = encoder_threads() as i32;
             param.i_width = width as i32;
             param.i_height = height as i32;
-            param.i_csp = csp(chroma);
-            // x264 codes 4:4:4's chroma six steps coarser than its luma,
-            // twice the samples at half the quality; taken back, so the
-            // colour of a glyph's edge is at the quantizer the dial asks, as
-            // its luma is.
-            if chroma == Chroma::Yuv444 {
-                param.analyse.i_chroma_qp_offset = -6;
-            }
+            param.i_csp = x::X264_CSP_NV12 as i32;
             param.i_fps_num = FPS;
             param.i_fps_den = 1;
             param.i_timebase_num = 1;
@@ -152,20 +141,11 @@ impl Stream {
             );
             Ok(Self {
                 encoder,
-                chroma,
                 pts: 0,
                 constant: vec![0; width.div_ceil(16) * height.div_ceil(16)],
             })
         }
     }
-}
-
-/// x264's name for the planes a stream at `chroma` is handed.
-fn csp(chroma: Chroma) -> i32 {
-    (match chroma {
-        Chroma::Yuv420 => x::X264_CSP_NV12,
-        Chroma::Yuv444 => x::X264_CSP_I444,
-    }) as i32
 }
 
 impl Backend for Stream {
@@ -182,16 +162,12 @@ impl Backend for Stream {
         unsafe {
             let mut picture: x::x264_picture_t = std::mem::zeroed();
             x::x264_picture_init(&mut picture);
-            picture.img.i_csp = csp(self.chroma);
-            let sources: &[&Vec<u8>] = match self.chroma {
-                Chroma::Yuv420 => &[&planes.y, &planes.uv],
-                Chroma::Yuv444 => &[&planes.y, &planes.u, &planes.v],
-            };
-            picture.img.i_plane = sources.len() as i32;
-            for (plane, source) in sources.iter().enumerate() {
-                picture.img.plane[plane] = source.as_ptr().cast_mut();
-                picture.img.i_stride[plane] = planes.stride as i32;
-            }
+            picture.img.i_csp = x::X264_CSP_NV12 as i32;
+            picture.img.i_plane = 2;
+            picture.img.plane[0] = planes.y.as_ptr().cast_mut();
+            picture.img.plane[1] = planes.uv.as_ptr().cast_mut();
+            picture.img.i_stride[0] = planes.stride as i32;
+            picture.img.i_stride[1] = planes.stride as i32;
             // The first picture of an encoder is an IDR whatever is asked.
             picture.i_type = if keyframe {
                 x::X264_TYPE_IDR

@@ -221,12 +221,18 @@ times on video (4K, 240 ms a frame against 56). Software stays libx264.
 ## The stream at 4:4:4
 
 Measured on 2026-11-10 and 2026-11-11. The question was whether `WLSV` as
-High 4:4:4 Predictive, a colour sample for every pixel
-([The video encoding](architecture.md#the-video-encoding)), was good enough
+High 4:4:4 Predictive, a colour sample for every pixel, was good enough
 to take the place of the walked tiles, every tile RemoteFX Progressive,
-which were then the picture for a link that is not always wide and text
-that is to stay crisp ([Progressive tiles](tiles-performance.md#progressive-tiles)).
-It was, and did, in protocol 13. RDP's AVC444, the same chroma as two 4:2:0
+the picture for a link that is not always wide and text that is to stay
+crisp ([Progressive tiles](tiles-performance.md#progressive-tiles)).
+It did, in protocol 13 (0.0.125), and was taken out again in 0.0.126, the
+progressive tiles back in its place: on a large desktop its encoder took
+two to four times their share of a core, as the table below shows, and a
+browser decodes it in software if at all. The encoder's changes made for
+it ([What did not change](#what-did-not-change),
+[the settings](#the-encoders-settings-again),
+[the settle frame](#the-settle-frame)) stayed, for the 4:2:0 stream and the
+tiles' regions. RDP's AVC444, the same chroma as two 4:2:0
 pictures a client puts back together, was weighed first and left: it codes
 on any 4:2:0 encoder and decodes on any decoder, but the page would have to
 copy both pictures' samples out of the decoder to combine them, which costs
@@ -244,7 +250,7 @@ moves, and the page once nothing more is owed. Flood is left out. The runs,
 their scripts and every table are the artifacts' `bench/wlsv-444-20261110/`.
 
 **What it showed.** lab1's walks, the progressive tiles then the 4:4:4
-stream as it is now:
+stream as 0.0.125 coded it:
 
 | Capture | Link | Frames/s | dB moving | dB at rest | Mbit/s | Encoder |
 |---|---|---|---|---|---|---|
@@ -305,18 +311,19 @@ Chrome offers no hardware decoder for it. Chrome 156 and 157, on Windows
 and a Mac, decode it through WebCodecs with a colour for every pixel;
 Safari 27.2 on a Mac and Safari on an iPhone (iOS 18.7) refuse it there,
 though their video element plays it; Firefox 160 refuses both. So the
-gateway asks its page's decoder, and offers the stream where the answer is
-yes: nothing here hangs on how many browsers that is.
+gateway asked its page's decoder, and offered the stream where the answer
+was yes.
 
 ### What did not change
 
-A profile of the 4K terminal sample, where a frame is a keystroke, had
+A profile of the 4:4:4 stream on the 4K terminal sample, where a frame is a
+keystroke, had
 about nine tenths of libx264's time on macroblocks that had not changed:
 the half-pel planes of all three planes, and each macroblock visited,
 transformed and quantized to find it could be skipped, then copied forward.
 Telling x264 which macroblocks the reads left alone
-(`X264_MBINFO_CONSTANT`) took the second of those away. On the samples at
-3840x2160, the processor time a frame:
+(`X264_MBINFO_CONSTANT`) took the second of those away, at either chroma.
+On the samples at 3840x2160, the 4:4:4 stream's processor time a frame:
 
 | Sample | Before | Told | Told, and the settings below | Progressive tiles |
 |---|---:|---:|---:|---:|

@@ -25,7 +25,8 @@
 //! most), the encode its tick is owed ([`TilesEncoder::tick_at`]), nothing
 //! changing, its output's scale the capture's name's, `@2` or 1 without one
 //! ([`wlcap::named_scale`]), which the fewest tiles a region is laid out over
-//! follows. Its dial is wlshare's, held there, every still lossless.
+//! follows. Its dial is wlshare's, held there, the picture lossless as a list that holds the dial asks: a walked
+//! list's is progressive tiles, which `tiles-walk-sim` walks over a link.
 //! `--lossless` codes the picture a lossless list asks for instead, every
 //! tile exact, planar where it is still and a median predictor's residuals
 //! where it moves, and no region: its coder is `lossless`. Its
@@ -512,6 +513,12 @@ impl Page {
                     let rgb = self.stills.unpack(&body, w, h)?;
                     self.paste((x, y, w, h), &rgb);
                 }
+                TileBody::Progressive(_) => {
+                    return Err(
+                        "a progressive tile, which neither a held list nor a lossless one is sent"
+                            .into(),
+                    );
+                }
             }
         }
         Ok(sent)
@@ -619,6 +626,7 @@ impl Tiles {
         let cost = cpu.elapsed();
         // No link: every update crosses at once, so the settle sends as
         // much a tick as it ever does.
+        self.encoder.delivered(Duration::ZERO);
         Ok((cost, self.page.draw(update.rects, &self.out)?))
     }
 
@@ -709,7 +717,7 @@ impl Wlsv {
         let decoder = decode::Decoder::new()?;
         let cpu = ProcessTime::now();
         let mut coder = encoder.coder()?;
-        let encoder = VideoEncoder::new(&mut coder, w, h, crate::rfb::Chroma::Yuv420)?;
+        let encoder = VideoEncoder::new(&mut coder, w, h)?;
         let made = cpu.elapsed();
         let picture = vec![0; usize::from(w) * 4 * usize::from(h)];
         Ok((

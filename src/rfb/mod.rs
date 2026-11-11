@@ -25,7 +25,8 @@
 //!   quality its owner sets ([`video`]), for a desktop that moves; **the tiles
 //!   encoding**, another for the gateway, the desktop as lossless PNG tiles where
 //!   it is still and a video stream for each region that moves, for a link
-//!   with room to spare ([`tiles`]), or every tile lossless. Raw is produced for a client whose list
+//!   with room to spare ([`tiles`]), or every tile RemoteFX Progressive, still
+//!   or moving ([`progressive`]). Raw is produced for a client whose list
 //!   names neither. Tight, Hextile, RRE, CopyRect and every other lossy
 //!   encoding are absent.
 //! - **32-bit true colour only.** The server's native format is the compositor's
@@ -65,6 +66,7 @@ pub mod median;
 pub mod msg;
 pub mod pixel;
 pub mod planar;
+pub mod progressive;
 mod rect;
 pub mod rsa_aes;
 pub mod tiles;
@@ -103,8 +105,9 @@ pub const QUALITY_MIN: u8 = 1;
 /// The finest end of the dial.
 pub const QUALITY_MAX: u8 = 100;
 
-/// The dial wlshare codes at: the ceiling the video stream is walked down
-/// from, and a tiles picture's streams' quality. The server's alone — no client names one — so there is one
+/// The dial wlshare codes at: the ceiling the video stream and a walked tiles
+/// picture's first passes are walked down from, and a held tiles picture's
+/// streams' quality. The server's alone — no client names one — so there is one
 /// way to code each picture. 90 is QP 18 in H.264, where a desktop's text
 /// reads sharp in motion.
 pub const QUALITY: u8 = 90;
@@ -122,21 +125,10 @@ pub type H264Error = Box<dyn std::error::Error + Send + Sync>;
 /// stream of it over the whole desktop, the tiles one for each region that
 /// moves, and a failure to open or to code is its encode's.
 pub trait H264Coder: Send {
-    /// A stream over a `width`×`height` picture at `chroma`, which codes
-    /// nothing until read into.
-    fn open(
-        &mut self,
-        width: u16,
-        height: u16,
-        chroma: Chroma,
-    ) -> Result<Box<dyn H264Stream>, H264Error>;
+    /// A stream over a `width`×`height` picture, which codes nothing until
+    /// read into.
+    fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error>;
 }
-
-/// How much of a picture's colour an H.264 stream carries, as a client's
-/// list asks the video stream's to be: 4:2:0, which either encoder codes, or
-/// 4:4:4, which libx264 alone does, libva having no profile for it. A tiles
-/// picture's regions are 4:2:0.
-pub use wlshare_proto::video::Chroma;
 
 /// One stream as an [`H264Coder`] codes it: read, then encode.
 pub trait H264Stream: Send {
