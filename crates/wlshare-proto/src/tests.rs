@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn the_encodings_are_their_ascii_names() {
     assert_eq!(ENCODING_VIDEO, i32::from_be_bytes(*b"WLSV"));
-    assert_eq!(ENCODING_VIDEO_444, i32::from_be_bytes(*b"WLS4"));
+    assert_eq!(ENCODING_HELD, i32::from_be_bytes(*b"WLSD"));
     assert_eq!(ENCODING_LOSSLESS, i32::from_be_bytes(*b"WLSL"));
     assert_eq!(ENCODING_TILES, i32::from_be_bytes(*b"WLST"));
     assert_eq!(ENCODING_DENSITY, i32::from_be_bytes(*b"WLSH"));
@@ -18,7 +18,6 @@ fn the_encodings_are_their_ascii_names() {
 fn every_encoding_here_is_private() {
     for e in [
         ENCODING_VIDEO,
-        ENCODING_VIDEO_444,
         ENCODING_TILES,
         ENCODING_DENSITY,
         ENCODING_OUTPUTS,
@@ -26,6 +25,7 @@ fn every_encoding_here_is_private() {
         ENCODING_MICROPHONE,
         ENCODING_AUDIO,
         ENCODING_AUDIO_OPUS,
+        ENCODING_HELD,
         ENCODING_LOSSLESS,
         version::encoding(1),
     ] {

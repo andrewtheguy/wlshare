@@ -1,11 +1,15 @@
 use super::*;
 
 #[test]
-fn the_list_names_one_picture() {
+fn the_list_names_one_picture_and_whether_it_walks() {
     let listed = TilesPicture::listed;
     let lossless = crate::ENCODING_LOSSLESS;
     assert_eq!(
         listed(&[crate::ENCODING_TILES, 16]),
+        Ok(Some(TilesPicture::Progressive))
+    );
+    assert_eq!(
+        listed(&[crate::ENCODING_TILES, ENCODING_HELD]),
         Ok(Some(TilesPicture::Held))
     );
     assert_eq!(
@@ -17,16 +21,28 @@ fn the_list_names_one_picture() {
         Err(TilesListError::Both)
     );
     assert_eq!(
-        listed(&[crate::ENCODING_TILES, lossless, crate::ENCODING_VIDEO]),
-        Err(TilesListError::Both)
+        listed(&[crate::ENCODING_TILES, ENCODING_HELD, lossless]),
+        Err(TilesListError::HeldAndLossless)
     );
+    assert_eq!(listed(&[16, ENCODING_HELD]), Ok(None));
     assert_eq!(listed(&[16, lossless]), Ok(None));
-    assert_eq!(TilesPicture::Held.encodings(), [crate::ENCODING_TILES]);
+    assert_eq!(
+        TilesPicture::Progressive.encodings(),
+        [crate::ENCODING_TILES]
+    );
+    assert_eq!(
+        TilesPicture::Held.encodings(),
+        [crate::ENCODING_TILES, ENCODING_HELD]
+    );
     assert_eq!(
         TilesPicture::Lossless.encodings(),
         [crate::ENCODING_TILES, lossless]
     );
-    for picture in [TilesPicture::Held, TilesPicture::Lossless] {
+    for picture in [
+        TilesPicture::Progressive,
+        TilesPicture::Held,
+        TilesPicture::Lossless,
+    ] {
         assert_eq!(listed(&picture.encodings()), Ok(Some(picture)));
     }
 }
@@ -60,8 +76,9 @@ fn each_header_has_the_documented_layout() {
         ),
         (TileHeader::Cached { slot: 0x0102 }, vec![5, 1, 2]),
         (TileHeader::Store { slot: 0x0FFF }, vec![6, 0x0F, 0xFF]),
-        (TileHeader::Still { len: 0x01_0203 }, vec![7, 0, 1, 2, 3]),
-        (TileHeader::Median { len: 0x01_0203 }, vec![8, 0, 1, 2, 3]),
+        (TileHeader::Progressive { len: 0x0102 }, vec![7, 0, 0, 1, 2]),
+        (TileHeader::Still { len: 0x01_0203 }, vec![8, 0, 1, 2, 3]),
+        (TileHeader::Median { len: 0x01_0203 }, vec![9, 0, 1, 2, 3]),
     ] {
         assert_eq!(header.to_bytes(), bytes);
         assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -87,6 +104,7 @@ fn a_length_filled_in_keeps_the_header_its_size() {
         TileHeader::Copy { x: 1, y: 2 },
         TileHeader::Cached { slot: 3 },
         TileHeader::Store { slot: 4 },
+        TileHeader::Progressive { len: 0 },
         TileHeader::Still { len: 0 },
         TileHeader::Median { len: 0 },
     ] {
@@ -121,10 +139,14 @@ fn a_length_filled_in_keeps_the_header_its_size() {
 #[test]
 fn a_bad_kind_length_or_slot_is_fatal() {
     assert_eq!(
-        TileHeader::parse(&[9]),
-        Err(TilesParseError::UnknownKind(9))
+        TileHeader::parse(&[10]),
+        Err(TilesParseError::UnknownKind(10))
     );
-    for kind in [7, 8] {
+    assert_eq!(
+        TileHeader::parse(&[7, 0, 0, 0, 0]),
+        Err(TilesParseError::Length(0))
+    );
+    for kind in [8, 9] {
         assert_eq!(
             TileHeader::parse(&[kind, 0, 0, 0, 0]),
             Err(TilesParseError::Length(0))

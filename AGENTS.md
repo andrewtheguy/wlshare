@@ -20,16 +20,16 @@
   in a file of its own, `src/<module>/tests.rs` (`src/tests.rs` for the
   crate's root), which the check leaves out by its path. Every private extension's bytes, both
   directions, are built and parsed there, never in the daemon or the gateway.
-  Nothing on the wire says how a picture is coded but the video stream's
-  chroma, 4:2:0 or, where the list asks (`WLS4`), 4:4:4, which libx264 codes
-  on every host: the dial is the daemon's (`QUALITY` in `src/rfb/mod.rs`),
-  and its one codec setting is `hardware_h264`. Everything is built for its target's baseline, with no CPU floor:
+  Nothing on the wire says how a picture is coded: the dial is the daemon's
+  (`QUALITY` in `src/rfb/mod.rs`), and its one codec setting is
+  `hardware_h264`. Everything is built for its target's baseline, with no CPU floor:
   a wider instruction set is used only where the processor says at run time it
   has it. A measurement of the encoder is run on an idle machine,
   alone: no build, test, profile or second measurement beside it. After Rust
   changes run `cargo test` and `cargo clippy --all-targets -- -D warnings`.
   The daemon has no cross-target check to run: nothing in it is
-  architecture-specific but the lossless tiles' coders (`encode` in
+  architecture-specific but the progressive tiles' coder (`code_tile` in
+  `src/rfb/progressive.rs`) and the lossless tiles' (`encode` in
   `src/rfb/planar.rs`, and `residuals` in `src/rfb/median.rs`), each compiled
   a second time for AVX2 on x86-64 and chosen at run time, the same source,
   which a test holds to the baseline's bytes; and the release builds each suite (Debian trixie, Ubuntu 26.04) and
@@ -61,7 +61,7 @@
   the hardware's is run for real.
 - The lossless pictures — the lossless tiles (`WLSL`: every changed tile
   exact, planar where the desktop is still and the median predictor's
-  residuals where it moves, no H.264 stream) and the tiles with motion (`WLST` alone: lossless PNG
+  residuals where it moves, no H.264 stream) and the tiles with motion (`WLSD`: lossless PNG
   where the desktop is still) — are not meant for a mobile client or
   a page zDesk flags as tight on memory (`tight_memory`: an iPhone, an iPad,
   or a browser that reports 4 GB or less). Nothing in them accommodates one,

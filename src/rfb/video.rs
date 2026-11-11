@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::rfb::{Chroma, H264Coder, H264Error, H264Stream, Rect};
+use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
 
 /// How long after a stream's last frame, the desktop not having changed, it
 /// settles ([`VideoEncoder::settle`]): the half second the tiles picture
@@ -63,20 +63,12 @@ pub struct VideoEncoder {
 }
 
 impl VideoEncoder {
-    /// An encoder for a `width`×`height` picture at `chroma`, on a stream
-    /// `coder` opens.
-    pub fn new(
-        coder: &mut dyn H264Coder,
-        width: u16,
-        height: u16,
-        chroma: Chroma,
-    ) -> Result<Self, VideoError> {
+    /// An encoder for a `width`×`height` picture, on a stream `coder` opens.
+    pub fn new(coder: &mut dyn H264Coder, width: u16, height: u16) -> Result<Self, VideoError> {
         if width == 0 || height == 0 {
             return Err(VideoError::Empty(width, height));
         }
-        let stream = coder
-            .open(width, height, chroma)
-            .map_err(VideoError::Codec)?;
+        let stream = coder.open(width, height).map_err(VideoError::Codec)?;
         Ok(Self {
             stream,
             size: (width, height),
@@ -202,7 +194,7 @@ mod tests {
     /// what changed and encode as `(keyframe, quality)`, in order.
     #[derive(Default)]
     struct Log {
-        opened: Vec<(u16, u16, Chroma)>,
+        opened: Vec<(u16, u16)>,
         reads: Vec<Option<Vec<Rect>>>,
         encodes: Vec<(bool, u8)>,
         /// How many frames had been asked for when each refine was.
@@ -224,17 +216,8 @@ mod tests {
     }
 
     impl H264Coder for Fake {
-        fn open(
-            &mut self,
-            width: u16,
-            height: u16,
-            chroma: Chroma,
-        ) -> Result<Box<dyn H264Stream>, H264Error> {
-            self.log
-                .lock()
-                .unwrap()
-                .opened
-                .push((width, height, chroma));
+        fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
+            self.log.lock().unwrap().opened.push((width, height));
             Ok(Box::new(FakeStream {
                 log: self.log.clone(),
                 frame: self.frame.clone(),
@@ -304,7 +287,7 @@ mod tests {
     fn a_frame_is_the_length_and_the_access_unit() {
         let unit = vec![0, 0, 0, 1, 0x65, 0x88, 0x84];
         let (mut coder, log) = fake(Some(unit.clone()), false);
-        let mut encoder = VideoEncoder::new(&mut coder, 64, 48, Chroma::Yuv444).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 64, 48).unwrap();
         assert_eq!(encoder.size(), (64, 48));
         let damage = [Rect {
             x: 2,
@@ -325,7 +308,7 @@ mod tests {
         );
         assert_eq!(&out[5..], unit);
         let log = log.lock().unwrap();
-        assert_eq!(log.opened, [(64, 48, Chroma::Yuv444)]);
+        assert_eq!(log.opened, [(64, 48)]);
         assert_eq!(log.reads, [Some(damage.to_vec())]);
         assert_eq!(log.encodes, [(true, 47)]);
     }
@@ -335,7 +318,7 @@ mod tests {
     fn an_empty_desktop_is_refused() {
         let (mut coder, log) = fake(Some(vec![1]), false);
         assert!(matches!(
-            VideoEncoder::new(&mut coder, 0, 16, Chroma::Yuv420),
+            VideoEncoder::new(&mut coder, 0, 16),
             Err(VideoError::Empty(0, 16))
         ));
         assert!(log.lock().unwrap().opened.is_empty());
@@ -345,7 +328,7 @@ mod tests {
     #[test]
     fn no_frame_or_an_error_leaves_nothing_behind() {
         let (mut coder, _) = fake(None, false);
-        let mut encoder = VideoEncoder::new(&mut coder, 16, 16, Chroma::Yuv420).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 16, 16).unwrap();
         let mut out = vec![0xEE];
         assert!(
             !encoder
@@ -356,7 +339,7 @@ mod tests {
         assert_eq!(out, [0xEE]);
 
         let (mut coder, _) = fake(Some(vec![1]), true);
-        let mut encoder = VideoEncoder::new(&mut coder, 16, 16, Chroma::Yuv420).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 16, 16).unwrap();
         assert!(matches!(
             encoder.encode(false, crate::rfb::QUALITY, &mut out),
             Err(VideoError::Codec(_))
@@ -372,7 +355,7 @@ mod tests {
     #[test]
     fn a_frame_of_the_desktop_owes_its_settle_frames() {
         let (mut coder, log) = fake(Some(vec![0, 0, 0, 1, 0x41, 0x9A]), false);
-        let mut encoder = VideoEncoder::new(&mut coder, 64, 48, Chroma::Yuv444).unwrap();
+        let mut encoder = VideoEncoder::new(&mut coder, 64, 48).unwrap();
         assert!(!encoder.settle_owed(), "nothing sent, nothing to settle");
         let mut out = Vec::new();
         encoder.read(&[0; 64 * 48 * 4], 64 * 4, None).unwrap();
