@@ -461,9 +461,11 @@ word and its ceiling. What a frame holds is fixed:
   as it stands, the one that carried its change and one that refined it:
   x264 skips those without looking, unless the frame is asked a finer
   quantizer than they were coded at. Flagged from the first frame they would
-  stay as their first coding left them, 2 to 5 dB short on a terminal. What
-  is left is the whole picture's whatever changed: the copy in, the
-  half-pel planes, each skipped macroblock carried forward.
+  stay as their first coding left them, short of the picture the second
+  brings. What is left is the whole picture's whatever changed: the copy in,
+  the half-pel planes, each skipped macroblock carried forward. What the
+  flag saves, and what flagging at once loses, is in
+  [What did not change](video-performance.md#what-did-not-change).
 - **A desktop that stops is settled.** Half a second after the stream's last
   frame, the desktop not having changed, it is sent two more, each once the
   one before is fenced: no damage, the whole picture coded again with
