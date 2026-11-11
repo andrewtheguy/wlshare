@@ -13,7 +13,11 @@ tiles](#progressive-tiles) is the one wlshare sent until 2026-10-28, zDesk's
 Adaptive tiles: every still a lossy WebP at the dial, and a region that
 moves an H.264 stream walked with it. Progressive tiles replaced it, and
 its figures stay as what they were measured against; motion-bench's
-`--walk-at`, which coded it, went with it.
+`--walk-at`, which coded it, went with it. motion-bench now codes the held
+picture, or the lossless one with `--lossless`, and the progressive tiles
+are measured by `tiles-walk-sim` on a link and by `progressive-bench` and
+`progressive-stills` on the samples ([Progressive
+tiles](#progressive-tiles)).
 
 `WLSV` in every figure here is the VP9 stream it was until 2026-10-29,
 4:4:4 or 4:2:0, its dial walked on the link, which H.264 replaced, its

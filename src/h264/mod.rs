@@ -876,6 +876,94 @@ mod tests {
         }
     }
 
+    /// The four colours of [`quadrants`], `B, G, R`: each Cb and Cr far apart,
+    /// and far from the others', so a chroma swapped or misplaced shows.
+    const QUADRANT_COLOURS: [[u8; 3]; 4] =
+        [[40, 40, 220], [220, 60, 40], [220, 200, 40], [40, 200, 220]];
+
+    /// A picture of four flat quadrants of [`QUADRANT_COLOURS`] as
+    /// `B, G, R, X`, each on whole macroblocks, so 4:2:0 keeps every one's
+    /// colour away from its edges.
+    fn quadrants(w: usize, h: usize) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                let [b, g, r] =
+                    QUADRANT_COLOURS[usize::from(x >= w / 2) + 2 * usize::from(y >= h / 2)];
+                pixels.extend_from_slice(&[b, g, r, 0]);
+            }
+        }
+        pixels
+    }
+
+    /// `B, G, R` as BT.601 at studio swing, `Y, Cb, Cr`, worked out here from
+    /// the standard's coefficients and not by the conversion the encoder is
+    /// handed.
+    fn bt601([b, g, r]: [u8; 3]) -> [f64; 3] {
+        let (b, g, r) = (f64::from(b), f64::from(g), f64::from(r));
+        let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+        [
+            16.0 + luma * 219.0 / 255.0,
+            128.0 + (b - luma) / 1.772 * 224.0 / 255.0,
+            128.0 + (r - luma) / 1.402 * 224.0 / 255.0,
+        ]
+    }
+
+    /// A coloured picture through libx264 at 4:2:0 decodes with libavcodec's
+    /// software decoder to its own luma and both its chromas, each in its own
+    /// plane: Cb as Cb and Cr as Cr, away from the quadrants' edges, where
+    /// 4:2:0 and the deblocking filter blend one colour into the next.
+    #[test]
+    fn libx264_keeps_a_coloured_pictures_chroma_at_420() {
+        let (w, h) = (96usize, 64usize);
+        let expected = QUADRANT_COLOURS.map(bt601);
+        for [_, cb, cr] in expected {
+            assert!(
+                (cb - cr).abs() > 30.0,
+                "a swap would show: {cb:.1} and {cr:.1}"
+            );
+        }
+        let mut coder = Encoder::X264.coder().unwrap();
+        let mut stream = coder.open(w as u16, h as u16).unwrap();
+        stream.read_bgrx(&quadrants(w, h), w * 4, None).unwrap();
+        let mut unit = Vec::new();
+        assert!(stream.encode(false, 100, &mut unit).unwrap());
+        let mut out = Vec::new();
+        let decoded = crate::decode::Decoder::new()
+            .unwrap()
+            .decode(&unit, &mut out)
+            .unwrap()
+            .expect("a picture");
+        let (pw, ph) = (decoded.width, decoded.height);
+        let (cw, ch) = decoded.chroma();
+        assert_eq!(out.len(), pw * ph + 2 * cw * ch, "three planes");
+        let (luma, chroma) = out.split_at(pw * ph);
+        let (cb, cr) = chroma.split_at(cw * ch);
+        // A sample this far from an edge between quadrants is one colour's.
+        const MARGIN: usize = 8;
+        let inside =
+            |x: usize, y: usize| x.abs_diff(w / 2) >= MARGIN && y.abs_diff(h / 2) >= MARGIN;
+        let quadrant = |x: usize, y: usize| usize::from(x >= w / 2) + 2 * usize::from(y >= h / 2);
+        let near = |got: u8, want: f64, what: &str, x: usize, y: usize| {
+            assert!(
+                (f64::from(got) - want).abs() <= 4.0,
+                "{what} at {x},{y}: {got}, not {want:.1}"
+            );
+        };
+        for y in (0..h).filter(|y| y.abs_diff(h / 2) >= MARGIN) {
+            for x in (0..w).filter(|x| inside(*x, y)) {
+                near(luma[y * pw + x], expected[quadrant(x, y)][0], "luma", x, y);
+            }
+        }
+        for y in 0..h / 2 {
+            for x in (0..w / 2).filter(|x| inside(x * 2, y * 2)) {
+                let [_, want_cb, want_cr] = expected[quadrant(x * 2, y * 2)];
+                near(cb[y * cw + x], want_cb, "Cb", x, y);
+                near(cr[y * cw + x], want_cr, "Cr", x, y);
+            }
+        }
+    }
+
     /// A picture with texture a coarse quantizer loses: a luma that steps
     /// from pixel to pixel, grey.
     fn textured(w: usize, h: usize) -> Vec<u8> {
