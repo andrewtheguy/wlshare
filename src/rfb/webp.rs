@@ -27,7 +27,7 @@ use thiserror::Error;
 const LEVEL: c_int = 1;
 
 /// The longest side a WebP has.
-const MAX_SIDE: u16 = 16383;
+pub const MAX_SIDE: u16 = 16383;
 
 /// Why a rectangle could not be coded.
 #[derive(Debug, Error)]

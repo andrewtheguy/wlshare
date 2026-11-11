@@ -785,7 +785,8 @@ the picture.
   here is the point rather than the waste: fewer bytes at once, not fewer
   bytes. The WebP is libwebp's (`src/rfb/webp.rs`), compiled from
   `libwebp-sys`'s copy of its source and linked in, at its lossless preset
-  1, read from the encoder's picture in place: over a session at the desk
+  1, read from the encoder's picture in place, a run wider than a WebP's
+  longest side, 16383 pixels, as many, cut on the tile grid: over a session at the desk
   43% of the bytes of the fast PNG the stills were before, for a third more
   of the encoder's time, and three quarters of the bytes of preset 0 for a
   fifth more; the presets past it are a tenth fewer at most for a tenth to a third
@@ -1087,7 +1088,8 @@ the picture.
   pace is the most the desktop's own changes were found sending over any
   one second since something was last owed — a region's frames, a
   picture's stills, and none of the looks, which would raise the rate they
-  keep to. The settle's rate rises to it over the second after it began
+  keep to, measured at every update whether or not a look had
+  anything to pay then. The settle's rate rises to it over the second after it began
   paying, from nothing, and starts over once a look finds nothing ready to
   pay; a look's bytes are that rate's share of its interval less what the
   reads sent in it, at most 128 KiB and at least 32 KiB a quarter of a
@@ -1102,9 +1104,9 @@ the picture.
   the link, with no step up to it, where a settle at whatever the link
   would take was a burst of 256 KiB a round trip until it was done, and
   one at the pace from its first look, a row at a time, was 33 Mbit/s for
-  a quarter of a second after a 1080p video's 20 and is now 12 at its
-  most, its first look 15 kB where it was 191; what the picture pays for
-  that is the time to lossless, about a second more
+  a quarter of a second after a 1080p video's 20 and is now 17 at its
+  most, its first look 8 kB where it was 191; what the picture pays for
+  that is the time to lossless, half a second more
   ([measured](tiles-performance.md#webp-stills-and-the-eased-settle)). On a
   walked list the look's bytes follow the walk: while
   the walk is at the ceiling those are 256 KiB. Below it, where the link is

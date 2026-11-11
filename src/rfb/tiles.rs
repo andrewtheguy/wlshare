@@ -424,6 +424,9 @@ const SETTLE_TILE_LEAST: f64 = 32.0;
 /// The least time between two of a held list's ticks, where the pace would
 /// have one of [`SETTLE_MOST`] sooner than [`CLEANUP_TICK`].
 const SETTLE_TICK_LEAST: Duration = Duration::from_millis(50);
+/// The most tiles along a row one WebP holds, its longest side
+/// ([`webp::MAX_SIDE`]) in whole tiles.
+const WEBP_TILES: usize = (webp::MAX_SIDE / TILE) as usize;
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
@@ -2136,7 +2139,10 @@ impl TilesEncoder {
             self.round(now, &mut out)?;
         }
         let brought = out.count;
-        let before_tick = out.out.len();
+        // What the reads brought so far, in the pace before the tick measures
+        // by it: a tick with nothing ready to pay looks at no budget, and the
+        // video then playing is the pace its settle will keep to.
+        self.observe_pace(now, out.out.len() - from);
         if now >= self.next_tick {
             let more = self.tick(now, &mut out)?;
             self.next_tick = if self.picture == TilesPicture::Held {
@@ -2155,7 +2161,7 @@ impl TilesEncoder {
             };
         }
         self.settling = out.count > brought;
-        let ticked = out.out.len() - before_tick;
+        let after_tick = out.out.len();
         // What the streams that ended here had not carried, after their ENDs;
         // a region it is more than an update's stills for started at once.
         let stills = std::mem::take(&mut self.stills);
@@ -2170,19 +2176,9 @@ impl TilesEncoder {
             enc.drop_ready();
             self.keys.clear();
         }
-        // What the reads brought, which is the pace: a settle's own bytes
-        // are not, or it would raise the rate it keeps to.
-        let bytes = out.out.len() - from - ticked;
-        if bytes > 0 {
-            self.sent.push_back((now, bytes));
-        }
-        while self
-            .sent
-            .front()
-            .is_some_and(|(at, _)| *at + PACE_WINDOW <= now)
-        {
-            self.sent.pop_front();
-        }
+        // And what the streams that ended here brought; a settle's own bytes
+        // are none of the pace, or it would raise the rate it keeps to.
+        self.observe_pace(now, out.out.len() - after_tick);
         if !self.owed() {
             self.pace = 0;
         }
@@ -2521,9 +2517,18 @@ impl TilesEncoder {
     }
 
     /// Code `tiles`, a run of parts of tiles along one row with each whole
-    /// tile's key, as one WebP, and store every whole tile of it that is not
-    /// one colour in the client's cache, after it.
+    /// tile's key, as one WebP, or as many as its width takes ([`WEBP_TILES`]),
+    /// and store every whole tile of each that is not one colour in the
+    /// client's cache, after it.
     fn coded(&mut self, tiles: &[StillTile], out: &mut Out) -> Result<(), TilesError> {
+        // A WebP has a longest side: a run wider than it is as many, cut on
+        // the tile grid.
+        if tiles.len() > WEBP_TILES {
+            for run in tiles.chunks(WEBP_TILES) {
+                self.coded(run, out)?;
+            }
+            return Ok(());
+        }
         let (Some(first), Some(last)) = (tiles.first(), tiles.last()) else {
             return Ok(());
         };
@@ -2844,6 +2849,27 @@ impl TilesEncoder {
                 }
                 Ok(false)
             }
+        }
+    }
+
+    /// `bytes` the reads brought at `now` counted among what the link has been
+    /// carrying, the updates before [`PACE_WINDOW`] ago dropped, and the pace
+    /// raised to it while anything is owed: the most the desktop's own
+    /// changes were found sending over a second, whether or not a tick had
+    /// anything to pay then.
+    fn observe_pace(&mut self, now: Duration, bytes: usize) {
+        while self
+            .sent
+            .front()
+            .is_some_and(|(at, _)| *at + PACE_WINDOW <= now)
+        {
+            self.sent.pop_front();
+        }
+        if bytes > 0 {
+            self.sent.push_back((now, bytes));
+        }
+        if self.owed() {
+            self.pace = self.pace.max(self.carrying());
         }
     }
 
@@ -4366,6 +4392,11 @@ mod tests {
         );
         assert!(page.off(&pixels) > 0, "the rest a frame of video, lossy");
         assert_eq!(page.streams.len(), 1, "the region live");
+        assert!(
+            encoder.pace >= stills,
+            "the pace is what the update brought, though no tick had a tile to pay: {}",
+            encoder.pace
+        );
         assert!(encoder.owed(), "every tile of the box owed its still");
         let whole = usize::from(w / TILE) * usize::from(h / TILE);
         assert!(
@@ -4425,6 +4456,28 @@ mod tests {
             last.unwrap() >= STREAM_IDLE,
             "settled after the region's idle second: {last:?}"
         );
+    }
+
+    /// A row wider than a WebP's longest side goes as two, cut on the tile
+    /// grid, every whole tile stored where it is.
+    #[test]
+    fn a_row_wider_than_a_webp_is_cut_on_the_tile_grid() {
+        let (w, h) = (webp::MAX_SIDE + 100, 64u16);
+        // Bars of a few colours, a tile and a half wide: little to code.
+        let pixels: Vec<u8> = (0..usize::from(h))
+            .flat_map(|_| (0..usize::from(w)).flat_map(|x| [(x / 96 % 5) as u8 * 50, 40, 200, 0]))
+            .collect();
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let first = update(&mut encoder, &mut page, &pixels, None, ms(0));
+        assert!(first.keyframe);
+        assert_eq!(
+            (page.webps, page.starts),
+            (2, 0),
+            "the row in two WebPs, and no region"
+        );
+        assert_eq!(page.off(&pixels), 0, "the row lossless");
+        assert!(encoder.tick_at().is_none(), "and nothing owed");
     }
 
     /// The frames of a video before its region forms by churn: the first

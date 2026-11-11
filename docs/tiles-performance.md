@@ -1485,15 +1485,19 @@ the tick's bytes, each tile taken to cost what its pixels that differ from
 the one to their left cost in the piece before, a piece half of what is
 left at most; and the settle's rate rises to the pace over the second
 after it began paying
+— the pace measured at every update while anything is owed, the update's
+own bytes in it, whether or not a tick had a tile to pay then, so a
+settle that begins more than a second after a video's last frame still
+keeps to the video's rate —
 ([architecture](architecture.md#the-tiles-encoding)). As the encoder is
 now, WebP and the eased settle together, against main:
 
 | Capture | Bytes | CPU | Settle's busiest 250 ms | Its first tick | Settled after |
 |---|---:|---:|---:|---:|---:|
-| video-1920x1080 | 13.0 → 12.1 MB | 1.58 → 2.64 s | 32.9 → 11.8 Mbit/s | 191 → 15 kB | 0.95 → 1.95 s |
-| video-2880x1800@2 | 26.3 → 24.7 MB | 5.29 → 6.96 s | 29.0 → 16.8 Mbit/s | 138 → 10 kB | 1.77 → 2.57 s |
-| window-1920x1080 | 4.32 → 5.16 MB | 0.59 → 0.93 s | 10.4 → 3.8 Mbit/s | 150 → 30 kB | 1.39 → 1.61 s |
-| window-2880x1800@2 | 7.14 → 8.37 MB | 1.78 → 1.62 s | 21.2 → 7.3 Mbit/s | 7 → 34 kB | 1.62 → 2.37 s |
+| video-1920x1080 | 13.0 → 12.1 MB | 1.58 → 2.64 s | 32.9 → 16.7 Mbit/s | 191 → 8 kB | 0.95 → 1.48 s |
+| video-2880x1800@2 | 26.3 → 24.7 MB | 5.29 → 6.96 s | 29.0 → 21.2 Mbit/s | 138 → 14 kB | 1.77 → 1.93 s |
+| window-1920x1080 | 4.32 → 5.16 MB | 0.59 → 0.93 s | 10.4 → 6.1 Mbit/s | 150 → 16 kB | 1.39 → 1.20 s |
+| window-2880x1800@2 | 7.14 → 8.37 MB | 1.78 → 1.62 s | 21.2 → 8.7 Mbit/s | 7 → 11 kB | 1.62 → 1.56 s |
 | browser-1920x1080 | 2.27 → 1.30 MB | 0.95 → 0.84 s | 4.7 Mbit/s → none | 146 kB → none | 0.81 s → at once |
 | uncover-1920x1080 | 1.30 → 0.29 MB | 0.23 → 0.18 s | none | none | at once |
 | still-1920x1080 | 455 → 96 kB | 45 → 44 ms | none | none | at once |
@@ -1504,9 +1508,10 @@ now, WebP and the eased settle together, against main:
 
 The stream's rate over each video's last second was 19.5 Mbit/s at 1080p
 and 42 at 2880x1800@2, 8 and 12 in the windows: the settle is now under
-the stream it follows at every size, from a first tick of 10 to 34 kB, and
-no tick is past 134 kB where the largest was 253. What it pays is the time
-to lossless, a second more after a video and less after a window.
+the stream it follows at every size, from a first tick of 8 to 16 kB, and
+no tick is past 135 kB where the largest was 253. What it pays is the time
+to lossless, half a second more after the 1080p video, a sixth after the
+larger, and none after a window.
 
 Where no settle is left at all, the smaller still is why: a page of text
 at 1080p is 96 kB, within the 128 KiB of stills an update carries, so it
@@ -1573,17 +1578,18 @@ tick, and the time to lossless:
 
 | Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
 |---|---:|---:|---:|---:|
-| video-1920x1080 | 5.6 Mbit/s, 36 kB, 2.57 s | 10.8, 68 kB, 1.97 s | 11.8, 131 kB, 1.96 s | 16.6, 265 kB, 1.86 s |
-| video-2880x1800@2 | 5.8, 36 kB, 4.96 s | 10.9, 69 kB, 3.16 s | 16.8, 133 kB, 2.58 s | 16.8, 263 kB, 2.45 s |
-| walk-1920x1080 | 5.6, 36 kB, 2.23 s | 9.5, 68 kB, 1.81 s | 8.8, 132 kB, 1.72 s | 8.4, 263 kB, 1.74 s |
-| window-1920x1080 | 4.1, 33 kB, 1.73 s | 4.0, 66 kB, 1.73 s | 3.8, 119 kB, 1.61 s | 4.7, 147 kB, 1.72 s |
-| window-2880x1800@2 | 4.4, 36 kB, 2.49 s | 4.6, 68 kB, 2.49 s | 7.3, 133 kB, 2.37 s | 4.4, 137 kB, 2.42 s |
+| video-1920x1080 | 5.6 Mbit/s, 36 kB, 2.37 s | 10.8, 70 kB, 1.67 s | 16.7, 118 kB, 1.48 s | 18.9, 209 kB, 1.43 s |
+| video-2880x1800@2 | 5.6, 36 kB, 4.66 s | 10.9, 69 kB, 2.76 s | 21.2, 134 kB, 1.93 s | 35.8, 249 kB, 1.63 s |
+| walk-1920x1080 | 5.7, 37 kB, 2.00 s | 10.8, 69 kB, 1.43 s | 15.2, 116 kB, 1.26 s | 16.1, 192 kB, 1.21 s |
+| window-1920x1080 | 5.5, 36 kB, 1.29 s | 6.1, 50 kB, 1.27 s | 6.1, 85 kB, 1.20 s | 7.5, 142 kB, 1.21 s |
+| window-2880x1800@2 | 5.7, 36 kB, 1.92 s | 10.3, 67 kB, 1.63 s | 8.7, 94 kB, 1.57 s | 10.4, 170 kB, 1.57 s |
 
-Both stay 128 KiB. A tick of 256 KiB settles a tenth of a second sooner
-for an update twice the size; one of 64 KiB is an update half the size
-and the same time to lossless at 1080p, 0.6 s more after the larger
-video, whose settle the 50 ms between ticks then holds to 10 Mbit/s; one
-of 32 KiB takes 5 s there. Apart, neither finds a better place than
+Both stay 128 KiB. A tick of 256 KiB settles a twentieth of a second
+sooner at 1080p and 0.3 s after the larger video, for an update twice the
+size and a settle of 36 Mbit/s there beside the stream's 42; one of 64 KiB
+is an update half the size for 0.2 s more to lossless at 1080p and 0.8 s
+after the larger video, whose settle the 50 ms between ticks then holds
+to 11 Mbit/s; one of 32 KiB takes 4.7 s there. Apart, neither finds a better place than
 together: the pairs off the axes, 64 and 64 and 256 and 64, are their
 stills' row and their tick's column, and the windows' video is one stream
 only where the stills are too few for a page.
