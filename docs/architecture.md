@@ -885,11 +885,14 @@ the picture.
   with no motion for a second ends. What changed under a stream that ends
   that no frame of it carried goes as stills after its END in the same update,
   or the client would hold it as the stream's last frame left it, older than
-  the picture. A region that began as the box around one large change,
+  the picture. A stream that ends having never started, its coder making no
+  frame, leaves the client nothing of the change that began it: all of its
+  rectangle goes as stills in that update, whatever they come to, since a
+  region over what is past an update's stills would be that one again. A region that began as the box around one large change,
   above, has no stills under it to count: what moves in it is taken for
   dear where at most 16 of its tiles, coded as a WebP each and thrown away,
   say the component's changes would come to half that over the 8 tenths.
-  Then the region is kept where the component is half of it or more, a
+  Then the region is kept where the tiles that move are half of it or more, a
   video that began full screen, and otherwise ended for a region of the
   component alone, a video in the window that opened; with nothing dear
   moving in it, it ends a second after it began as any idle region does,

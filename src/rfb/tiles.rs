@@ -614,7 +614,7 @@ type MergeQueue = BinaryHeap<Reverse<(u32, usize, usize, u32, u32)>>;
 /// At most `max` pairwise disjoint boxes from the components: overlaps first,
 /// merged unless the union is past the waste, then the cheapest merges while
 /// there are too many, then the smallest dropped.
-fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
+fn merge(components: Vec<Component>, max: usize) -> Vec<Component> {
     let mut overlaps = OverlapQueue::new();
     let mut merges = MergeQueue::new();
     let mut components: Vec<Option<Component>> = components.into_iter().map(Some).collect();
@@ -698,7 +698,7 @@ fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
             }
         }
     }
-    components.into_iter().flatten().map(|c| c.bbox).collect()
+    components.into_iter().flatten().collect()
 }
 
 fn queue_component(
@@ -1102,19 +1102,26 @@ struct Live {
 
 impl Live {
     /// The damage no frame carried, on the desktop: what the client holds of
-    /// it is the stream's last frame from before it, or for a stream that
-    /// never started, all of its rectangle, whatever was there before it.
+    /// it is the stream's last frame from before it. None of a stream that
+    /// never started, which is owed its rectangle whole ([`Self::unstarted`]).
     fn unsent(&self) -> impl Iterator<Item = Area> + '_ {
         let Area { left, top, .. } = self.area;
-        (!self.started)
-            .then_some(self.area)
-            .into_iter()
-            .chain(self.pending.iter().map(move |r| Area {
+        self.pending
+            .iter()
+            .filter(|_| self.started)
+            .map(move |r| Area {
                 left: left + r.x,
                 top: top + r.y,
                 right: left + r.x + r.width - 1,
                 bottom: top + r.y + r.height - 1,
-            }))
+            })
+    }
+
+    /// The rectangle of a stream that never started: the client holds
+    /// whatever was there before it, the change that began it never sent,
+    /// so all of it is owed as stills ([`TilesEncoder::recover`]).
+    fn unstarted(&self) -> Option<Area> {
+        (!self.started).then_some(self.area)
     }
 }
 
@@ -1201,6 +1208,9 @@ pub struct TilesEncoder {
     retuned_at: Option<Duration>,
     /// The stills the reads since the last encode owe.
     stills: Vec<Area>,
+    /// The rectangles of streams that ended without starting, which the
+    /// encode they ended in sends as stills whatever they come to.
+    recovery: Vec<Area>,
     /// The copies the reads since the last encode found, which go ahead of
     /// the stills, in the order they were found.
     copies: Vec<CopyRect>,
@@ -1292,6 +1302,7 @@ impl TilesEncoder {
             cache: Cache::default(),
             retuned_at: None,
             stills: Vec::new(),
+            recovery: Vec::new(),
             copies: Vec::new(),
             ended: Vec::new(),
             read: false,
@@ -1401,6 +1412,7 @@ impl TilesEncoder {
         self.copied_at = None;
         self.copied_by.clear();
         self.stills.clear();
+        self.recovery.clear();
         self.copies.clear();
         self.restarting = true;
         self.pace = 0;
@@ -2295,6 +2307,7 @@ impl TilesEncoder {
             if self.held_stills(stills, moved, now, &mut out)? {
                 self.round(now, &mut out)?;
             }
+            self.recover(now, &mut out)?;
         } else {
             self.stills(stills, now, &mut out)?;
         }
@@ -2883,24 +2896,26 @@ impl TilesEncoder {
             }
         }
         let size = self.size;
-        let wanted: Vec<Area> = merge(worthy, MAX_STREAMS)
+        // Each box wanted, and how many tiles move in it.
+        let wanted: Vec<(Area, u32)> = merge(worthy, MAX_STREAMS)
             .into_iter()
-            .filter_map(|bbox| bbox.to_area(size))
+            .filter_map(|c| Some((c.bbox.to_area(size)?, c.moving)))
             .collect();
         let (mut next, mut old): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live)
             .into_iter()
             .partition(|live| {
                 let mut touched = wanted
                     .iter()
-                    .filter(|area| live.area.intersect(**area).is_some());
+                    .filter(|(area, _)| live.area.intersect(*area).is_some());
                 // A region a single change began is the box around all of
-                // it: kept for what moves in it only where that is half of
-                // it or more, and otherwise ended for regions of what moves.
-                let tiles: usize = touched.clone().map(|area| tiles_of(*area).count()).sum();
+                // it: kept for what moves in it only where the tiles that
+                // move are half of it or more, as a merge's box is, and
+                // otherwise ended for regions of what moves.
+                let moving: u32 = touched.clone().map(|(_, moving)| moving).sum();
                 touched.clone().next().is_some()
-                    && touched.all(|area| live.area.contains(*area))
+                    && touched.all(|(area, _)| live.area.contains(*area))
                     && (live.cause == Cause::Moving
-                        || live.cells.len() <= MERGE_WASTE as usize * tiles)
+                        || live.cells.len() <= (MERGE_WASTE * moving) as usize)
             });
         let outlined = self.debug.then_some(self.outline);
         for live in &mut next {
@@ -2916,7 +2931,7 @@ impl TilesEncoder {
             }
         }
         let mut unsent = Vec::new();
-        for area in wanted {
+        for (area, _) in wanted {
             if next.iter().any(|live| live.area.contains(area)) {
                 continue;
             }
@@ -2926,6 +2941,7 @@ impl TilesEncoder {
                         out.end(live.id, live.area);
                     }
                     unsent.extend(live.unsent());
+                    self.recovery.extend(live.unstarted());
                 }
                 let id = (0..=u8::MAX)
                     .find(|id| !next.iter().chain(&old).any(|live| live.id == *id))
@@ -2945,6 +2961,7 @@ impl TilesEncoder {
                     out.end(live.id, live.area);
                 }
                 unsent.extend(live.unsent());
+                self.recovery.extend(live.unstarted());
             }
         }
         self.live = next;
@@ -2978,10 +2995,11 @@ impl TilesEncoder {
         (bytes * changes).checked_div(coded).unwrap_or(0)
     }
 
-    /// What streams that ended did not carry, owed as stills where no stream
-    /// live from here does, as runs along a row.
-    fn owe(&mut self, unsent: &[Area]) {
-        for area in unsent {
+    /// The tiles of `areas` no stream live from here carries, as runs along
+    /// a row.
+    fn uncovered(&self, areas: &[Area]) -> Vec<Area> {
+        let mut all = Vec::new();
+        for area in areas {
             let mut runs: Vec<Area> = Vec::new();
             for (_, part) in tiles_of(*area).filter(|(cell, _)| !self.covered.contains(cell)) {
                 match runs.last_mut() {
@@ -2993,8 +3011,30 @@ impl TilesEncoder {
                     _ => runs.push(part),
                 }
             }
-            self.stills.extend(runs);
+            all.extend(runs);
         }
+        all
+    }
+
+    /// What streams that ended did not carry, owed as stills where no stream
+    /// live from here does.
+    fn owe(&mut self, unsent: &[Area]) {
+        let runs = self.uncovered(unsent);
+        self.stills.extend(runs);
+    }
+
+    /// The rectangles of the streams that ended without starting, sent as
+    /// stills where no stream live by now carries them, whatever they come
+    /// to: a region over what is past an update's stills would be the one
+    /// that never started again, its tiles owed anew and never sent, where a
+    /// stream that makes no frame is why it never started. Their tiles'
+    /// debts are paid by them.
+    fn recover(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        let areas = std::mem::take(&mut self.recovery);
+        for run in self.uncovered(&areas) {
+            self.still(run, now, false, out)?;
+        }
+        Ok(())
     }
 
     /// A stream of the region coder over `area`, every tile of it owed from now.
@@ -3103,6 +3143,7 @@ impl TilesEncoder {
                         out.end(old.id, old.area);
                     }
                     unsent.extend(old.unsent());
+                    self.recovery.extend(old.unstarted());
                 }
                 self.live.push(live);
                 self.cover();
@@ -3251,6 +3292,7 @@ impl TilesEncoder {
                 out.end(live.id, live.area);
             }
             unsent.extend(live.unsent());
+            self.recovery.extend(live.unstarted());
         }
         self.cover();
         self.owe(&unsent);
@@ -3798,6 +3840,8 @@ mod tests {
     /// its read or at its encode.
     struct Fake {
         refuse: bool,
+        /// Every stream makes no frame of what it reads.
+        mute: bool,
         fail_after: Option<usize>,
         fail_read_after: Option<usize>,
     }
@@ -3809,6 +3853,7 @@ mod tests {
         fn coder() -> Box<dyn H264Coder> {
             Box::new(Self {
                 refuse: false,
+                mute: false,
                 fail_after: None,
                 fail_read_after: None,
             })
@@ -3820,6 +3865,7 @@ mod tests {
         h: usize,
         picture: Vec<u8>,
         filled: bool,
+        mute: bool,
         frames: usize,
         fail_after: Option<usize>,
         fail_read_after: Option<usize>,
@@ -3836,6 +3882,7 @@ mod tests {
                 h,
                 picture: vec![0; w * h * 4],
                 filled: false,
+                mute: self.mute,
                 frames: 0,
                 fail_after: self.fail_after,
                 fail_read_after: self.fail_read_after,
@@ -3888,6 +3935,9 @@ mod tests {
         ) -> Result<bool, H264Error> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
                 return Err("the encoder hung".into());
+            }
+            if self.mute {
+                return Ok(false);
             }
             out.push(if keyframe || self.frames == 0 {
                 Fake::KEYFRAME
@@ -5407,6 +5457,57 @@ mod tests {
         );
     }
 
+    /// A region whose stream never made a frame ends at its second with the
+    /// client holding nothing of the change that began it: all of it goes
+    /// as stills in that update, though they are past an update's stills,
+    /// and no region is laid out over them again, which would be the one
+    /// that never started, owed anew every second and never sent.
+    #[test]
+    fn a_region_that_never_started_is_sent_as_stills() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        paint(&mut pixels, w, whole, 9);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[whole]),
+            t0 + ms(50),
+        );
+        assert_eq!(encoder.live.len(), 1, "a region around the change");
+        assert!(page.off(&pixels) > 0, "which made no frame of it");
+        let webps = page.webps;
+        let at = settle(&mut encoder, &mut page, t0 + ms(50));
+        assert!(
+            at <= t0 + ms(50) + STREAM_IDLE + CLEANUP_TICK,
+            "ended at its second, and nothing owed after: {at:?}"
+        );
+        assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
+        assert!(page.webps > webps);
+        assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
+        assert!(encoder.live.is_empty() && !encoder.owed());
+    }
+
     /// A stream that ends with damage no frame of it carried leaves that
     /// damage as stills in the same update, not the stream's last frame from
     /// before it.
@@ -6227,6 +6328,7 @@ mod tests {
             held(),
             Box::new(Fake {
                 refuse: true,
+                mute: false,
                 fail_after: None,
                 fail_read_after: None,
             }),
@@ -6356,6 +6458,7 @@ mod tests {
             held(),
             Box::new(Fake {
                 refuse: true,
+                mute: false,
                 fail_after: None,
                 fail_read_after: None,
             }),
@@ -6382,6 +6485,7 @@ mod tests {
                 8,
                 Fake {
                     refuse: false,
+                    mute: false,
                     fail_after: Some(4),
                     fail_read_after: None,
                 },
@@ -6390,6 +6494,7 @@ mod tests {
                 10,
                 Fake {
                     refuse: false,
+                    mute: false,
                     fail_after: None,
                     fail_read_after: Some(4),
                 },
