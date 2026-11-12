@@ -1098,30 +1098,32 @@ struct Live {
     cause: Cause,
     /// When it was laid out.
     since: Duration,
+    /// What moves under it was coded and found dear
+    /// ([`TilesEncoder::probe`]), which is not asked of it again.
+    dear: bool,
 }
 
 impl Live {
-    /// The damage no frame carried, on the desktop: what the client holds of
-    /// it is the stream's last frame from before it. None of a stream that
-    /// never started, which is owed its rectangle whole ([`Self::unstarted`]).
-    fn unsent(&self) -> impl Iterator<Item = Area> + '_ {
+    /// The stream is over, and what it leaves owed: its END, where it
+    /// started, and into `unsent` the damage no frame carried, on the
+    /// desktop, of which the client holds the stream's last frame from
+    /// before it ([`TilesEncoder::owe`]); or, where it never started, into
+    /// `recovery` its rectangle whole, the client holding whatever was
+    /// there before it, the change that began it never sent
+    /// ([`TilesEncoder::recover`]).
+    fn end(self, out: &mut Out, unsent: &mut Vec<Area>, recovery: &mut Vec<Area>) {
+        if !self.started {
+            recovery.push(self.area);
+            return;
+        }
+        out.end(self.id, self.area);
         let Area { left, top, .. } = self.area;
-        self.pending
-            .iter()
-            .filter(|_| self.started)
-            .map(move |r| Area {
-                left: left + r.x,
-                top: top + r.y,
-                right: left + r.x + r.width - 1,
-                bottom: top + r.y + r.height - 1,
-            })
-    }
-
-    /// The rectangle of a stream that never started: the client holds
-    /// whatever was there before it, the change that began it never sent,
-    /// so all of it is owed as stills ([`TilesEncoder::recover`]).
-    fn unstarted(&self) -> Option<Area> {
-        (!self.started).then_some(self.area)
+        unsent.extend(self.pending.iter().map(|r| Area {
+            left: left + r.x,
+            top: top + r.y,
+            right: left + r.x + r.width - 1,
+            bottom: top + r.y + r.height - 1,
+        }));
     }
 }
 
@@ -2855,28 +2857,44 @@ impl TilesEncoder {
         // its first: by then what the churn calls moving is what moves
         // since the change, not what moved before it, and its second,
         // after which nothing moving in it ends it, is not yet up.
-        let held: HashMap<(u16, u16), Option<bool>> = self
+        // What was found dear under one is not coded again: none of a
+        // region that cannot be ended for a region of it, every stream
+        // being taken, is coded at every layout.
+        let held: HashMap<(u16, u16), Option<(u8, bool)>> = self
             .live
             .iter()
             .flat_map(|live| {
                 let judged = match live.cause {
-                    Cause::Moving => None,
-                    Cause::Burst => Some(now.saturating_sub(live.since) >= RETUNE),
+                    Cause::Burst if !live.dear => {
+                        Some((live.id, now.saturating_sub(live.since) >= RETUNE))
+                    }
+                    _ => None,
                 };
                 live.cells.iter().map(move |cell| (*cell, judged))
             })
             .collect();
+        let found_dear = std::cell::RefCell::new(Vec::new());
         let worthy = components(moving, self.stream_cells, |cells| {
-            let mut burst = None;
+            let mut burst: Vec<u8> = Vec::new();
+            let mut judged = true;
             for cell in cells {
                 match held.get(cell) {
                     Some(None) => return true,
-                    Some(Some(judged)) => burst = Some(*judged && burst.unwrap_or(true)),
+                    Some(Some((id, of_age))) => {
+                        judged &= of_age;
+                        if !burst.contains(id) {
+                            burst.push(*id);
+                        }
+                    }
                     None => {}
                 }
             }
-            if let Some(judged) = burst {
-                judged && self.probe(cells, now) >= MOVING_BYTES / 2
+            if !burst.is_empty() {
+                let dear = judged && self.probe(cells, now) >= MOVING_BYTES / 2;
+                if dear {
+                    found_dear.borrow_mut().extend(burst);
+                }
+                dear
             } else {
                 cells
                     .iter()
@@ -2890,10 +2908,12 @@ impl TilesEncoder {
             .copied()
             .filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell)))
             .collect();
+        let found_dear = found_dear.into_inner();
         for live in &mut self.live {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
                 live.moving_at = now;
             }
+            live.dear |= found_dear.contains(&live.id);
         }
         let size = self.size;
         // Each box wanted, and how many tiles move in it.
@@ -2937,11 +2957,7 @@ impl TilesEncoder {
             }
             if next.len() < MAX_STREAMS {
                 for live in old.extract_if(.., |live| live.area.intersect(area).is_some()) {
-                    if live.started {
-                        out.end(live.id, live.area);
-                    }
-                    unsent.extend(live.unsent());
-                    self.recovery.extend(live.unstarted());
+                    live.end(out, &mut unsent, &mut self.recovery);
                 }
                 let id = (0..=u8::MAX)
                     .find(|id| !next.iter().chain(&old).any(|live| live.id == *id))
@@ -2957,11 +2973,7 @@ impl TilesEncoder {
             if !idle && !overlaps && next.len() < MAX_STREAMS {
                 next.push(live);
             } else {
-                if live.started {
-                    out.end(live.id, live.area);
-                }
-                unsent.extend(live.unsent());
-                self.recovery.extend(live.unstarted());
+                live.end(out, &mut unsent, &mut self.recovery);
             }
         }
         self.live = next;
@@ -3065,6 +3077,7 @@ impl TilesEncoder {
             moving_at: now,
             cause,
             since: now,
+            dear: false,
         })
     }
 
@@ -3139,15 +3152,16 @@ impl TilesEncoder {
                     .live
                     .extract_if(.., |old| old.area.intersect(around).is_some())
                 {
-                    if old.started {
-                        out.end(old.id, old.area);
-                    }
-                    unsent.extend(old.unsent());
-                    self.recovery.extend(old.unstarted());
+                    old.end(out, &mut unsent, &mut self.recovery);
                 }
                 self.live.push(live);
                 self.cover();
                 self.owe(&unsent);
+                // The layouts count from here, so that one comes [`RETUNE`]
+                // on, where the region is judged, and not just short of its
+                // second, where a tick that finds it idle could end it
+                // first.
+                self.retuned_at = Some(now);
                 Ok(true)
             }
             Err(_) => {
@@ -3288,14 +3302,14 @@ impl TilesEncoder {
             .live
             .extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE)
         {
-            if live.started {
-                out.end(live.id, live.area);
-            }
-            unsent.extend(live.unsent());
-            self.recovery.extend(live.unstarted());
+            live.end(out, &mut unsent, &mut self.recovery);
         }
         self.cover();
         self.owe(&unsent);
+        // Ahead of the settle: a stream that never started left its tiles
+        // owed since it was laid out, which the settle would pay in part
+        // and the recovery then send again whole.
+        self.recover(now, out)?;
         if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
             return Ok(false);
         }
@@ -5457,6 +5471,53 @@ mod tests {
         );
     }
 
+    /// A region one large change began is judged before its second is up
+    /// whenever the layout before it was: a video over all of it at seven
+    /// frames a second, begun a moment after a layout with nothing live,
+    /// is kept, where the layouts counted from that one came just short of
+    /// half a second in, too soon to judge, and next after the tick that
+    /// ends a region nothing has kept for a second.
+    #[test]
+    fn a_region_one_change_began_is_judged_before_its_second() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels) + ms(5000);
+        // A layout with nothing live, 50 ms before the change.
+        let dot = Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+        stripes(&mut pixels, w, dot, 1);
+        step(&mut encoder, &mut page, &pixels, Some(&[dot]), t0 - ms(50));
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let mut out = Vec::new();
+        for n in 0..=14u64 {
+            let now = t0 + ms(n * 150);
+            // The ticks owed before the frame, as a session sends them.
+            while let Some(at) = encoder.tick_at().filter(|at| *at < now) {
+                out.clear();
+                let update = encoder.encode(at, &mut out).unwrap();
+                page.draw(update.rects, &out);
+            }
+            paint(&mut pixels, w, whole, 20 + n as u32);
+            step(&mut encoder, &mut page, &pixels, Some(&[whole]), now);
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 0, 1),
+            "one stream throughout"
+        );
+    }
+
     /// A region whose stream never made a frame ends at its second with the
     /// client holding nothing of the change that began it: all of it goes
     /// as stills in that update, though they are past an update's stills,
@@ -5503,7 +5564,12 @@ mod tests {
             "ended at its second, and nothing owed after: {at:?}"
         );
         assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
-        assert!(page.webps > webps);
+        assert_eq!(
+            page.webps - webps,
+            4,
+            "a still a row of tiles, none sent twice: the two rows the \
+             change's own update carried are draws of the cache"
+        );
         assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
         assert!(encoder.live.is_empty() && !encoder.owed());
     }

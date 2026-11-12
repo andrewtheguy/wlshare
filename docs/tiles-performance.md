@@ -1609,13 +1609,13 @@ frames, with the stills beside them:
 
 | Part | 1920x1080 | 2880x1800@2 |
 |---|---|---|
-| striped bar, 600×16 points, 6 s | 1 region, 110 kB + 2 kB | 1 region, 220 kB + 4 kB |
-| text sliding, 520×28 points, 6 s | 6 regions, 179 kB + 27 kB | 4 regions, 350 kB + 153 kB |
-| chart of 300×100 redrawn 5 a second | 1 region, 24 kB + 22 kB | stills, 277 kB |
+| striped bar, 600×16 points, 6 s | 1 region, 109 kB + 2 kB | 1 region, 219 kB + 5 kB |
+| text sliding, 520×28 points, 6 s | 6 regions, 174 kB + 29 kB | 4 regions, 355 kB + 146 kB |
+| chart of 300×100 redrawn 5 a second | 1 region, 24 kB + 22 kB | stills, 276 kB |
 | log of 400×180, 5 lines a second | 1 region, 8 kB + 98 kB | stills, 154 kB |
-| notice of 280×70 sliding in and out, twice | 4 regions, 31 kB + 54 kB | 4 regions, 58 kB + 121 kB |
-| clock, spinner and typing at once | 1 region, 46 kB + 100 kB | stills, 351 kB |
-| video of 320×180 points, 6 s | 1 region, 522 kB + 301 kB | 1 region, 878 kB + 892 kB |
+| notice of 280×70 sliding in and out, twice | 3 regions, 26 kB + 54 kB | 3 regions, 50 kB + 124 kB |
+| clock, spinner and typing at once | 1 region, 42 kB + 111 kB | stills, 351 kB |
+| video of 320×180 points, 6 s | 1 region, 520 kB + 301 kB | 1 region, 878 kB + 891 kB |
 
 The spinners (32 and 16 points), the filling bar, the stopwatch, the clock,
 the hover, the selection, the menu, the slider, the wheel's nudges and the
@@ -1631,9 +1631,9 @@ seconds:
 | Part | 1920x1080 | 2880x1800@2 |
 |---|---:|---:|
 | striped bar | 33 kB, 6 kB/s | 73 kB, 12 kB/s |
-| text sliding | 274 kB, 46 kB/s | 632 kB, 105 kB/s |
-| chart | 67 kB | 277 kB |
-| notice | 90 kB | 173 kB |
+| text sliding | 274 kB, 46 kB/s | 630 kB, 105 kB/s |
+| chart | 67 kB | 276 kB |
+| notice | 87 kB | 190 kB |
 | video of 96×54 points | 511 kB, 85 kB/s | 1493 kB, 249 kB/s |
 | video of 320×180 points | 5597 kB, 933 kB/s | not run: a region at every setting below |
 
@@ -1641,7 +1641,9 @@ A bar's stills are a third of the bytes its video was, and exact; the
 text's are a quarter to a third more than its regions and their stills
 came to; and the video is ten times any of them or more. So a component is worth a stream
 only where the stills of its tiles came to `MOVING_BYTES` over the churn's
-8 tenths, the bytes each still came to shared among its tiles. Swept:
+8 tenths, the bytes each still came to shared among its tiles. Swept, on
+the capture as it was first taken, the same page with its terminal's part
+timed otherwise, which no setting made a region of:
 
 | `MOVING_BYTES` | what streams |
 |---|---|
@@ -1670,16 +1672,16 @@ Over the two captures, and the samples at the same sizes (`mixed` and
 
 | Capture | bytes, MB | regions started | frames held lossless | held MSE |
 |---|---:|---:|---:|---:|
-| small-1920x1080 | 4.27 → 4.34 | 16 → 2 | 1447 → 1834 of 1955 | 0.09 → 0.08 |
-| small-2880x1800@2 | 8.19 → 8.15 | 12 → 3 | 1581 → 1800 of 1921 | 0.05 → 0.04 |
+| small-1920x1080 | 4.21 → 4.27 | 15 → 2 | 1340 → 1703 of 1824 | 0.10 → 0.08 |
+| small-2880x1800@2 | 8.22 → 8.21 | 11 → 3 | 1454 → 1668 of 1789 | 0.05 → 0.04 |
 | mixed-1920x1080 | 134.68 → 135.05 | 15 → 13 | 991 → 1058 of 3515 | 2.47 → 2.47 |
-| mixed-2880x1800@2 | 273.44 → 273.16 | 20 → 17 | 1045 → 1104 of 3328 | 1.32 → 1.32 |
+| mixed-2880x1800@2 | 273.44 → 273.37 | 20 → 18 | 1045 → 1104 of 3328 | 1.32 → 1.32 |
 | window-1920x1080 | 5.16 → 4.99 | 7 → 8 | 9 → 12 | 1.26 → 1.24 |
 | window-2880x1800@2 | 8.37 → 8.37 | 8 → 8 | 8 → 8 | 0.62 → 0.62 |
-| video-1920x1080 | 12.06 → 12.06 | 9 → 8 | 6 → 6 | 2.18 → 2.19 |
-| video-2880x1800@2 | 24.71 → 24.67 | 11 → 10 | 4 → 4 | 1.71 → 1.71 |
-| walk-1920x1080 | 17.96 → 18.02 | 15 → 14 | 9 → 9 | 2.50 → 2.50 |
-| walk-2880x1800@2 | 29.54 → 29.91 | 18 → 17 | 6 → 6 | 1.73 → 1.73 |
+| video-1920x1080 | 12.06 → 12.18 | 9 → 9 | 6 → 6 | 2.18 → 2.17 |
+| video-2880x1800@2 | 24.71 → 24.65 | 11 → 11 | 4 → 4 | 1.71 → 1.70 |
+| walk-1920x1080 | 17.96 → 18.18 | 15 → 17 | 9 → 9 | 2.50 → 2.48 |
+| walk-2880x1800@2 | 29.54 → 29.75 | 18 → 18 | 6 → 6 | 1.73 → 1.73 |
 | uncover-2880x1800@2 | 0.97 → 1.54 | 1 → 2 | 2 → 3 of 49 | 1.83 → 0.62 |
 
 The two regions left of `small` at 1920x1080 are the first picture's and

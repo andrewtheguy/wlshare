@@ -167,6 +167,26 @@ END
 # which is fullscreen, and sway draws a fullscreen window over a floating
 # one, the terminal's. `--test-type` keeps the bar that warns of
 # `--no-sandbox` off the top of it, which a kiosk does not draw.
+# What the terminal part runs: a progress line rewritten ten times a second,
+# and a table redrawn once a second.
+cat >"$MATERIAL/progress" <<'END'
+#!/usr/bin/env bash
+for i in $(seq 60); do
+	printf '\rcopying %3d%% ' $((i * 100 / 60))
+	sleep 0.1
+done
+echo
+END
+cat >"$MATERIAL/table" <<'END'
+#!/usr/bin/env bash
+for _ in 1 2 3 4 5; do
+	clear
+	ps aux --sort=-%cpu | head -12 | cut -c1-76
+	sleep 1
+done
+END
+chmod +x "$MATERIAL/progress" "$MATERIAL/table"
+
 chromium --ozone-platform=wayland --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --password-store=basic --test-type --app="file://$MATERIAL/small.html" >>"$MATERIAL/chromium.log" 2>&1 &
 await_window chrom
 sleep 4
@@ -295,15 +315,18 @@ done
 
 at 189
 part "a terminal over the page"
-foot --app-id=small-term >/dev/null 2>&1 &
+# What the terminal runs is a short name each, so that typing one is over
+# well before it is to start and the one before it has ended: the progress
+# line runs six seconds from about 196, the table five from about 205.
+foot --app-id=small-term --working-directory="$MATERIAL" >/dev/null 2>&1 &
 await_window small-term
 swaymsg -q '[app_id="small-term"] floating enable, resize set 640 400, move position 300 160'
 at 191
 type_slowly $'ls -la /usr/share/fonts | head\n'
 at 195
-type_slowly $'for i in $(seq 60); do printf "\\rcopying %3d%% " $((i*100/60)); sleep 0.1; done; echo\n'
-at 203.5
-type_slowly $'for i in 1 2 3 4 5; do clear; ps aux --sort=-%cpu | head -12 | cut -c1-76; sleep 1; done\n'
+type_slowly $'./progress\n'
+at 204
+type_slowly $'./table\n'
 at 211.5
 for step in $(seq 1 10) $(seq 9 -1 0); do
 	swaymsg -q "[app_id=\"small-term\"] move position $((300 + step * 4)) 160"
