@@ -18,7 +18,7 @@ use wlshare_proto::audio::{
     AUDIO_FRAME_HEADER_LEN, AudioParseError, MSG_AUDIO_FRAME, MSG_QEMU, ServerAudio,
 };
 use wlshare_proto::density::{Density, MSG_DENSITY};
-use wlshare_proto::tiles::{TileHeader, TilesParseError};
+use wlshare_proto::tiles::{MarkWhy, TileHeader, TilesParseError};
 use wlshare_proto::video::{FRAME_HEADER_LEN, VideoFrameError};
 use wlshare_proto::{ENCODING_AUDIO, ENCODING_TILES, ENCODING_VIDEO};
 
@@ -321,6 +321,9 @@ pub enum TileBody {
     /// A median predictor's residuals of the rectangle's pixels in three
     /// zstd frames, on a lossless list where the desktop moves.
     Median(Vec<u8>),
+    /// Where the stream on `stream` moves, the rectangle, and why its region
+    /// is one: none of the picture.
+    Mark { stream: u8, why: MarkWhy },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -580,6 +583,9 @@ fn parse_rect(buf: &[u8]) -> Result<Option<(Rect, usize)>, ParseError> {
                 TileHeader::Copy { x, y } => (RectBody::Tiles(TileBody::Copy { x, y }), at),
                 TileHeader::Cached { slot } => (RectBody::Tiles(TileBody::Cached { slot }), at),
                 TileHeader::Store { slot } => (RectBody::Tiles(TileBody::Store { slot }), at),
+                TileHeader::Mark { stream, why } => {
+                    (RectBody::Tiles(TileBody::Mark { stream, why }), at)
+                }
                 TileHeader::Progressive { len } => {
                     let Some(block) = body(len)? else {
                         return Ok(None);
@@ -672,8 +678,8 @@ mod tests {
         AudioFormat, MAX_AUDIO_FRAME, SampleFormat, audio_begin, audio_end, audio_rect,
     };
     use wlshare_proto::tiles::{
-        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MEDIAN, KIND_PROGRESSIVE, KIND_START,
-        KIND_STILL, KIND_STORE, KIND_WEBP,
+        KIND_CACHED, KIND_COPY, KIND_END, KIND_FRAME, KIND_MARK, KIND_MEDIAN, KIND_PROGRESSIVE,
+        KIND_START, KIND_STILL, KIND_STORE, KIND_WEBP,
     };
 
     use crate::rfb::audio::FlacEncoder;
@@ -933,7 +939,7 @@ mod tests {
     #[test]
     fn an_update_of_every_rectangle_parses_whole_or_not_at_all() {
         let image = CursorImage::cropped(2, 1, (1, 0), &[255, 0, 0, 255, 0, 0, 128, 128]).unwrap();
-        let mut wire = msg::update_header(17).to_vec();
+        let mut wire = msg::update_header(18).to_vec();
         wire.extend_from_slice(&msg::rect_header(3, 4, 2, 1, ENCODING_RAW));
         wire.extend_from_slice(&[1, 2, 3, 0, 4, 5, 6, 0]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 64, 64, ENCODING_ZRLE));
@@ -956,6 +962,8 @@ mod tests {
         wire.extend_from_slice(&[KIND_START, 2, 0, 0, 0, 1, 0x82]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_FRAME, 2, 0, 0, 0, 1, 0x86]);
+        wire.extend_from_slice(&msg::rect_header(6, 70, 308, 180, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_MARK, 2, 1]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_END, 2]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 320, 160, ENCODING_TILES));
@@ -1054,11 +1062,24 @@ mod tests {
             })
         );
         assert_eq!(
-            (rects[10].width, &rects[10].body),
+            rects[10],
+            Rect {
+                x: 6,
+                y: 70,
+                width: 308,
+                height: 180,
+                body: RectBody::Tiles(TileBody::Mark {
+                    stream: 2,
+                    why: MarkWhy::Burst
+                })
+            }
+        );
+        assert_eq!(
+            (rects[11].width, &rects[11].body),
             (320, &RectBody::Tiles(TileBody::End { stream: 2 }))
         );
         assert_eq!(
-            rects[11],
+            rects[12],
             Rect {
                 x: 0,
                 y: 0,
@@ -1068,7 +1089,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rects[12],
+            rects[13],
             Rect {
                 x: 64,
                 y: 64,
@@ -1078,7 +1099,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rects[13],
+            rects[14],
             Rect {
                 x: 128,
                 y: 64,
@@ -1088,7 +1109,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rects[14],
+            rects[15],
             Rect {
                 x: 192,
                 y: 64,
@@ -1098,7 +1119,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rects[15],
+            rects[16],
             Rect {
                 x: 128,
                 y: 128,
@@ -1108,7 +1129,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rects[16],
+            rects[17],
             Rect {
                 x: 192,
                 y: 128,

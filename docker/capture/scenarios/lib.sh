@@ -15,6 +15,7 @@
 #   busy:  flood.sh, browser.sh, drag.sh, video.sh, window.sh    most of the picture new, or the window's
 #   mixed: mixed.sh    minutes at the desk, quiet and busy in turn
 #   small: small.sh    the small movements of a desk, one kind at a time
+#   many:  many.sh     the same movements, several at once and then all of them
 #
 # busy-lines.sh is the flood itself, for any terminal.
 
@@ -131,6 +132,73 @@ await_window() {
 	done
 	log "no window $1 appeared"
 	return 1
+}
+
+# A script's own clock, for one that plays its parts by the second: sleep
+# until that many seconds, which may have a fraction, from T0, the nanosecond
+# the script set as it went.
+at() {
+	local due now
+	due=$((T0 + $(awk -v s="$1" 'BEGIN { printf "%d", s * 1000000000 }')))
+	now=$(date +%s%N)
+	if ((due > now)); then
+		sleep "$(awk -v n=$((due - now)) 'BEGIN { printf "%.3f", n / 1000000000 }')"
+	fi
+}
+
+# The pointer from where it is, PX,PY, which a script sets where it first
+# puts it, to X,Y in steps of about a thirtieth of a second over SECONDS, its
+# buttons held as given; and a click of the left button at X,Y.
+PX=0 PY=0
+glide() {
+	local x=$1 y=$2 seconds=$3 buttons=${4:-0} steps i
+	steps=$(awk -v s="$seconds" 'BEGIN { n = int(s * 30); print n < 1 ? 1 : n }')
+	for ((i = 1; i <= steps; i++)); do
+		pointer $((PX + (x - PX) * i / steps)) $((PY + (y - PY) * i / steps)) "$buttons"
+		sleep 0.033
+	done
+	PX=$x PY=$y
+}
+click() {
+	pointer "$1" "$2" 0
+	pointer "$1" "$2" 1
+	sleep 0.05
+	pointer "$1" "$2" 0
+	PX=$1 PY=$2
+}
+
+# The page of the small movements (small.html), which lays every part out at
+# a fixed place and plays them by its own clock from the first key not typed
+# into its field, by PLAN: `small`, one kind at a time, or `many`, several at
+# once. As an application's window, which has no tab strip or address bar
+# and, tiled, fills the desktop: its points are the desktop's. Not a kiosk's,
+# which is fullscreen, and sway draws a fullscreen window over a floating
+# one, the terminal's. `--test-type` keeps the bar that warns of
+# `--no-sandbox` off the top of it, which a kiosk does not draw. And in
+# MATERIAL what the terminal over it runs: `progress`, a line rewritten ten
+# times a second for six, and `table`, redrawn once a second for five.
+small_page() {
+	mkdir -p "$MATERIAL"
+	cat >"$MATERIAL/progress" <<'END'
+#!/usr/bin/env bash
+for i in $(seq 60); do
+	printf '\rcopying %3d%% ' $((i * 100 / 60))
+	sleep 0.1
+done
+echo
+END
+	cat >"$MATERIAL/table" <<'END'
+#!/usr/bin/env bash
+for _ in 1 2 3 4 5; do
+	clear
+	ps aux --sort=-%cpu | head -12 | cut -c1-76
+	sleep 1
+done
+END
+	chmod +x "$MATERIAL/progress" "$MATERIAL/table"
+	chromium --ozone-platform=wayland --no-sandbox --disable-gpu --disable-dev-shm-usage --no-first-run --password-store=basic --test-type --app="file://$HERE/small.html?$1" >>"$MATERIAL/chromium.log" 2>&1 &
+	await_window chrom
+	sleep 4
 }
 
 # The page in a kiosk Chromium, software rendered. Its first start in a

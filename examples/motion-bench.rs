@@ -29,10 +29,11 @@
 //! list's is progressive tiles, which `tiles-walk-sim` walks over a link.
 //! `--lossless` codes the picture a lossless list asks for instead, every
 //! tile exact, planar where it is still and a median predictor's residuals
-//! where it moves, and no region: its coder is `lossless`. Its
-//! `--motion-debug` outlines every region in its frames, as the daemon does
-//! with `motion_debug = true`, for what that costs and to hold it to a
-//! picture that still ends lossless. Its
+//! where it moves, and no region: its coder is `lossless`.
+//! `--motion-debug` marks every region of the held picture, as the daemon
+//! does with `motion_debug = true`, to hold it to the same bytes as without:
+//! a mark has no payload, so `bytes` counts none, and `marks` says how many
+//! went, 15 bytes each on the wire. The held picture's
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
@@ -155,7 +156,8 @@ struct Args {
     /// The dial `WLSV` is coded at.
     quality: u8,
     frames: Option<PathBuf>,
-    /// Every region outlined in its frames.
+    /// Every region marked, none of it in the picture
+    /// ([`TilesEncoder::set_debug`]).
     motion_debug: bool,
     /// `check` rather than the bench.
     check: bool,
@@ -340,6 +342,8 @@ struct Sent {
     copies: u64,
     /// The tiles drawn from the page's cache, which carry no payload either.
     cached: u64,
+    /// The regions' marks, which carry none and are none of the picture.
+    marks: u64,
 }
 
 impl Sent {
@@ -356,6 +360,7 @@ impl Sent {
         self.regions.extend(&other.regions);
         self.copies += other.copies;
         self.cached += other.cached;
+        self.marks += other.marks;
     }
 }
 
@@ -466,6 +471,13 @@ impl Page {
                     self.decoders
                         .remove(&stream)
                         .ok_or_else(|| format!("stream {stream} ended while not live"))?;
+                }
+                // None of the picture: only that its stream is live.
+                TileBody::Mark { stream, .. } => {
+                    if !self.decoders.contains_key(&stream) {
+                        return Err(format!("stream {stream} marked while not live").into());
+                    }
+                    sent.marks += 1;
                 }
                 TileBody::Copy {
                     x: from_x,
@@ -1141,7 +1153,7 @@ fn row(
         tally.mse / tally.frames as f64
     };
     println!(
-        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"webp\":{},\"median\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
+        "{{\"capture\":{},\"coder\":{},\"quality\":{},\"frames\":{},\"seconds\":{seconds},\"cpu_ms\":{},\"frame_ms\":{mean},\"p95_ms\":{},\"bytes\":{},\"webp\":{},\"median\":{},\"still\":{},\"video\":{},\"copies\":{},\"cached\":{},\"streams\":{},\"marks\":{},\"keyframes\":{},\"held_mse\":{held_mse},\"lossless_frames\":{},\"end_off\":{end_off},\"end_mse\":{end_mse},\"settled\":{},\"tail_s\":{},\"tail_cpu_ms\":{},\"tail_tick_ms\":{},\"tail_tick_bytes\":{}}}",
         json(name),
         json(coder),
         quality,
@@ -1156,6 +1168,7 @@ fn row(
         tally.sent.copies,
         tally.sent.cached,
         tally.sent.starts,
+        tally.sent.marks,
         tally.keyframes,
         tally.lossless,
         tally.settled,

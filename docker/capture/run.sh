@@ -37,6 +37,10 @@
 #                    own length, SMALL_LENGTH (240 by default, and no
 #                    less: its last part begins at 231), and only at
 #                    the sizes its page fits, 1280 by 820 points or more
+#   many   many      the same movements several at once, then all of them;
+#                    not in `all`, its own length, MANY_LENGTH (120 by
+#                    default, and no less: its last part begins at 115),
+#                    and at the sizes small's page fits
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
@@ -52,6 +56,7 @@ SIZES="${SIZES:-1280x800 1440x900 1600x1000 1920x1080 2048x1536@2 2560x1600@2 28
 SCENARIOS="${SCENARIOS:-all}"
 LENGTH="${LENGTH:-20}"
 SMALL_LENGTH="${SMALL_LENGTH:-240}"
+MANY_LENGTH="${MANY_LENGTH:-120}"
 FRAMES="${FRAMES:-150}"
 OUT=/captures
 RAW="$OUT/raw"
@@ -91,10 +96,15 @@ if [[ " $SCENARIOS " == *" video "* || " $SCENARIOS " == *" walk "* || " $SCENAR
 	exit 1
 fi
 
-# The small plays its parts by the clock, the last from its 231st second: a
-# shorter session would be a capture of that name without them.
+# The small and the many play their parts by the clock, the last from their
+# 231st and 115th seconds: a shorter session would be a capture of that name
+# without them.
 if [[ " $SCENARIOS " == *" small "* ]] && { [[ ! "$SMALL_LENGTH" =~ ^[0-9]+$ ]] || ((10#$SMALL_LENGTH < 240)); }; then
 	log "the small plays for 240 seconds or more, and SMALL_LENGTH is '$SMALL_LENGTH'"
+	exit 1
+fi
+if [[ " $SCENARIOS " == *" many "* ]] && { [[ ! "$MANY_LENGTH" =~ ^[0-9]+$ ]] || ((10#$MANY_LENGTH < 120)); }; then
+	log "the many plays for 120 seconds or more, and MANY_LENGTH is '$MANY_LENGTH'"
 	exit 1
 fi
 
@@ -285,6 +295,16 @@ scenario_small() {
 	finish small
 }
 
+scenario_many() {
+	# The small's page, and passed over where that does not fit.
+	if ((W / scale < 1280 || H / scale < 820)); then
+		log "many: passed over at $LABEL, under the 1280 by 820 points of its page"
+		return
+	fi
+	LENGTH=$MANY_LENGTH play many
+	finish many
+}
+
 # ── The run ──────────────────────────────────────────────────────────────────
 
 PREV=1280x720
@@ -335,6 +355,11 @@ rmdir "$RAW" 2>/dev/null || true
 		echo
 		echo "Small, $SMALL_LENGTH seconds, at the sizes of 1280 by 820 points or more:"
 		echo "- small: the small movements of a desk, one kind at a time with the desktop still between them, each part and its second in \`docker/capture/scenarios/small.sh\`"
+	fi
+	if compgen -G "$OUT/many-*.wlcap.zst" >/dev/null; then
+		echo
+		echo "Many, $MANY_LENGTH seconds, at the sizes of 1280 by 820 points or more:"
+		echo "- many: the small movements of a desk several at once, then all of them, each part and its second in \`docker/capture/scenarios/many.sh\`"
 	fi
 	echo
 	echo "$(sway --version), $(wlshare --version)"

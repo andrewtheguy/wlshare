@@ -19,7 +19,8 @@
 //! client's parser; a WebP, a progressive tile (all a list whose dial walks
 //! is sent; `--held` holds it, for WebPs and streams), a still and a median
 //! predictor's residuals (all a lossless list is sent, `--lossless`), a copy
-//! and a region's START are counted, a copy's source and a progressive
+//! a region's START and a mark of one are counted, a mark held to a live
+//! stream's rectangle, a copy's source and a progressive
 //! tile's tile checked, a still or a median body read back whole at its
 //! rectangle's size, and with
 //! `--streams` each region's stream is written to
@@ -218,9 +219,12 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         mut frames,
         mut frame_bytes,
         mut ends,
+        mut marks,
         mut updates,
         mut second,
-    ) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    ) = (
+        0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64,
+    );
     let mut live: HashMap<u8, Stream> = HashMap::new();
     let mut done: Vec<Stream> = Vec::new();
     let mut n = 0;
@@ -372,6 +376,26 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                                 ends += 1;
                                 done.push(held);
                             }
+                            // None of the picture: only that it lies in a
+                            // live stream's rectangle.
+                            RectBody::Tiles(TileBody::Mark { stream, .. }) => {
+                                let held = live.get(&stream).ok_or_else(|| {
+                                    format!("stream {stream} marked while not live")
+                                })?;
+                                let ((x, y, w, h), (sx, sy, sw, sh)) = (place, held.rect);
+                                if x < sx
+                                    || y < sy
+                                    || u32::from(x) + u32::from(w) > u32::from(sx) + u32::from(sw)
+                                    || u32::from(y) + u32::from(h) > u32::from(sy) + u32::from(sh)
+                                {
+                                    return Err(format!(
+                                        "stream {stream} marked at {place:?}, not inside {:?}",
+                                        held.rect
+                                    )
+                                    .into());
+                                }
+                                marks += 1;
+                            }
                             RectBody::ExtendedDesktopSize { .. } => {
                                 (width, height) = (rect.width, rect.height);
                                 eprintln!(
@@ -405,7 +429,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         if elapsed > second {
             second = elapsed;
             eprintln!(
-                "tiles-sink: {second}s {updates} updates, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends",
+                "tiles-sink: {second}s {updates} updates, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {} live streams, {frames} frames {frame_bytes} bytes, {ends} ends, {marks} marks",
                 live.len()
             );
         }
@@ -423,7 +447,7 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     eprintln!(
-        "tiles-sink: done, {updates} updates, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends"
+        "tiles-sink: done, {updates} updates, {webps} WebPs {webp_bytes} bytes, {progressives} progressive {progressive_bytes} bytes, {medians} median {median_bytes} bytes, {stills} stills {still_bytes} bytes, {copies} copies, {cached} cached, {starts} streams started, {frames} frames {frame_bytes} bytes, {ends} ends, {marks} marks"
     );
 
     Ok(())

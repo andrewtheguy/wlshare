@@ -28,6 +28,7 @@
 //! 7 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
 //! 8 STILL   u32 length | u8[length]  the still stream's next planar bitmap, of exactly the rectangle's pixels
 //! 9 MEDIAN  u32 length | u8[length]  three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
+//! 10 MARK   u8 stream | u8 why   where the stream's region moves and why it is one, to show a person and no picture
 //! ```
 //!
 //! - A **WEBP** is the desktop's pixels in the rectangle as a WebP file, lossless
@@ -93,6 +94,21 @@
 //! - An **END** says the stream on `stream` is over: its last picture stays
 //!   until something draws over it, and no frame follows on the id until a
 //!   START begins another. The rectangle is the stream's.
+//! - A **MARK** is none of the picture: it tells a person looking into what
+//!   the server makes a stream of where the stream on `stream` moves, and why
+//!   its region is one. The rectangle is the box around the pixels that
+//!   changed in the region since its START, inside the stream's rectangle,
+//!   and the stream's rectangle until any have; `why` is [`MarkWhy`], the
+//!   reason the server has for the region as the mark is sent: why it
+//!   began, until the server keeps it for another, which the next mark
+//!   says, the same stream going on under it. It
+//!   follows the stream's START, each takes the place of the one before it
+//!   on that stream, rectangle and `why` both, and the stream's END is the
+//!   end of it, as is a picture that starts over. A client that shows it draws the rectangle's outline
+//!   over its picture and never into it, so that what a COPY or a STORE
+//!   takes, and every rectangle drawn after, is the picture alone; a client
+//!   that does not ignores it. It has no body past its header, and a server
+//!   sends none unless it is set to.
 //! - A **COPY** draws at the rectangle what the client holds, as the
 //!   rectangles before it left it, at the same size from `(x, y)`, which is
 //!   inside the desktop: a scroll, or a window moved, as RFB's CopyRect draws
@@ -162,6 +178,16 @@ pub const KIND_STILL: u8 = 8;
 /// Three zstd frames of a median predictor's residuals of the rectangle's
 /// pixels, on a lossless list where the desktop moves.
 pub const KIND_MEDIAN: u8 = 9;
+/// Where a region's stream moves and why the region is one, to show a
+/// person: none of the picture.
+pub const KIND_MARK: u8 = 10;
+
+/// A MARK's `why`: the region was laid out over tiles that kept changing,
+/// or is kept for them, whatever began it.
+pub const MARK_MOVING: u8 = 0;
+/// A MARK's `why`: one update's change was more than its stills, and the
+/// region is the box around it, not kept for anything else since.
+pub const MARK_BURST: u8 = 1;
 
 /// A tile's side: the desktop is in tiles this square from its top-left, and
 /// a STORE or a CACHED rectangle is one of them.
@@ -251,6 +277,36 @@ impl TilesPicture {
     }
 }
 
+/// Why a region is one, which a MARK says of its stream ([`KIND_MARK`]):
+/// why it began, until the server keeps it for another reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkWhy {
+    /// Its tiles kept changing, and it was laid out or is kept for them
+    /// ([`MARK_MOVING`]).
+    Moving,
+    /// One update's change was more than its stills ([`MARK_BURST`]).
+    Burst,
+}
+
+impl MarkWhy {
+    /// The byte a MARK carries for it.
+    pub const fn to_byte(self) -> u8 {
+        match self {
+            Self::Moving => MARK_MOVING,
+            Self::Burst => MARK_BURST,
+        }
+    }
+
+    /// What `byte` names, or `None` where it names nothing.
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            MARK_MOVING => Some(Self::Moving),
+            MARK_BURST => Some(Self::Burst),
+            _ => None,
+        }
+    }
+}
+
 /// Why a list that names the tiles encoding asks for no picture the server
 /// sends. Fatal to the connection, as a malformed message is.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -265,9 +321,11 @@ pub enum TilesListError {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum TilesParseError {
     #[error(
-        "a tiles rectangle of kind {0}, which is none of WEBP, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE, STILL and MEDIAN"
+        "a tiles rectangle of kind {0}, which is none of WEBP, START, FRAME, END, COPY, CACHED, STORE, PROGRESSIVE, STILL, MEDIAN and MARK"
     )]
     UnknownKind(u8),
+    #[error("a tiles mark whose why is {0}, which is neither MOVING nor BURST")]
+    Why(u8),
     #[error("a tiles rectangle of cache slot {0}, where the cache has {CACHE_SLOTS}")]
     Slot(u16),
     #[error("a tiles rectangle of {0} bytes, where one is 1 to {max} bytes", max = crate::MAX_BODY)]
@@ -302,6 +360,9 @@ pub enum TileHeader {
     /// Three zstd frames of a median predictor's residuals, `len` bytes,
     /// follow.
     Median { len: usize },
+    /// The stream on `stream` moves in the rectangle, its region one for
+    /// `why`; nothing follows.
+    Mark { stream: u8, why: MarkWhy },
 }
 
 impl TileHeader {
@@ -311,13 +372,13 @@ impl TileHeader {
             KIND_WEBP | KIND_COPY | KIND_PROGRESSIVE | KIND_STILL | KIND_MEDIAN => Ok(5),
             KIND_START | KIND_FRAME => Ok(6),
             KIND_END => Ok(2),
-            KIND_CACHED | KIND_STORE => Ok(3),
+            KIND_CACHED | KIND_STORE | KIND_MARK => Ok(3),
             other => Err(TilesParseError::UnknownKind(other)),
         }
     }
 
     /// The same header naming a body of `len` bytes; an END, a COPY, a
-    /// CACHED or a STORE names none. What
+    /// CACHED, a STORE or a MARK names none. What
     /// a server that writes the body before it knows its length fills its
     /// header in again with, [`Self::to_bytes`] being as long either way.
     pub fn with_len(self, len: usize) -> Self {
@@ -332,6 +393,7 @@ impl TileHeader {
             Self::Progressive { .. } => Self::Progressive { len },
             Self::Still { .. } => Self::Still { len },
             Self::Median { .. } => Self::Median { len },
+            Self::Mark { stream, why } => Self::Mark { stream, why },
         }
     }
 
@@ -350,13 +412,14 @@ impl TileHeader {
             Self::Progressive { len } => [&[KIND_PROGRESSIVE][..], &length(len)].concat(),
             Self::Still { len } => [&[KIND_STILL][..], &length(len)].concat(),
             Self::Median { len } => [&[KIND_MEDIAN][..], &length(len)].concat(),
+            Self::Mark { stream, why } => vec![KIND_MARK, stream, why.to_byte()],
         }
     }
 
     /// The header at the front of `buf`, a rectangle's body, and its length,
     /// or `Ok(None)` while it is not all there. An unknown kind, a body
-    /// of none or past [`crate::MAX_BODY`] bytes, or a cache slot past
-    /// [`CACHE_SLOTS`], is an error.
+    /// of none or past [`crate::MAX_BODY`] bytes, a cache slot past
+    /// [`CACHE_SLOTS`], or a mark's why that names nothing, is an error.
     pub fn parse(buf: &[u8]) -> Result<Option<(Self, usize)>, TilesParseError> {
         let Some(&kind) = buf.first() else {
             return Ok(None);
@@ -401,6 +464,10 @@ impl TileHeader {
                     Self::Store { slot }
                 }
             }
+            KIND_MARK => Self::Mark {
+                stream: buf[1],
+                why: MarkWhy::from_byte(buf[2]).ok_or(TilesParseError::Why(buf[2]))?,
+            },
             _ => Self::End { stream: buf[1] },
         };
         Ok(Some((header, used)))

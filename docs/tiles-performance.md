@@ -1661,7 +1661,9 @@ A region that one large change began has no stills under it to count, and
 was kept for as long as anything of 5 tiles' area moved in it: a window
 that opened with a bar moving on it was a video of the whole window until
 the bar stopped. What moves in it is now coded to see — at most 16 of the
-component's tiles, a WebP each, thrown away — from the layout after its
+component's tiles, a WebP each, thrown away, and what a tile of those came
+to taken for every change of every tile over the 8 tenths, held to
+`MOVING_BYTES` as stills counted are — from the layout after its
 first, half a second in, and the region is kept only where that would be
 dear and is half of it or more; where it is dear and less, it ends for a
 region of what moves; otherwise it ends at its second, as an idle one
@@ -1679,9 +1681,27 @@ video, and 1.0% and 0.7% on walk, the most of any. The frame it
 falls on is that much later, once a region. Counting instead the pixels of
 the same tiles that are neither the one to their left nor the one above
 took 0.15 ms and gave the same verdict all 31 times, none of them close —
-30 dear by 9 to 180 times the bytes, one cheap by 33 — but a still came to
+30 dear by 4.6 to 206 times the bytes, one cheap by 67 — but a still came to
 1.2 to 2.8 bytes for each such pixel, by what it showed, where the WebP is
 what the still would be. So the tiles are coded.
+
+The guess first took a tile to have changed once in each tenth of a second
+it changed in, which is all the churn kept, and was held to half of
+`MOVING_BYTES` for it. A still goes with every update, though, and over
+those 31 a tile had changed 1.0 to 2.7 times a tenth, 2.1 to 2.6 under a
+video: a guess of 85 to 128 KiB over something changing three times a tenth
+would have ended a region whose stills then came to `MOVING_BYTES` and
+began it again. So the churn counts every change, the guess takes a still
+for each, and it is held to `MOVING_BYTES` whole. None of the 31 verdicts
+is another: every sample at both sizes, `small` at both and `many` at
+1920x1080 are the same to the byte. `many` at 2880x1800@2 is not
+([below](#many-small-movements-at-once)), the one capture with a guess
+near the line. And where more than four components are to be coded so in
+one layout, they share the 64 tiles four would take, one each at the
+least, and of more than 64 components that many are coded a layout, the
+rest in turn at the layouts after, so a desktop with many things moving
+under such a region is coded no more than one with four; no capture has
+more than three.
 
 Over the two captures, and the samples at the same sizes (`mixed` and
 `walk` whole), the rule before and now:
@@ -1707,11 +1727,23 @@ The encoder's time is within its noise on all of them. uncover at
 2880x1800@2 is the one that sends more, 0.6 MB, in two regions where it
 had one: a third of the error held, for half as many bytes again.
 
-`motion_debug` outlines each region in its frames. On lab1 (4 vCPUs of AMD
-EPYC Rome), libx264, three runs each: video-1920x1080 took 2.52 s of the
-processor without it and 2.54 s with, window-2880x1800@2 1.64 s and 1.63 s,
-inside what the runs differ by, for 0.4% and 0.2% more bytes; and `check`
-passes with it, the picture lossless once settled, the outline gone.
+`motion_debug` marks each region for zDesk's page to outline, and codes
+nothing: a MARK after a region's START and wherever what it says changes,
+15 bytes each, last in an update that carries something else. Played with
+it and without (`motion-bench --motion-debug`), video-1920x1080,
+window-2880x1800@2, both mixed, walk-1920x1080 and uncover-2880x1800@2 are
+the same in every count the bench keeps and in every frame's — bytes,
+stills, frames, regions, what the page held — but the marks: 60, 78, 185,
+203, 106 and 4 of them for 9, 8, 16, 21, 17 and 2 regions, 2775 bytes beside
+mixed-1920x1080's 135 MB; and `check` passes with it. A region has several
+because its mark is the box around the pixels that changed, found by
+comparing each changed tile with the picture before whatever the damage
+named, and grows as pixels further out change; the comparison is made only
+with `motion_debug`, and the encoder's time with it was from 2% less to 4%
+more than without. Until protocol 14 the
+outline was painted into each region's frames, which coded it: 0.4% and
+0.2% more bytes on video-1920x1080 and window-2880x1800@2, and frames that
+were not the ones a session without it sends.
 
 ## A region that shrinks
 
@@ -1767,3 +1799,69 @@ a second on, and the bar is stills (`a_region_left_with_what_is_cheap_ends`).
 On the samples nothing was found cheap, a video being what was left each
 time, and every figure above is the same to the byte: the cost is the
 coding, 4 and 6 times more on the two mixed, counted above.
+
+## Many small movements at once
+
+`small` plays each movement alone. `many`
+(`docker/capture/scenarios/many.sh`) plays the same page's several at
+once: three that are apart, four beside each other along the top, four
+lower down where a chart and a log are beside a thumbnail's video, then all
+eleven for a minute, with a small video, a notice and a section, typing,
+the pointer and a terminal beside them in turn. Two minutes, captured on
+lab1 at 1920x1080 and 2880x1800@2 (2113 and 2082 frames), and played
+through `motion-bench --libx264 --tiles-only`, by 0.0.127, where any five
+moving tiles were a region, and now:
+
+| Capture | bytes, MB | regions started | frames held lossless | held MSE | encoder CPU, s |
+|---|---:|---:|---:|---:|---:|
+| many-1920x1080 | 11.49 → 13.99 | 70 → 39 | 36 → 1068 of 2113 | 1.21 → 0.94 | 4.22 → 5.27 |
+| many-2880x1800@2 | 25.68 → 34.86 | 67 → 9 | 339 → 1065 of 2082 | 0.47 → 0.27 | 17.09 → 23.31 |
+
+What moves a little stays lossless here as it does alone, and that is what
+the bytes and the time are for: a fifth more bytes and a quarter more time
+at 1920x1080, a third more of each at 2880x1800@2. By
+part, now, at 1920x1080 — its frames, those a region was live in, those the
+page held exact, and what went:
+
+| From | Part | frames | with a region | exact | WebP, kB | H.264, kB | regions started |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 3 s | three apart | 251 | 0 | 251 | 333 | 0 | 0 |
+| 18 s | four along the top | 251 | 0 | 251 | 744 | 0 | 0 |
+| 33 s | four lower down | 250 | 0 | 250 | 1522 | 0 | 0 |
+| 48 s | all eleven | 273 | 0 | 273 | 3045 | 0 | 0 |
+| 63 s | and a small video, a notice, a section | 371 | 329 | 42 | 1371 | 3165 | 28 |
+| 81 s | and typing | 144 | 144 | 0 | 10 | 593 | 4 |
+| 88 s | and the pointer, a drag | 227 | 227 | 0 | 73 | 1114 | 5 |
+| 99 s | and a terminal | 325 | 325 | 0 | 129 | 1357 | 1 |
+
+All eleven together are no region at 1920x1080: 3.0 MB of stills in fifteen
+seconds, 1.6 Mbit/s, every frame exact, where 0.0.127 sent 1.7 MB for them
+with a region live in all but six frames. At 2880x1800@2 the first two
+parts are the same, lossless throughout for 0.7 and 1.6 MB, and from the
+third the chart and the thumbnail's video beside it are one region of 640
+by 384. The terminal's opening, at 101 s, begins a region over nearly the
+whole desktop, and of the three things moving under it half a second on
+none is dear, guessed at 45, 160 and 233 KiB: it ends at its second, and
+the rest is stills, 7.6 MB of them in the terminal's 16 s with 230 of its
+316 frames exact. Held to half of `MOVING_BYTES`, by the tenths, the last
+of the three kept a region of 576 by 384 to the end, and the part was
+3.8 MB of stills and 0.7 of video with 2 frames exact: 3.5 MB less.
+
+Two things the capture shows are left as found, neither looked into
+further than the frames' own record:
+
+- **A region laid out again and again.** At 1920x1080, while the small
+  video plays among the rest (63 s to 81 s), 28 regions are started in
+  eighteen seconds, the rectangles another set at most layouts — 512 by
+  576, then 640 by 192 and 384 by 256, then 640 by 576, then 1280 by 576 —
+  each a stream started over at a keyframe. 0.0.127 started 31 there.
+- **A region that ends and comes back.** At 2880x1800@2 the region over
+  the chart and the thumbnail, 640 by 384, is started 5 times between
+  45 s and 92 s, live from four to nine seconds at a time, eighteen where
+  the small video is beside it, and gone for one to three between. The
+  chart is redrawn five times a second, four of the churn's eight tenths,
+  which is the least that counts as moving, and the thumbnail alone is
+  under the 20 tiles a region needs at scale 2, so the region may be
+  idling out its second whenever the chart's tiles fall short and being
+  laid out again when the stills come to its worth; that is a reading of
+  the rule, not something measured.
