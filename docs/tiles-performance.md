@@ -1661,7 +1661,9 @@ A region that one large change began has no stills under it to count, and
 was kept for as long as anything of 5 tiles' area moved in it: a window
 that opened with a bar moving on it was a video of the whole window until
 the bar stopped. What moves in it is now coded to see — at most 16 of the
-component's tiles, a WebP each, thrown away — from the layout after its
+component's tiles, a WebP each, thrown away, and what a tile of those came
+to taken for every change of every tile over the 8 tenths, held to
+`MOVING_BYTES` as stills counted are — from the layout after its
 first, half a second in, and the region is kept only where that would be
 dear and is half of it or more; where it is dear and less, it ends for a
 region of what moves; otherwise it ends at its second, as an idle one
@@ -1679,9 +1681,25 @@ video, and 1.0% and 0.7% on walk, the most of any. The frame it
 falls on is that much later, once a region. Counting instead the pixels of
 the same tiles that are neither the one to their left nor the one above
 took 0.15 ms and gave the same verdict all 31 times, none of them close —
-30 dear by 9 to 180 times the bytes, one cheap by 33 — but a still came to
+30 dear by 4.6 to 206 times the bytes, one cheap by 67 — but a still came to
 1.2 to 2.8 bytes for each such pixel, by what it showed, where the WebP is
 what the still would be. So the tiles are coded.
+
+The guess first took a tile to have changed once in each tenth of a second
+it changed in, which is all the churn kept, and was held to half of
+`MOVING_BYTES` for it. A still goes with every update, though, and over
+those 31 a tile had changed 1.0 to 2.7 times a tenth, 2.1 to 2.6 under a
+video: a guess of 85 to 128 KiB over something changing three times a tenth
+would have ended a region whose stills then came to `MOVING_BYTES` and
+began it again. So the churn counts every change, the guess takes a still
+for each, and it is held to `MOVING_BYTES` whole. None of the 31 verdicts
+is another: every sample at both sizes, `small` at both and `many` at
+1920x1080 are the same to the byte. `many` at 2880x1800@2 is not
+([below](#many-small-movements-at-once)), the one capture with a guess
+near the line. And where more than four components are to be coded so in
+one layout, they share the 64 tiles four would take, one each at the
+least, so a desktop with many things moving under such a region is coded
+no more than one with four; no capture has more than three.
 
 Over the two captures, and the samples at the same sizes (`mixed` and
 `walk` whole), the rule before and now:
@@ -1795,10 +1813,11 @@ moving tiles were a region, and now:
 | Capture | bytes, MB | regions started | frames held lossless | held MSE | encoder CPU, s |
 |---|---:|---:|---:|---:|---:|
 | many-1920x1080 | 11.49 → 13.99 | 70 → 39 | 36 → 1068 of 2113 | 1.21 → 0.94 | 4.22 → 5.27 |
-| many-2880x1800@2 | 25.68 → 31.21 | 67 → 10 | 339 → 819 of 2082 | 0.47 → 0.31 | 17.09 → 21.85 |
+| many-2880x1800@2 | 25.68 → 34.86 | 67 → 9 | 339 → 1065 of 2082 | 0.47 → 0.27 | 17.09 → 23.31 |
 
 What moves a little stays lossless here as it does alone, and that is what
-the bytes and the time are for: a fifth more bytes and a quarter more time. By
+the bytes and the time are for: a fifth more bytes and a quarter more time
+at 1920x1080, a third more of each at 2880x1800@2. By
 part, now, at 1920x1080 — its frames, those a region was live in, those the
 page held exact, and what went:
 
@@ -1818,7 +1837,13 @@ seconds, 1.6 Mbit/s, every frame exact, where 0.0.127 sent 1.7 MB for them
 with a region live in all but six frames. At 2880x1800@2 the first two
 parts are the same, lossless throughout for 0.7 and 1.6 MB, and from the
 third the chart and the thumbnail's video beside it are one region of 640
-by 384.
+by 384. The terminal's opening, at 101 s, begins a region over nearly the
+whole desktop, and of the three things moving under it half a second on
+none is dear, guessed at 45, 160 and 233 KiB: it ends at its second, and
+the rest is stills, 7.6 MB of them in the terminal's 16 s with 230 of its
+316 frames exact. Held to half of `MOVING_BYTES`, by the tenths, the last
+of the three kept a region of 576 by 384 to the end, and the part was
+3.8 MB of stills and 0.7 of video with 2 frames exact: 3.5 MB less.
 
 Two things the capture shows are left as found, neither looked into
 further than the frames' own record:

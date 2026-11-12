@@ -912,7 +912,9 @@ the picture.
   changes going as stills, until the coder is tried again. A region that began as the box around one large change,
   above, has no stills under it to count: what moves in it is taken for
   dear where at most 16 of its tiles, coded as a WebP each and thrown away,
-  say the component's changes would come to half that over the 8 tenths.
+  say the component's changes, a still for every one, would come to that
+  over the 8 tenths; where more than four components are to be coded so in
+  one layout, 64 tiles are shared among them, one each at the least.
   Then the region is kept where the tiles that move are half of it or more, a
   video that began full screen, and otherwise ended for a region of the
   component alone, a video in the window that opened; with nothing dear

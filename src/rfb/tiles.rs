@@ -486,23 +486,36 @@ const WEBP_TILES: usize = (webp::MAX_SIDE / TILE) as usize;
 /// window, [`CHURN_WINDOW`] slots, to be worth a stream: about 2.6 Mbit/s of
 /// them. Twice what the widgets of a desk came to at their most, a line of
 /// text sliding sideways at scale 2, and half of the least of what a video
-/// did, 320 by 180 points at scale 1; and half of it keeps a stream on what
-/// moves under a region one large change began, where it is guessed
-/// ([`TilesEncoder::probe`]).
+/// did, 320 by 180 points at scale 1; and what moves under a region one
+/// large change began is held to the same, guessed where there are no
+/// stills to count ([`TilesEncoder::probe`]).
 const MOVING_BYTES: u64 = 2 * HELD_BYTES as u64;
 
 /// The most tiles of a component [`TilesEncoder::probe`] codes.
 const PROBE_TILES: usize = 16;
+/// The tiles one layout codes to see, over all its components: what four
+/// take, shared among however many there are ([`probe_share`]).
+const PROBE_LAYOUT: usize = 4 * PROBE_TILES;
+
+/// How many tiles of each of `components` a layout codes to see: all
+/// [`PROBE_TILES`] of each of a few, and of more an even share of
+/// [`PROBE_LAYOUT`], one at the least, so that a desktop where many things
+/// move under a region yet to be judged is coded no more than one where four
+/// do.
+fn probe_share(components: usize) -> usize {
+    (PROBE_LAYOUT / components.max(1)).clamp(1, PROBE_TILES)
+}
 
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
 /// One tile's history: bit 0 the slot it last changed in, shifted a place a
-/// slot, and the bytes its stills came to in each of those slots, the last
-/// first.
+/// slot, and how many times it changed and the bytes its stills came to in
+/// each of those slots, the last first.
 #[derive(Clone, Copy)]
 struct ChurnCell {
     history: u8,
+    changes: [u8; CHURN_WINDOW as usize],
     spent: [u32; CHURN_WINDOW as usize],
     last_slot: u64,
 }
@@ -513,9 +526,12 @@ impl ChurnCell {
         let elapsed = slot.saturating_sub(self.last_slot);
         if elapsed >= CHURN_WINDOW {
             self.history = 0;
+            self.changes = [0; CHURN_WINDOW as usize];
             self.spent = [0; CHURN_WINDOW as usize];
         } else if elapsed > 0 {
             self.history <<= elapsed;
+            self.changes.rotate_right(elapsed as usize);
+            self.changes[..elapsed as usize].fill(0);
             self.spent.rotate_right(elapsed as usize);
             self.spent[..elapsed as usize].fill(0);
         }
@@ -539,11 +555,13 @@ impl Churn {
         let slot = Self::slot(origin, now);
         let cell = self.churn.entry(key).or_insert(ChurnCell {
             history: 0,
+            changes: [0; CHURN_WINDOW as usize],
             spent: [0; CHURN_WINDOW as usize],
             last_slot: slot,
         });
         cell.advance(slot);
         cell.history |= 1;
+        cell.changes[0] = cell.changes[0].saturating_add(1);
     }
 
     /// `bytes` of a still that carried `key` at `now`, where it has changed
@@ -592,6 +610,21 @@ impl Churn {
         } else {
             (cell.history << elapsed).count_ones()
         }
+    }
+
+    /// How many times `key` changed in the last [`CHURN_WINDOW`] slots, as
+    /// of `now`: each a still it would have been, where the slots it changed
+    /// in ([`Self::recent`]) are one however many fell in each.
+    fn changes(&self, key: (u16, u16), now: Duration) -> u32 {
+        let (Some(origin), Some(cell)) = (self.origin, self.churn.get(&key)) else {
+            return 0;
+        };
+        let elapsed = Self::slot(origin, now).saturating_sub(cell.last_slot);
+        cell.changes
+            .iter()
+            .take(CHURN_WINDOW.saturating_sub(elapsed) as usize)
+            .map(|n| u32::from(*n))
+            .sum()
     }
 
     fn clear(&mut self) {
@@ -2987,16 +3020,34 @@ impl TilesEncoder {
                 live.cells.iter().map(move |cell| (*cell, id))
             })
             .collect();
-        let mut found_dear: Vec<u8> = Vec::new();
-        let worthy = components(moving, self.stream_cells, |cells| {
+        // The regions yet to be judged a component is under; none where one
+        // of its tiles is under a region known dear, which is its verdict.
+        let under = |cells: &[(u16, u16)]| {
             let mut under: Vec<u8> = Vec::new();
             for cell in cells {
                 match judged.get(cell) {
-                    Some(None) => return true,
+                    Some(None) => return None,
                     Some(Some(id)) if !under.contains(id) => under.push(*id),
                     _ => {}
                 }
             }
+            Some(under)
+        };
+        // How many are to be coded to see, which the tiles coded of each
+        // follow: counted first, and only where a region is yet to be judged.
+        let mut guessed = 0;
+        if judged.values().any(Option::is_some) {
+            components(moving, self.stream_cells, |cells| {
+                guessed += usize::from(under(cells).is_some_and(|under| !under.is_empty()));
+                false
+            });
+        }
+        let most = probe_share(guessed);
+        let mut found_dear: Vec<u8> = Vec::new();
+        let worthy = components(moving, self.stream_cells, |cells| {
+            let Some(under) = under(cells) else {
+                return true;
+            };
             if under.is_empty() {
                 return cells
                     .iter()
@@ -3004,7 +3055,7 @@ impl TilesEncoder {
                     .sum::<u64>()
                     >= MOVING_BYTES;
             }
-            let dear = self.probe(cells, now) >= MOVING_BYTES / 2;
+            let dear = self.probe(cells, most, now) >= MOVING_BYTES;
             if dear {
                 found_dear.extend(under);
             }
@@ -3132,13 +3183,15 @@ impl TilesEncoder {
 
     /// What the changes of `cells`, a moving component's tiles, would come to
     /// as stills over the churn's window, for one a region carries, which
-    /// has no stills to count: at most [`PROBE_TILES`] of them coded as a
-    /// WebP each and thrown away, and what a tile of those came to taken for
-    /// each change of each tile in the window.
-    fn probe(&self, cells: &[(u16, u16)], now: Duration) -> u64 {
+    /// has no stills to count: at most `most` of them
+    /// ([`probe_share`]) coded as a WebP each and thrown away, and what a
+    /// tile of those came to taken for each change of each tile in the
+    /// window, every update's and not one a slot, as its stills would be.
+    fn probe(&self, cells: &[(u16, u16)], most: usize, now: Duration) -> u64 {
+        let most = most.clamp(1, PROBE_TILES);
         let mut scratch = Vec::new();
         let (mut bytes, mut coded) = (0u64, 0u64);
-        for cell in cells.iter().step_by(cells.len().div_ceil(PROBE_TILES)) {
+        for cell in cells.iter().step_by(cells.len().div_ceil(most)).take(most) {
             let part = self.cell_area(*cell);
             let pixels =
                 &self.mirror[usize::from(part.top) * self.stride + usize::from(part.left) * 4..];
@@ -3150,7 +3203,7 @@ impl TilesEncoder {
         }
         let changes: u64 = cells
             .iter()
-            .map(|cell| u64::from(self.churn.recent(*cell, now)))
+            .map(|cell| u64::from(self.churn.changes(*cell, now)))
             .sum();
         (bytes * changes).checked_div(coded).unwrap_or(0)
     }
@@ -5765,6 +5818,122 @@ mod tests {
             play(whole, paint),
             (1, 0, 1),
             "kept for a video over all of it"
+        );
+    }
+
+    /// What moves under a region one large change began is taken to cost a
+    /// still for every change, not one for each tenth of a second it changed
+    /// in: a desktop of small things that change is kept as its region where
+    /// they change four times a tenth, which their stills would be dear at,
+    /// and ends for stills where they change once, the same pictures.
+    #[test]
+    fn what_moves_under_a_region_costs_a_still_a_change() {
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        // Every tile white but for 8 by 8 of noise, another each frame.
+        let small = |pixels: &mut [u8], n: u32| {
+            pixels.fill(255);
+            for row in 0..h / TILE {
+                for col in 0..w / TILE {
+                    let patch = Rect {
+                        x: col * TILE + 8,
+                        y: row * TILE + 8,
+                        width: 8,
+                        height: 8,
+                    };
+                    paint(pixels, w, patch, n * 100 + u32::from(row * 10 + col));
+                }
+            }
+        };
+        let play = |every: u64| {
+            let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            paint(&mut pixels, w, whole, 9);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[whole]),
+                t0 + ms(50),
+            );
+            assert_eq!(page.starts, 1, "a region around the change");
+            for n in 1..=3000 / every {
+                small(&mut pixels, n as u32);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[whole]),
+                    t0 + ms(50 + n * every),
+                );
+            }
+            (page.starts, page.ends, page.streams.len())
+        };
+        assert_eq!(play(25), (1, 0, 1), "kept, changing four times a tenth");
+        assert_eq!(play(100), (1, 1, 0), "ended for stills, changing once");
+    }
+
+    /// A layout codes so many tiles to see however many things move under a
+    /// region yet to be judged: sixteen of each of four, and of more an
+    /// even share of the same, one at the least. All of them are judged
+    /// still: five videos in a window that opened, more than half of it,
+    /// keep its region, none left for stills.
+    #[test]
+    fn a_layout_codes_so_many_tiles_to_see() {
+        assert_eq!(
+            [0, 1, 4, 5, 8, 16, 64, 100].map(probe_share),
+            [16, 16, 16, 12, 8, 4, 1, 1]
+        );
+        let (w, h) = (1600u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let videos: Vec<Rect> = (0..5)
+            .map(|n| Rect {
+                x: n * 320,
+                y: 0,
+                width: 256,
+                height: 256,
+            })
+            .collect();
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        paint(&mut pixels, w, whole, 9);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[whole]),
+            t0 + ms(50),
+        );
+        for n in 1..=40u32 {
+            for (at, video) in videos.iter().enumerate() {
+                paint(&mut pixels, w, *video, n * 10 + at as u32);
+            }
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&videos),
+                t0 + ms(50 + u64::from(n) * 50),
+            );
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 0, 1),
+            "the window's region kept for the five"
         );
     }
 
