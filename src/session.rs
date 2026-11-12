@@ -245,6 +245,9 @@ pub struct SessionConfig {
     /// The H.264 encoder that codes the video stream and the tiles picture's
     /// moving regions ([`crate::h264`]), the host's hardware or libx264.
     pub h264: Arc<crate::h264::Encoder>,
+    /// Whether a tiles picture's regions are outlined in their frames
+    /// ([`TilesEncoder::set_debug`]), the configuration's `motion_debug`.
+    pub motion_debug: bool,
 }
 
 /// The most rectangles one update carries before they collapse into one.
@@ -1823,6 +1826,7 @@ impl Session {
                             })?;
                     let (quality, coarse) = self.tiles_pace();
                     encoder.set_pace(quality, coarse);
+                    encoder.set_debug(self.config.motion_debug);
                     // The client keeps its cache of tiles through the new
                     // size, and so does the record of it.
                     if let Some(old) = self.tiles.take() {
@@ -2672,6 +2676,7 @@ mod pacing_tests {
             output_wait: Duration::ZERO,
             capture_frames: None,
             h264: h264.clone(),
+            motion_debug: false,
         };
         let (events, frames) = (
             shared.events.subscribe(),
