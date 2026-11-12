@@ -29,11 +29,11 @@
 //! list's is progressive tiles, which `tiles-walk-sim` walks over a link.
 //! `--lossless` codes the picture a lossless list asks for instead, every
 //! tile exact, planar where it is still and a median predictor's residuals
-//! where it moves, and no region: its coder is `lossless`. Its
-//! `--motion-debug` marks every region, as the daemon does with
-//! `motion_debug = true`, to hold it to the same bytes as without: a mark
-//! has no payload, so `bytes` counts none, and `marks` says how many went,
-//! 15 bytes each on the wire. Its
+//! where it moves, and no region: its coder is `lossless`.
+//! `--motion-debug` marks every region of the held picture, as the daemon
+//! does with `motion_debug = true`, to hold it to the same bytes as without:
+//! a mark has no payload, so `bytes` counts none, and `marks` says how many
+//! went, 15 bytes each on the wire. The held picture's
 //! regions are the daemon's H.264 encoder, found as the daemon finds it
 //! ([`h264::Encoder::find`]): the hardware's where VA-API opens one, libx264
 //! otherwise or with `--libx264`, each tiles picture on a coder of its own as
@@ -156,7 +156,8 @@ struct Args {
     /// The dial `WLSV` is coded at.
     quality: u8,
     frames: Option<PathBuf>,
-    /// Every region outlined in its frames.
+    /// Every region marked, none of it in the picture
+    /// ([`TilesEncoder::set_debug`]).
     motion_debug: bool,
     /// `check` rather than the bench.
     check: bool,

@@ -2274,6 +2274,7 @@ impl TilesEncoder {
             // For the marks, the box around the pixels that changed in each
             // of those tiles, found before the picture takes them: the
             // damage names more than changed, a whole window for its clock.
+            // Only a held list has regions to mark.
             let mut exact: Vec<Area> = Vec::new();
             let extend = |runs: &mut Vec<Area>, part: Area| match runs.last_mut() {
                 Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => {
@@ -2301,6 +2302,7 @@ impl TilesEncoder {
                     extend(&mut runs, part);
                 }
                 if self.debug
+                    && self.picture == TilesPicture::Held
                     && let Some(part) = differing(&self.mirror, self.stride, pixels, stride, part)
                 {
                     if carried {
