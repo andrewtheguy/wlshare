@@ -915,7 +915,10 @@ the picture.
   dear where at most 16 of its tiles, coded as a WebP each and thrown away,
   say the component's changes, a still for every one, would come to that
   over the 8 tenths; where more than four components are to be coded so in
-  one layout, 64 tiles are shared among them, one each at the least.
+  one layout, 64 tiles are shared among them, one each at the least, and
+  of more than 64 that many are coded, the next layout beginning at the one
+  after: no layout codes more than 64, and one not yet coded is stills
+  where its region ends.
   Then the region is kept where the tiles that move are half of it or more, a
   video that began full screen, and otherwise ended for a region of the
   component alone, a video in the window that opened; with nothing dear
@@ -934,7 +937,8 @@ the picture.
   With `motion_debug = true` in the configuration every region is marked,
   to see what the rules make a video of: a MARK after its stream's START,
   and again wherever what it says changes, whose rectangle is the box around
-  the pixels that changed in the region — those of the change that began it
+  the pixels that changed in the region — those of the change that began it,
+  what a stream it ended carried of that among them,
   and of every read since that were not what the picture held, however much
   the damage named: a video's own rectangle and not the tiles around it, the
   region's rectangle until anything has — and whose `why` is 0 where the

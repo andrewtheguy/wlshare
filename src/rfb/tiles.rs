@@ -494,7 +494,8 @@ const MOVING_BYTES: u64 = 2 * HELD_BYTES as u64;
 /// The most tiles of a component [`TilesEncoder::probe`] codes.
 const PROBE_TILES: usize = 16;
 /// The tiles one layout codes to see, over all its components: what four
-/// take, shared among however many there are ([`probe_share`]).
+/// take, shared among however many there are ([`probe_share`]), and of
+/// more components than that as many of them in turn ([`probe_turn`]).
 const PROBE_LAYOUT: usize = 4 * PROBE_TILES;
 
 /// How many tiles of each of `components` a layout codes to see: all
@@ -504,6 +505,15 @@ const PROBE_LAYOUT: usize = 4 * PROBE_TILES;
 /// do.
 fn probe_share(components: usize) -> usize {
     (PROBE_LAYOUT / components.max(1)).clamp(1, PROBE_TILES)
+}
+
+/// Whether a layout that begins at the `first` of `components` codes the
+/// `nth` of them to see: every one of up to [`PROBE_LAYOUT`], and of more
+/// that many from `first` on and round, a tile each, the rest left to the
+/// layouts after, each beginning where the last stopped.
+fn probe_turn(nth: usize, first: usize, components: usize) -> bool {
+    let components = components.max(1);
+    (nth % components + components - first % components) % components < PROBE_LAYOUT
 }
 
 /// The rows a report of damage is cut into.
@@ -1322,6 +1332,13 @@ pub struct TilesEncoder {
     /// carried, for the mark of a region the stills begin
     /// ([`Self::set_debug`]).
     fresh: Option<Area>,
+    /// And around those a stream carried, a box a tile, which the mark of
+    /// a region begun over that stream takes in too.
+    carried: Vec<Area>,
+    /// Which of the components to be coded to see the next layout begins
+    /// at, where the last had more than its tiles went round
+    /// ([`probe_turn`]).
+    probe_from: usize,
     /// The rectangles of streams that ended without starting, which the
     /// encode they ended in sends as stills whatever they come to.
     recovery: Vec<Area>,
@@ -1416,6 +1433,8 @@ impl TilesEncoder {
             retuned_at: None,
             stills: Vec::new(),
             fresh: None,
+            carried: Vec::new(),
+            probe_from: 0,
             recovery: Vec::new(),
             no_streams_until: Duration::ZERO,
             copies: Vec::new(),
@@ -1526,6 +1545,7 @@ impl TilesEncoder {
         self.copied_by.clear();
         self.stills.clear();
         self.fresh = None;
+        self.carried.clear();
         self.recovery.clear();
         self.copies.clear();
         self.restarting = true;
@@ -2358,6 +2378,7 @@ impl TilesEncoder {
                     live.moved = Some(live.moved.map_or(part, |all| all.around(part)));
                 }
             }
+            self.carried.extend(exact);
             self.stills.extend(runs);
         }
     }
@@ -2398,6 +2419,7 @@ impl TilesEncoder {
         }
         let stills = std::mem::take(&mut self.stills);
         let fresh = self.fresh.take();
+        let carried = std::mem::take(&mut self.carried);
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
             out.keyframe = true;
         }
@@ -2407,7 +2429,7 @@ impl TilesEncoder {
             // them for a region over the box around it, with no word that
             // the coder makes no frame, and the next a second on.
             self.expire_unstarted(now);
-            owed_round = self.held_stills(stills, fresh, moved, now, &mut out)?;
+            owed_round = self.held_stills(stills, fresh, &carried, moved, now, &mut out)?;
         } else {
             self.stills(stills, now, &mut out)?;
         }
@@ -2444,7 +2466,7 @@ impl TilesEncoder {
         if self.picture == TilesPicture::Held {
             // None of these is a change: what a region they begin is marked
             // by is its own rectangle.
-            if self.held_stills(stills, None, moved, now, &mut out)? {
+            if self.held_stills(stills, None, &[], moved, now, &mut out)? {
                 self.round(now, &mut out)?;
             }
             self.recover(now, &mut out)?;
@@ -3047,6 +3069,16 @@ impl TilesEncoder {
             });
         }
         let most = probe_share(guessed);
+        // Past a layout's tiles of them, that many are coded and the next
+        // layout begins at the one after: one whose turn it is not is not
+        // found dear by this layout, and is stills where its region ends.
+        let first = self.probe_from;
+        self.probe_from = if guessed > PROBE_LAYOUT {
+            (first + PROBE_LAYOUT) % guessed
+        } else {
+            0
+        };
+        let mut nth = 0;
         let mut found_dear: Vec<u8> = Vec::new();
         let worthy = components(moving, self.stream_cells, |cells| {
             let Some(under) = under(cells) else {
@@ -3058,6 +3090,11 @@ impl TilesEncoder {
                     .map(|cell| u64::from(self.churn.spent(*cell)))
                     .sum::<u64>()
                     >= MOVING_BYTES;
+            }
+            let turn = probe_turn(nth, first, guessed);
+            nth += 1;
+            if !turn {
+                return false;
             }
             let dear = self.probe(cells, most, now) >= MOVING_BYTES;
             if dear {
@@ -3304,11 +3341,15 @@ impl TilesEncoder {
     /// new one carries its tiles on, as a retune's does ([`Self::retune`]):
     /// no two regions over one tile. Whether a region was added, whose START
     /// is owed a round ([`Self::round`]). `fresh` is the box around the
-    /// pixels that changed in the stills, which such a region is marked by.
+    /// pixels that changed in the stills, which such a region is marked by,
+    /// with those of `carried` in it, the boxes around the pixels that
+    /// changed under the streams, which it ends: all of the change that
+    /// began it.
     fn held_stills(
         &mut self,
         stills: Vec<Area>,
         fresh: Option<Area>,
+        carried: &[Area],
         moved: bool,
         now: Duration,
         out: &mut Out,
@@ -3347,7 +3388,12 @@ impl TilesEncoder {
             .expect("at most a few streams live");
         match self.build(id, around, now, Cause::Burst) {
             Ok(mut live) => {
-                live.moved = fresh;
+                live.moved = carried
+                    .iter()
+                    .filter(|part| around.contains(**part))
+                    .fold(fresh, |all, part| {
+                        Some(all.map_or(*part, |all| all.around(*part)))
+                    });
                 let mut unsent = Vec::new();
                 for old in self
                     .live
@@ -5640,6 +5686,73 @@ mod tests {
         );
     }
 
+    /// A region one change begins over a stream is marked around all of
+    /// that change, what the stream it ends carried of it too: the pixels
+    /// that changed under that one are in no still, and are in its
+    /// rectangle all the same.
+    #[test]
+    fn a_mark_takes_in_what_changed_under_the_stream_its_region_ends() {
+        let (w, h) = (640u16, 384u16);
+        let all = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        // Its region is tiles (0,1) to (3,4): 0,64 to 255,319.
+        let first = Rect {
+            x: 0,
+            y: 64,
+            width: 256,
+            height: 256,
+        };
+        // All but the first 40 columns: of the stills, those above and
+        // below that region begin at the 40th.
+        let rest = Rect {
+            x: 40,
+            y: 0,
+            width: 600,
+            height: h,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        encoder.set_debug(true);
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        paint(&mut pixels, w, first, 90);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[all]),
+            t0 + ms(1000),
+        );
+        assert_eq!(
+            (page.starts, page.marks.values().collect::<Vec<_>>()),
+            (1, vec![&((0, 64, 256, 256), MarkWhy::Burst)]),
+            "a region of the first change"
+        );
+        paint(&mut pixels, w, rest, 91);
+        paint(&mut pixels, w, first, 92);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[all]),
+            t0 + ms(1100),
+        );
+        assert_eq!(
+            (
+                page.starts,
+                page.ends,
+                page.marks.values().collect::<Vec<_>>()
+            ),
+            (2, 1, vec![&((0, 0, 640, 384), MarkWhy::Burst)]),
+            "one over the desktop, marked from its first column, where only \
+             what the first carried changed"
+        );
+    }
+
     /// The fewest moving tiles a stream needs is an area of the layout: at
     /// scale 2 a spinner over 3×3 tiles, 96 of the layout's pixels across,
     /// stays stills, lossless throughout, where at 1 it streams; a video at 2
@@ -5886,7 +5999,8 @@ mod tests {
 
     /// A layout codes so many tiles to see however many things move under a
     /// region yet to be judged: sixteen of each of four, and of more an
-    /// even share of the same, one at the least. All of them are judged
+    /// even share of the same, one at the least, of 64 of them at a layout
+    /// and the rest at the next. All of a few are judged
     /// still: five videos in a window that opened, more than half of it,
     /// keep its region, none left for stills.
     #[test]
@@ -5895,6 +6009,19 @@ mod tests {
             [0, 1, 4, 5, 8, 16, 64, 100].map(probe_share),
             [16, 16, 16, 12, 8, 4, 1, 1]
         );
+        // Past 64 of them, 64 a layout, the next from where it stopped.
+        let turns = |first: usize, components: usize| -> Vec<usize> {
+            (0..components)
+                .filter(|nth| probe_turn(*nth, first, components))
+                .collect()
+        };
+        for components in 1..=300 {
+            let coded = turns(0, components).len();
+            assert_eq!(coded, components.min(PROBE_LAYOUT));
+            assert!(coded * probe_share(components) <= PROBE_LAYOUT);
+        }
+        assert_eq!(turns(0, 100), (0..64).collect::<Vec<_>>());
+        assert_eq!(turns(64, 100), (0..28).chain(64..100).collect::<Vec<_>>());
         let (w, h) = (1600u16, 384u16);
         let whole = Rect {
             x: 0,

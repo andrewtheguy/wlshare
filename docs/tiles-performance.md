@@ -1698,8 +1698,10 @@ is another: every sample at both sizes, `small` at both and `many` at
 ([below](#many-small-movements-at-once)), the one capture with a guess
 near the line. And where more than four components are to be coded so in
 one layout, they share the 64 tiles four would take, one each at the
-least, so a desktop with many things moving under such a region is coded
-no more than one with four; no capture has more than three.
+least, and of more than 64 components that many are coded a layout, the
+rest in turn at the layouts after, so a desktop with many things moving
+under such a region is coded no more than one with four; no capture has
+more than three.
 
 Over the two captures, and the samples at the same sizes (`mixed` and
 `walk` whole), the rule before and now:
