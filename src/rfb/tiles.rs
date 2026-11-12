@@ -359,6 +359,14 @@ const MAX_STREAMS: usize = 4;
 const RETUNE: Duration = Duration::from_millis(500);
 /// How long a region has nothing moving in it before its stream ends.
 const STREAM_IDLE: Duration = Duration::from_millis(1000);
+/// How long a stream has to start: one whose coder has made no frame of it
+/// by then ends, whatever moves in it, and its rectangle goes as stills.
+const START_WITHIN: Duration = Duration::from_millis(1000);
+/// How long no region is laid out after a stream ran out of
+/// [`START_WITHIN`]: the coder that made no frame of it would make none of
+/// the next, so what changes goes as stills, whatever they come to, until
+/// it is tried again.
+const START_RETRY: Duration = Duration::from_millis(5000);
 /// The most tiles a merge may cover, as a multiple of the moving tiles it joins.
 const MERGE_WASTE: u32 = 2;
 /// The fewest moving tiles a component needs to be worth a stream at scale 1:
@@ -1213,6 +1221,9 @@ pub struct TilesEncoder {
     /// The rectangles of streams that ended without starting, which the
     /// encode they ended in sends as stills whatever they come to.
     recovery: Vec<Area>,
+    /// Until when no region is laid out, a stream having run out of
+    /// [`START_WITHIN`] without a frame ([`START_RETRY`]).
+    no_streams_until: Duration,
     /// The copies the reads since the last encode found, which go ahead of
     /// the stills, in the order they were found.
     copies: Vec<CopyRect>,
@@ -1305,6 +1316,7 @@ impl TilesEncoder {
             retuned_at: None,
             stills: Vec::new(),
             recovery: Vec::new(),
+            no_streams_until: Duration::ZERO,
             copies: Vec::new(),
             ended: Vec::new(),
             read: false,
@@ -2955,7 +2967,7 @@ impl TilesEncoder {
             if next.iter().any(|live| live.area.contains(area)) {
                 continue;
             }
-            if next.len() < MAX_STREAMS {
+            if next.len() < MAX_STREAMS && now >= self.no_streams_until {
                 for live in old.extract_if(.., |live| live.area.intersect(area).is_some()) {
                     live.end(out, &mut unsent, &mut self.recovery);
                 }
@@ -3036,14 +3048,43 @@ impl TilesEncoder {
     }
 
     /// The rectangles of the streams that ended without starting, sent as
-    /// stills where no stream live by now carries them, whatever they come
-    /// to: a region over what is past an update's stills would be the one
-    /// that never started again, its tiles owed anew and never sent, where a
-    /// stream that makes no frame is why it never started. Their tiles'
-    /// debts are paid by them.
+    /// stills where no stream that has started carries them, whatever they
+    /// come to: a region over what is past an update's stills would be the
+    /// one that never started again, its tiles owed anew and never sent,
+    /// where a stream that makes no frame is why it never started. A stream
+    /// laid out over them that has not started either has shown the client
+    /// nothing of them, so they go all the same, as runs along a row, and
+    /// its START draws over them when it comes. Their tiles' debts are paid
+    /// by them.
     fn recover(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
         let areas = std::mem::take(&mut self.recovery);
-        for run in self.uncovered(&areas) {
+        if areas.is_empty() {
+            return Ok(());
+        }
+        let started: HashSet<(u16, u16)> = self
+            .live
+            .iter()
+            .filter(|live| live.started)
+            .flat_map(|live| live.cells.iter().copied())
+            .collect();
+        let mut runs: Vec<Area> = Vec::new();
+        for area in &areas {
+            let mut last: Option<usize> = None;
+            for (_, part) in tiles_of(*area).filter(|(cell, _)| !started.contains(cell)) {
+                match last.map(|at| &mut runs[at]) {
+                    Some(run)
+                        if run.top == part.top && run.right.checked_add(1) == Some(part.left) =>
+                    {
+                        run.right = part.right
+                    }
+                    _ => {
+                        last = Some(runs.len());
+                        runs.push(part);
+                    }
+                }
+            }
+        }
+        for run in runs {
             self.still(run, now, false, out)?;
         }
         Ok(())
@@ -3116,7 +3157,11 @@ impl TilesEncoder {
         let from = out.out.len();
         let mut rest: Vec<Area> = Vec::new();
         for area in &stills {
-            if moved || out.out.len() - from < HELD_BYTES || self.live.len() >= MAX_STREAMS {
+            if moved
+                || out.out.len() - from < HELD_BYTES
+                || self.live.len() >= MAX_STREAMS
+                || now < self.no_streams_until
+            {
                 self.still(*area, now, true, out)?;
             } else {
                 rest.push(*area);
@@ -3298,10 +3343,16 @@ impl TilesEncoder {
     /// that was ready.
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
         let mut unsent = Vec::new();
-        for live in self
-            .live
-            .extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE)
-        {
+        // A stream nothing has moved in for its second, or one that has not
+        // started within its own, whatever moves in it and however often
+        // the layouts keep it: the client holds nothing of what it covers.
+        for live in self.live.extract_if(.., |live| {
+            now.saturating_sub(live.moving_at) >= STREAM_IDLE
+                || (!live.started && now.saturating_sub(live.since) >= START_WITHIN)
+        }) {
+            if !live.started && now.saturating_sub(live.since) >= START_WITHIN {
+                self.no_streams_until = now + START_RETRY;
+            }
             live.end(out, &mut unsent, &mut self.recovery);
         }
         self.cover();
@@ -5516,6 +5567,57 @@ mod tests {
             (1, 0, 1),
             "one stream throughout"
         );
+    }
+
+    /// A stream that has made no frame within its second ends though what
+    /// it covers keeps moving and the layouts would keep it: a video over
+    /// the whole desktop on a coder that makes no frame is stills from then,
+    /// every frame of it whole and lossless, with no region laid out again
+    /// until the coder is tried once more.
+    #[test]
+    fn a_stream_that_does_not_start_in_time_gives_way_to_stills() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let mut out = Vec::new();
+        for n in 1..=60u64 {
+            let now = t0 + ms(n * 50);
+            while let Some(at) = encoder.tick_at().filter(|at| *at < now) {
+                out.clear();
+                let update = encoder.encode(at, &mut out).unwrap();
+                page.draw(update.rects, &out);
+            }
+            paint(&mut pixels, w, whole, 30 + n as u32);
+            step(&mut encoder, &mut page, &pixels, Some(&[whole]), now);
+            if n == 15 {
+                assert_eq!(encoder.live.len(), 1, "a region, which makes no frame");
+                assert!(page.off(&pixels) > 0, "and the client holds none of it");
+            }
+            if n >= 30 {
+                assert!(encoder.live.is_empty(), "no region at frame {n}");
+                assert_eq!(page.off(&pixels), 0, "frame {n} whole, as stills");
+            }
+        }
+        assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
     }
 
     /// A region whose stream never made a frame ends at its second with the

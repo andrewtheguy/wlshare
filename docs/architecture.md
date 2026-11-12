@@ -888,7 +888,12 @@ the picture.
   the picture. A stream that ends having never started, its coder making no
   frame, leaves the client nothing of the change that began it: all of its
   rectangle goes as stills in that update, whatever they come to, since a
-  region over what is past an update's stills would be that one again. A region that began as the box around one large change,
+  region over what is past an update's stills would be that one again —
+  under a stream laid out over it that has not started either, too, which
+  has shown the client as little. And a stream has a second to start:
+  one with no frame by then ends whatever moves in it, though the layouts
+  would keep it, and no region is laid out for the five seconds after, what
+  changes going as stills, until the coder is tried again. A region that began as the box around one large change,
   above, has no stills under it to count: what moves in it is taken for
   dear where at most 16 of its tiles, coded as a WebP each and thrown away,
   say the component's changes would come to half that over the 8 tenths.
