@@ -1412,9 +1412,22 @@ impl TilesEncoder {
     /// The scale the output is drawn at, 1 until it is said: the fewest
     /// moving tiles a region is laid out over from the next layout on
     /// ([`stream_cells`]). A live stream is kept, or ends, by that layout.
+    /// An outline ([`Self::set_debug`]) is as thick as the scale makes it
+    /// from each region's next frame, the wider of the old and the new read
+    /// again, since a frame is otherwise of its damage alone.
     pub fn set_scale(&mut self, scale: f64) {
         self.stream_cells = stream_cells(scale);
-        self.outline = (2.0 * scale).round().clamp(2.0, 16.0) as u16;
+        let thick = (2.0 * scale).round().clamp(2.0, 16.0) as u16;
+        if self.debug && thick != self.outline {
+            let wider = thick.max(self.outline);
+            for live in &mut self.live {
+                live.dirty = true;
+                for strip in outline(live.area, wider) {
+                    live.pending.push(strip.within(live.area));
+                }
+            }
+        }
+        self.outline = thick;
     }
 
     /// Whether every region's stream carries an outline of its rectangle,
@@ -3280,14 +3293,22 @@ impl TilesEncoder {
                 // on, where the region is judged, and not just short of its
                 // second, where a tick that finds it idle could end it
                 // first. The other regions' layout is later by as long as
-                // it has been since the last, and each is taken to have
-                // moved that much later, or a tick would find one idle that
-                // only the layout it waits for says is moving.
+                // it has been since the last, and each with a tile still
+                // moving, which that layout would have found, is taken to
+                // have moved that much later, or a tick would find one idle
+                // that only the layout it waits for says is moving. One
+                // with none is left its time, and ends when it would have.
                 let late = self
                     .retuned_at
                     .map_or(Duration::ZERO, |at| now.saturating_sub(at));
                 for other in &mut self.live {
-                    other.moving_at = (other.moving_at + late).min(now);
+                    let moving = other
+                        .cells
+                        .iter()
+                        .any(|cell| self.churn.recent(*cell, now) >= CHURN_MOVING);
+                    if moving {
+                        other.moving_at = (other.moving_at + late).min(now);
+                    }
                 }
                 self.retuned_at = Some(now);
                 Ok(true)
@@ -5418,6 +5439,70 @@ mod tests {
         );
     }
 
+    /// A scale that changes while a region is live changes its outline with
+    /// the next frame, though the frame's damage is short of it: the wider
+    /// of the two is read again, none of the old one left and all of the new
+    /// one there.
+    #[test]
+    fn a_region_outlined_follows_the_scale() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = noise(w, h, 3);
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        encoder.set_debug(true);
+        encoder.set_scale(2.0);
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // As above: the region is tiles (1,1) to (5,4), 64,64 to 383,319,
+        // and no frame's damage reaches its edge.
+        let video = Rect {
+            x: 70,
+            y: 70,
+            width: 308,
+            height: 244,
+        };
+        let magenta = [254, 0, 254];
+        let mut n = 0u32;
+        // How many regions had started once the video had its own.
+        let mut started = None;
+        for (scale, thick) in [(2.0, 4usize), (1.0, 2), (2.0, 4)] {
+            encoder.set_scale(scale);
+            for _ in 0..40 {
+                n += 1;
+                paint(&mut pixels, w, video, 100 + n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[video]),
+                    t0 + ms(u64::from(n) * 50),
+                );
+            }
+            assert_eq!(
+                (*started.get_or_insert(page.starts), page.streams.len()),
+                (page.starts, 1),
+                "the one stream from there on, at scale {scale}"
+            );
+            let at = |x: usize, y: usize| {
+                let i = (y * usize::from(w) + x) * 4;
+                [page.canvas[i], page.canvas[i + 1], page.canvas[i + 2]]
+            };
+            for depth in 0..6usize {
+                for (x, y) in [
+                    (64 + depth, 200),
+                    (383 - depth, 200),
+                    (200, 64 + depth),
+                    (200, 319 - depth),
+                ] {
+                    assert_eq!(
+                        at(x, y) == magenta,
+                        depth < thick,
+                        "the outline {depth} in at {x},{y}, at scale {scale}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The fewest moving tiles a stream needs is an area of the layout: at
     /// scale 2 a spinner over 3×3 tiles, 96 of the layout's pixels across,
     /// stays stills, lossless throughout, where at 1 it streams; a video at 2
@@ -5953,6 +6038,60 @@ mod tests {
                 "both streams throughout, the window opened at frame {opens}"
             );
         }
+    }
+
+    /// Only a region that still moves is left that time: a video that
+    /// stopped before a window opened beside it is ended a second after its
+    /// last frame, at the first layout after, and not a second after the
+    /// window opened.
+    #[test]
+    fn a_region_one_change_begins_keeps_none_that_stopped() {
+        let (w, h) = (640u16, 384u16);
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 192,
+            height: 192,
+        };
+        let window = Rect {
+            x: 320,
+            y: 0,
+            width: 320,
+            height: 384,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // The video's last frame is at 1.8 s.
+        for n in 1..=12u64 {
+            paint(&mut pixels, w, video, 40 + n as u32);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                t0 + ms(n * 150),
+            );
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "the video a region");
+        // The window opens at 2.5 s, none of the video's tiles moving by
+        // then, and plays on; its region's first layout is at 3 s.
+        for n in 0..=4u64 {
+            paint(&mut pixels, w, window, 90 + n as u32);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[window]),
+                t0 + ms(2500 + n * 150),
+            );
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (2, 1, 1),
+            "the video's region ended by 3.1 s, the window's live"
+        );
     }
 
     /// A stream out of its second to start is counted against the coder
