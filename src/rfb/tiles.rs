@@ -2732,6 +2732,10 @@ impl TilesEncoder {
     /// The regions laid out again from the churn, and every stream with
     /// pixels waiting coded.
     fn round(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        // Ahead of the layout, which would end one of them as idle or for
+        // another region and lay that out at once, with no word that the
+        // coder makes no frame.
+        self.expire_unstarted(now);
         let moving = self.churn.moving(now);
         self.retune(&moving, now, out)?;
         let stride = self.stride;
@@ -2834,6 +2838,23 @@ impl TilesEncoder {
             }
         }
         Ok(())
+    }
+
+    /// The streams that have not started within [`START_WITHIN`] ended,
+    /// whatever moves in them, their rectangles owed whole
+    /// ([`Self::recover`]), and no region laid out for [`START_RETRY`]
+    /// from now.
+    fn expire_unstarted(&mut self, now: Duration) {
+        let before = self.live.len();
+        for live in self.live.extract_if(.., |live| {
+            !live.started && now.saturating_sub(live.since) >= START_WITHIN
+        }) {
+            self.recovery.push(live.area);
+        }
+        if self.live.len() != before {
+            self.no_streams_until = now + START_RETRY;
+            self.cover();
+        }
     }
 
     fn cover(&mut self) {
@@ -3343,16 +3364,14 @@ impl TilesEncoder {
     /// that was ready.
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
         let mut unsent = Vec::new();
-        // A stream nothing has moved in for its second, or one that has not
-        // started within its own, whatever moves in it and however often
-        // the layouts keep it: the client holds nothing of what it covers.
-        for live in self.live.extract_if(.., |live| {
-            now.saturating_sub(live.moving_at) >= STREAM_IDLE
-                || (!live.started && now.saturating_sub(live.since) >= START_WITHIN)
-        }) {
-            if !live.started && now.saturating_sub(live.since) >= START_WITHIN {
-                self.no_streams_until = now + START_RETRY;
-            }
+        // A stream that has not started within its second, whatever moves
+        // in it and however often the layouts keep it, of which the client
+        // holds nothing; and one nothing has moved in for its own.
+        self.expire_unstarted(now);
+        for live in self
+            .live
+            .extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE)
+        {
             live.end(out, &mut unsent, &mut self.recovery);
         }
         self.cover();
@@ -5618,6 +5637,71 @@ mod tests {
             }
         }
         assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
+    }
+
+    /// A stream out of its second to start is counted against the coder
+    /// whichever of the layout and the tick comes to it first: one with only
+    /// a striped bar moving in it, which the layout would end as idle a
+    /// second after it was laid out, ahead of that update's tick, still
+    /// holds the next region off.
+    #[test]
+    fn a_stream_the_layout_would_end_unstarted_holds_the_next_off() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let bar = Rect {
+            x: 64,
+            y: 64,
+            width: 512,
+            height: 64,
+        };
+        paint(&mut pixels, w, whole, 9);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[whole]),
+            t0 + ms(50),
+        );
+        assert_eq!(encoder.live.len(), 1, "a region around the change");
+        // The bar every 50 ms: the update a second on has a layout, and
+        // the stream is out of its second at it.
+        for n in 1..=20u32 {
+            stripes(&mut pixels, w, bar, n);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[bar]),
+                t0 + ms(50 + u64::from(n) * 50),
+            );
+        }
+        assert!(encoder.live.is_empty(), "ended at its second");
+        assert_eq!(
+            encoder.no_streams_until,
+            t0 + ms(1050) + START_RETRY,
+            "and no region for a while after"
+        );
+        assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
     }
 
     /// A region whose stream never made a frame ends at its second with the
