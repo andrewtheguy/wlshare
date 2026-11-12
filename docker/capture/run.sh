@@ -33,8 +33,9 @@
 #                    in a window and full screen among them; not in `all`,
 #                    and its own length, MIXED_LENGTH (300 by default)
 #   small  small     the small movements of a desk, one kind at a time with
-#                    the desktop still between them; not in `all`, and its
-#                    own length, SMALL_LENGTH (240 by default)
+#                    the desktop still between them; not in `all`, its
+#                    own length, SMALL_LENGTH (240 by default), and only at
+#                    the sizes its page fits, 1280 by 820 points or more
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
@@ -265,6 +266,12 @@ scenario_mixed() {
 }
 
 scenario_small() {
+	# Its page lays every part out at a fixed place: a desktop it does not
+	# fit is passed over, and is no failure of the run.
+	if ((W / scale < 1280 || H / scale < 820)); then
+		log "small: passed over at $LABEL, under the 1280 by 820 points of its page"
+		return
+	fi
 	LENGTH=${SMALL_LENGTH:-240} play small
 	finish small
 }

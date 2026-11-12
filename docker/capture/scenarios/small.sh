@@ -6,8 +6,8 @@
 # Chromium lays every part out at a fixed place and plays it by its
 # own clock from the key that starts it; the pointer and the keys come
 # through the session's client, as a person's do, so CAPTURE_KEYS must name
-# what it reads (lib.sh, `press`), and the desktop must be 1280 by 720 points
-# or more. LENGTH should be 240 or more. Each part's start goes to stderr
+# what it reads (lib.sh, `press`), and the desktop must be 1280 by 820 points
+# or more, the menu's last item ending 813 down. LENGTH should be 240 or more. Each part's start goes to stderr
 # with its second:
 #
 #     3  text typed into a field, its caret blinking after
@@ -37,7 +37,7 @@
 #   231  still until the end
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ -n "${CAPTURE_KEYS:-}" ]] || { log "small: the pointer comes through CAPTURE_KEYS, which is not set"; exit 1; }
-((W >= 1280 && H >= 720)) || { log "small: the page is 1280 by 720 points, and the desktop ${W}x${H}"; exit 1; }
+((W >= 1280 && H >= 820)) || { log "small: the page is 1280 by 820 points, and the desktop ${W}x${H}"; exit 1; }
 mkdir -p "$MATERIAL"
 
 cat >"$MATERIAL/small.html" <<'END'

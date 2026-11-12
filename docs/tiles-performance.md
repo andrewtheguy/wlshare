@@ -1668,17 +1668,18 @@ region of what moves; otherwise it ends at its second, as an idle one
 does.
 
 That coding is rare and small. Over the samples at both sizes, on lab1 and
-alone, it ran 21 times in all: not once on `small`, window, drag, terminal
-or still, once on each video, each flood, browser at 2880x1800@2 and
-mixed-1920x1080, twice on uncover at 2880x1800@2, 3 times on
-mixed-2880x1800@2, and 4 and 6 times on the two walks, where a region
-begins every few seconds. Sixteen tiles of a video took 10 ms, 0.6 ms a
-tile, and of a page 2.5 ms: 0.03% and 0.04% of the encoder's time on mixed,
-0.4% and 0.15% on video, and 1.0% and 0.7% on walk, the most of any. The frame it
+alone, it ran 31 times in all, a region whose motion narrowed being judged
+by it too ([below](#a-region-that-shrinks)): not once on `small`, window,
+drag, terminal or still, once on each video, each flood and browser at
+2880x1800@2, twice on uncover at 2880x1800@2, 5 and 9 times on the two
+mixed, and 4 and 6 times on the two walks, where a region begins every few
+seconds. Sixteen tiles of a video took 10 ms, 0.6 ms a tile, and of a page
+2.5 ms: 0.15% and 0.11% of the encoder's time on mixed, 0.4% and 0.16% on
+video, and 1.0% and 0.7% on walk, the most of any. The frame it
 falls on is that much later, once a region. Counting instead the pixels of
 the same tiles that are neither the one to their left nor the one above
-took 0.15 ms and gave the same verdict all 21 times, none of them close —
-20 dear by 9 to 180 times the bytes, one cheap by 33 — but a still came to
+took 0.15 ms and gave the same verdict all 31 times, none of them close —
+30 dear by 9 to 180 times the bytes, one cheap by 33 — but a still came to
 1.2 to 2.8 bytes for each such pixel, by what it showed, where the WebP is
 what the still would be. So the tiles are coded.
 
@@ -1752,5 +1753,17 @@ samples at 1920x1080 and 2880x1800@2 and both `small` captures, only
 No capture scrolls a page under a video that plays, so what the rule is
 for is not in these figures, which are what it costs where it is not
 wanted: three keyframes in four minutes, 0.1% to 0.2% more bytes, the
-encoder's time within its noise. A test holds what it is for
-(`a_region_shrinks_to_what_still_moves`).
+encoder's time within its noise (30.8 s without it and 30.3 s with at
+1920x1080, 86.6 s and 86.2 s at 2880x1800@2, three runs each, turn about).
+A test holds what it is for (`a_region_shrinks_to_what_still_moves`).
+
+What a region's motion has narrowed to need not be what it was laid out
+for: a video that stops with a striped bar still moving beside it left the
+bar a video for as long as it moved, every component that touches a region
+being taken for worth one. So the region is judged again before it is
+started over the box, some of what moves in it coded to see as under a
+region one change began, and where that would not be dear it ends instead,
+a second on, and the bar is stills (`a_region_left_with_what_is_cheap_ends`).
+On the samples nothing was found cheap, a video being what was left each
+time, and every figure above is the same to the byte: the cost is the
+coding, 4 and 6 times more on the two mixed, counted above.

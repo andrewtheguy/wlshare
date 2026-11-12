@@ -43,8 +43,10 @@
 //! most 4 regions stream at once. The regions are laid out again at most every
 //! 500 ms: one that grows starts another, one with no motion for a second
 //! ends, and one whose motion has kept for two seconds to a box of at most
-//! half of it starts another over that box; less of a difference keeps
-//! its stream. A region one large change began, the
+//! half of it is judged again, some of what moves coded to see: where that
+//! would be dear as stills it starts another over that box, and otherwise it
+//! ends as one with no motion does, what moves in it stills from then; less
+//! of a difference keeps its stream. A region one large change began, the
 //! box around all of it, is kept past its second only for what moves over
 //! half of it and would be dear as stills, and ends otherwise, for regions of
 //! what moves in it where that is dear.
@@ -281,6 +283,25 @@ fn tiles_of(area: Area) -> impl Iterator<Item = ((u16, u16), Area)> {
             )
         })
     })
+}
+
+/// The tiles of `areas` that are not among `carried`, as runs along a row,
+/// none of them across two of the areas.
+fn runs_outside(areas: &[Area], carried: &HashSet<(u16, u16)>) -> Vec<Area> {
+    let mut all = Vec::new();
+    for area in areas {
+        let mut runs: Vec<Area> = Vec::new();
+        for (_, part) in tiles_of(*area).filter(|(cell, _)| !carried.contains(cell)) {
+            match runs.last_mut() {
+                Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => {
+                    run.right = part.right
+                }
+                _ => runs.push(part),
+            }
+        }
+        all.extend(runs);
+    }
+    all
 }
 
 /// A rectangle of the tile grid, in tiles.
@@ -590,7 +611,7 @@ fn stream_cells(scale: f64) -> u32 {
 fn components(
     cells: &[(u16, u16)],
     least: u32,
-    worth: impl Fn(&[(u16, u16)]) -> bool,
+    mut worth: impl FnMut(&[(u16, u16)]) -> bool,
 ) -> Vec<Component> {
     let remaining: HashSet<(u16, u16)> = cells.iter().copied().collect();
     let mut sorted: Vec<(u16, u16)> = remaining.iter().copied().collect();
@@ -1116,8 +1137,12 @@ struct Live {
     cause: Cause,
     /// When it was laid out.
     since: Duration,
-    /// What moves under it was coded and found dear
-    /// ([`TilesEncoder::probe`]), which is not asked of it again.
+    /// What moves under it is dear as stills: by the stills counted before
+    /// it was laid out, or by its tiles coded since
+    /// ([`TilesEncoder::probe`]), which is not asked of it again. Not yet
+    /// of a region one change began, nor of one whose motion has kept to a
+    /// smaller box since ([`SHRINK_AFTER`]), each judged at the layouts
+    /// until it is.
     dear: bool,
     /// Since when what moves in it has kept to a smaller box
     /// ([`SHRINK_AFTER`]), and the box around all that moved since.
@@ -2895,66 +2920,68 @@ impl TilesEncoder {
         if self.picture != TilesPicture::Held {
             return Ok(());
         }
-        // Worth a stream: a region laid out for what moves carries some of
-        // it already; or its stills came to more than a link is owed
-        // lossless; or, under a region a single change began, where there
-        // are no stills to count, some of its tiles coded to see.
-        // A region a single change began is judged from the layout after
-        // its first: by then what the churn calls moving is what moves
-        // since the change, not what moved before it, and its second,
-        // after which nothing moving in it ends it, is not yet up.
-        // What was found dear under one is not coded again: none of a
-        // region that cannot be ended for a region of it, every stream
-        // being taken, is coded at every layout.
-        let held: HashMap<(u16, u16), Option<(u8, bool)>> = self
+        // A region whose motion has kept to a smaller box for
+        // [`SHRINK_AFTER`] is judged again from here, as one a single change
+        // began is: what was dear when it was laid out may have stopped, and
+        // what still moves in it be a bar, which no region is laid out again
+        // for. Not while no region may be laid out.
+        if now >= self.no_streams_until {
+            for live in &mut self.live {
+                if live
+                    .smaller
+                    .is_some_and(|(since, _)| now.saturating_sub(since) >= SHRINK_AFTER)
+                {
+                    live.dear = false;
+                }
+            }
+        }
+        // Worth a stream: a region whose motion is known dear carries some
+        // of it already; or its stills came to more than a link is owed
+        // lossless; or, under a region yet to be judged, where there are no
+        // stills to count, some of its tiles coded to see. A region a
+        // single change began is judged from the layout after its first,
+        // [`RETUNE`] on ([`Self::held_stills`]): by then most of the churn's
+        // window is since the change, and its second, after which nothing
+        // moving in it ends it, is not yet up. What was found dear under
+        // one is not coded again: none of a region that cannot be ended for
+        // a region of it, every stream being taken, is coded at every
+        // layout.
+        let judged: HashMap<(u16, u16), Option<u8>> = self
             .live
             .iter()
             .flat_map(|live| {
-                let judged = match live.cause {
-                    Cause::Burst if !live.dear => {
-                        Some((live.id, now.saturating_sub(live.since) >= RETUNE))
-                    }
-                    _ => None,
-                };
-                live.cells.iter().map(move |cell| (*cell, judged))
+                let id = (!live.dear).then_some(live.id);
+                live.cells.iter().map(move |cell| (*cell, id))
             })
             .collect();
-        let found_dear = std::cell::RefCell::new(Vec::new());
+        let mut found_dear: Vec<u8> = Vec::new();
         let worthy = components(moving, self.stream_cells, |cells| {
-            let mut burst: Vec<u8> = Vec::new();
-            let mut judged = true;
+            let mut under: Vec<u8> = Vec::new();
             for cell in cells {
-                match held.get(cell) {
+                match judged.get(cell) {
                     Some(None) => return true,
-                    Some(Some((id, of_age))) => {
-                        judged &= of_age;
-                        if !burst.contains(id) {
-                            burst.push(*id);
-                        }
-                    }
-                    None => {}
+                    Some(Some(id)) if !under.contains(id) => under.push(*id),
+                    _ => {}
                 }
             }
-            if !burst.is_empty() {
-                let dear = judged && self.probe(cells, now) >= MOVING_BYTES / 2;
-                if dear {
-                    found_dear.borrow_mut().extend(burst);
-                }
-                dear
-            } else {
-                cells
+            if under.is_empty() {
+                return cells
                     .iter()
                     .map(|cell| u64::from(self.churn.spent(*cell)))
                     .sum::<u64>()
-                    >= MOVING_BYTES
+                    >= MOVING_BYTES;
             }
+            let dear = self.probe(cells, now) >= MOVING_BYTES / 2;
+            if dear {
+                found_dear.extend(under);
+            }
+            dear
         });
         let busy: HashSet<(u16, u16)> = moving
             .iter()
             .copied()
             .filter(|cell| worthy.iter().any(|c| c.bbox.contains(*cell)))
             .collect();
-        let found_dear = found_dear.into_inner();
         for live in &mut self.live {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
                 live.moving_at = now;
@@ -3002,7 +3029,9 @@ impl TilesEncoder {
         // moved in it since: what a scroll or a window's opening made a
         // video of is the video's own region soon after, and the rest of it
         // settles. Not while no region may be laid out, or the box would be
-        // stills.
+        // stills; and the stream it has is ended only once the coder has
+        // opened the one over the box, a coder that refuses that leaving it
+        // as it is, its motion counted from here again.
         let mut at = 0;
         while at < next.len() {
             let live = &mut next[at];
@@ -3029,10 +3058,18 @@ impl TilesEncoder {
                 at += 1;
                 continue;
             };
-            let live = next.swap_remove(at);
-            let id = live.id;
-            live.end(out, &mut unsent, &mut self.recovery);
-            next.push(self.build(id, area, now, Cause::Moving)?);
+            let id = next[at].id;
+            match self.build(id, area, now, Cause::Moving) {
+                Ok(over) => {
+                    next.swap_remove(at)
+                        .end(out, &mut unsent, &mut self.recovery);
+                    next.push(over);
+                }
+                Err(_) => {
+                    next[at].smaller = None;
+                    at += 1;
+                }
+            }
         }
         for (area, ..) in wanted {
             if next.iter().any(|live| live.area.contains(area)) {
@@ -3048,12 +3085,15 @@ impl TilesEncoder {
                 next.push(self.build(id, area, now, Cause::Moving)?);
             }
         }
-        for live in old {
+        for mut live in old {
             let idle = now.saturating_sub(live.moving_at) >= STREAM_IDLE;
             let overlaps = next
                 .iter()
                 .any(|kept| kept.area.intersect(live.area).is_some());
             if !idle && !overlaps && next.len() < MAX_STREAMS {
+                // Kept for now, though for nothing that moves within it:
+                // what its motion had kept to is counted anew.
+                live.smaller = None;
                 next.push(live);
             } else {
                 live.end(out, &mut unsent, &mut self.recovery);
@@ -3090,31 +3130,10 @@ impl TilesEncoder {
         (bytes * changes).checked_div(coded).unwrap_or(0)
     }
 
-    /// The tiles of `areas` no stream live from here carries, as runs along
-    /// a row.
-    fn uncovered(&self, areas: &[Area]) -> Vec<Area> {
-        let mut all = Vec::new();
-        for area in areas {
-            let mut runs: Vec<Area> = Vec::new();
-            for (_, part) in tiles_of(*area).filter(|(cell, _)| !self.covered.contains(cell)) {
-                match runs.last_mut() {
-                    Some(run)
-                        if run.top == part.top && run.right.checked_add(1) == Some(part.left) =>
-                    {
-                        run.right = part.right
-                    }
-                    _ => runs.push(part),
-                }
-            }
-            all.extend(runs);
-        }
-        all
-    }
-
     /// What streams that ended did not carry, owed as stills where no stream
     /// live from here does.
     fn owe(&mut self, unsent: &[Area]) {
-        let runs = self.uncovered(unsent);
+        let runs = runs_outside(unsent, &self.covered);
         self.stills.extend(runs);
     }
 
@@ -3138,24 +3157,7 @@ impl TilesEncoder {
             .filter(|live| live.started)
             .flat_map(|live| live.cells.iter().copied())
             .collect();
-        let mut runs: Vec<Area> = Vec::new();
-        for area in &areas {
-            let mut last: Option<usize> = None;
-            for (_, part) in tiles_of(*area).filter(|(cell, _)| !started.contains(cell)) {
-                match last.map(|at| &mut runs[at]) {
-                    Some(run)
-                        if run.top == part.top && run.right.checked_add(1) == Some(part.left) =>
-                    {
-                        run.right = part.right
-                    }
-                    _ => {
-                        last = Some(runs.len());
-                        runs.push(part);
-                    }
-                }
-            }
-        }
-        for run in runs {
+        for run in runs_outside(&areas, &started) {
             self.still(run, now, false, out)?;
         }
         Ok(())
@@ -3189,7 +3191,7 @@ impl TilesEncoder {
             moving_at: now,
             cause,
             since: now,
-            dear: false,
+            dear: cause == Cause::Moving,
             smaller: None,
         })
     }
@@ -3277,7 +3279,16 @@ impl TilesEncoder {
                 // The layouts count from here, so that one comes [`RETUNE`]
                 // on, where the region is judged, and not just short of its
                 // second, where a tick that finds it idle could end it
-                // first.
+                // first. The other regions' layout is later by as long as
+                // it has been since the last, and each is taken to have
+                // moved that much later, or a tick would find one idle that
+                // only the layout it waits for says is moving.
+                let late = self
+                    .retuned_at
+                    .map_or(Duration::ZERO, |at| now.saturating_sub(at));
+                for other in &mut self.live {
+                    other.moving_at = (other.moving_at + late).min(now);
+                }
                 self.retuned_at = Some(now);
                 Ok(true)
             }
@@ -5762,6 +5773,186 @@ mod tests {
             (1, 0, Some(whole)),
             "kept where what moves is over half of it"
         );
+    }
+
+    /// A region is judged again once its motion has kept to a smaller box:
+    /// a video over the whole desktop that stops with a striped bar still
+    /// moving on it, which kept the region for as long as it moved, is
+    /// ended two seconds and the region's own second on, no region laid out
+    /// for the bar, which is stills, and the desktop settles lossless
+    /// around it while it moves.
+    #[test]
+    fn a_region_left_with_what_is_cheap_ends() {
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let bar = Rect {
+            x: 64,
+            y: 64,
+            width: 512,
+            height: 64,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // A video over all of it for two seconds, then the bar alone for
+        // eight.
+        for n in 1..=200u32 {
+            let moving = if n <= 40 { whole } else { bar };
+            if n <= 40 {
+                paint(&mut pixels, w, whole, 300 + n);
+            } else {
+                stripes(&mut pixels, w, bar, n);
+            }
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[moving]),
+                t0 + ms(u64::from(n) * 50),
+            );
+            if n == 75 {
+                assert_eq!(
+                    (page.starts, page.ends),
+                    (1, 0),
+                    "kept by the bar, under two seconds after the video stopped"
+                );
+            }
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 1, 0),
+            "ended, and no region for the bar"
+        );
+        assert_eq!(page.off(&pixels), 0, "lossless under the bar and around it");
+    }
+
+    /// A region to be laid out again over a smaller box keeps the stream it
+    /// has where the coder refuses the one over the box: the session goes
+    /// on, the video in the region it had.
+    #[test]
+    fn a_region_the_coder_refuses_to_shrink_keeps_its_stream() {
+        /// A coder that opens `left` streams and refuses the rest.
+        struct Few {
+            left: usize,
+        }
+        impl H264Coder for Few {
+            fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
+                if self.left == 0 {
+                    return Err("no surface left".into());
+                }
+                self.left -= 1;
+                Fake::coder().open(width, height)
+            }
+        }
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let part = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Box::new(Few { left: 1 })).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        assert_eq!(page.starts, 0, "a flat first picture is stills");
+        // A video over all of it for two seconds, then over the part alone
+        // for six: laid out again over the part twice, and refused twice.
+        for n in 1..=160u32 {
+            let moving = if n <= 40 { whole } else { part };
+            paint(&mut pixels, w, moving, 300 + n);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[moving]),
+                t0 + ms(u64::from(n) * 50),
+            );
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 0, 1),
+            "the one stream throughout"
+        );
+        assert_eq!(
+            encoder.live[0].area.within(Area::whole((w, h))),
+            whole,
+            "over all it was laid out over"
+        );
+    }
+
+    /// A region one large change begins counts the layouts from itself, and
+    /// leaves the regions beside it the time that takes from theirs: a
+    /// video playing at seven frames a second is not found idle by a tick
+    /// because a window opened beside it and put off the layout that says it
+    /// moves, whichever of its frames the window opens on.
+    #[test]
+    fn a_region_one_change_begins_ends_none_beside_it() {
+        let (w, h) = (640u16, 384u16);
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 192,
+            height: 192,
+        };
+        let window = Rect {
+            x: 320,
+            y: 0,
+            width: 320,
+            height: 384,
+        };
+        for opens in 12..=16u64 {
+            let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            for n in 1..=opens + 14 {
+                paint(&mut pixels, w, video, 40 + n as u32);
+                if n < opens {
+                    step(
+                        &mut encoder,
+                        &mut page,
+                        &pixels,
+                        Some(&[video]),
+                        t0 + ms(n * 150),
+                    );
+                    continue;
+                }
+                if n == opens {
+                    assert_eq!(
+                        (page.starts, page.ends),
+                        (1, 0),
+                        "the video a region before the window opens at frame {opens}"
+                    );
+                }
+                // The window, of a video itself, so that its region is kept.
+                paint(&mut pixels, w, window, 90 + n as u32);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[video, window]),
+                    t0 + ms(n * 150),
+                );
+            }
+            assert_eq!(
+                (page.starts, page.ends, page.streams.len()),
+                (2, 0, 2),
+                "both streams throughout, the window opened at frame {opens}"
+            );
+        }
     }
 
     /// A stream out of its second to start is counted against the coder

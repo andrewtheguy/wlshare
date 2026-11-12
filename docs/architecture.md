@@ -883,12 +883,17 @@ the picture.
   at once. The regions are laid out again at most every 500 ms: one that
   grows is started again at a keyframe, one with no motion for a second ends,
   and one whose motion has kept, for two seconds, to a box of at most half
-  of its tiles is started again over the box around all that moved
+  of its tiles is judged again, as one a single change began is, some of
+  what moves in it coded to see. Where that would be dear as stills it is
+  started again over the box around all that moved
   in it since, the rest of it settling lossless while that plays: a page
   scrolled with a video on it is one region while it scrolls and the video's
   own two seconds after, where it stayed the page's for as long as the video
-  played. Less of a difference keeps its stream, a keyframe not being worth
-  it ([measured](tiles-performance.md#a-region-that-shrinks)). What changed under a stream that ends
+  played. Where it would not, a bar left moving where a video stopped, it
+  ends as one with no motion does and the bar is stills. Less of a
+  difference keeps its stream, a keyframe not being worth
+  it ([measured](tiles-performance.md#a-region-that-shrinks)). A coder that
+  refuses the stream over the box leaves the region the one it has. What changed under a stream that ends
   that no frame of it carried goes as stills after its END in the same update,
   or the client would hold it as the stream's last frame left it, older than
   the picture. A stream that ends having never started, its coder making no
