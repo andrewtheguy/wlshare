@@ -32,6 +32,11 @@
 #   mixed  mixed     minutes at the desk, quiet and busy in turn, the video
 #                    in a window and full screen among them; not in `all`,
 #                    and its own length, MIXED_LENGTH (300 by default)
+#   small  small     the small movements of a desk, one kind at a time with
+#                    the desktop still between them; not in `all`, its
+#                    own length, SMALL_LENGTH (240 by default, and no
+#                    less: its last part begins at 231), and only at
+#                    the sizes its page fits, 1280 by 820 points or more
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
@@ -46,6 +51,7 @@ set -euo pipefail
 SIZES="${SIZES:-1280x800 1440x900 1600x1000 1920x1080 2048x1536@2 2560x1600@2 2880x1800@2 3200x2000@2 3840x2160@2}"
 SCENARIOS="${SCENARIOS:-all}"
 LENGTH="${LENGTH:-20}"
+SMALL_LENGTH="${SMALL_LENGTH:-240}"
 FRAMES="${FRAMES:-150}"
 OUT=/captures
 RAW="$OUT/raw"
@@ -82,6 +88,13 @@ expand() {
 SCENARIOS=$(expand "$SCENARIOS")
 if [[ " $SCENARIOS " == *" video "* || " $SCENARIOS " == *" walk "* || " $SCENARIOS " == *" window "* || " $SCENARIOS " == *" mixed "* ]] && [[ ! -s "${CAPTURE_VIDEO:-}" ]]; then
 	log "the video, the window, the walk and the mixed play CAPTURE_VIDEO, and it is '${CAPTURE_VIDEO:-}'"
+	exit 1
+fi
+
+# The small plays its parts by the clock, the last from its 231st second: a
+# shorter session would be a capture of that name without them.
+if [[ " $SCENARIOS " == *" small "* ]] && { [[ ! "$SMALL_LENGTH" =~ ^[0-9]+$ ]] || ((10#$SMALL_LENGTH < 240)); }; then
+	log "the small plays for 240 seconds or more, and SMALL_LENGTH is '$SMALL_LENGTH'"
 	exit 1
 fi
 
@@ -261,6 +274,17 @@ scenario_mixed() {
 	finish mixed
 }
 
+scenario_small() {
+	# Its page lays every part out at a fixed place: a desktop it does not
+	# fit is passed over, and is no failure of the run.
+	if ((W / scale < 1280 || H / scale < 820)); then
+		log "small: passed over at $LABEL, under the 1280 by 820 points of its page"
+		return
+	fi
+	LENGTH=$SMALL_LENGTH play small
+	finish small
+}
+
 # ── The run ──────────────────────────────────────────────────────────────────
 
 PREV=1280x720
@@ -293,7 +317,7 @@ rmdir "$RAW" 2>/dev/null || true
 {
 	echo "# Frame captures"
 	echo
-	echo "What a wlshare session handed its video encoder, lossless, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`src/wlcap.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. $LENGTH seconds each; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
+	echo "What a wlshare session handed its video encoder, lossless, written by \`wlshare --capture-frames\` in the capture container (\`docker/capture/\`) on $(date -u +%Y-%m-%d): the capture file of \`src/wlcap.rs\`, \`zstd\` compressed. One file per scenario and size, \`<scenario>-<WxH>[@2]\`, where \`@2\` is a desktop drawn at scale 2. $LENGTH seconds each, but where one says its own; the content is \`docker/capture/scenarios/\`, whose windows are open and drawn when a session begins."
 	echo
 	echo "Quiet:"
 	echo "- terminal: a resize into the size from the size before, then a terminal typed into one key at a time and scrolled"
@@ -307,6 +331,11 @@ rmdir "$RAW" 2>/dev/null || true
 	echo "- video: \`$(basename "${CAPTURE_VIDEO:-none}")\` playing full screen from its start, cropped to fill it, with a keyframe asked at 10 s"
 	echo "- window: the video playing in a floating 16:9 window 55% of the desktop's width, centred over the page, from its start, the rest of the desktop still, with a keyframe asked at 10 s"
 	echo "- walk: the video while the client reads 200 ms late from 4 s to 10 s, so the frames slow and come back, then paused 7 s before the end on a frame of the video"
+	if compgen -G "$OUT/small-*.wlcap.zst" >/dev/null; then
+		echo
+		echo "Small, $SMALL_LENGTH seconds, at the sizes of 1280 by 820 points or more:"
+		echo "- small: the small movements of a desk, one kind at a time with the desktop still between them, each part and its second in \`docker/capture/scenarios/small.sh\`"
+	fi
 	echo
 	echo "$(sway --version), $(wlshare --version)"
 } >"$OUT/README.md"

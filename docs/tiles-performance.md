@@ -1593,3 +1593,177 @@ to 11 Mbit/s; one of 32 KiB takes 4.7 s there. Apart, neither finds a better pla
 together: the pairs off the axes, 64 and 64 and 256 and 64, are their
 stills' row and their tick's column, and the windows' video is one stream
 only where the stills are too few for a page.
+
+## What is worth a stream
+
+Motion's rule made a video of whatever kept changing over 5 tiles' area of
+the layout, and a desk has much that does and is no video: a striped
+progress bar, a line of text sliding sideways, a notice fading in. `small`
+is a capture of those — four minutes of the small movements of a desk, one
+kind at a time with the desktop still between them
+(`docker/capture/scenarios/small.sh`), at 1920x1080 and 2880x1800@2,
+captured on 2026-11-11 — played through a held list by `motion-bench
+--libx264 --tiles-only --frames`, each part by its seconds. What each part
+was sent as under that rule, the regions started and the bytes of their
+frames, with the stills beside them:
+
+| Part | 1920x1080 | 2880x1800@2 |
+|---|---|---|
+| striped bar, 600×16 points, 6 s | 1 region, 109 kB + 2 kB | 1 region, 219 kB + 5 kB |
+| text sliding, 520×28 points, 6 s | 6 regions, 174 kB + 29 kB | 4 regions, 355 kB + 146 kB |
+| chart of 300×100 redrawn 5 a second | 1 region, 24 kB + 22 kB | stills, 276 kB |
+| log of 400×180, 5 lines a second | 1 region, 8 kB + 98 kB | stills, 154 kB |
+| notice of 280×70 sliding in and out, twice | 3 regions, 26 kB + 54 kB | 3 regions, 50 kB + 124 kB |
+| clock, spinner and typing at once | 1 region, 42 kB + 111 kB | stills, 351 kB |
+| video of 320×180 points, 6 s | 1 region, 520 kB + 301 kB | 1 region, 878 kB + 891 kB |
+
+The spinners (32 and 16 points), the filling bar, the stopwatch, the clock,
+the hover, the selection, the menu, the slider, the wheel's nudges and the
+terminal were stills already, under 5 tiles' area or changing too seldom.
+The text that slides is the worst of it: a region started again each time
+it grew, 6 keyframes in 6 seconds, the text lossy throughout and settled
+after.
+
+What separates them from a video is not their size but what they cost
+lossless. With no region allowed at all, each part's stills over its
+seconds:
+
+| Part | 1920x1080 | 2880x1800@2 |
+|---|---:|---:|
+| striped bar | 33 kB, 6 kB/s | 73 kB, 12 kB/s |
+| text sliding | 274 kB, 46 kB/s | 630 kB, 105 kB/s |
+| chart | 67 kB | 276 kB |
+| notice | 87 kB | 190 kB |
+| video of 96×54 points | 511 kB, 85 kB/s | 1493 kB, 249 kB/s |
+| video of 320×180 points | 5597 kB, 933 kB/s | not run: a region at every setting below |
+
+A bar's stills are a third of the bytes its video was, and exact; the
+text's are a quarter to a third more than its regions and their stills
+came to; and the video is ten times any of them or more. So a component is worth a stream
+only where the stills of its tiles came to `MOVING_BYTES` over the churn's
+8 tenths, the bytes each still came to shared among its tiles. Swept, on
+the capture as it was first taken, the same page with its terminal's part
+timed otherwise, which no setting made a region of:
+
+| `MOVING_BYTES` | what streams |
+|---|---|
+| 64 KiB | the video, and at 2880x1800@2 the sliding text, 4 regions |
+| 128 KiB | the video alone, from the frame it did before |
+| 256 KiB | the same |
+| 512 KiB | the video, at 1920x1080 five frames later, 229 kB more of stills |
+| 1 MiB | at 1920x1080 nothing, the video 5.6 MB of stills; at 2880x1800@2 the video, two frames later |
+
+It is 256 KiB, twice the last that fails either way: about 2.6 Mbit/s of
+stills, on a list for a link with room. The small video of 96×54 points
+stays stills as it did, under the area.
+
+A region that one large change began has no stills under it to count, and
+was kept for as long as anything of 5 tiles' area moved in it: a window
+that opened with a bar moving on it was a video of the whole window until
+the bar stopped. What moves in it is now coded to see — at most 16 of the
+component's tiles, a WebP each, thrown away — from the layout after its
+first, half a second in, and the region is kept only where that would be
+dear and is half of it or more; where it is dear and less, it ends for a
+region of what moves; otherwise it ends at its second, as an idle one
+does.
+
+That coding is rare and small. Over the samples at both sizes, on lab1 and
+alone, it ran 31 times in all, a region whose motion narrowed being judged
+by it too ([below](#a-region-that-shrinks)): not once on `small`, window,
+drag, terminal or still, once on each video, each flood and browser at
+2880x1800@2, twice on uncover at 2880x1800@2, 5 and 9 times on the two
+mixed, and 4 and 6 times on the two walks, where a region begins every few
+seconds. Sixteen tiles of a video took 10 ms, 0.6 ms a tile, and of a page
+2.5 ms: 0.15% and 0.11% of the encoder's time on mixed, 0.4% and 0.16% on
+video, and 1.0% and 0.7% on walk, the most of any. The frame it
+falls on is that much later, once a region. Counting instead the pixels of
+the same tiles that are neither the one to their left nor the one above
+took 0.15 ms and gave the same verdict all 31 times, none of them close —
+30 dear by 9 to 180 times the bytes, one cheap by 33 — but a still came to
+1.2 to 2.8 bytes for each such pixel, by what it showed, where the WebP is
+what the still would be. So the tiles are coded.
+
+Over the two captures, and the samples at the same sizes (`mixed` and
+`walk` whole), the rule before and now:
+
+| Capture | bytes, MB | regions started | frames held lossless | held MSE |
+|---|---:|---:|---:|---:|
+| small-1920x1080 | 4.21 → 4.27 | 15 → 2 | 1340 → 1703 of 1824 | 0.10 → 0.08 |
+| small-2880x1800@2 | 8.22 → 8.21 | 11 → 3 | 1454 → 1668 of 1789 | 0.05 → 0.04 |
+| mixed-1920x1080 | 134.68 → 135.05 | 15 → 13 | 991 → 1058 of 3515 | 2.47 → 2.47 |
+| mixed-2880x1800@2 | 273.44 → 273.37 | 20 → 18 | 1045 → 1104 of 3328 | 1.32 → 1.32 |
+| window-1920x1080 | 5.16 → 4.99 | 7 → 8 | 9 → 12 | 1.26 → 1.24 |
+| window-2880x1800@2 | 8.37 → 8.37 | 8 → 8 | 8 → 8 | 0.62 → 0.62 |
+| video-1920x1080 | 12.06 → 12.18 | 9 → 9 | 6 → 6 | 2.18 → 2.17 |
+| video-2880x1800@2 | 24.71 → 24.65 | 11 → 11 | 4 → 4 | 1.71 → 1.70 |
+| walk-1920x1080 | 17.96 → 18.18 | 15 → 17 | 9 → 9 | 2.50 → 2.48 |
+| walk-2880x1800@2 | 29.54 → 29.75 | 18 → 18 | 6 → 6 | 1.73 → 1.73 |
+| uncover-2880x1800@2 | 0.97 → 1.54 | 1 → 2 | 2 → 3 of 49 | 1.83 → 0.62 |
+
+The two regions left of `small` at 1920x1080 are the first picture's and
+the video's. browser, drag, terminal and flood at both sizes and uncover
+at 1920x1080 are the same to the byte, and every capture ends lossless.
+The encoder's time is within its noise on all of them. uncover at
+2880x1800@2 is the one that sends more, 0.6 MB, in two regions where it
+had one: a third of the error held, for half as many bytes again.
+
+`motion_debug` outlines each region in its frames. On lab1 (4 vCPUs of AMD
+EPYC Rome), libx264, three runs each: video-1920x1080 took 2.52 s of the
+processor without it and 2.54 s with, window-2880x1800@2 1.64 s and 1.63 s,
+inside what the runs differ by, for 0.4% and 0.2% more bytes; and `check`
+passes with it, the picture lossless once settled, the outline gone.
+
+## A region that shrinks
+
+A region was kept for as long as what moved stayed inside it: a page
+scrolled with a video playing on it was one region while it scrolled, and
+stayed the page's for as long as the video played, the page around the
+video lossy until it stopped. A region whose motion has kept to a smaller
+box for a time is now started again over that box, at a keyframe, and the
+rest of it settles. How much smaller and for how long, swept on
+mixed-1920x1080, where videos play for minutes, and browser-2880x1800@2,
+the scroll, beside neither being done at all:
+
+| The box is at most | for | mixed: regions started, MB | browser: regions started, MB |
+|---|---|---:|---:|
+| never | | 13, 135.05 | 1, 6.76 |
+| three quarters | 1 s | 83, 142.54 | 2, 7.03 |
+| three quarters | 2 s | 45, 137.55 | 2, 7.03 |
+| three quarters | 3 s | 29, 136.19 | 2, 7.17 |
+| three quarters | 5 s | 20, 135.51 | 2, 7.16 |
+| half | 1 s | 35, 137.01 | 1, 6.76 |
+| half | 2 s | 16, 135.23 | 1, 6.76 |
+| half | 3 s | 15, 135.12 | 1, 6.76 |
+| half | 5 s | 15, 135.15 | 1, 6.76 |
+
+A video's motion narrows and widens as it plays, and at three quarters it
+is started again each time, 83 keyframes where there were 13 and 5.5% more
+bytes at a second, and the scroll itself is cut in two at every delay
+swept. At
+half the scroll is left alone, and from two seconds the videos nearly are.
+It is half, the waste a merge's box may have, and two seconds. Over the
+samples at 1920x1080 and 2880x1800@2 and both `small` captures, only
+`mixed` differs, every other the same to the byte:
+
+| Capture | bytes, MB | regions started | frames held lossless | held MSE |
+|---|---:|---:|---:|---:|
+| mixed-1920x1080 | 135.05 → 135.23 | 13 → 16 | 1058 → 1058 | 2.47 → 2.34 |
+| mixed-2880x1800@2 | 273.37 → 273.80 | 18 → 21 | 1104 → 1104 | 1.32 → 1.31 |
+
+No capture scrolls a page under a video that plays, so what the rule is
+for is not in these figures, which are what it costs where it is not
+wanted: three keyframes in four minutes, 0.1% to 0.2% more bytes, the
+encoder's time within its noise (30.8 s without it and 30.3 s with at
+1920x1080, 86.6 s and 86.2 s at 2880x1800@2, three runs each, turn about).
+A test holds what it is for (`a_region_shrinks_to_what_still_moves`).
+
+What a region's motion has narrowed to need not be what it was laid out
+for: a video that stops with a striped bar still moving beside it left the
+bar a video for as long as it moved, every component that touches a region
+being taken for worth one. So the region is judged again before it is
+started over the box, some of what moves in it coded to see as under a
+region one change began, and where that would not be dear it ends instead,
+a second on, and the bar is stills (`a_region_left_with_what_is_cheap_ends`).
+On the samples nothing was found cheap, a video being what was left each
+time, and every figure above is the same to the byte: the cost is the
+coding, 4 and 6 times more on the two mixed, counted above.

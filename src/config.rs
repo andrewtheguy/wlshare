@@ -56,6 +56,12 @@ pub struct Config {
     /// they are libx264's.
     #[serde(default = "default_true")]
     pub hardware_h264: bool,
+    /// Whether a tiles picture that holds its dial outlines every region it
+    /// streams as video, in the frames themselves
+    /// ([`crate::rfb::tiles::TilesEncoder::set_debug`]): for seeing what the
+    /// rules make a video of. Off by default.
+    #[serde(default)]
+    pub motion_debug: bool,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
     pub name: String,

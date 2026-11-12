@@ -598,8 +598,13 @@ parts of them: `scripts/capture-samples.sh` cuts each capture to 120 frames
 under its own name with `wlcap trim --frames`, a quiet scenario's first and
 a busy one's busiest, the cut's first frame the picture as it stood, whole,
 with a keyframe asked; `walk` it copies whole, since its frames slow and
-come back over all of it, and `mixed`, minutes at the desk of which a cut
-would keep only the busiest, the video full screen.
+come back over all of it, `mixed`, minutes at the desk of which a cut
+would keep only the busiest, the video full screen, and `small`, the small
+movements of a desk one kind at a time — a spinner, a progress bar, a line
+of text sliding, a clock, a menu, a terminal's progress line, a small video
+— each at its own seconds with the desktop still between them
+(`docker/capture/scenarios/small.sh`), for the tiles picture to be measured
+on what is and is not worth a region's stream.
 
 The walk is measured on the captures the same way, without a link being
 shaped: `walk-sim` (`examples/`) plays one or several of them through the
@@ -864,14 +869,51 @@ the picture.
   components, one under 5 tiles' area of the layout is left to WebP — 5 at
   scale 1, 20 at 2, `ceil(5 × scale²)` and never fewer than 5, the scale the
   session's output is drawn at, so a spinner or a progress bar drawn at 2,
-  four times the tiles it covers at 1, is no more a video for it — boxes merge unless the merged
+  four times the tiles it covers at 1, is no more a video for it — and so
+  is one whose changes were cheap as stills, under 256 KiB of them over
+  those 8 tenths, about 2.6 Mbit/s: the moving parts of a desk — a striped
+  progress bar, a line of text sliding sideways, a notice fading in, a chart
+  redrawn, a log printing, whatever tiles they cover and at either scale —
+  cost less lossless than that, a tenth to a hundredth of what a video
+  does, and stay stills, exact while they move, with no stream opened and
+  nothing to settle after, unless they touch tiles a region already
+  carries or join a component that is dear, which is then one region
+  ([measured](tiles-performance.md#what-is-worth-a-stream)). Boxes merge unless the merged
   box would be more than twice the moving tiles, and at most 4 regions stream
   at once. The regions are laid out again at most every 500 ms: one that
-  shrinks keeps its stream, one that grows is started again at a keyframe, one
-  with no motion for a second ends. What changed under a stream that ends
+  grows is started again at a keyframe, one with no motion for a second ends,
+  and one whose motion has kept, for two seconds, to a box of at most half
+  of its tiles is judged again, as one a single change began is, some of
+  what moves in it coded to see. Where that would be dear as stills it is
+  started again over the box around all that moved
+  in it since, the rest of it settling lossless while that plays: a page
+  scrolled with a video on it is one region while it scrolls and the video's
+  own two seconds after, where it stayed the page's for as long as the video
+  played. Where it would not, a bar left moving where a video stopped, it
+  ends as one with no motion does and the bar is stills. Less of a
+  difference keeps its stream, a keyframe not being worth
+  it ([measured](tiles-performance.md#a-region-that-shrinks)). A coder that
+  refuses the stream over the box leaves the region the one it has. What changed under a stream that ends
   that no frame of it carried goes as stills after its END in the same update,
   or the client would hold it as the stream's last frame left it, older than
-  the picture. A region is at most the desktop, which
+  the picture. A stream that ends having never started, its coder making no
+  frame, leaves the client nothing of the change that began it: all of its
+  rectangle goes as stills in that update, whatever they come to, since a
+  region over what is past an update's stills would be that one again —
+  under a stream laid out over it that has not started either, too, which
+  has shown the client as little. And a stream has a second to start:
+  one with no frame by then ends whatever moves in it, though the layouts
+  would keep it, and no region is laid out for the five seconds after, what
+  changes going as stills, until the coder is tried again. A region that began as the box around one large change,
+  above, has no stills under it to count: what moves in it is taken for
+  dear where at most 16 of its tiles, coded as a WebP each and thrown away,
+  say the component's changes would come to half that over the 8 tenths.
+  Then the region is kept where the tiles that move are half of it or more, a
+  video that began full screen, and otherwise ended for a region of the
+  component alone, a video in the window that opened; with nothing dear
+  moving in it, it ends a second after it began as any idle region does,
+  so a page that loads with a bar moving on it is not a video for as long
+  as the bar moves. A region is at most the desktop, which
   has the ceiling `WLSV`'s whole-desktop stream has: the gateway lists this
   encoding only for a desktop its browser's decoder takes, as it does `WLSV`,
   so wlshare holds a region to no ceiling of its own. Each region
@@ -881,6 +923,15 @@ the picture.
   hardware decoders included; what it loses lasts only while the region
   moves, since the settle sends it again as a still. Its dial is wlshare's,
   held: a walked list streams nothing.
+  With `motion_debug = true` in the configuration every region's frames
+  carry an outline of its rectangle, two of the layout's pixels thick inside
+  it — magenta around one laid out over tiles that kept changing, orange
+  around one a single update's change was more than its stills for — to see
+  what the rules make a video of. It is painted into the encoder's picture
+  for as long as a frame is read from it and put back after, a few thousand
+  pixels a frame, so no still, copy or cached tile ever holds it, and it is
+  gone as the region settles: the page draws nothing of its own, and the
+  gateway knows nothing of it.
 - **The dial walks, unless the list holds it.** wlshare's dial is a
   ceiling, and the session's walk of the link — the same one, with the same
   thresholds and steps, that walks `WLSV`'s quality and frames

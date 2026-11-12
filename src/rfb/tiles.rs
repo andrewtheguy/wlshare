@@ -35,11 +35,21 @@
 //! damage a read is told of is compared, tile by tile, with what the client
 //! was sent, so a redraw of what it holds sends nothing. A tile is moving when
 //! it changed in 4 of the last 8 tenths of a second. Moving tiles join into
-//! 4-connected components; one under 5 tiles is left to WebP, boxes merge
+//! 4-connected components; one under 5 tiles is left to WebP, and so is one
+//! whose stills came to under 256 KiB over those 8 tenths, a spinner, a
+//! progress bar or a line of text that slides, which cost little lossless and
+//! are no video unless they join one that is; boxes merge
 //! unless the merged box would be more than twice the moving tiles, and at
 //! most 4 regions stream at once. The regions are laid out again at most every
-//! 500 ms: one that shrinks keeps its stream, one that grows starts another,
-//! one with no motion for a second ends.
+//! 500 ms: one that grows starts another, one with no motion for a second
+//! ends, and one whose motion has kept for two seconds to a box of at most
+//! half of it is judged again, some of what moves coded to see: where that
+//! would be dear as stills it starts another over that box, and otherwise it
+//! ends as one with no motion does, what moves in it stills from then; less
+//! of a difference keeps its stream. A region one large change began, the
+//! box around all of it, is kept past its second only for what moves over
+//! half of it and would be dear as stills, and ends otherwise, for regions of
+//! what moves in it where that is dear.
 //!
 //! **What moved is a copy.** Where the damage moved pixels the client holds
 //! — a scroll, a window dragged — the rectangle they now fill goes as a copy
@@ -275,6 +285,25 @@ fn tiles_of(area: Area) -> impl Iterator<Item = ((u16, u16), Area)> {
     })
 }
 
+/// The tiles of `areas` that are not among `carried`, as runs along a row,
+/// none of them across two of the areas.
+fn runs_outside(areas: &[Area], carried: &HashSet<(u16, u16)>) -> Vec<Area> {
+    let mut all = Vec::new();
+    for area in areas {
+        let mut runs: Vec<Area> = Vec::new();
+        for (_, part) in tiles_of(*area).filter(|(cell, _)| !carried.contains(cell)) {
+            match runs.last_mut() {
+                Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => {
+                    run.right = part.right
+                }
+                _ => runs.push(part),
+            }
+        }
+        all.extend(runs);
+    }
+    all
+}
+
 /// A rectangle of the tile grid, in tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CellBox {
@@ -353,8 +382,24 @@ const MAX_STREAMS: usize = 4;
 const RETUNE: Duration = Duration::from_millis(500);
 /// How long a region has nothing moving in it before its stream ends.
 const STREAM_IDLE: Duration = Duration::from_millis(1000);
+/// How long a stream has to start: one whose coder has made no frame of it
+/// by then ends, whatever moves in it, and its rectangle goes as stills.
+const START_WITHIN: Duration = Duration::from_millis(1000);
+/// How long no region is laid out after a stream ran out of
+/// [`START_WITHIN`]: the coder that made no frame of it would make none of
+/// the next, so what changes goes as stills, whatever they come to, until
+/// it is tried again.
+const START_RETRY: Duration = Duration::from_millis(5000);
 /// The most tiles a merge may cover, as a multiple of the moving tiles it joins.
 const MERGE_WASTE: u32 = 2;
+/// How long what moves in a region has kept to a smaller box before the
+/// region is laid out again over that box: a page scrolled with a video on
+/// it is one region while it scrolls, and the video's alone this long after.
+/// A smaller box is one of at most half the region's tiles, the waste a
+/// merge's box may have ([`MERGE_WASTE`]): less of a difference is not worth
+/// the keyframe, and a video whose motion narrows and widens, as most do,
+/// would be started again each time.
+const SHRINK_AFTER: Duration = Duration::from_millis(2000);
 /// The fewest moving tiles a component needs to be worth a stream at scale 1:
 /// at another, the same area of the layout, 64×64 of its pixels a tile here
 /// ([`stream_cells`]).
@@ -427,14 +472,45 @@ const SETTLE_TICK_LEAST: Duration = Duration::from_millis(50);
 /// The most tiles along a row one WebP holds, its longest side
 /// ([`webp::MAX_SIDE`]) in whole tiles.
 const WEBP_TILES: usize = (webp::MAX_SIDE / TILE) as usize;
+/// What a moving component's stills must have come to over the churn's
+/// window, [`CHURN_WINDOW`] slots, to be worth a stream: about 2.6 Mbit/s of
+/// them. Twice what the widgets of a desk came to at their most, a line of
+/// text sliding sideways at scale 2, and half of the least of what a video
+/// did, 320 by 180 points at scale 1; and half of it keeps a stream on what
+/// moves under a region one large change began, where it is guessed
+/// ([`TilesEncoder::probe`]).
+const MOVING_BYTES: u64 = 2 * HELD_BYTES as u64;
+
+/// The most tiles of a component [`TilesEncoder::probe`] codes.
+const PROBE_TILES: usize = 16;
+
 /// The rows a report of damage is cut into.
 const BAND_ROWS: u16 = 64;
 
-/// One tile's history: bit 0 the slot it last changed in, shifted a place a slot.
+/// One tile's history: bit 0 the slot it last changed in, shifted a place a
+/// slot, and the bytes its stills came to in each of those slots, the last
+/// first.
 #[derive(Clone, Copy)]
 struct ChurnCell {
     history: u8,
+    spent: [u32; CHURN_WINDOW as usize],
     last_slot: u64,
+}
+
+impl ChurnCell {
+    /// The history as of `slot`, what is older than the window dropped.
+    fn advance(&mut self, slot: u64) {
+        let elapsed = slot.saturating_sub(self.last_slot);
+        if elapsed >= CHURN_WINDOW {
+            self.history = 0;
+            self.spent = [0; CHURN_WINDOW as usize];
+        } else if elapsed > 0 {
+            self.history <<= elapsed;
+            self.spent.rotate_right(elapsed as usize);
+            self.spent[..elapsed as usize].fill(0);
+        }
+        self.last_slot = slot;
+    }
 }
 
 #[derive(Default)]
@@ -453,16 +529,29 @@ impl Churn {
         let slot = Self::slot(origin, now);
         let cell = self.churn.entry(key).or_insert(ChurnCell {
             history: 0,
+            spent: [0; CHURN_WINDOW as usize],
             last_slot: slot,
         });
-        let elapsed = slot.saturating_sub(cell.last_slot);
-        cell.history = if elapsed >= CHURN_WINDOW {
-            0
-        } else {
-            cell.history << elapsed
-        };
+        cell.advance(slot);
         cell.history |= 1;
-        cell.last_slot = slot;
+    }
+
+    /// `bytes` of a still that carried `key` at `now`, where it has changed
+    /// within the window: what its changes cost as stills.
+    fn spend(&mut self, key: (u16, u16), now: Duration, bytes: u32) {
+        let (Some(origin), Some(cell)) = (self.origin, self.churn.get_mut(&key)) else {
+            return;
+        };
+        cell.advance(Self::slot(origin, now));
+        cell.spent[0] = cell.spent[0].saturating_add(bytes);
+    }
+
+    /// The bytes `key`'s stills came to over the window, as of the last
+    /// [`Self::moving`].
+    fn spent(&self, key: (u16, u16)) -> u32 {
+        self.churn
+            .get(&key)
+            .map_or(0, |cell| cell.spent.iter().sum())
     }
 
     fn moving(&mut self, now: Duration) -> Vec<(u16, u16)> {
@@ -472,13 +561,7 @@ impl Churn {
         let slot = Self::slot(origin, now);
         let mut moving = Vec::new();
         self.churn.retain(|key, cell| {
-            let elapsed = slot.saturating_sub(cell.last_slot);
-            cell.history = if elapsed >= CHURN_WINDOW {
-                0
-            } else {
-                cell.history << elapsed
-            };
-            cell.last_slot = slot;
+            cell.advance(slot);
             if cell.history.count_ones() >= CHURN_MOVING {
                 moving.push(*key);
             }
@@ -523,8 +606,13 @@ fn stream_cells(scale: f64) -> u32 {
     ((f64::from(MIN_STREAM_CELLS) * scale * scale).ceil() as u32).max(MIN_STREAM_CELLS)
 }
 
-/// The 4-connected components of `cells` of at least `least` tiles.
-fn components(cells: &[(u16, u16)], least: u32) -> Vec<Component> {
+/// The 4-connected components of `cells` of at least `least` tiles that are
+/// `worth` a stream, asked of each one's tiles.
+fn components(
+    cells: &[(u16, u16)],
+    least: u32,
+    mut worth: impl FnMut(&[(u16, u16)]) -> bool,
+) -> Vec<Component> {
     let remaining: HashSet<(u16, u16)> = cells.iter().copied().collect();
     let mut sorted: Vec<(u16, u16)> = remaining.iter().copied().collect();
     sorted.sort_unstable();
@@ -535,10 +623,10 @@ fn components(cells: &[(u16, u16)], least: u32) -> Vec<Component> {
             continue;
         }
         let mut bbox = CellBox::of(start);
-        let mut moving = 0;
+        let mut members = Vec::new();
         let mut stack = vec![start];
         while let Some((c, r)) = stack.pop() {
-            moving += 1;
+            members.push((c, r));
             bbox = bbox.union(&CellBox::of((c, r)));
             for next in [
                 (c.wrapping_sub(1), r),
@@ -551,9 +639,11 @@ fn components(cells: &[(u16, u16)], least: u32) -> Vec<Component> {
                 }
             }
         }
-        components.push(Component { bbox, moving });
+        let moving = members.len() as u32;
+        if moving >= least && worth(&members) {
+            components.push(Component { bbox, moving });
+        }
     }
-    components.retain(|c| c.moving >= least);
     components
 }
 
@@ -563,7 +653,7 @@ type MergeQueue = BinaryHeap<Reverse<(u32, usize, usize, u32, u32)>>;
 /// At most `max` pairwise disjoint boxes from the components: overlaps first,
 /// merged unless the union is past the waste, then the cheapest merges while
 /// there are too many, then the smallest dropped.
-fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
+fn merge(components: Vec<Component>, max: usize) -> Vec<Component> {
     let mut overlaps = OverlapQueue::new();
     let mut merges = MergeQueue::new();
     let mut components: Vec<Option<Component>> = components.into_iter().map(Some).collect();
@@ -647,7 +737,7 @@ fn merge(components: Vec<Component>, max: usize) -> Vec<CellBox> {
             }
         }
     }
-    components.into_iter().flatten().map(|c| c.bbox).collect()
+    components.into_iter().flatten().collect()
 }
 
 fn queue_component(
@@ -985,6 +1075,51 @@ impl Cache {
 /// where that is the whole tile, its key for the cache ([`tile_key`]).
 type StillTile = ((u16, u16), Area, Option<(u64, bool)>);
 
+/// Why a region was laid out, which [`TilesEncoder::set_debug`]'s outline
+/// of it says by its colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cause {
+    /// Its tiles kept changing ([`TilesEncoder::retune`]): magenta.
+    Moving,
+    /// One update's change was more than its stills
+    /// ([`TilesEncoder::held_stills`]): orange.
+    Burst,
+}
+
+impl Cause {
+    /// The outline's colour, `B, G, R, X`.
+    fn colour(self) -> [u8; 4] {
+        match self {
+            Self::Moving => [255, 0, 255, 255],
+            Self::Burst => [0, 165, 255, 255],
+        }
+    }
+}
+
+/// The four strips, `thick` pixels wide, along the inside of `area`'s edges:
+/// the outline [`TilesEncoder::set_debug`] draws on a region.
+fn outline(area: Area, thick: u16) -> [Area; 4] {
+    let thick = thick.clamp(1, area.w().min(area.h())) - 1;
+    [
+        Area {
+            bottom: area.top + thick,
+            ..area
+        },
+        Area {
+            top: area.bottom - thick,
+            ..area
+        },
+        Area {
+            right: area.left + thick,
+            ..area
+        },
+        Area {
+            left: area.right - thick,
+            ..area
+        },
+    ]
+}
+
 /// One live region stream.
 struct Live {
     /// The id its rectangles carry, which no other live stream has.
@@ -999,19 +1134,42 @@ struct Live {
     started: bool,
     carried: bool,
     moving_at: Duration,
+    cause: Cause,
+    /// When it was laid out.
+    since: Duration,
+    /// What moves under it is dear as stills: by the stills counted before
+    /// it was laid out, or by its tiles coded since
+    /// ([`TilesEncoder::probe`]), which is not asked of it again. Not yet
+    /// of a region one change began, nor of one whose motion has kept to a
+    /// smaller box since ([`SHRINK_AFTER`]), each judged at the layouts
+    /// until it is.
+    dear: bool,
+    /// Since when what moves in it has kept to a smaller box
+    /// ([`SHRINK_AFTER`]), and the box around all that moved since.
+    smaller: Option<(Duration, CellBox)>,
 }
 
 impl Live {
-    /// The damage no frame carried, on the desktop: what the client holds of
-    /// it is the stream's last frame from before it.
-    fn unsent(&self) -> impl Iterator<Item = Area> + '_ {
+    /// The stream is over, and what it leaves owed: its END, where it
+    /// started, and into `unsent` the damage no frame carried, on the
+    /// desktop, of which the client holds the stream's last frame from
+    /// before it ([`TilesEncoder::owe`]); or, where it never started, into
+    /// `recovery` its rectangle whole, the client holding whatever was
+    /// there before it, the change that began it never sent
+    /// ([`TilesEncoder::recover`]).
+    fn end(self, out: &mut Out, unsent: &mut Vec<Area>, recovery: &mut Vec<Area>) {
+        if !self.started {
+            recovery.push(self.area);
+            return;
+        }
+        out.end(self.id, self.area);
         let Area { left, top, .. } = self.area;
-        self.pending.iter().map(move |r| Area {
+        unsent.extend(self.pending.iter().map(|r| Area {
             left: left + r.x,
             top: top + r.y,
             right: left + r.x + r.width - 1,
             bottom: top + r.y + r.height - 1,
-        })
+        }));
     }
 }
 
@@ -1098,6 +1256,12 @@ pub struct TilesEncoder {
     retuned_at: Option<Duration>,
     /// The stills the reads since the last encode owe.
     stills: Vec<Area>,
+    /// The rectangles of streams that ended without starting, which the
+    /// encode they ended in sends as stills whatever they come to.
+    recovery: Vec<Area>,
+    /// Until when no region is laid out, a stream having run out of
+    /// [`START_WITHIN`] without a frame ([`START_RETRY`]).
+    no_streams_until: Duration,
     /// The copies the reads since the last encode found, which go ahead of
     /// the stills, in the order they were found.
     copies: Vec<CopyRect>,
@@ -1151,6 +1315,12 @@ pub struct TilesEncoder {
     /// A lossless list's still stream, from its first STILL; none where it
     /// starts over, with the picture or the client's cache.
     still_stream: Option<planar::StillStream>,
+    /// Every region's frames carry its outline ([`Self::set_debug`]), this
+    /// many pixels thick, two of the layout's.
+    debug: bool,
+    outline: u16,
+    /// The mirror's pixels under an outline while its frame is read.
+    under: Vec<u8>,
 }
 
 impl TilesEncoder {
@@ -1183,6 +1353,8 @@ impl TilesEncoder {
             cache: Cache::default(),
             retuned_at: None,
             stills: Vec::new(),
+            recovery: Vec::new(),
+            no_streams_until: Duration::ZERO,
             copies: Vec::new(),
             ended: Vec::new(),
             read: false,
@@ -1204,6 +1376,9 @@ impl TilesEncoder {
             progressive: (picture == TilesPicture::Progressive)
                 .then(|| progressive::Encoder::new(width, progressive::Tables::protocol())),
             still_stream: None,
+            debug: false,
+            outline: 2,
+            under: Vec::new(),
         };
         encoder.forget();
         Ok(encoder)
@@ -1237,8 +1412,35 @@ impl TilesEncoder {
     /// The scale the output is drawn at, 1 until it is said: the fewest
     /// moving tiles a region is laid out over from the next layout on
     /// ([`stream_cells`]). A live stream is kept, or ends, by that layout.
+    /// An outline ([`Self::set_debug`]) is as thick as the scale makes it
+    /// from each region's next frame, the wider of the old and the new read
+    /// again, since a frame is otherwise of its damage alone.
     pub fn set_scale(&mut self, scale: f64) {
         self.stream_cells = stream_cells(scale);
+        let thick = (2.0 * scale).round().clamp(2.0, 16.0) as u16;
+        if self.debug && thick != self.outline {
+            let wider = thick.max(self.outline);
+            for live in &mut self.live {
+                live.dirty = true;
+                for strip in outline(live.area, wider) {
+                    live.pending.push(strip.within(live.area));
+                }
+            }
+        }
+        self.outline = thick;
+    }
+
+    /// Whether every region's stream carries an outline of its rectangle,
+    /// drawn into the frames it is coded from and nowhere else: magenta
+    /// around a region laid out over tiles that kept changing, orange around
+    /// one a single update's change was more than its stills for. It is two
+    /// pixels of the layout thick, inside the rectangle, and gone as the
+    /// region settles, since every tile of a region is owed its still, which
+    /// is of the desktop's pixels alone. For seeing what the rules make a
+    /// video of; the strips are painted and put back around each frame's
+    /// read, a few thousand pixels a frame.
+    pub fn set_debug(&mut self, debug: bool) {
+        self.debug = debug;
     }
 
     /// A new picture, a walk the list did not name before: what the client
@@ -1275,6 +1477,7 @@ impl TilesEncoder {
         self.copied_at = None;
         self.copied_by.clear();
         self.stills.clear();
+        self.recovery.clear();
         self.copies.clear();
         self.restarting = true;
         self.pace = 0;
@@ -2169,6 +2372,7 @@ impl TilesEncoder {
             if self.held_stills(stills, moved, now, &mut out)? {
                 self.round(now, &mut out)?;
             }
+            self.recover(now, &mut out)?;
         } else {
             self.stills(stills, now, &mut out)?;
         }
@@ -2246,7 +2450,13 @@ impl TilesEncoder {
     /// cache keeps lossless goes as a draw of its slot instead, and the run is
     /// coded around it ([`Self::coded`]). A WebP pays the debt of every tile it
     /// covers whole, and so does a draw.
-    fn still(&mut self, area: Area, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+    fn still(
+        &mut self,
+        area: Area,
+        now: Duration,
+        change: bool,
+        out: &mut Out,
+    ) -> Result<(), TilesError> {
         debug_assert!(
             self.picture != TilesPicture::Lossless,
             "a lossless list's stills are packed together"
@@ -2283,12 +2493,12 @@ impl TilesEncoder {
         for (i, hit) in hits.into_iter().enumerate() {
             let Some(slot) = hit else { continue };
             let (cell, part, _) = tiles[i];
-            self.coded(&tiles[run..i], out)?;
+            self.coded(&tiles[run..i], change.then_some(now), out)?;
             run = i + 1;
             out.header(part, TileHeader::Cached { slot });
             self.debts.remove(&cell);
         }
-        self.coded(&tiles[run..], out)
+        self.coded(&tiles[run..], change.then_some(now), out)
     }
 
     /// Send `stills`, each a run of tiles along one row: on a lossless list
@@ -2310,7 +2520,7 @@ impl TilesEncoder {
         }
         self.precode(&stills);
         for area in stills {
-            self.still(area, now, out)?;
+            self.still(area, now, true, out)?;
         }
         Ok(())
     }
@@ -2520,12 +2730,17 @@ impl TilesEncoder {
     /// tile's key, as one WebP, or as many as its width takes ([`WEBP_TILES`]),
     /// and store every whole tile of each that is not one colour in the
     /// client's cache, after it.
-    fn coded(&mut self, tiles: &[StillTile], out: &mut Out) -> Result<(), TilesError> {
+    fn coded(
+        &mut self,
+        tiles: &[StillTile],
+        change: Option<Duration>,
+        out: &mut Out,
+    ) -> Result<(), TilesError> {
         // A WebP has a longest side: a run wider than it is as many, cut on
         // the tile grid.
         if tiles.len() > WEBP_TILES {
             for run in tiles.chunks(WEBP_TILES) {
-                self.coded(run, out)?;
+                self.coded(run, change, out)?;
             }
             return Ok(());
         }
@@ -2547,6 +2762,12 @@ impl TilesEncoder {
             return Err(e.into());
         }
         out.length(from, at, header)?;
+        if let Some(now) = change {
+            let each = ((out.out.len() - from) / tiles.len()) as u32;
+            for (cell, _, _) in tiles {
+                self.churn.spend(*cell, now, each);
+            }
+        }
         for (cell, part, key) in tiles {
             if area.contains(self.cell_area(*cell)) {
                 self.debts.remove(cell);
@@ -2562,6 +2783,10 @@ impl TilesEncoder {
     /// The regions laid out again from the churn, and every stream with
     /// pixels waiting coded.
     fn round(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        // Ahead of the layout, which would end one of them as idle or for
+        // another region and lay that out at once, with no word that the
+        // coder makes no frame.
+        self.expire_unstarted(now);
         let moving = self.churn.moving(now);
         self.retune(&moving, now, out)?;
         let stride = self.stride;
@@ -2571,6 +2796,30 @@ impl TilesEncoder {
                 continue;
             }
             let at = usize::from(live.area.top) * stride + usize::from(live.area.left) * 4;
+            // The outline, in the mirror for as long as the frame is read
+            // from it: over the damage alone on a frame after the first,
+            // whose coder keeps the rest of it from the frames before.
+            let strips = self.debug.then(|| outline(live.area, self.outline));
+            self.under.clear();
+            for (strip, paint) in strips
+                .iter()
+                .flatten()
+                .flat_map(|strip| [(strip, false), (strip, true)])
+            {
+                let colour = live.cause.colour();
+                for y in strip.top..=strip.bottom {
+                    let row = usize::from(y) * stride;
+                    let pixels = &mut self.mirror[row + usize::from(strip.left) * 4
+                        ..row + (usize::from(strip.right) + 1) * 4];
+                    if paint {
+                        for pixel in pixels.as_chunks_mut::<4>().0 {
+                            pixel.copy_from_slice(&colour);
+                        }
+                    } else {
+                        self.under.extend_from_slice(pixels);
+                    }
+                }
+            }
             let from = out.out.len();
             // Whether the rectangle was begun, which a failed read never does.
             let mut headed = false;
@@ -2597,6 +2846,18 @@ impl TilesEncoder {
                         header_at,
                     ))
                 });
+            // The mirror as the desktop is again, the strips put back in the
+            // order they were kept, the last first.
+            let mut kept = self.under.len();
+            for strip in strips.iter().flatten().rev() {
+                for y in (strip.top..=strip.bottom).rev() {
+                    let row = usize::from(y) * stride;
+                    let pixels = &mut self.mirror[row + usize::from(strip.left) * 4
+                        ..row + (usize::from(strip.right) + 1) * 4];
+                    kept -= pixels.len();
+                    pixels.copy_from_slice(&self.under[kept..kept + pixels.len()]);
+                }
+            }
             match coded {
                 Ok((true, header_at)) => {
                     out.length(from, header_at, header)?;
@@ -2630,6 +2891,23 @@ impl TilesEncoder {
         Ok(())
     }
 
+    /// The streams that have not started within [`START_WITHIN`] ended,
+    /// whatever moves in them, their rectangles owed whole
+    /// ([`Self::recover`]), and no region laid out for [`START_RETRY`]
+    /// from now.
+    fn expire_unstarted(&mut self, now: Duration) {
+        let before = self.live.len();
+        for live in self.live.extract_if(.., |live| {
+            !live.started && now.saturating_sub(live.since) >= START_WITHIN
+        }) {
+            self.recovery.push(live.area);
+        }
+        if self.live.len() != before {
+            self.no_streams_until = now + START_RETRY;
+            self.cover();
+        }
+    }
+
     fn cover(&mut self) {
         self.covered = self
             .live
@@ -2655,7 +2933,63 @@ impl TilesEncoder {
         if self.picture != TilesPicture::Held {
             return Ok(());
         }
-        let worthy = components(moving, self.stream_cells);
+        // A region whose motion has kept to a smaller box for
+        // [`SHRINK_AFTER`] is judged again from here, as one a single change
+        // began is: what was dear when it was laid out may have stopped, and
+        // what still moves in it be a bar, which no region is laid out again
+        // for. Not while no region may be laid out.
+        if now >= self.no_streams_until {
+            for live in &mut self.live {
+                if live
+                    .smaller
+                    .is_some_and(|(since, _)| now.saturating_sub(since) >= SHRINK_AFTER)
+                {
+                    live.dear = false;
+                }
+            }
+        }
+        // Worth a stream: a region whose motion is known dear carries some
+        // of it already; or its stills came to more than a link is owed
+        // lossless; or, under a region yet to be judged, where there are no
+        // stills to count, some of its tiles coded to see. A region a
+        // single change began is judged from the layout after its first,
+        // [`RETUNE`] on ([`Self::held_stills`]): by then most of the churn's
+        // window is since the change, and its second, after which nothing
+        // moving in it ends it, is not yet up. What was found dear under
+        // one is not coded again: none of a region that cannot be ended for
+        // a region of it, every stream being taken, is coded at every
+        // layout.
+        let judged: HashMap<(u16, u16), Option<u8>> = self
+            .live
+            .iter()
+            .flat_map(|live| {
+                let id = (!live.dear).then_some(live.id);
+                live.cells.iter().map(move |cell| (*cell, id))
+            })
+            .collect();
+        let mut found_dear: Vec<u8> = Vec::new();
+        let worthy = components(moving, self.stream_cells, |cells| {
+            let mut under: Vec<u8> = Vec::new();
+            for cell in cells {
+                match judged.get(cell) {
+                    Some(None) => return true,
+                    Some(Some(id)) if !under.contains(id) => under.push(*id),
+                    _ => {}
+                }
+            }
+            if under.is_empty() {
+                return cells
+                    .iter()
+                    .map(|cell| u64::from(self.churn.spent(*cell)))
+                    .sum::<u64>()
+                    >= MOVING_BYTES;
+            }
+            let dear = self.probe(cells, now) >= MOVING_BYTES / 2;
+            if dear {
+                found_dear.extend(under);
+            }
+            dear
+        });
         let busy: HashSet<(u16, u16)> = moving
             .iter()
             .copied()
@@ -2665,53 +2999,117 @@ impl TilesEncoder {
             if live.cells.iter().any(|cell| busy.contains(cell)) {
                 live.moving_at = now;
             }
+            live.dear |= found_dear.contains(&live.id);
         }
         let size = self.size;
-        let wanted: Vec<Area> = merge(worthy, MAX_STREAMS)
+        // Each box wanted, and how many tiles move in it.
+        let wanted: Vec<(Area, u32, CellBox)> = merge(worthy, MAX_STREAMS)
             .into_iter()
-            .filter_map(|bbox| bbox.to_area(size))
+            .filter_map(|c| Some((c.bbox.to_area(size)?, c.moving, c.bbox)))
             .collect();
         let (mut next, mut old): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live)
             .into_iter()
             .partition(|live| {
                 let mut touched = wanted
                     .iter()
-                    .filter(|area| live.area.intersect(**area).is_some());
-                touched.clone().next().is_some() && touched.all(|area| live.area.contains(*area))
+                    .filter(|(area, ..)| live.area.intersect(*area).is_some());
+                // A region a single change began is the box around all of
+                // it: kept for what moves in it only where the tiles that
+                // move are half of it or more, as a merge's box is, and
+                // otherwise ended for regions of what moves.
+                let moving: u32 = touched.clone().map(|(_, moving, _)| moving).sum();
+                touched.clone().next().is_some()
+                    && touched.all(|(area, ..)| live.area.contains(*area))
+                    && (live.cause == Cause::Moving
+                        || live.cells.len() <= (MERGE_WASTE * moving) as usize)
             });
+        let outlined = self.debug.then_some(self.outline);
         for live in &mut next {
             live.moving_at = now;
+            // Kept for what moves in it, which only one judged is.
+            if live.cause != Cause::Moving {
+                live.cause = Cause::Moving;
+                // Its outline is another colour from here: read again.
+                for strip in outlined.iter().flat_map(|thick| outline(live.area, *thick)) {
+                    live.dirty = true;
+                    live.pending.push(strip.within(live.area));
+                }
+            }
         }
         let mut unsent = Vec::new();
-        for area in wanted {
+        // A region kept whose motion has kept to a smaller box for
+        // [`SHRINK_AFTER`] is laid out again over the box around all that
+        // moved in it since: what a scroll or a window's opening made a
+        // video of is the video's own region soon after, and the rest of it
+        // settles. Not while no region may be laid out, or the box would be
+        // stills; and the stream it has is ended only once the coder has
+        // opened the one over the box, a coder that refuses that leaving it
+        // as it is, its motion counted from here again.
+        let mut at = 0;
+        while at < next.len() {
+            let live = &mut next[at];
+            let moved = wanted
+                .iter()
+                .filter(|(area, ..)| live.area.contains(*area))
+                .map(|(.., bbox)| *bbox)
+                .reduce(|a, b| a.union(&b));
+            let cells = live.cells.len() as u32;
+            let within = |bbox: &CellBox| bbox.area() * MERGE_WASTE <= cells;
+            live.smaller = match (moved, live.smaller) {
+                (Some(bbox), Some((since, all))) if within(&all.union(&bbox)) => {
+                    Some((since, all.union(&bbox)))
+                }
+                (Some(bbox), None) if within(&bbox) => Some((now, bbox)),
+                _ => None,
+            };
+            let shrunk = live
+                .smaller
+                .filter(|(since, _)| now.saturating_sub(*since) >= SHRINK_AFTER)
+                .and_then(|(_, all)| all.to_area(size))
+                .filter(|_| now >= self.no_streams_until);
+            let Some(area) = shrunk else {
+                at += 1;
+                continue;
+            };
+            let id = next[at].id;
+            match self.build(id, area, now, Cause::Moving) {
+                Ok(over) => {
+                    next.swap_remove(at)
+                        .end(out, &mut unsent, &mut self.recovery);
+                    next.push(over);
+                }
+                Err(_) => {
+                    next[at].smaller = None;
+                    at += 1;
+                }
+            }
+        }
+        for (area, ..) in wanted {
             if next.iter().any(|live| live.area.contains(area)) {
                 continue;
             }
-            if next.len() < MAX_STREAMS {
+            if next.len() < MAX_STREAMS && now >= self.no_streams_until {
                 for live in old.extract_if(.., |live| live.area.intersect(area).is_some()) {
-                    if live.started {
-                        out.end(live.id, live.area);
-                    }
-                    unsent.extend(live.unsent());
+                    live.end(out, &mut unsent, &mut self.recovery);
                 }
                 let id = (0..=u8::MAX)
                     .find(|id| !next.iter().chain(&old).any(|live| live.id == *id))
                     .expect("at most a few streams live");
-                next.push(self.build(id, area, now)?);
+                next.push(self.build(id, area, now, Cause::Moving)?);
             }
         }
-        for live in old {
+        for mut live in old {
             let idle = now.saturating_sub(live.moving_at) >= STREAM_IDLE;
             let overlaps = next
                 .iter()
                 .any(|kept| kept.area.intersect(live.area).is_some());
             if !idle && !overlaps && next.len() < MAX_STREAMS {
+                // Kept for now, though for nothing that moves within it:
+                // what its motion had kept to is counted anew.
+                live.smaller = None;
                 next.push(live);
             } else {
-                if live.started {
-                    out.end(live.id, live.area);
-                }
-                unsent.extend(live.unsent());
+                live.end(out, &mut unsent, &mut self.recovery);
             }
         }
         self.live = next;
@@ -2720,27 +3118,72 @@ impl TilesEncoder {
         Ok(())
     }
 
-    /// What streams that ended did not carry, owed as stills where no stream
-    /// live from here does, as runs along a row.
-    fn owe(&mut self, unsent: &[Area]) {
-        for area in unsent {
-            let mut runs: Vec<Area> = Vec::new();
-            for (_, part) in tiles_of(*area).filter(|(cell, _)| !self.covered.contains(cell)) {
-                match runs.last_mut() {
-                    Some(run)
-                        if run.top == part.top && run.right.checked_add(1) == Some(part.left) =>
-                    {
-                        run.right = part.right
-                    }
-                    _ => runs.push(part),
-                }
+    /// What the changes of `cells`, a moving component's tiles, would come to
+    /// as stills over the churn's window, for one a region carries, which
+    /// has no stills to count: at most [`PROBE_TILES`] of them coded as a
+    /// WebP each and thrown away, and what a tile of those came to taken for
+    /// each change of each tile in the window.
+    fn probe(&self, cells: &[(u16, u16)], now: Duration) -> u64 {
+        let mut scratch = Vec::new();
+        let (mut bytes, mut coded) = (0u64, 0u64);
+        for cell in cells.iter().step_by(cells.len().div_ceil(PROBE_TILES)) {
+            let part = self.cell_area(*cell);
+            let pixels =
+                &self.mirror[usize::from(part.top) * self.stride + usize::from(part.left) * 4..];
+            scratch.clear();
+            if webp::encode(pixels, self.stride, part.w(), part.h(), &mut scratch).is_ok() {
+                bytes += scratch.len() as u64;
+                coded += 1;
             }
-            self.stills.extend(runs);
         }
+        let changes: u64 = cells
+            .iter()
+            .map(|cell| u64::from(self.churn.recent(*cell, now)))
+            .sum();
+        (bytes * changes).checked_div(coded).unwrap_or(0)
+    }
+
+    /// What streams that ended did not carry, owed as stills where no stream
+    /// live from here does.
+    fn owe(&mut self, unsent: &[Area]) {
+        let runs = runs_outside(unsent, &self.covered);
+        self.stills.extend(runs);
+    }
+
+    /// The rectangles of the streams that ended without starting, sent as
+    /// stills where no stream that has started carries them, whatever they
+    /// come to: a region over what is past an update's stills would be the
+    /// one that never started again, its tiles owed anew and never sent,
+    /// where a stream that makes no frame is why it never started. A stream
+    /// laid out over them that has not started either has shown the client
+    /// nothing of them, so they go all the same, as runs along a row, and
+    /// its START draws over them when it comes. Their tiles' debts are paid
+    /// by them.
+    fn recover(&mut self, now: Duration, out: &mut Out) -> Result<(), TilesError> {
+        let areas = std::mem::take(&mut self.recovery);
+        if areas.is_empty() {
+            return Ok(());
+        }
+        let started: HashSet<(u16, u16)> = self
+            .live
+            .iter()
+            .filter(|live| live.started)
+            .flat_map(|live| live.cells.iter().copied())
+            .collect();
+        for run in runs_outside(&areas, &started) {
+            self.still(run, now, false, out)?;
+        }
+        Ok(())
     }
 
     /// A stream of the region coder over `area`, every tile of it owed from now.
-    fn build(&mut self, id: u8, area: Area, now: Duration) -> Result<Live, TilesError> {
+    fn build(
+        &mut self,
+        id: u8,
+        area: Area,
+        now: Duration,
+        cause: Cause,
+    ) -> Result<Live, TilesError> {
         let stream = self
             .coder
             .open(area.w(), area.h())
@@ -2759,6 +3202,10 @@ impl TilesEncoder {
             started: false,
             carried: false,
             moving_at: now,
+            cause,
+            since: now,
+            dear: cause == Cause::Moving,
+            smaller: None,
         })
     }
 
@@ -2797,8 +3244,12 @@ impl TilesEncoder {
         let from = out.out.len();
         let mut rest: Vec<Area> = Vec::new();
         for area in &stills {
-            if moved || out.out.len() - from < HELD_BYTES || self.live.len() >= MAX_STREAMS {
-                self.still(*area, now, out)?;
+            if moved
+                || out.out.len() - from < HELD_BYTES
+                || self.live.len() >= MAX_STREAMS
+                || now < self.no_streams_until
+            {
+                self.still(*area, now, true, out)?;
             } else {
                 rest.push(*area);
             }
@@ -2826,26 +3277,45 @@ impl TilesEncoder {
         let id = (0..=u8::MAX)
             .find(|id| !self.live.iter().any(|live| live.id == *id))
             .expect("at most a few streams live");
-        match self.build(id, around, now) {
+        match self.build(id, around, now, Cause::Burst) {
             Ok(live) => {
                 let mut unsent = Vec::new();
                 for old in self
                     .live
                     .extract_if(.., |old| old.area.intersect(around).is_some())
                 {
-                    if old.started {
-                        out.end(old.id, old.area);
-                    }
-                    unsent.extend(old.unsent());
+                    old.end(out, &mut unsent, &mut self.recovery);
                 }
                 self.live.push(live);
                 self.cover();
                 self.owe(&unsent);
+                // The layouts count from here, so that one comes [`RETUNE`]
+                // on, where the region is judged, and not just short of its
+                // second, where a tick that finds it idle could end it
+                // first. The other regions' layout is later by as long as
+                // it has been since the last, and each with a tile still
+                // moving, which that layout would have found, is taken to
+                // have moved that much later, or a tick would find one idle
+                // that only the layout it waits for says is moving. One
+                // with none is left its time, and ends when it would have.
+                let late = self
+                    .retuned_at
+                    .map_or(Duration::ZERO, |at| now.saturating_sub(at));
+                for other in &mut self.live {
+                    let moving = other
+                        .cells
+                        .iter()
+                        .any(|cell| self.churn.recent(*cell, now) >= CHURN_MOVING);
+                    if moving {
+                        other.moving_at = (other.moving_at + late).min(now);
+                    }
+                }
+                self.retuned_at = Some(now);
                 Ok(true)
             }
             Err(_) => {
                 for area in rest {
-                    self.still(area, now, out)?;
+                    self.still(area, now, true, out)?;
                 }
                 Ok(false)
             }
@@ -2977,17 +3447,22 @@ impl TilesEncoder {
     /// that was ready.
     fn tick(&mut self, now: Duration, out: &mut Out) -> Result<bool, TilesError> {
         let mut unsent = Vec::new();
+        // A stream that has not started within its second, whatever moves
+        // in it and however often the layouts keep it, of which the client
+        // holds nothing; and one nothing has moved in for its own.
+        self.expire_unstarted(now);
         for live in self
             .live
             .extract_if(.., |live| now.saturating_sub(live.moving_at) >= STREAM_IDLE)
         {
-            if live.started {
-                out.end(live.id, live.area);
-            }
-            unsent.extend(live.unsent());
+            live.end(out, &mut unsent, &mut self.recovery);
         }
         self.cover();
         self.owe(&unsent);
+        // Ahead of the settle: a stream that never started left its tiles
+        // owed since it was laid out, which the settle would pay in part
+        // and the recovery then send again whole.
+        self.recover(now, out)?;
         if self.coarse && now.saturating_sub(self.changed_at) < COARSE_QUIET {
             return Ok(false);
         }
@@ -3115,7 +3590,7 @@ impl TilesEncoder {
                             ..area
                         };
                         let before = out.out.len();
-                        self.still(piece, now, out)?;
+                        self.still(piece, now, false, out)?;
                         // A piece with little in it says little of the next.
                         if activity >= usize::from(TILE) {
                             let rate = (out.out.len() - before) as f64 / activity as f64;
@@ -3532,6 +4007,8 @@ mod tests {
     /// its read or at its encode.
     struct Fake {
         refuse: bool,
+        /// Every stream makes no frame of what it reads.
+        mute: bool,
         fail_after: Option<usize>,
         fail_read_after: Option<usize>,
     }
@@ -3543,6 +4020,7 @@ mod tests {
         fn coder() -> Box<dyn H264Coder> {
             Box::new(Self {
                 refuse: false,
+                mute: false,
                 fail_after: None,
                 fail_read_after: None,
             })
@@ -3554,6 +4032,7 @@ mod tests {
         h: usize,
         picture: Vec<u8>,
         filled: bool,
+        mute: bool,
         frames: usize,
         fail_after: Option<usize>,
         fail_read_after: Option<usize>,
@@ -3570,6 +4049,7 @@ mod tests {
                 h,
                 picture: vec![0; w * h * 4],
                 filled: false,
+                mute: self.mute,
                 frames: 0,
                 fail_after: self.fail_after,
                 fail_read_after: self.fail_read_after,
@@ -3622,6 +4102,9 @@ mod tests {
         ) -> Result<bool, H264Error> {
             if self.fail_after.is_some_and(|after| self.frames >= after) {
                 return Err("the encoder hung".into());
+            }
+            if self.mute {
+                return Ok(false);
             }
             out.push(if keyframe || self.frames == 0 {
                 Fake::KEYFRAME
@@ -4894,6 +5377,132 @@ mod tests {
         assert!(page.streams.is_empty());
     }
 
+    /// With the outline asked for, a region's frames carry it, inside its
+    /// rectangle and two of the layout's pixels thick, the read's damage
+    /// short of it or not; the encoder's own picture never does, so the
+    /// stills after are the desktop's and the picture settles lossless, the
+    /// outline gone.
+    #[test]
+    fn a_region_outlined_settles_without_its_outline() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = noise(w, h, 3);
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        encoder.set_debug(true);
+        encoder.set_scale(2.0);
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // A video well inside the tiles its region is laid out over, so no
+        // frame's damage reaches the region's edge: 20 tiles, a stream at 2.
+        let video = Rect {
+            x: 70,
+            y: 70,
+            width: 308,
+            height: 244,
+        };
+        for n in 1..=40u32 {
+            paint(&mut pixels, w, video, 100 + n);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                t0 + ms(u64::from(n) * 50),
+            );
+        }
+        assert_eq!(page.streams.len(), 1, "one stream live");
+        // The region is tiles (1,1) to (5,4): 64,64 to 383,319.
+        let at = |x: usize, y: usize| {
+            let i = (y * usize::from(w) + x) * 4;
+            [page.canvas[i], page.canvas[i + 1], page.canvas[i + 2]]
+        };
+        // Magenta as the stand-in coder leaves it: what moved was a
+        // region for it by the end, whichever way it began.
+        let magenta = [254, 0, 254];
+        for (x, y) in [
+            (64, 64),
+            (67, 200),
+            (383, 319),
+            (200, 316),
+            (380, 100),
+            (300, 67),
+        ] {
+            assert_eq!(at(x, y), magenta, "the outline at {x},{y}");
+        }
+        for (x, y) in [(68, 68), (379, 315), (63, 64), (384, 200), (200, 320)] {
+            assert_ne!(at(x, y), magenta, "no outline at {x},{y}");
+        }
+        settle(&mut encoder, &mut page, t0 + ms(2000));
+        assert_eq!(
+            page.off(&pixels),
+            0,
+            "the picture settled lossless, the outline gone"
+        );
+    }
+
+    /// A scale that changes while a region is live changes its outline with
+    /// the next frame, though the frame's damage is short of it: the wider
+    /// of the two is read again, none of the old one left and all of the new
+    /// one there.
+    #[test]
+    fn a_region_outlined_follows_the_scale() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = noise(w, h, 3);
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        encoder.set_debug(true);
+        encoder.set_scale(2.0);
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // As above: the region is tiles (1,1) to (5,4), 64,64 to 383,319,
+        // and no frame's damage reaches its edge.
+        let video = Rect {
+            x: 70,
+            y: 70,
+            width: 308,
+            height: 244,
+        };
+        let magenta = [254, 0, 254];
+        let mut n = 0u32;
+        // How many regions had started once the video had its own.
+        let mut started = None;
+        for (scale, thick) in [(2.0, 4usize), (1.0, 2), (2.0, 4)] {
+            encoder.set_scale(scale);
+            for _ in 0..40 {
+                n += 1;
+                paint(&mut pixels, w, video, 100 + n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[video]),
+                    t0 + ms(u64::from(n) * 50),
+                );
+            }
+            assert_eq!(
+                (*started.get_or_insert(page.starts), page.streams.len()),
+                (page.starts, 1),
+                "the one stream from there on, at scale {scale}"
+            );
+            let at = |x: usize, y: usize| {
+                let i = (y * usize::from(w) + x) * 4;
+                [page.canvas[i], page.canvas[i + 1], page.canvas[i + 2]]
+            };
+            for depth in 0..6usize {
+                for (x, y) in [
+                    (64 + depth, 200),
+                    (383 - depth, 200),
+                    (200, 64 + depth),
+                    (200, 319 - depth),
+                ] {
+                    assert_eq!(
+                        at(x, y) == magenta,
+                        depth < thick,
+                        "the outline {depth} in at {x},{y}, at scale {scale}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The fewest moving tiles a stream needs is an area of the layout: at
     /// scale 2 a spinner over 3×3 tiles, 96 of the layout's pixels across,
     /// stays stills, lossless throughout, where at 1 it streams; a video at 2
@@ -4945,6 +5554,665 @@ mod tests {
             height: 256,
         };
         assert_eq!(spin(2.0, video).0, 1, "24 tiles at 2 stream");
+    }
+
+    /// Paint `rect` of a `w`-wide picture with frame `n` of a striped
+    /// progress bar: two flat colours, the stripes a few pixels along each
+    /// frame.
+    fn stripes(pixels: &mut [u8], w: u16, rect: Rect, n: u32) {
+        for row in 0..usize::from(rect.height) {
+            for col in 0..usize::from(rect.width) {
+                let at =
+                    ((usize::from(rect.y) + row) * usize::from(w) + usize::from(rect.x) + col) * 4;
+                let v = if ((col + row + n as usize * 3) / 12).is_multiple_of(2) {
+                    [250, 165, 96, 0]
+                } else {
+                    [254, 219, 191, 0]
+                };
+                pixels[at..at + 4].copy_from_slice(&v);
+            }
+        }
+    }
+
+    /// A stream needs its stills to have been dear: a striped bar across
+    /// eight tiles, all of it moving, more tiles than a stream needs, costs
+    /// little as stills and stays stills, lossless throughout, where the
+    /// same tiles of a video stream.
+    #[test]
+    fn what_moves_cheaply_is_no_stream() {
+        let (w, h) = (640u16, 384u16);
+        let bar = Rect {
+            x: 64,
+            y: 64,
+            width: 512,
+            height: 64,
+        };
+        let play = |frame: fn(&mut [u8], u16, Rect, u32)| {
+            let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            assert_eq!(page.starts, 0, "a flat first picture is stills");
+            let mut lossless = true;
+            for n in 1..=40u32 {
+                frame(&mut pixels, w, bar, n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[bar]),
+                    t0 + ms(u64::from(n) * 50),
+                );
+                lossless &= page.off(&pixels) == 0;
+            }
+            (page.starts, lossless)
+        };
+        assert_eq!(play(stripes), (0, true), "a bar is stills, lossless");
+        assert_eq!(play(paint).0, 1, "a video of its tiles streams");
+    }
+
+    /// A region one large change began is kept only for what moves in it
+    /// that would be dear as stills, which some of its tiles are coded to
+    /// find, there being no stills under a region to count: with a striped
+    /// bar moving in it, it ends a second on as with nothing moving, and
+    /// the bar is stills; with a video over a part of it, it ends for a
+    /// region of the video; with a video over all of it, it is kept.
+    #[test]
+    fn a_region_one_change_began_is_kept_for_what_is_dear() {
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let play = |moving: Rect, frame: fn(&mut [u8], u16, Rect, u32)| {
+            let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            // A window of noise opens over the whole desktop: one change
+            // past an update's stills, a region around it.
+            paint(&mut pixels, w, whole, 9);
+            frame(&mut pixels, w, moving, 0);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[whole]),
+                t0 + ms(50),
+            );
+            assert_eq!(
+                (page.starts, page.streams.len()),
+                (1, 1),
+                "a region around it"
+            );
+            for n in 1..=60u32 {
+                frame(&mut pixels, w, moving, n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[moving]),
+                    t0 + ms(50 + u64::from(n) * 50),
+                );
+            }
+            (page.starts, page.ends, page.streams.len())
+        };
+        let bar = Rect {
+            x: 64,
+            y: 64,
+            width: 512,
+            height: 64,
+        };
+        assert_eq!(
+            play(bar, stripes),
+            (1, 1, 0),
+            "ended with a bar moving in it, which is stills"
+        );
+        let video = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        assert_eq!(
+            play(video, paint),
+            (2, 1, 1),
+            "ended for a region of the video in it"
+        );
+        assert_eq!(
+            play(whole, paint),
+            (1, 0, 1),
+            "kept for a video over all of it"
+        );
+    }
+
+    /// A region one large change began is judged before its second is up
+    /// whenever the layout before it was: a video over all of it at seven
+    /// frames a second, begun a moment after a layout with nothing live,
+    /// is kept, where the layouts counted from that one came just short of
+    /// half a second in, too soon to judge, and next after the tick that
+    /// ends a region nothing has kept for a second.
+    #[test]
+    fn a_region_one_change_began_is_judged_before_its_second() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels) + ms(5000);
+        // A layout with nothing live, 50 ms before the change.
+        let dot = Rect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        };
+        stripes(&mut pixels, w, dot, 1);
+        step(&mut encoder, &mut page, &pixels, Some(&[dot]), t0 - ms(50));
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let mut out = Vec::new();
+        for n in 0..=14u64 {
+            let now = t0 + ms(n * 150);
+            // The ticks owed before the frame, as a session sends them.
+            while let Some(at) = encoder.tick_at().filter(|at| *at < now) {
+                out.clear();
+                let update = encoder.encode(at, &mut out).unwrap();
+                page.draw(update.rects, &out);
+            }
+            paint(&mut pixels, w, whole, 20 + n as u32);
+            step(&mut encoder, &mut page, &pixels, Some(&[whole]), now);
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 0, 1),
+            "one stream throughout"
+        );
+    }
+
+    /// A stream that has made no frame within its second ends though what
+    /// it covers keeps moving and the layouts would keep it: a video over
+    /// the whole desktop on a coder that makes no frame is stills from then,
+    /// every frame of it whole and lossless, with no region laid out again
+    /// until the coder is tried once more.
+    #[test]
+    fn a_stream_that_does_not_start_in_time_gives_way_to_stills() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let mut out = Vec::new();
+        for n in 1..=60u64 {
+            let now = t0 + ms(n * 50);
+            while let Some(at) = encoder.tick_at().filter(|at| *at < now) {
+                out.clear();
+                let update = encoder.encode(at, &mut out).unwrap();
+                page.draw(update.rects, &out);
+            }
+            paint(&mut pixels, w, whole, 30 + n as u32);
+            step(&mut encoder, &mut page, &pixels, Some(&[whole]), now);
+            if n == 15 {
+                assert_eq!(encoder.live.len(), 1, "a region, which makes no frame");
+                assert!(page.off(&pixels) > 0, "and the client holds none of it");
+            }
+            if n >= 30 {
+                assert!(encoder.live.is_empty(), "no region at frame {n}");
+                assert_eq!(page.off(&pixels), 0, "frame {n} whole, as stills");
+            }
+        }
+        assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
+    }
+
+    /// A region whose motion keeps to a smaller box is laid out again over
+    /// that box two seconds on: a video that filled the desktop, as a page
+    /// scrolled with a video on it does, and then moves in a part of it
+    /// alone, is that part's region, its own keyframe, and the rest settles
+    /// lossless while it plays; one that moves over more than half its region
+    /// keeps its stream.
+    #[test]
+    fn a_region_shrinks_to_what_still_moves() {
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let play = |part: Rect| {
+            let mut pixels = noise(w, h, 5);
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            let (starts, ends) = (page.starts, page.ends);
+            // All of it for two seconds, then the part alone for six.
+            for n in 1..=160u32 {
+                let moving = if n <= 40 { whole } else { part };
+                paint(&mut pixels, w, moving, 300 + n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[moving]),
+                    t0 + ms(u64::from(n) * 50),
+                );
+                if n == 75 {
+                    assert_eq!(
+                        (page.starts - starts, page.ends - ends),
+                        (1, 0),
+                        "one region still, under two seconds after the motion shrank"
+                    );
+                }
+            }
+            let area = encoder
+                .live
+                .first()
+                .map(|live| live.area.within(Area::whole((w, h))));
+            // What the stream no longer covers is settled while it plays.
+            let outside = usize::from(w) * 4 * 300;
+            let settled = page.canvas[outside..] == pixels[outside..];
+            (page.starts - starts, page.ends - ends, area, settled)
+        };
+        let part = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        assert_eq!(
+            play(part),
+            (2, 1, Some(part), true),
+            "laid out again over the part, the rest lossless"
+        );
+        let most = Rect {
+            x: 0,
+            y: 0,
+            width: 576,
+            height: 384,
+        };
+        let (starts, ends, area, _) = play(most);
+        assert_eq!(
+            (starts, ends, area),
+            (1, 0, Some(whole)),
+            "kept where what moves is over half of it"
+        );
+    }
+
+    /// A region is judged again once its motion has kept to a smaller box:
+    /// a video over the whole desktop that stops with a striped bar still
+    /// moving on it, which kept the region for as long as it moved, is
+    /// ended two seconds and the region's own second on, no region laid out
+    /// for the bar, which is stills, and the desktop settles lossless
+    /// around it while it moves.
+    #[test]
+    fn a_region_left_with_what_is_cheap_ends() {
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let bar = Rect {
+            x: 64,
+            y: 64,
+            width: 512,
+            height: 64,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // A video over all of it for two seconds, then the bar alone for
+        // eight.
+        for n in 1..=200u32 {
+            let moving = if n <= 40 { whole } else { bar };
+            if n <= 40 {
+                paint(&mut pixels, w, whole, 300 + n);
+            } else {
+                stripes(&mut pixels, w, bar, n);
+            }
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[moving]),
+                t0 + ms(u64::from(n) * 50),
+            );
+            if n == 75 {
+                assert_eq!(
+                    (page.starts, page.ends),
+                    (1, 0),
+                    "kept by the bar, under two seconds after the video stopped"
+                );
+            }
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 1, 0),
+            "ended, and no region for the bar"
+        );
+        assert_eq!(page.off(&pixels), 0, "lossless under the bar and around it");
+    }
+
+    /// A region to be laid out again over a smaller box keeps the stream it
+    /// has where the coder refuses the one over the box: the session goes
+    /// on, the video in the region it had.
+    #[test]
+    fn a_region_the_coder_refuses_to_shrink_keeps_its_stream() {
+        /// A coder that opens `left` streams and refuses the rest.
+        struct Few {
+            left: usize,
+        }
+        impl H264Coder for Few {
+            fn open(&mut self, width: u16, height: u16) -> Result<Box<dyn H264Stream>, H264Error> {
+                if self.left == 0 {
+                    return Err("no surface left".into());
+                }
+                self.left -= 1;
+                Fake::coder().open(width, height)
+            }
+        }
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let part = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Box::new(Few { left: 1 })).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        assert_eq!(page.starts, 0, "a flat first picture is stills");
+        // A video over all of it for two seconds, then over the part alone
+        // for six: laid out again over the part twice, and refused twice.
+        for n in 1..=160u32 {
+            let moving = if n <= 40 { whole } else { part };
+            paint(&mut pixels, w, moving, 300 + n);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[moving]),
+                t0 + ms(u64::from(n) * 50),
+            );
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (1, 0, 1),
+            "the one stream throughout"
+        );
+        assert_eq!(
+            encoder.live[0].area.within(Area::whole((w, h))),
+            whole,
+            "over all it was laid out over"
+        );
+    }
+
+    /// A region one large change begins counts the layouts from itself, and
+    /// leaves the regions beside it the time that takes from theirs: a
+    /// video playing at seven frames a second is not found idle by a tick
+    /// because a window opened beside it and put off the layout that says it
+    /// moves, whichever of its frames the window opens on.
+    #[test]
+    fn a_region_one_change_begins_ends_none_beside_it() {
+        let (w, h) = (640u16, 384u16);
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 192,
+            height: 192,
+        };
+        let window = Rect {
+            x: 320,
+            y: 0,
+            width: 320,
+            height: 384,
+        };
+        for opens in 12..=16u64 {
+            let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            for n in 1..=opens + 14 {
+                paint(&mut pixels, w, video, 40 + n as u32);
+                if n < opens {
+                    step(
+                        &mut encoder,
+                        &mut page,
+                        &pixels,
+                        Some(&[video]),
+                        t0 + ms(n * 150),
+                    );
+                    continue;
+                }
+                if n == opens {
+                    assert_eq!(
+                        (page.starts, page.ends),
+                        (1, 0),
+                        "the video a region before the window opens at frame {opens}"
+                    );
+                }
+                // The window, of a video itself, so that its region is kept.
+                paint(&mut pixels, w, window, 90 + n as u32);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[video, window]),
+                    t0 + ms(n * 150),
+                );
+            }
+            assert_eq!(
+                (page.starts, page.ends, page.streams.len()),
+                (2, 0, 2),
+                "both streams throughout, the window opened at frame {opens}"
+            );
+        }
+    }
+
+    /// Only a region that still moves is left that time: a video that
+    /// stopped before a window opened beside it is ended a second after its
+    /// last frame, at the first layout after, and not a second after the
+    /// window opened.
+    #[test]
+    fn a_region_one_change_begins_keeps_none_that_stopped() {
+        let (w, h) = (640u16, 384u16);
+        let video = Rect {
+            x: 0,
+            y: 0,
+            width: 192,
+            height: 192,
+        };
+        let window = Rect {
+            x: 320,
+            y: 0,
+            width: 320,
+            height: 384,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        // The video's last frame is at 1.8 s.
+        for n in 1..=12u64 {
+            paint(&mut pixels, w, video, 40 + n as u32);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[video]),
+                t0 + ms(n * 150),
+            );
+        }
+        assert_eq!((page.starts, page.ends), (1, 0), "the video a region");
+        // The window opens at 2.5 s, none of the video's tiles moving by
+        // then, and plays on; its region's first layout is at 3 s.
+        for n in 0..=4u64 {
+            paint(&mut pixels, w, window, 90 + n as u32);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[window]),
+                t0 + ms(2500 + n * 150),
+            );
+        }
+        assert_eq!(
+            (page.starts, page.ends, page.streams.len()),
+            (2, 1, 1),
+            "the video's region ended by 3.1 s, the window's live"
+        );
+    }
+
+    /// A stream out of its second to start is counted against the coder
+    /// whichever of the layout and the tick comes to it first: one with only
+    /// a striped bar moving in it, which the layout would end as idle a
+    /// second after it was laid out, ahead of that update's tick, still
+    /// holds the next region off.
+    #[test]
+    fn a_stream_the_layout_would_end_unstarted_holds_the_next_off() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let bar = Rect {
+            x: 64,
+            y: 64,
+            width: 512,
+            height: 64,
+        };
+        paint(&mut pixels, w, whole, 9);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[whole]),
+            t0 + ms(50),
+        );
+        assert_eq!(encoder.live.len(), 1, "a region around the change");
+        // The bar every 50 ms: the update a second on has a layout, and
+        // the stream is out of its second at it.
+        for n in 1..=20u32 {
+            stripes(&mut pixels, w, bar, n);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[bar]),
+                t0 + ms(50 + u64::from(n) * 50),
+            );
+        }
+        assert!(encoder.live.is_empty(), "ended at its second");
+        assert_eq!(
+            encoder.no_streams_until,
+            t0 + ms(1050) + START_RETRY,
+            "and no region for a while after"
+        );
+        assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
+    }
+
+    /// A region whose stream never made a frame ends at its second with the
+    /// client holding nothing of the change that began it: all of it goes
+    /// as stills in that update, though they are past an update's stills,
+    /// and no region is laid out over them again, which would be the one
+    /// that never started, owed anew every second and never sent.
+    #[test]
+    fn a_region_that_never_started_is_sent_as_stills() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        paint(&mut pixels, w, whole, 9);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[whole]),
+            t0 + ms(50),
+        );
+        assert_eq!(encoder.live.len(), 1, "a region around the change");
+        assert!(page.off(&pixels) > 0, "which made no frame of it");
+        let webps = page.webps;
+        let at = settle(&mut encoder, &mut page, t0 + ms(50));
+        assert!(
+            at <= t0 + ms(50) + STREAM_IDLE + CLEANUP_TICK,
+            "ended at its second, and nothing owed after: {at:?}"
+        );
+        assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
+        assert_eq!(
+            page.webps - webps,
+            4,
+            "a still a row of tiles, none sent twice: the two rows the \
+             change's own update carried are draws of the cache"
+        );
+        assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
+        assert!(encoder.live.is_empty() && !encoder.owed());
     }
 
     /// A stream that ends with damage no frame of it carried leaves that
@@ -5767,6 +7035,7 @@ mod tests {
             held(),
             Box::new(Fake {
                 refuse: true,
+                mute: false,
                 fail_after: None,
                 fail_read_after: None,
             }),
@@ -5896,6 +7165,7 @@ mod tests {
             held(),
             Box::new(Fake {
                 refuse: true,
+                mute: false,
                 fail_after: None,
                 fail_read_after: None,
             }),
@@ -5922,6 +7192,7 @@ mod tests {
                 8,
                 Fake {
                     refuse: false,
+                    mute: false,
                     fail_after: Some(4),
                     fail_read_after: None,
                 },
@@ -5930,6 +7201,7 @@ mod tests {
                 10,
                 Fake {
                     refuse: false,
+                    mute: false,
                     fail_after: None,
                     fail_read_after: Some(4),
                 },

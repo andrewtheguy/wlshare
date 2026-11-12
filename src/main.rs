@@ -430,6 +430,7 @@ async fn serve(
         output_wait: std::time::Duration::from_secs(config.output_wait_secs),
         capture_frames,
         h264,
+        motion_debug: config.motion_debug,
     });
     loop {
         tokio::select! {
