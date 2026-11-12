@@ -692,7 +692,7 @@ u8 kind
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
 8 STILL   u32 length | u8[length]                          the still stream's next planar bitmap, of exactly the rectangle's pixels
 9 MEDIAN  u32 length | u8[length]                          three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
-10 MARK   u8 stream | u8 why                               where the stream's region moves and why it began: none of the picture
+10 MARK   u8 stream | u8 why                               where the stream's region moves and why it is one: none of the picture
 ```
 
 A WEBP is the desktop's pixels there as a WebP file, lossless (`VP8L`) and
@@ -941,11 +941,14 @@ the picture.
   what a stream it ended carried of that among them,
   and of every read since that were not what the picture held, however much
   the damage named: a video's own rectangle and not the tiles around it, the
-  region's rectangle until anything has — and whose `why` is 0 where the
-  region was laid out over tiles that kept changing and 1 where one update's
-  change was more than its stills. Each takes the place of the one before
-  on its stream, and the stream's END, or a picture that starts over, is
-  the end of it. It is none of the picture: zDesk's page draws the
+  region's rectangle until anything has — and whose `why` is the reason the
+  region is one as the mark is sent: 0 where it was laid out over tiles that
+  kept changing, or is kept for them, and 1 where one update's change was
+  more than its stills and no layout has kept it since. So a region a
+  window's opening began says 1, and 0 from the layout that keeps it for
+  what moves in it, in its next mark, the stream the same. Each takes the
+  place of the one before on its stream, rectangle and `why` both, and the
+  stream's END, or a picture that starts over, is the end of it. It is none of the picture: zDesk's page draws the
   rectangle's outline over its canvas, magenta or orange by the `why`, and
   takes it away, so nothing a COPY or a STORE reads holds it. The daemon
   codes nothing for it. Every still, frame and copy is the same bytes with

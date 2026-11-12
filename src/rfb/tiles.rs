@@ -1163,8 +1163,8 @@ impl Cache {
 /// where that is the whole tile, its key for the cache ([`tile_key`]).
 type StillTile = ((u16, u16), Area, Option<(u64, bool)>);
 
-/// Why a region was laid out, which its mark says
-/// ([`TilesEncoder::set_debug`]).
+/// Why a region is one, which its mark says ([`TilesEncoder::set_debug`]):
+/// why it was laid out, until a layout keeps it for what moves in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cause {
     /// Its tiles kept changing ([`TilesEncoder::retune`]).
@@ -1499,9 +1499,9 @@ impl TilesEncoder {
     /// Whether every region is marked for the client to show a person: a
     /// MARK after its stream's START and wherever what it says changes, the
     /// box around the pixels that changed in the region, the region's own
-    /// rectangle until any have, and why it was laid out, over tiles that
-    /// kept changing or for one update's change that was more than its
-    /// stills. For seeing what the rules make a video of. It is none of the
+    /// rectangle until any have, and why it is one, laid out over or kept
+    /// for tiles that kept changing or for one update's change that was
+    /// more than its stills. For seeing what the rules make a video of. It is none of the
     /// picture, which the client draws it over: every still, frame and copy
     /// is the same bytes with it as without, and so is every pace and
     /// budget, a mark going last in an update that has something else to
@@ -5578,7 +5578,7 @@ mod tests {
         assert_eq!(shown.off(&pixels), 0, "the picture settled lossless");
     }
 
-    /// A mark says why its region began, and says so again once the region
+    /// A mark says why its region is one, and says so again once the region
     /// is judged: one a window's opening began is the box around the window,
     /// its own pixels and not its tiles', for one update's change, and from
     /// the layout that keeps it for what moves in it, for that.

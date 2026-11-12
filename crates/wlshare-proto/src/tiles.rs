@@ -28,7 +28,7 @@
 //! 7 PROGRESSIVE u32 length | u8[length]  a RemoteFX Progressive tile block of the rectangle's tile
 //! 8 STILL   u32 length | u8[length]  the still stream's next planar bitmap, of exactly the rectangle's pixels
 //! 9 MEDIAN  u32 length | u8[length]  three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
-//! 10 MARK   u8 stream | u8 why   where the stream's region moves and why it began, to show a person and no picture
+//! 10 MARK   u8 stream | u8 why   where the stream's region moves and why it is one, to show a person and no picture
 //! ```
 //!
 //! - A **WEBP** is the desktop's pixels in the rectangle as a WebP file, lossless
@@ -96,12 +96,15 @@
 //!   START begins another. The rectangle is the stream's.
 //! - A **MARK** is none of the picture: it tells a person looking into what
 //!   the server makes a stream of where the stream on `stream` moves, and why
-//!   its region began. The rectangle is the box around the pixels that
+//!   its region is one. The rectangle is the box around the pixels that
 //!   changed in the region since its START, inside the stream's rectangle,
-//!   and the stream's rectangle until any have; `why` is [`MarkWhy`]. It
+//!   and the stream's rectangle until any have; `why` is [`MarkWhy`], the
+//!   reason the server has for the region as the mark is sent: why it
+//!   began, until the server keeps it for another, which the next mark
+//!   says, the same stream going on under it. It
 //!   follows the stream's START, each takes the place of the one before it
-//!   on that stream, and the stream's END is the end of it, as is a picture
-//!   that starts over. A client that shows it draws the rectangle's outline
+//!   on that stream, rectangle and `why` both, and the stream's END is the
+//!   end of it, as is a picture that starts over. A client that shows it draws the rectangle's outline
 //!   over its picture and never into it, so that what a COPY or a STORE
 //!   takes, and every rectangle drawn after, is the picture alone; a client
 //!   that does not ignores it. It has no body past its header, and a server
@@ -175,14 +178,15 @@ pub const KIND_STILL: u8 = 8;
 /// Three zstd frames of a median predictor's residuals of the rectangle's
 /// pixels, on a lossless list where the desktop moves.
 pub const KIND_MEDIAN: u8 = 9;
-/// Where a region's stream moves and why the region began, to show a person:
-/// none of the picture.
+/// Where a region's stream moves and why the region is one, to show a
+/// person: none of the picture.
 pub const KIND_MARK: u8 = 10;
 
-/// A MARK's `why`: the region was laid out over tiles that kept changing.
+/// A MARK's `why`: the region was laid out over tiles that kept changing,
+/// or is kept for them, whatever began it.
 pub const MARK_MOVING: u8 = 0;
 /// A MARK's `why`: one update's change was more than its stills, and the
-/// region is the box around it.
+/// region is the box around it, not kept for anything else since.
 pub const MARK_BURST: u8 = 1;
 
 /// A tile's side: the desktop is in tiles this square from its top-left, and
@@ -273,10 +277,12 @@ impl TilesPicture {
     }
 }
 
-/// Why a region began, which a MARK says of its stream ([`KIND_MARK`]).
+/// Why a region is one, which a MARK says of its stream ([`KIND_MARK`]):
+/// why it began, until the server keeps it for another reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkWhy {
-    /// Its tiles kept changing ([`MARK_MOVING`]).
+    /// Its tiles kept changing, and it was laid out or is kept for them
+    /// ([`MARK_MOVING`]).
     Moving,
     /// One update's change was more than its stills ([`MARK_BURST`]).
     Burst,
@@ -354,7 +360,7 @@ pub enum TileHeader {
     /// Three zstd frames of a median predictor's residuals, `len` bytes,
     /// follow.
     Median { len: usize },
-    /// The stream on `stream` moves in the rectangle, its region begun for
+    /// The stream on `stream` moves in the rectangle, its region one for
     /// `why`; nothing follows.
     Mark { stream: u8, why: MarkWhy },
 }
