@@ -824,6 +824,41 @@ fn differs(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, area: Area) -> 
     })
 }
 
+/// The box around the pixels of `area` that differ between `a` and `b`, two
+/// `B, G, R, X` pictures, as [`differs`] compares them. None where none does.
+fn differing(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, area: Area) -> Option<Area> {
+    let (from, to) = (
+        usize::from(area.left) * 4,
+        (usize::from(area.right) + 1) * 4,
+    );
+    let row = |y: u16| {
+        let (ra, rb) = (usize::from(y) * a_stride, usize::from(y) * b_stride);
+        (&a[ra + from..ra + to], &b[rb + from..rb + to])
+    };
+    let differs = |y: &u16| {
+        let (a, b) = row(*y);
+        a != b
+    };
+    let top = (area.top..=area.bottom).find(differs)?;
+    let bottom = (top..=area.bottom).rev().find(differs)?;
+    let (mut left, mut right) = (area.right, area.left);
+    for y in top..=bottom {
+        let (a, b) = row(y);
+        let pixels = || a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0);
+        if let Some(first) = pixels().position(|(a, b)| a != b) {
+            let last = pixels().rposition(|(a, b)| a != b).unwrap_or(first);
+            left = left.min(area.left + first as u16);
+            right = right.max(area.left + last as u16);
+        }
+    }
+    Some(Area {
+        left,
+        top,
+        right,
+        bottom,
+    })
+}
+
 /// Copy `area` of `from` into `to`, two `B, G, R, X` pictures.
 fn blit(to: &mut [u8], to_stride: usize, from: &[u8], from_stride: usize, area: Area) {
     let (left, right) = (
@@ -1133,9 +1168,11 @@ struct Live {
     /// Since when what moves in it has kept to a smaller box
     /// ([`SHRINK_AFTER`]), and the box around all that moved since.
     smaller: Option<(Duration, CellBox)>,
-    /// The box around the pixels that changed in it, on the desktop: the
-    /// change that began it, where one did, and the damage since. None until
-    /// any has.
+    /// The box around the pixels that changed in it, on the desktop: those
+    /// of the change that began it, where one did, and of every read since
+    /// that were not what the picture held, however much the damage named.
+    /// None until any has, and kept only for the marks
+    /// ([`TilesEncoder::set_debug`]).
     moved: Option<Area>,
     /// The mark the client was last sent of it ([`TilesEncoder::set_debug`]).
     marked: Option<(Area, Cause)>,
@@ -1248,6 +1285,10 @@ pub struct TilesEncoder {
     retuned_at: Option<Duration>,
     /// The stills the reads since the last encode owe.
     stills: Vec<Area>,
+    /// The box around the pixels those reads changed that no stream
+    /// carried, for the mark of a region the stills begin
+    /// ([`Self::set_debug`]).
+    fresh: Option<Area>,
     /// The rectangles of streams that ended without starting, which the
     /// encode they ended in sends as stills whatever they come to.
     recovery: Vec<Area>,
@@ -1341,6 +1382,7 @@ impl TilesEncoder {
             cache: Cache::default(),
             retuned_at: None,
             stills: Vec::new(),
+            fresh: None,
             recovery: Vec::new(),
             no_streams_until: Duration::ZERO,
             copies: Vec::new(),
@@ -1450,6 +1492,7 @@ impl TilesEncoder {
         self.copied_at = None;
         self.copied_by.clear();
         self.stills.clear();
+        self.fresh = None;
         self.recovery.clear();
         self.copies.clear();
         self.restarting = true;
@@ -2226,9 +2269,12 @@ impl TilesEncoder {
                 ..area
             };
             top = band.bottom.saturating_add(1);
-            blit(&mut self.mirror, self.stride, pixels, stride, band);
             // The runs of changed tiles, and of those the ones no stream carries.
             let (mut changes, mut runs): (Vec<Area>, Vec<Area>) = (Vec::new(), Vec::new());
+            // For the marks, the box around the pixels that changed in each
+            // of those tiles, found before the picture takes them: the
+            // damage names more than changed, a whole window for its clock.
+            let mut exact: Vec<Area> = Vec::new();
             let extend = |runs: &mut Vec<Area>, part: Area| match runs.last_mut() {
                 Some(run) if run.top == part.top && run.right.checked_add(1) == Some(part.left) => {
                     run.right = part.right
@@ -2250,10 +2296,21 @@ impl TilesEncoder {
                     self.churn.observe(cell, now);
                 }
                 extend(&mut changes, part);
-                if !self.covered.contains(&cell) {
+                let carried = self.covered.contains(&cell);
+                if !carried {
                     extend(&mut runs, part);
                 }
+                if self.debug
+                    && let Some(part) = differing(&self.mirror, self.stride, pixels, stride, part)
+                {
+                    if carried {
+                        exact.push(part);
+                    } else {
+                        self.fresh = Some(self.fresh.map_or(part, |all| all.around(part)));
+                    }
+                }
             }
+            blit(&mut self.mirror, self.stride, pixels, stride, band);
             for live in &mut self.live {
                 for part in changes
                     .iter()
@@ -2261,6 +2318,8 @@ impl TilesEncoder {
                 {
                     live.dirty = true;
                     live.pending.push(part.within(live.area));
+                }
+                for part in exact.iter().filter_map(|part| live.area.intersect(*part)) {
                     live.moved = Some(live.moved.map_or(part, |all| all.around(part)));
                 }
             }
@@ -2303,12 +2362,13 @@ impl TilesEncoder {
             );
         }
         let stills = std::mem::take(&mut self.stills);
+        let fresh = self.fresh.take();
         if !stills.is_empty() && std::mem::take(&mut self.restarting) {
             out.keyframe = true;
         }
         let mut owed_round = false;
         if self.picture == TilesPicture::Held {
-            owed_round = self.held_stills(stills, moved, now, &mut out)?;
+            owed_round = self.held_stills(stills, fresh, moved, now, &mut out)?;
         } else {
             self.stills(stills, now, &mut out)?;
         }
@@ -2343,7 +2403,9 @@ impl TilesEncoder {
         // a region it is more than an update's stills for started at once.
         let stills = std::mem::take(&mut self.stills);
         if self.picture == TilesPicture::Held {
-            if self.held_stills(stills, moved, now, &mut out)? {
+            // None of these is a change: what a region they begin is marked
+            // by is its own rectangle.
+            if self.held_stills(stills, None, moved, now, &mut out)? {
                 self.round(now, &mut out)?;
             }
             self.recover(now, &mut out)?;
@@ -3182,10 +3244,12 @@ impl TilesEncoder {
     /// every stream is taken. A region live within the box is ended and the
     /// new one carries its tiles on, as a retune's does ([`Self::retune`]):
     /// no two regions over one tile. Whether a region was added, whose START
-    /// is owed a round ([`Self::round`]).
+    /// is owed a round ([`Self::round`]). `fresh` is the box around the
+    /// pixels that changed in the stills, which such a region is marked by.
     fn held_stills(
         &mut self,
         stills: Vec<Area>,
+        fresh: Option<Area>,
         moved: bool,
         now: Duration,
         out: &mut Out,
@@ -3224,7 +3288,7 @@ impl TilesEncoder {
             .expect("at most a few streams live");
         match self.build(id, around, now, Cause::Burst) {
             Ok(mut live) => {
-                live.moved = Some(changed);
+                live.moved = fresh;
                 let mut unsent = Vec::new();
                 for old in self
                     .live
@@ -5452,6 +5516,68 @@ mod tests {
         assert_eq!(
             page.marked, 2,
             "a mark where what it says changed, and no other"
+        );
+    }
+
+    /// A mark is around the pixels that changed, not the damage that named
+    /// them: where every read's damage is the whole desktop, a window that
+    /// opens is marked by its own rectangle, and what then moves in its
+    /// region a few pixels further out by the box around both, neither by
+    /// the region's tiles.
+    #[test]
+    fn a_mark_is_around_the_pixels_that_changed() {
+        let (w, h) = (640u16, 384u16);
+        let all = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        // Its region is tiles (5,0) to (9,5): 320,0 to 639,383.
+        let window = Rect {
+            x: 330,
+            y: 10,
+            width: 300,
+            height: 360,
+        };
+        let wider = Rect {
+            x: 324,
+            y: 6,
+            width: 310,
+            height: 370,
+        };
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+        encoder.set_debug(true);
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        paint(&mut pixels, w, window, 90);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[all]),
+            t0 + ms(1000),
+        );
+        assert_eq!(
+            (page.starts, page.marks.values().collect::<Vec<_>>()),
+            (1, vec![&((330, 10, 300, 360), MarkWhy::Burst)]),
+            "the window's own rectangle, of damage that was the desktop"
+        );
+        for n in 1..=6u64 {
+            paint(&mut pixels, w, wider, 90 + n as u32);
+            step(
+                &mut encoder,
+                &mut page,
+                &pixels,
+                Some(&[all]),
+                t0 + ms(1000 + n * 100),
+            );
+        }
+        assert_eq!(
+            (page.starts, page.marks.values().collect::<Vec<_>>()),
+            (1, vec![&((324, 6, 310, 370), MarkWhy::Moving)]),
+            "the box around what moved since, inside its tiles"
         );
     }
 

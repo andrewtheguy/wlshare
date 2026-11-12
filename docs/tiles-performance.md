@@ -1713,9 +1713,14 @@ nothing: a MARK after a region's START and wherever what it says changes,
 it and without (`motion-bench --motion-debug`), video-1920x1080,
 window-2880x1800@2, both mixed, walk-1920x1080 and uncover-2880x1800@2 are
 the same in every count the bench keeps and in every frame's — bytes,
-stills, frames, regions, what the page held — but the marks: 9, 13, 29, 53,
-18 and 3 of them for 9, 8, 16, 21, 17 and 2 regions, 435 bytes beside
-mixed-1920x1080's 135 MB; and `check` passes with it. Until protocol 14 the
+stills, frames, regions, what the page held — but the marks: 60, 78, 185,
+203, 106 and 4 of them for 9, 8, 16, 21, 17 and 2 regions, 2775 bytes beside
+mixed-1920x1080's 135 MB; and `check` passes with it. A region has several
+because its mark is the box around the pixels that changed, found by
+comparing each changed tile with the picture before whatever the damage
+named, and grows as pixels further out change; the comparison is made only
+with `motion_debug`, and the encoder's time with it was from 2% less to 4%
+more than without. Until protocol 14 the
 outline was painted into each region's frames, which coded it: 0.4% and
 0.2% more bytes on video-1920x1080 and window-2880x1800@2, and frames that
 were not the ones a session without it sends.
@@ -1783,34 +1788,34 @@ once: three that are apart, four beside each other along the top, four
 lower down where a chart and a log are beside a thumbnail's video, then all
 eleven for a minute, with a small video, a notice and a section, typing,
 the pointer and a terminal beside them in turn. Two minutes, captured on
-lab1 at 1920x1080 and 2880x1800@2 (2113 and 2081 frames), and played
+lab1 at 1920x1080 and 2880x1800@2 (2113 and 2082 frames), and played
 through `motion-bench --libx264 --tiles-only`, by 0.0.127, where any five
 moving tiles were a region, and now:
 
 | Capture | bytes, MB | regions started | frames held lossless | held MSE | encoder CPU, s |
 |---|---:|---:|---:|---:|---:|
-| many-1920x1080 | 11.48 → 14.47 | 82 → 35 | 40 → 1069 of 2113 | 1.20 → 0.91 | 4.40 → 5.74 |
-| many-2880x1800@2 | 24.81 → 35.08 | 75 → 15 | 327 → 765 of 2081 | 0.44 → 0.25 | 16.66 → 23.43 |
+| many-1920x1080 | 11.49 → 13.99 | 70 → 39 | 36 → 1068 of 2113 | 1.21 → 0.94 | 4.22 → 5.27 |
+| many-2880x1800@2 | 25.68 → 31.21 | 67 → 10 | 339 → 819 of 2082 | 0.47 → 0.31 | 17.09 → 21.85 |
 
 What moves a little stays lossless here as it does alone, and that is what
-the bytes and the time are for: a quarter and two fifths more of each. By
+the bytes and the time are for: a fifth more bytes and a quarter more time. By
 part, now, at 1920x1080 — its frames, those a region was live in, those the
 page held exact, and what went:
 
 | From | Part | frames | with a region | exact | WebP, kB | H.264, kB | regions started |
 |---:|---|---:|---:|---:|---:|---:|---:|
-| 3 s | three apart | 251 | 0 | 251 | 332 | 0 | 0 |
-| 18 s | four along the top | 251 | 0 | 251 | 746 | 0 | 0 |
-| 33 s | four lower down | 250 | 0 | 250 | 1520 | 0 | 0 |
-| 48 s | all eleven | 274 | 0 | 274 | 3070 | 0 | 0 |
-| 63 s | and a small video, a notice, a section | 370 | 328 | 42 | 1523 | 3022 | 24 |
-| 81 s | and typing | 145 | 145 | 0 | 131 | 577 | 4 |
-| 88 s | and the pointer, a drag | 226 | 226 | 0 | 321 | 1071 | 6 |
-| 99 s | and a terminal | 325 | 325 | 0 | 374 | 1272 | 0 |
+| 3 s | three apart | 251 | 0 | 251 | 333 | 0 | 0 |
+| 18 s | four along the top | 251 | 0 | 251 | 744 | 0 | 0 |
+| 33 s | four lower down | 250 | 0 | 250 | 1522 | 0 | 0 |
+| 48 s | all eleven | 273 | 0 | 273 | 3045 | 0 | 0 |
+| 63 s | and a small video, a notice, a section | 371 | 329 | 42 | 1371 | 3165 | 28 |
+| 81 s | and typing | 144 | 144 | 0 | 10 | 593 | 4 |
+| 88 s | and the pointer, a drag | 227 | 227 | 0 | 73 | 1114 | 5 |
+| 99 s | and a terminal | 325 | 325 | 0 | 129 | 1357 | 1 |
 
-All eleven together are no region at 1920x1080: 3.1 MB of stills in fifteen
-seconds, 1.6 Mbit/s, every frame exact, where 0.0.127 sent 1.5 MB of them
-with a region live in all but seven frames. At 2880x1800@2 the first two
+All eleven together are no region at 1920x1080: 3.0 MB of stills in fifteen
+seconds, 1.6 Mbit/s, every frame exact, where 0.0.127 sent 1.7 MB for them
+with a region live in all but six frames. At 2880x1800@2 the first two
 parts are the same, lossless throughout for 0.7 and 1.6 MB, and from the
 third the chart and the thumbnail's video beside it are one region of 640
 by 384.
@@ -1819,16 +1824,17 @@ Two things the capture shows are left as found, neither looked into
 further than the frames' own record:
 
 - **A region laid out again and again.** At 1920x1080, while the small
-  video plays among the rest (63 s to 81 s), 24 regions are started in
-  eighteen seconds, the rectangles another set at one layout in two —
-  640 by 576, then 640 by 192 and 384 by 384, then 640 by 576 again — each
-  a stream started over at a keyframe. 0.0.127 started 18 there.
+  video plays among the rest (63 s to 81 s), 28 regions are started in
+  eighteen seconds, the rectangles another set at most layouts — 512 by
+  576, then 640 by 192 and 384 by 256, then 640 by 576, then 1280 by 576 —
+  each a stream started over at a keyframe. 0.0.127 started 31 there.
 - **A region that ends and comes back.** At 2880x1800@2 the region over
-  the chart and the thumbnail, 640 by 384, is started 11 times between
-  45 s and 101 s, live from one to ten seconds at a time and gone for one
-  or two between. The chart is redrawn five times a second, four of the
-  churn's eight tenths, which is the least that counts as moving, and the
-  thumbnail alone is under the 20 tiles a region needs at scale 2, so the
-  region may be idling out its second whenever the chart's tiles fall
-  short and being laid out again when the stills come to its worth; that
-  is a reading of the rule, not something measured.
+  the chart and the thumbnail, 640 by 384, is started 5 times between
+  45 s and 92 s, live from four to nine seconds at a time, eighteen where
+  the small video is beside it, and gone for one to three between. The
+  chart is redrawn five times a second, four of the churn's eight tenths,
+  which is the least that counts as moving, and the thumbnail alone is
+  under the 20 tiles a region needs at scale 2, so the region may be
+  idling out its second whenever the chart's tiles fall short and being
+  laid out again when the stills come to its worth; that is a reading of
+  the rule, not something measured.

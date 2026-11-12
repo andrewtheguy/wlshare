@@ -98,7 +98,7 @@ const during = (from, to, el) => { setTimeout(() => el.classList.add('on', 'open
 const clock = (from, to) => every(from, to, 1000, t => { const s = Math.floor(t) + 41400; $('clock').textContent = `${two(Math.floor(s / 3600))}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`; });
 let lines = 0;
 const dots = (from, to) => every(from, to, 400, t => { $('loading').textContent = 'Loading' + '.'.repeat(Math.floor(t / 0.4) % 4); });
-const stopwatch = (from, to) => every(from, to, 100, t => { $('stopwatch').textContent = `00:${two(Math.floor(t))}.${Math.floor(t * 10) % 10}`; });
+const stopwatch = (from, to) => every(from, to, 100, t => { const s = Math.floor(t); $('stopwatch').textContent = `${two(Math.floor(s / 60))}:${two(s % 60)}.${Math.floor(t * 10) % 10}`; });
 // The bar fills in six seconds, once, or again and again.
 const fill = (from, to, again) => frames(from, to, t => { const p = again ? (t % 6) / 6 * 100 : Math.min(100, t / 6 * 100); $('fill').style.width = p + '%'; $('percent').textContent = Math.round(p) + '%'; });
 const redraw = (from, to) => every(from, to, 200, t => { points.shift(); points.push(50 + 30 * Math.sin(t * 3) + 15 * Math.sin(t * 11)); chart(); });
