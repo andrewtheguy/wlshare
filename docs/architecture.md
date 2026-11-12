@@ -604,7 +604,11 @@ movements of a desk one kind at a time — a spinner, a progress bar, a line
 of text sliding, a clock, a menu, a terminal's progress line, a small video
 — each at its own seconds with the desktop still between them
 (`docker/capture/scenarios/small.sh`), for the tiles picture to be measured
-on what is and is not worth a region's stream.
+on what is and is not worth a region's stream, and `many`, the same page's
+movements several at once — three apart, four beside each other, then all
+eleven for a minute with a small video, typing, the pointer and a terminal
+beside them in turn (`many.sh`) — for what is made a stream where the
+movements are neighbours.
 
 The walk is measured on the captures the same way, without a link being
 shaped: `walk-sim` (`examples/`) plays one or several of them through the

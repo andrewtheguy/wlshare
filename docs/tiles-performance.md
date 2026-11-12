@@ -1774,3 +1774,61 @@ a second on, and the bar is stills (`a_region_left_with_what_is_cheap_ends`).
 On the samples nothing was found cheap, a video being what was left each
 time, and every figure above is the same to the byte: the cost is the
 coding, 4 and 6 times more on the two mixed, counted above.
+
+## Many small movements at once
+
+`small` plays each movement alone. `many`
+(`docker/capture/scenarios/many.sh`) plays the same page's several at
+once: three that are apart, four beside each other along the top, four
+lower down where a chart and a log are beside a thumbnail's video, then all
+eleven for a minute, with a small video, a notice and a section, typing,
+the pointer and a terminal beside them in turn. Two minutes, captured on
+lab1 at 1920x1080 and 2880x1800@2 (2113 and 2081 frames), and played
+through `motion-bench --libx264 --tiles-only`, by 0.0.127, where any five
+moving tiles were a region, and now:
+
+| Capture | bytes, MB | regions started | frames held lossless | held MSE | encoder CPU, s |
+|---|---:|---:|---:|---:|---:|
+| many-1920x1080 | 11.48 → 14.47 | 82 → 35 | 40 → 1069 of 2113 | 1.20 → 0.91 | 4.40 → 5.74 |
+| many-2880x1800@2 | 24.81 → 35.08 | 75 → 15 | 327 → 765 of 2081 | 0.44 → 0.25 | 16.66 → 23.43 |
+
+What moves a little stays lossless here as it does alone, and that is what
+the bytes and the time are for: a quarter and two fifths more of each. By
+part, now, at 1920x1080 — its frames, those a region was live in, those the
+page held exact, and what went:
+
+| From | Part | frames | with a region | exact | WebP, kB | H.264, kB | regions started |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 3 s | three apart | 251 | 0 | 251 | 332 | 0 | 0 |
+| 18 s | four along the top | 251 | 0 | 251 | 746 | 0 | 0 |
+| 33 s | four lower down | 250 | 0 | 250 | 1520 | 0 | 0 |
+| 48 s | all eleven | 274 | 0 | 274 | 3070 | 0 | 0 |
+| 63 s | and a small video, a notice, a section | 370 | 328 | 42 | 1523 | 3022 | 24 |
+| 81 s | and typing | 145 | 145 | 0 | 131 | 577 | 4 |
+| 88 s | and the pointer, a drag | 226 | 226 | 0 | 321 | 1071 | 6 |
+| 99 s | and a terminal | 325 | 325 | 0 | 374 | 1272 | 0 |
+
+All eleven together are no region at 1920x1080: 3.1 MB of stills in fifteen
+seconds, 1.6 Mbit/s, every frame exact, where 0.0.127 sent 1.5 MB of them
+with a region live in all but seven frames. At 2880x1800@2 the first two
+parts are the same, lossless throughout for 0.7 and 1.6 MB, and from the
+third the chart and the thumbnail's video beside it are one region of 640
+by 384.
+
+Two things the capture shows are left as found, neither looked into
+further than the frames' own record:
+
+- **A region laid out again and again.** At 1920x1080, while the small
+  video plays among the rest (63 s to 81 s), 24 regions are started in
+  eighteen seconds, the rectangles another set at one layout in two —
+  640 by 576, then 640 by 192 and 384 by 384, then 640 by 576 again — each
+  a stream started over at a keyframe. 0.0.127 started 18 there.
+- **A region that ends and comes back.** At 2880x1800@2 the region over
+  the chart and the thumbnail, 640 by 384, is started 11 times between
+  45 s and 101 s, live from one to ten seconds at a time and gone for one
+  or two between. The chart is redrawn five times a second, four of the
+  churn's eight tenths, which is the least that counts as moving, and the
+  thumbnail alone is under the 20 tiles a region needs at scale 2, so the
+  region may be idling out its second whenever the chart's tiles fall
+  short and being laid out again when the stills come to its worth; that
+  is a reading of the rule, not something measured.
