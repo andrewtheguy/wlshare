@@ -42,8 +42,8 @@
 //! unless the merged box would be more than twice the moving tiles, and at
 //! most 4 regions stream at once. The regions are laid out again at most every
 //! 500 ms: one that grows starts another, one with no motion for a second
-//! ends, and one whose motion has kept for a second to a box of at most three
-//! quarters of it starts another over that box; less of a difference keeps
+//! ends, and one whose motion has kept for two seconds to a box of at most
+//! half of it starts another over that box; less of a difference keeps
 //! its stream. A region one large change began, the
 //! box around all of it, is kept past its second only for what moves over
 //! half of it and would be dear as stills, and ends otherwise, for regions of
@@ -374,11 +374,11 @@ const MERGE_WASTE: u32 = 2;
 /// How long what moves in a region has kept to a smaller box before the
 /// region is laid out again over that box: a page scrolled with a video on
 /// it is one region while it scrolls, and the video's alone this long after.
-const SHRINK_AFTER: Duration = Duration::from_millis(1000);
-/// The most of a region's tiles the box of what moved in it may be, in
-/// quarters, for the region to be laid out again over it: less of a
-/// difference is not worth the keyframe.
-const SHRINK_QUARTERS: u32 = 3;
+/// A smaller box is one of at most half the region's tiles, the waste a
+/// merge's box may have ([`MERGE_WASTE`]): less of a difference is not worth
+/// the keyframe, and a video whose motion narrows and widens, as most do,
+/// would be started again each time.
+const SHRINK_AFTER: Duration = Duration::from_millis(2000);
 /// The fewest moving tiles a component needs to be worth a stream at scale 1:
 /// at another, the same area of the layout, 64×64 of its pixels a tile here
 /// ([`stream_cells`]).
@@ -1120,7 +1120,7 @@ struct Live {
     /// ([`TilesEncoder::probe`]), which is not asked of it again.
     dear: bool,
     /// Since when what moves in it has kept to a smaller box
-    /// ([`SHRINK_QUARTERS`]), and the box around all that moved since.
+    /// ([`SHRINK_AFTER`]), and the box around all that moved since.
     smaller: Option<(Duration, CellBox)>,
 }
 
@@ -3012,7 +3012,7 @@ impl TilesEncoder {
                 .map(|(.., bbox)| *bbox)
                 .reduce(|a, b| a.union(&b));
             let cells = live.cells.len() as u32;
-            let within = |bbox: &CellBox| bbox.area() * 4 <= cells * SHRINK_QUARTERS;
+            let within = |bbox: &CellBox| bbox.area() * MERGE_WASTE <= cells;
             live.smaller = match (moved, live.smaller) {
                 (Some(bbox), Some((since, all))) if within(&all.union(&bbox)) => {
                     Some((since, all.union(&bbox)))
@@ -5691,10 +5691,10 @@ mod tests {
     }
 
     /// A region whose motion keeps to a smaller box is laid out again over
-    /// that box a second on: a video that filled the desktop, as a page
+    /// that box two seconds on: a video that filled the desktop, as a page
     /// scrolled with a video on it does, and then moves in a part of it
     /// alone, is that part's region, its own keyframe, and the rest settles
-    /// lossless while it plays; one that moves over most of its region
+    /// lossless while it plays; one that moves over more than half its region
     /// keeps its stream.
     #[test]
     fn a_region_shrinks_to_what_still_moves() {
@@ -5711,8 +5711,8 @@ mod tests {
             let mut page = Page::new(w, h);
             let t0 = begin(&mut encoder, &mut page, &pixels);
             let (starts, ends) = (page.starts, page.ends);
-            // All of it for two seconds, then the part alone for three.
-            for n in 1..=100u32 {
+            // All of it for two seconds, then the part alone for six.
+            for n in 1..=160u32 {
                 let moving = if n <= 40 { whole } else { part };
                 paint(&mut pixels, w, moving, 300 + n);
                 step(
@@ -5722,11 +5722,11 @@ mod tests {
                     Some(&[moving]),
                     t0 + ms(u64::from(n) * 50),
                 );
-                if n == 55 {
+                if n == 75 {
                     assert_eq!(
                         (page.starts - starts, page.ends - ends),
                         (1, 0),
-                        "one region still, under a second after the motion shrank"
+                        "one region still, under two seconds after the motion shrank"
                     );
                 }
             }
@@ -5760,7 +5760,7 @@ mod tests {
         assert_eq!(
             (starts, ends, area),
             (1, 0, Some(whole)),
-            "kept where what moves is most of it"
+            "kept where what moves is over half of it"
         );
     }
 

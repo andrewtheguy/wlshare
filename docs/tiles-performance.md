@@ -1667,6 +1667,21 @@ dear and is half of it or more; where it is dear and less, it ends for a
 region of what moves; otherwise it ends at its second, as an idle one
 does.
 
+That coding is rare and small. Over the samples at both sizes, on lab1 and
+alone, it ran 21 times in all: not once on `small`, window, drag, terminal
+or still, once on each video, each flood, browser at 2880x1800@2 and
+mixed-1920x1080, twice on uncover at 2880x1800@2, 3 times on
+mixed-2880x1800@2, and 4 and 6 times on the two walks, where a region
+begins every few seconds. Sixteen tiles of a video took 10 ms, 0.6 ms a
+tile, and of a page 2.5 ms: 0.03% and 0.04% of the encoder's time on mixed,
+0.4% and 0.15% on video, and 1.0% and 0.7% on walk, the most of any. The frame it
+falls on is that much later, once a region. Counting instead the pixels of
+the same tiles that are neither the one to their left nor the one above
+took 0.15 ms and gave the same verdict all 21 times, none of them close —
+20 dear by 9 to 180 times the bytes, one cheap by 33 — but a still came to
+1.2 to 2.8 bytes for each such pixel, by what it showed, where the WebP is
+what the still would be. So the tiles are coded.
+
 Over the two captures, and the samples at the same sizes (`mixed` and
 `walk` whole), the rule before and now:
 
@@ -1696,3 +1711,46 @@ EPYC Rome), libx264, three runs each: video-1920x1080 took 2.52 s of the
 processor without it and 2.54 s with, window-2880x1800@2 1.64 s and 1.63 s,
 inside what the runs differ by, for 0.4% and 0.2% more bytes; and `check`
 passes with it, the picture lossless once settled, the outline gone.
+
+## A region that shrinks
+
+A region was kept for as long as what moved stayed inside it: a page
+scrolled with a video playing on it was one region while it scrolled, and
+stayed the page's for as long as the video played, the page around the
+video lossy until it stopped. A region whose motion has kept to a smaller
+box for a time is now started again over that box, at a keyframe, and the
+rest of it settles. How much smaller and for how long, swept on
+mixed-1920x1080, where videos play for minutes, and browser-2880x1800@2,
+the scroll, beside neither being done at all:
+
+| The box is at most | for | mixed: regions started, MB | browser: regions started, MB |
+|---|---|---:|---:|
+| never | | 13, 135.05 | 1, 6.76 |
+| three quarters | 1 s | 83, 142.54 | 2, 7.03 |
+| three quarters | 2 s | 45, 137.55 | 2, 7.03 |
+| three quarters | 3 s | 29, 136.19 | 2, 7.17 |
+| three quarters | 5 s | 20, 135.51 | 2, 7.16 |
+| half | 1 s | 35, 137.01 | 1, 6.76 |
+| half | 2 s | 16, 135.23 | 1, 6.76 |
+| half | 3 s | 15, 135.12 | 1, 6.76 |
+| half | 5 s | 15, 135.15 | 1, 6.76 |
+
+A video's motion narrows and widens as it plays, and at three quarters it
+is started again each time, 83 keyframes where there were 13 and 5.5% more
+bytes at a second, and the scroll itself is cut in two at every delay
+swept. At
+half the scroll is left alone, and from two seconds the videos nearly are.
+It is half, the waste a merge's box may have, and two seconds. Over the
+samples at 1920x1080 and 2880x1800@2 and both `small` captures, only
+`mixed` differs, every other the same to the byte:
+
+| Capture | bytes, MB | regions started | frames held lossless | held MSE |
+|---|---:|---:|---:|---:|
+| mixed-1920x1080 | 135.05 → 135.23 | 13 → 16 | 1058 → 1058 | 2.47 → 2.34 |
+| mixed-2880x1800@2 | 273.37 → 273.80 | 18 → 21 | 1104 → 1104 | 1.32 → 1.31 |
+
+No capture scrolls a page under a video that plays, so what the rule is
+for is not in these figures, which are what it costs where it is not
+wanted: three keyframes in four minutes, 0.1% to 0.2% more bytes, the
+encoder's time within its noise. A test holds what it is for
+(`a_region_shrinks_to_what_still_moves`).
