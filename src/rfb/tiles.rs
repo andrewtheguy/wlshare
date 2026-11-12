@@ -2403,6 +2403,10 @@ impl TilesEncoder {
         }
         let mut owed_round = false;
         if self.picture == TilesPicture::Held {
+            // Ahead of the stills, a change past which would end one of
+            // them for a region over the box around it, with no word that
+            // the coder makes no frame, and the next a second on.
+            self.expire_unstarted(now);
             owed_round = self.held_stills(stills, fresh, moved, now, &mut out)?;
         } else {
             self.stills(stills, now, &mut out)?;
@@ -6406,6 +6410,73 @@ mod tests {
             "and no region for a while after"
         );
         assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
+    }
+
+    /// Nor does a change past an update's stills around it, in the update
+    /// its second is up at, begin a region over them both before it is
+    /// counted: that one would have its own second to make no frame in, and
+    /// the one after it, for as long as the desktop kept changing.
+    #[test]
+    fn a_change_around_a_stream_out_of_its_second_begins_no_other() {
+        let (w, h) = (640u16, 384u16);
+        let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
+        let mut encoder = TilesEncoder::new(
+            w,
+            h,
+            held(),
+            Box::new(Fake {
+                refuse: false,
+                mute: true,
+                fail_after: None,
+                fail_read_after: None,
+            }),
+        )
+        .unwrap();
+        let mut page = Page::new(w, h);
+        let t0 = begin(&mut encoder, &mut page, &pixels);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let middle = Rect {
+            x: 128,
+            y: 0,
+            width: 384,
+            height: h,
+        };
+        paint(&mut pixels, w, middle, 9);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[middle]),
+            t0 + ms(50),
+        );
+        assert_eq!(encoder.live.len(), 1, "a region around the change");
+        // All of the desktop a second on: the stills are the strips either
+        // side of the region, past an update's, and the box around them is
+        // over it.
+        paint(&mut pixels, w, whole, 10);
+        step(
+            &mut encoder,
+            &mut page,
+            &pixels,
+            Some(&[whole]),
+            t0 + ms(50) + START_WITHIN,
+        );
+        assert!(
+            encoder.live.is_empty(),
+            "ended at its second, and none begun"
+        );
+        assert_eq!(
+            encoder.no_streams_until,
+            t0 + ms(50) + START_WITHIN + START_RETRY,
+            "and no region for a while after"
+        );
+        assert_eq!(page.off(&pixels), 0, "the change whole, as stills");
+        assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
     }
 
     /// A region whose stream never made a frame ends at its second with the

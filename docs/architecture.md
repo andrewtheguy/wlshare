@@ -908,7 +908,8 @@ the picture.
   under a stream laid out over it that has not started either, too, which
   has shown the client as little. And a stream has a second to start:
   one with no frame by then ends whatever moves in it, though the layouts
-  would keep it, and no region is laid out for the five seconds after, what
+  would keep it, and ahead of a change past an update's stills that would
+  begin a region over it; and no region is laid out for the five seconds after, what
   changes going as stills, until the coder is tried again. A region that began as the box around one large change,
   above, has no stills under it to count: what moves in it is taken for
   dear where at most 16 of its tiles, coded as a WebP each and thrown away,
