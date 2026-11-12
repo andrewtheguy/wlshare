@@ -41,8 +41,10 @@
 //! are no video unless they join one that is; boxes merge
 //! unless the merged box would be more than twice the moving tiles, and at
 //! most 4 regions stream at once. The regions are laid out again at most every
-//! 500 ms: one that shrinks keeps its stream, one that grows starts another,
-//! one with no motion for a second ends. A region one large change began, the
+//! 500 ms: one that grows starts another, one with no motion for a second
+//! ends, and one whose motion has kept for a second to a box of at most three
+//! quarters of it starts another over that box; less of a difference keeps
+//! its stream. A region one large change began, the
 //! box around all of it, is kept past its second only for what moves over
 //! half of it and would be dear as stills, and ends otherwise, for regions of
 //! what moves in it where that is dear.
@@ -369,6 +371,14 @@ const START_WITHIN: Duration = Duration::from_millis(1000);
 const START_RETRY: Duration = Duration::from_millis(5000);
 /// The most tiles a merge may cover, as a multiple of the moving tiles it joins.
 const MERGE_WASTE: u32 = 2;
+/// How long what moves in a region has kept to a smaller box before the
+/// region is laid out again over that box: a page scrolled with a video on
+/// it is one region while it scrolls, and the video's alone this long after.
+const SHRINK_AFTER: Duration = Duration::from_millis(1000);
+/// The most of a region's tiles the box of what moved in it may be, in
+/// quarters, for the region to be laid out again over it: less of a
+/// difference is not worth the keyframe.
+const SHRINK_QUARTERS: u32 = 3;
 /// The fewest moving tiles a component needs to be worth a stream at scale 1:
 /// at another, the same area of the layout, 64×64 of its pixels a tile here
 /// ([`stream_cells`]).
@@ -1109,6 +1119,9 @@ struct Live {
     /// What moves under it was coded and found dear
     /// ([`TilesEncoder::probe`]), which is not asked of it again.
     dear: bool,
+    /// Since when what moves in it has kept to a smaller box
+    /// ([`SHRINK_QUARTERS`]), and the box around all that moved since.
+    smaller: Option<(Duration, CellBox)>,
 }
 
 impl Live {
@@ -2950,23 +2963,23 @@ impl TilesEncoder {
         }
         let size = self.size;
         // Each box wanted, and how many tiles move in it.
-        let wanted: Vec<(Area, u32)> = merge(worthy, MAX_STREAMS)
+        let wanted: Vec<(Area, u32, CellBox)> = merge(worthy, MAX_STREAMS)
             .into_iter()
-            .filter_map(|c| Some((c.bbox.to_area(size)?, c.moving)))
+            .filter_map(|c| Some((c.bbox.to_area(size)?, c.moving, c.bbox)))
             .collect();
         let (mut next, mut old): (Vec<Live>, Vec<Live>) = std::mem::take(&mut self.live)
             .into_iter()
             .partition(|live| {
                 let mut touched = wanted
                     .iter()
-                    .filter(|(area, _)| live.area.intersect(*area).is_some());
+                    .filter(|(area, ..)| live.area.intersect(*area).is_some());
                 // A region a single change began is the box around all of
                 // it: kept for what moves in it only where the tiles that
                 // move are half of it or more, as a merge's box is, and
                 // otherwise ended for regions of what moves.
-                let moving: u32 = touched.clone().map(|(_, moving)| moving).sum();
+                let moving: u32 = touched.clone().map(|(_, moving, _)| moving).sum();
                 touched.clone().next().is_some()
-                    && touched.all(|(area, _)| live.area.contains(*area))
+                    && touched.all(|(area, ..)| live.area.contains(*area))
                     && (live.cause == Cause::Moving
                         || live.cells.len() <= (MERGE_WASTE * moving) as usize)
             });
@@ -2984,7 +2997,44 @@ impl TilesEncoder {
             }
         }
         let mut unsent = Vec::new();
-        for (area, _) in wanted {
+        // A region kept whose motion has kept to a smaller box for
+        // [`SHRINK_AFTER`] is laid out again over the box around all that
+        // moved in it since: what a scroll or a window's opening made a
+        // video of is the video's own region soon after, and the rest of it
+        // settles. Not while no region may be laid out, or the box would be
+        // stills.
+        let mut at = 0;
+        while at < next.len() {
+            let live = &mut next[at];
+            let moved = wanted
+                .iter()
+                .filter(|(area, ..)| live.area.contains(*area))
+                .map(|(.., bbox)| *bbox)
+                .reduce(|a, b| a.union(&b));
+            let cells = live.cells.len() as u32;
+            let within = |bbox: &CellBox| bbox.area() * 4 <= cells * SHRINK_QUARTERS;
+            live.smaller = match (moved, live.smaller) {
+                (Some(bbox), Some((since, all))) if within(&all.union(&bbox)) => {
+                    Some((since, all.union(&bbox)))
+                }
+                (Some(bbox), None) if within(&bbox) => Some((now, bbox)),
+                _ => None,
+            };
+            let shrunk = live
+                .smaller
+                .filter(|(since, _)| now.saturating_sub(*since) >= SHRINK_AFTER)
+                .and_then(|(_, all)| all.to_area(size))
+                .filter(|_| now >= self.no_streams_until);
+            let Some(area) = shrunk else {
+                at += 1;
+                continue;
+            };
+            let live = next.swap_remove(at);
+            let id = live.id;
+            live.end(out, &mut unsent, &mut self.recovery);
+            next.push(self.build(id, area, now, Cause::Moving)?);
+        }
+        for (area, ..) in wanted {
             if next.iter().any(|live| live.area.contains(area)) {
                 continue;
             }
@@ -3140,6 +3190,7 @@ impl TilesEncoder {
             cause,
             since: now,
             dear: false,
+            smaller: None,
         })
     }
 
@@ -5637,6 +5688,80 @@ mod tests {
             }
         }
         assert_eq!((page.starts, page.ends), (0, 0), "no stream ever started");
+    }
+
+    /// A region whose motion keeps to a smaller box is laid out again over
+    /// that box a second on: a video that filled the desktop, as a page
+    /// scrolled with a video on it does, and then moves in a part of it
+    /// alone, is that part's region, its own keyframe, and the rest settles
+    /// lossless while it plays; one that moves over most of its region
+    /// keeps its stream.
+    #[test]
+    fn a_region_shrinks_to_what_still_moves() {
+        let (w, h) = (640u16, 384u16);
+        let whole = Rect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h,
+        };
+        let play = |part: Rect| {
+            let mut pixels = noise(w, h, 5);
+            let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
+            let mut page = Page::new(w, h);
+            let t0 = begin(&mut encoder, &mut page, &pixels);
+            let (starts, ends) = (page.starts, page.ends);
+            // All of it for two seconds, then the part alone for three.
+            for n in 1..=100u32 {
+                let moving = if n <= 40 { whole } else { part };
+                paint(&mut pixels, w, moving, 300 + n);
+                step(
+                    &mut encoder,
+                    &mut page,
+                    &pixels,
+                    Some(&[moving]),
+                    t0 + ms(u64::from(n) * 50),
+                );
+                if n == 55 {
+                    assert_eq!(
+                        (page.starts - starts, page.ends - ends),
+                        (1, 0),
+                        "one region still, under a second after the motion shrank"
+                    );
+                }
+            }
+            let area = encoder
+                .live
+                .first()
+                .map(|live| live.area.within(Area::whole((w, h))));
+            // What the stream no longer covers is settled while it plays.
+            let outside = usize::from(w) * 4 * 300;
+            let settled = page.canvas[outside..] == pixels[outside..];
+            (page.starts - starts, page.ends - ends, area, settled)
+        };
+        let part = Rect {
+            x: 128,
+            y: 64,
+            width: 192,
+            height: 128,
+        };
+        assert_eq!(
+            play(part),
+            (2, 1, Some(part), true),
+            "laid out again over the part, the rest lossless"
+        );
+        let most = Rect {
+            x: 0,
+            y: 0,
+            width: 576,
+            height: 384,
+        };
+        let (starts, ends, area, _) = play(most);
+        assert_eq!(
+            (starts, ends, area),
+            (1, 0, Some(whole)),
+            "kept where what moves is most of it"
+        );
     }
 
     /// A stream out of its second to start is counted against the coder
