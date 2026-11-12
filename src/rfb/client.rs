@@ -322,7 +322,7 @@ pub enum TileBody {
     /// zstd frames, on a lossless list where the desktop moves.
     Median(Vec<u8>),
     /// Where the stream on `stream` moves, the rectangle, and why its region
-    /// began: none of the picture.
+    /// is one: none of the picture.
     Mark { stream: u8, why: MarkWhy },
 }
 
@@ -962,6 +962,8 @@ mod tests {
         wire.extend_from_slice(&[KIND_START, 2, 0, 0, 0, 1, 0x82]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_FRAME, 2, 0, 0, 0, 1, 0x86]);
+        wire.extend_from_slice(&msg::rect_header(6, 70, 308, 180, ENCODING_TILES));
+        wire.extend_from_slice(&[KIND_MARK, 2, 1]);
         wire.extend_from_slice(&msg::rect_header(0, 64, 320, 192, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_END, 2]);
         wire.extend_from_slice(&msg::rect_header(0, 0, 320, 160, ENCODING_TILES));
@@ -976,8 +978,6 @@ mod tests {
         wire.extend_from_slice(&[KIND_STILL, 0, 0, 0, 2, 0x28, 0xB5]);
         wire.extend_from_slice(&msg::rect_header(192, 128, 64, 64, ENCODING_TILES));
         wire.extend_from_slice(&[KIND_MEDIAN, 0, 0, 0, 3, 0x28, 0xB5, 0x2F]);
-        wire.extend_from_slice(&msg::rect_header(6, 70, 308, 180, ENCODING_TILES));
-        wire.extend_from_slice(&[KIND_MARK, 2, 1]);
         let whole = wire.len();
         wire.push(0xFF);
 
@@ -1062,71 +1062,7 @@ mod tests {
             })
         );
         assert_eq!(
-            (rects[10].width, &rects[10].body),
-            (320, &RectBody::Tiles(TileBody::End { stream: 2 }))
-        );
-        assert_eq!(
-            rects[11],
-            Rect {
-                x: 0,
-                y: 0,
-                width: 320,
-                height: 160,
-                body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 })
-            }
-        );
-        assert_eq!(
-            rects[12],
-            Rect {
-                x: 64,
-                y: 64,
-                width: 64,
-                height: 64,
-                body: RectBody::Tiles(TileBody::Store { slot: 4095 })
-            }
-        );
-        assert_eq!(
-            rects[13],
-            Rect {
-                x: 128,
-                y: 64,
-                width: 64,
-                height: 64,
-                body: RectBody::Tiles(TileBody::Cached { slot: 7 })
-            }
-        );
-        assert_eq!(
-            rects[14],
-            Rect {
-                x: 192,
-                y: 64,
-                width: 64,
-                height: 64,
-                body: RectBody::Tiles(TileBody::Progressive(vec![0xC6, 0xCC]))
-            }
-        );
-        assert_eq!(
-            rects[15],
-            Rect {
-                x: 128,
-                y: 128,
-                width: 64,
-                height: 64,
-                body: RectBody::Tiles(TileBody::Still(vec![0x28, 0xB5]))
-            }
-        );
-        assert_eq!(
-            rects[16],
-            Rect {
-                x: 192,
-                y: 128,
-                width: 64,
-                height: 64,
-                body: RectBody::Tiles(TileBody::Median(vec![0x28, 0xB5, 0x2F]))
-            }
-        );
-        assert_eq!(
-            rects[17],
+            rects[10],
             Rect {
                 x: 6,
                 y: 70,
@@ -1136,6 +1072,70 @@ mod tests {
                     stream: 2,
                     why: MarkWhy::Burst
                 })
+            }
+        );
+        assert_eq!(
+            (rects[11].width, &rects[11].body),
+            (320, &RectBody::Tiles(TileBody::End { stream: 2 }))
+        );
+        assert_eq!(
+            rects[12],
+            Rect {
+                x: 0,
+                y: 0,
+                width: 320,
+                height: 160,
+                body: RectBody::Tiles(TileBody::Copy { x: 0, y: 40 })
+            }
+        );
+        assert_eq!(
+            rects[13],
+            Rect {
+                x: 64,
+                y: 64,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Store { slot: 4095 })
+            }
+        );
+        assert_eq!(
+            rects[14],
+            Rect {
+                x: 128,
+                y: 64,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Cached { slot: 7 })
+            }
+        );
+        assert_eq!(
+            rects[15],
+            Rect {
+                x: 192,
+                y: 64,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Progressive(vec![0xC6, 0xCC]))
+            }
+        );
+        assert_eq!(
+            rects[16],
+            Rect {
+                x: 128,
+                y: 128,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Still(vec![0x28, 0xB5]))
+            }
+        );
+        assert_eq!(
+            rects[17],
+            Rect {
+                x: 192,
+                y: 128,
+                width: 64,
+                height: 64,
+                body: RectBody::Tiles(TileBody::Median(vec![0x28, 0xB5, 0x2F]))
             }
         );
     }
