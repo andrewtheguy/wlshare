@@ -14,6 +14,7 @@
 #   quiet: terminal.sh, still.sh, uncover.sh    little changes a frame, most of it still
 #   busy:  flood.sh, browser.sh, drag.sh, video.sh, window.sh    most of the picture new, or the window's
 #   mixed: mixed.sh    minutes at the desk, quiet and busy in turn
+#   small: small.sh    the small movements of a desk, one kind at a time
 #
 # busy-lines.sh is the flood itself, for any terminal.
 
@@ -35,6 +36,8 @@ desktop_size() {
 	W=${rect% *}
 	H=${rect#* }
 	[[ -n "$W" && -n "$H" ]] || { log "no output size from swaymsg"; exit 1; }
+	SCALE=$(swaymsg -t get_outputs | tr -d ' \n' | sed -n 's/.*"scale":\([0-9]*\).*/\1/p')
+	SCALE=${SCALE:-1}
 }
 
 # The page, made where MATERIAL says if it is not there.
@@ -96,6 +99,14 @@ press() {
 		*) keysym=$(printf '%x' "'$1") ;;
 	esac
 	echo "$keysym" >"$CAPTURE_KEYS"
+}
+
+# The pointer at X,Y in the desktop's points with BUTTONS held, RFB's mask
+# (1 the left button, 8 and 16 the wheel up and down), through the session's
+# client as `press`'s keys are (`video-sink --keys`: `@X,Y,BUTTONS`, in
+# pixels), so CAPTURE_KEYS must name what it reads.
+pointer() {
+	echo "@$(($1 * SCALE)),$(($2 * SCALE)),${3:-0}" >"$CAPTURE_KEYS"
 }
 
 # Type text a character at a time, as a person does.

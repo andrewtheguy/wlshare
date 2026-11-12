@@ -32,6 +32,9 @@
 #   mixed  mixed     minutes at the desk, quiet and busy in turn, the video
 #                    in a window and full screen among them; not in `all`,
 #                    and its own length, MIXED_LENGTH (300 by default)
+#   small  small     the small movements of a desk, one kind at a time with
+#                    the desktop still between them; not in `all`, and its
+#                    own length, SMALL_LENGTH (240 by default)
 set -euo pipefail
 
 # The sizes are four desktops at scale 1 and five at scale 2, the four again
@@ -259,6 +262,11 @@ scenario_mixed() {
 	# Minutes long, so the session and the script get a length of their own.
 	LENGTH=${MIXED_LENGTH:-300} play mixed
 	finish mixed
+}
+
+scenario_small() {
+	LENGTH=${SMALL_LENGTH:-240} play small
+	finish small
 }
 
 # ── The run ──────────────────────────────────────────────────────────────────

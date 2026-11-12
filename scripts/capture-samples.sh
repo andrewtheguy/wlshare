@@ -18,8 +18,9 @@
 # it stood, and the rest are as the session handed them to its encoder. A
 # capture whose longest run is N frames or fewer is copied whole, and so are
 # walk, whose frames slow and come back over all of it, a cut keeping only
-# the slowing, and mixed, minutes at the desk of which a cut
-# would keep only the busiest, the video full screen. A README.md says what
+# the slowing, mixed, minutes at the desk of which a cut
+# would keep only the busiest, the video full screen, and small, whose parts
+# are found by their seconds. A README.md says what
 # this run put there. Nothing in `--out` is removed unless `--clean` is given,
 # which first empties it of captures. Needs cargo and zstd on the path.
 set -euo pipefail
@@ -55,7 +56,7 @@ terminal-3456x2168@2 81
 terminal-3840x2160@2 79
 "
 # The scenarios copied whole, whatever their length.
-whole=" walk mixed "
+whole=" walk mixed small "
 
 log() { printf '%s %s\n' "$(date +%T)" "$*" >&2; }
 
@@ -104,7 +105,7 @@ done
 	echo
 	echo "The captures of what a wlshare session handed its video encoder, cut to $frames frames each by \`scripts/capture-samples.sh\` in the wlshare repository on $(date -u +%Y-%m-%d), under the names of the captures they are cut from, for an encoder measured on a part of each. What the scenarios are is in the README.md beside the captures."
 	echo
-	echo "Each is cut from the capture's longest run of a size, past the whole pictures that open it where nothing follows them for over a second: a quiet scenario's (still, uncover) first $frames frames, a busy one's the $frames in a row whose frames said the most pixels changed, a whole picture counting as none, the earliest where several tie, and the terminal's where they were chosen by eye, from just before the for loop's 40 lines of output to a second and a half after the page printed across the screen. Its first frame is a whole picture with a keyframe asked, the picture as it stood, its times are counted from it, and every frame after is as captured. A capture whose longest run is $frames frames or fewer is here whole, and so are walk, whose frames slow and come back over all of it, and mixed, minutes at the desk."
+	echo "Each is cut from the capture's longest run of a size, past the whole pictures that open it where nothing follows them for over a second: a quiet scenario's (still, uncover) first $frames frames, a busy one's the $frames in a row whose frames said the most pixels changed, a whole picture counting as none, the earliest where several tie, and the terminal's where they were chosen by eye, from just before the for loop's 40 lines of output to a second and a half after the page printed across the screen. Its first frame is a whole picture with a keyframe asked, the picture as it stood, its times are counted from it, and every frame after is as captured. A capture whose longest run is $frames frames or fewer is here whole, and so are walk, whose frames slow and come back over all of it, mixed, minutes at the desk, and small, the small movements of a desk one kind at a time, its parts found by their seconds."
 	echo
 	echo "| Capture | Frames | Size |"
 	echo "|---|---|---|"
