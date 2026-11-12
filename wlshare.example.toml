@@ -105,14 +105,15 @@ handshake_timeout_secs = 120
 # VA-API driver for the GPU (intel-media-va-driver, mesa-va-drivers).
 hardware_h264 = true
 
-# Outline every region the tiles picture streams as video, in the picture
-# itself, for seeing what is made a video of and when: magenta around a region
-# whose tiles kept changing, orange around one a single change was too large to
-# send as stills. Only on the picture zDesk asks for with a picture that
-# settles lossless, the only one with regions. The outline is two points
-# thick, inside the region, and goes as the region settles, a moment after it
-# stops moving. It costs nothing to speak of: a few thousand pixels a frame.
-# Off by default.
+# Have zDesk outline what the tiles picture streams as video, for seeing what
+# is made a video of and when: magenta around what moves in a region whose
+# tiles kept changing, orange around one a single change was too large to send
+# as stills. Only on the picture zDesk asks for with a picture that settles
+# lossless, the only one with regions. The outline is drawn by zDesk's page
+# over the picture, around the pixels that changed and not the tiles they are
+# in, and goes when the region ends, a moment after it stops moving. The
+# picture itself is the same with it as without: the daemon sends a few bytes
+# saying where, and codes nothing more. Off by default.
 #motion_debug = true
 
 # The desktop name clients see.

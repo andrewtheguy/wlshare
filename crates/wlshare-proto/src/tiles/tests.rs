@@ -79,6 +79,20 @@ fn each_header_has_the_documented_layout() {
         (TileHeader::Progressive { len: 0x0102 }, vec![7, 0, 0, 1, 2]),
         (TileHeader::Still { len: 0x01_0203 }, vec![8, 0, 1, 2, 3]),
         (TileHeader::Median { len: 0x01_0203 }, vec![9, 0, 1, 2, 3]),
+        (
+            TileHeader::Mark {
+                stream: 3,
+                why: MarkWhy::Moving,
+            },
+            vec![10, 3, 0],
+        ),
+        (
+            TileHeader::Mark {
+                stream: 3,
+                why: MarkWhy::Burst,
+            },
+            vec![10, 3, 1],
+        ),
     ] {
         assert_eq!(header.to_bytes(), bytes);
         assert_eq!(TileHeader::len_of(bytes[0]), Ok(bytes.len()));
@@ -107,6 +121,10 @@ fn a_length_filled_in_keeps_the_header_its_size() {
         TileHeader::Progressive { len: 0 },
         TileHeader::Still { len: 0 },
         TileHeader::Median { len: 0 },
+        TileHeader::Mark {
+            stream: 2,
+            why: MarkWhy::Burst,
+        },
     ] {
         let filled = header.with_len(9);
         assert_eq!(filled.to_bytes().len(), header.to_bytes().len());
@@ -134,14 +152,23 @@ fn a_length_filled_in_keeps_the_header_its_size() {
         TileHeader::Store { slot: 4 },
         "a slot is no length"
     );
+    let mark = TileHeader::Mark {
+        stream: 2,
+        why: MarkWhy::Burst,
+    };
+    assert_eq!(mark.with_len(9), mark, "a mark's why is no length");
 }
 
 #[test]
-fn a_bad_kind_length_or_slot_is_fatal() {
+fn a_bad_kind_length_slot_or_why_is_fatal() {
     assert_eq!(
-        TileHeader::parse(&[10]),
-        Err(TilesParseError::UnknownKind(10))
+        TileHeader::parse(&[11]),
+        Err(TilesParseError::UnknownKind(11))
     );
+    assert_eq!(TileHeader::parse(&[10, 3, 2]), Err(TilesParseError::Why(2)));
+    for why in [MarkWhy::Moving, MarkWhy::Burst] {
+        assert_eq!(MarkWhy::from_byte(why.to_byte()), Some(why));
+    }
     assert_eq!(
         TileHeader::parse(&[7, 0, 0, 0, 0]),
         Err(TilesParseError::Length(0))

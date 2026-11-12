@@ -149,7 +149,8 @@ fn split(out: &[u8]) -> Result<(usize, usize), Error> {
             TileHeader::End { .. }
             | TileHeader::Copy { .. }
             | TileHeader::Cached { .. }
-            | TileHeader::Store { .. } => 0,
+            | TileHeader::Store { .. }
+            | TileHeader::Mark { .. } => 0,
         };
         at += RECT_HEADER + used + body;
     }
@@ -177,7 +178,8 @@ fn records(out: &[u8]) -> Result<Vec<(usize, usize)>, Error> {
             TileHeader::End { .. }
             | TileHeader::Copy { .. }
             | TileHeader::Cached { .. }
-            | TileHeader::Store { .. } => 0,
+            | TileHeader::Store { .. }
+            | TileHeader::Mark { .. } => 0,
         };
         let bytes = RECT_HEADER + used + body;
         records.push((bytes + if at == 0 { FRAMING } else { 0 }, body));
@@ -335,6 +337,8 @@ impl Page {
                 TileBody::End { stream } => {
                     self.streams.remove(&stream);
                 }
+                // None of the picture.
+                TileBody::Mark { .. } => {}
                 TileBody::Copy { x, y } => {
                     let line = w * 4;
                     let source: Vec<u8> = (0..h)

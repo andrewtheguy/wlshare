@@ -245,8 +245,9 @@ pub struct SessionConfig {
     /// The H.264 encoder that codes the video stream and the tiles picture's
     /// moving regions ([`crate::h264`]), the host's hardware or libx264.
     pub h264: Arc<crate::h264::Encoder>,
-    /// Whether a tiles picture's regions are outlined in their frames
-    /// ([`TilesEncoder::set_debug`]), the configuration's `motion_debug`.
+    /// Whether a tiles picture's regions are marked for the client to
+    /// outline ([`TilesEncoder::set_debug`]), the configuration's
+    /// `motion_debug`.
     pub motion_debug: bool,
 }
 

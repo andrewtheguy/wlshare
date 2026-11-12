@@ -1707,11 +1707,18 @@ The encoder's time is within its noise on all of them. uncover at
 2880x1800@2 is the one that sends more, 0.6 MB, in two regions where it
 had one: a third of the error held, for half as many bytes again.
 
-`motion_debug` outlines each region in its frames. On lab1 (4 vCPUs of AMD
-EPYC Rome), libx264, three runs each: video-1920x1080 took 2.52 s of the
-processor without it and 2.54 s with, window-2880x1800@2 1.64 s and 1.63 s,
-inside what the runs differ by, for 0.4% and 0.2% more bytes; and `check`
-passes with it, the picture lossless once settled, the outline gone.
+`motion_debug` marks each region for zDesk's page to outline, and codes
+nothing: a MARK after a region's START and wherever what it says changes,
+15 bytes each, last in an update that carries something else. Played with
+it and without (`motion-bench --motion-debug`), video-1920x1080,
+window-2880x1800@2, both mixed, walk-1920x1080 and uncover-2880x1800@2 are
+the same in every count the bench keeps and in every frame's — bytes,
+stills, frames, regions, what the page held — but the marks: 9, 13, 29, 53,
+18 and 3 of them for 9, 8, 16, 21, 17 and 2 regions, 435 bytes beside
+mixed-1920x1080's 135 MB; and `check` passes with it. Until protocol 14 the
+outline was painted into each region's frames, which coded it: 0.4% and
+0.2% more bytes on video-1920x1080 and window-2880x1800@2, and frames that
+were not the ones a session without it sends.
 
 ## A region that shrinks
 

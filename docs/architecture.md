@@ -688,6 +688,7 @@ u8 kind
 7 PROGRESSIVE u32 length | u8[length]                      a RemoteFX Progressive tile block of the rectangle's tile
 8 STILL   u32 length | u8[length]                          the still stream's next planar bitmap, of exactly the rectangle's pixels
 9 MEDIAN  u32 length | u8[length]                          three zstd frames of a median predictor's residuals of exactly the rectangle's pixels
+10 MARK   u8 stream | u8 why                               where the stream's region moves and why it began: none of the picture
 ```
 
 A WEBP is the desktop's pixels there as a WebP file, lossless (`VP8L`) and
@@ -923,15 +924,26 @@ the picture.
   hardware decoders included; what it loses lasts only while the region
   moves, since the settle sends it again as a still. Its dial is wlshare's,
   held: a walked list streams nothing.
-  With `motion_debug = true` in the configuration every region's frames
-  carry an outline of its rectangle, two of the layout's pixels thick inside
-  it — magenta around one laid out over tiles that kept changing, orange
-  around one a single update's change was more than its stills for — to see
-  what the rules make a video of. It is painted into the encoder's picture
-  for as long as a frame is read from it and put back after, a few thousand
-  pixels a frame, so no still, copy or cached tile ever holds it, and it is
-  gone as the region settles: the page draws nothing of its own, and the
-  gateway knows nothing of it.
+  With `motion_debug = true` in the configuration every region is marked,
+  to see what the rules make a video of: a MARK after its stream's START,
+  and again wherever what it says changes, whose rectangle is the box around
+  the pixels that changed in the region — the change that began it and the
+  damage since, a video's own rectangle and not the tiles around it, the
+  region's rectangle until anything has — and whose `why` is 0 where the
+  region was laid out over tiles that kept changing and 1 where one update's
+  change was more than its stills. Each takes the place of the one before
+  on its stream, and the stream's END, or a picture that starts over, is
+  the end of it. It is none of the picture: zDesk's page draws the
+  rectangle's outline over its canvas, magenta or orange by the `why`, and
+  takes it away, so nothing a COPY or a STORE reads holds it. The daemon
+  codes nothing for it. Every still, frame and copy is the same bytes with
+  it as without, and so is every pace and budget: the marks go last in an
+  update that has something else to carry, counted by nothing, 15 bytes
+  each ([measured](tiles-performance.md#what-is-worth-a-stream)). It was an
+  outline painted into each region's frames until protocol 14, which made
+  a session with it another session: the frames coded the outline, its
+  strips were damage of their own, and it sat on the region's tiles, up to
+  63 pixels outside what moved.
 - **The dial walks, unless the list holds it.** wlshare's dial is a
   ceiling, and the session's walk of the link — the same one, with the same
   thresholds and steps, that walks `WLSV`'s quality and frames
