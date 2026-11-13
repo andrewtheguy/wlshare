@@ -908,7 +908,20 @@ the picture.
   played. Where it would not, a bar left moving where a video stopped, it
   ends as one with no motion does and the bar is stills. Less of a
   difference keeps its stream, a keyframe not being worth
-  it ([measured](tiles-performance.md#a-region-that-shrinks)). A coder that
+  it ([measured](tiles-performance.md#a-region-that-shrinks)). And one an
+  eighth of whose tiles or more have not been drawn for two seconds is
+  judged and started again the same way, over the box around all that was
+  drawn in it, however much of it moves: a video with a page beside it,
+  which one scroll of the page makes the video's region with it, is the
+  video's alone two seconds after the page last changed, where a video over
+  half of the region kept the page lossy for as long as it played. What a
+  region has drawn is the compositor's damage in it, changed or not, where
+  every tile that changed in that damage was the region's — a player draws
+  its whole picture each frame, a corner of it that stays dark too, which
+  the pixels that changed would leave out and bring back as the picture
+  moved — and where something outside the region changed in it as well, the
+  damage being then the box around both, only the region's tiles that
+  changed ([measured](tiles-performance.md#a-page-beside-a-video)). A coder that
   refuses the stream over the box leaves the region the one it has. What changed under a stream that ends
   that no frame of it carried goes as stills after its END in the same update,
   or the client would hold it as the stream's last frame left it, older than
