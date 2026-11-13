@@ -1,6 +1,7 @@
 //! libx264 through its own API: an encoder at `superfast` with `zerolatency`,
-//! its motion searched by uneven multi-hexagon over 128 pixels, each picture
-//! handed the quantizer it is to be coded at.
+//! its motion searched by uneven multi-hexagon over 128 pixels, to the whole
+//! pixel, its entropy coding CAVLC and its deblocking filter off, each
+//! picture handed the quantizer it is to be coded at.
 //!
 //! The quantizer is forced on each picture by `i_qpplus1`, under the constant
 //! quantizer rate control, whose own constant is never used. A forced
@@ -30,16 +31,26 @@
 //! refines what stands still. The frames before the flag are the ones that
 //! bring a macroblock from its first coding to what its quantizer can hold;
 //! flagged from the first, it would stay as that left it. The whole-picture
-//! work stays, the copy in and the half-pel planes.
+//! work stays: the copy in.
 //!
 //! **The preset and the search** ([measured](../../docs/video-performance.md)).
 //! A page scrolled moves farther in a frame than `ultrafast`'s or
 //! `superfast`'s diamond search over 16 pixels reaches; the multi-hexagon over
-//! 128 finds it, and a scroll is sent in a sixth to a half of the bytes.
-//! `superfast` over `ultrafast` is CABAC, the deblocking filter, the intra
-//! partitions and the 8×8 transform, which halve a video's bytes; its stream
-//! is High profile. Together, at the same quality, about two fifths of
-//! `ultrafast`'s bytes for about 1.7 times its processor time.
+//! 128 finds it, and a scroll is sent in a sixth to a half of the bytes, for
+//! less of the processor than coding what the short search missed.
+//!
+//! **The processor's time ahead of the bytes.** The software encoder is what
+//! a host with no GPU for it runs beside the desktop it shares, so of what
+//! `superfast` has over `ultrafast` it keeps what costs next to nothing, the
+//! intra partitions and the 8×8 transform, its stream High profile, and gives
+//! up what costs: CABAC, for CAVLC; the search to a fraction of a pixel,
+//! without which x264 makes no half-pel planes of every picture, most of a
+//! frame's work where little of a desktop changed; and the deblocking
+//! filter. About seven tenths of the processor time a frame for a ninth to
+//! a quarter more bytes; a video is half a decibel coarser at wlshare's dial
+//! and up to one down the walk, the rest of a desktop as it was. Against
+//! `ultrafast` as it comes, about two fifths of the bytes for about a quarter
+//! more of the processor time.
 
 use std::ptr;
 
@@ -131,6 +142,13 @@ impl Stream {
             param.analyse.i_weighted_pred = x::X264_WEIGHTP_NONE as i32;
             // Every macroblock at its picture's forced quantizer.
             param.rc.i_aq_mode = x::X264_AQ_NONE as i32;
+            // The processor's time ahead of the bytes: CAVLC where
+            // `superfast` has CABAC, motion to the whole pixel, so no
+            // half-pel planes are made of each picture, and no deblocking
+            // filter.
+            param.b_cabac = 0;
+            param.analyse.i_subpel_refine = 0;
+            param.b_deblocking_filter = 0;
             // Each P frame says which macroblocks did not change.
             param.analyse.b_mb_info = 1;
             param.i_log_level = x::X264_LOG_WARNING as i32;

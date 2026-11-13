@@ -392,6 +392,12 @@ chosen by; on the scenarios it is chosen by, `superfast` with its motion
 searched over 128 pixels sends about two fifths of `ultrafast`'s bytes for
 about 1.7 times its processor time, and has been the preset since
 2026-11-03 ([The preset and the search](video-performance.md#the-preset-and-the-search)).
+Since 2026-11-12 it is set for the processor's time ahead of the bytes,
+CAVLC, whole-pixel motion and no deblocking filter, which takes the held
+picture's processor time over the samples to 0.92 of what it was, a video's
+to 0.85, for 1.04 times its bytes, and over the longer captures to 0.87
+for 1.12 times
+([The processor ahead of the bytes](video-performance.md#the-processor-ahead-of-the-bytes)).
 
 ## What the rules were chosen by
 
