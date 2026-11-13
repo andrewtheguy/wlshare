@@ -1118,7 +1118,8 @@ the picture.
   driver reaches — looked for with `hardware_h264 = true` in the
   configuration, the default — it is that one, which is what this picture is
   for: the processor pays for the conversion to NV12 and nothing of the
-  search. On a host with none, or with the key off, it is libx264 at its
+  search ([beside libx264](video-performance.md#the-hardware-beside-libx264):
+  fewer of a video's bytes, more of a scroll's). On a host with none, or with the key off, it is libx264 at its
   `superfast` preset, its motion searched over 128 pixels
   ([measured](video-performance.md#the-preset-and-the-search)).
   `src/h264/` is that encoder, the GPU's through libva itself or libx264
