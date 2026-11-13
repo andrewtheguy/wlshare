@@ -1236,7 +1236,7 @@ struct Live {
     smaller: Option<(Duration, CellBox)>,
     /// The box around the tiles of it drawn since `drawn_from`, the last
     /// layout or when it was laid out ([`TilesEncoder::damage`]): none
-    /// where none of it has changed.
+    /// where none has been.
     drawn: Option<CellBox>,
     drawn_from: Duration,
     /// Since when all that was drawn in it has kept to a box that leaves a
@@ -2376,9 +2376,10 @@ impl TilesEncoder {
         // every tile that changed is the region's, the damage is its own,
         // a player drawing its picture, and all of it in the region is
         // drawn, changed or not, a video's still corner with the rest of
-        // it; where something changed outside the region too, the damage is
+        // it, and a rectangle of its own in which nothing changed at all;
+        // where something changed outside the region too, the damage is
         // the box around both, and names what lies between them, so only
-        // the region's tiles that changed are.
+        // the region's tiles that changed are, and none where none did.
         for live in &mut self.live {
             let Some(part) = live.area.intersect(area) else {
                 continue;
@@ -2394,10 +2395,13 @@ impl TilesEncoder {
                     alone = false;
                 }
             }
-            let Some(inside) = inside else {
+            let drawn = if alone {
+                part.cells()
+            } else if let Some(inside) = inside {
+                inside
+            } else {
                 continue;
             };
-            let drawn = if alone { part.cells() } else { inside };
             live.drawn = Some(live.drawn.map_or(drawn, |all| all.union(&drawn)));
         }
         // Bands cut where the tile rows meet, so that a tile the damage covers
@@ -6438,8 +6442,10 @@ mod tests {
     /// What a region has drawn is the damage that fell in it where all that
     /// changed lay in it, whatever of it changed: a player that draws its
     /// whole picture each frame keeps its region though a part of the
-    /// picture stays as it was, a dark corner, where one whose damage names
-    /// only what moves is laid out again without the rest. And where
+    /// picture stays as it was, a dark corner, in one rectangle of damage
+    /// with what moves or in one of its own in which nothing changed, where
+    /// one whose damage names only what moves is laid out again without
+    /// the rest. And where
     /// something outside the region changed too, a clock across the desktop
     /// whose damage is one box with the video's, only the tiles that
     /// changed are drawn, so what lies between the two is left out all the
@@ -6471,30 +6477,37 @@ mod tests {
             width: 64,
             height: 64,
         };
+        let rest = Rect {
+            x: 448,
+            y: 0,
+            width: 192,
+            height: 384,
+        };
         // The video whole for a second, then its busy part alone for
         // eight, the damage `named`, or with the clock `ticking` the whole
         // desktop, the box around both.
-        let play = |named: Rect, ticking: bool| {
+        let play = |named: &[Rect], ticking: bool| {
             let mut pixels = vec![255; usize::from(w) * usize::from(h) * 4];
             let mut encoder = TilesEncoder::new(w, h, held(), Fake::coder()).unwrap();
             let mut page = Page::new(w, h);
             let t0 = begin(&mut encoder, &mut page, &pixels);
+            let (first, both) = ([video], [whole]);
             for n in 1..=180u32 {
                 let (moving, mut damage) = if n <= 20 {
-                    (video, video)
+                    (video, &first[..])
                 } else {
                     (busy, named)
                 };
                 paint(&mut pixels, w, moving, 300 + n);
                 if ticking && n > 20 {
                     paint(&mut pixels, w, clock, 5000 + n);
-                    damage = whole;
+                    damage = &both;
                 }
                 step(
                     &mut encoder,
                     &mut page,
                     &pixels,
-                    Some(&[damage]),
+                    Some(damage),
                     t0 + ms(u64::from(n) * 50),
                 );
             }
@@ -6505,17 +6518,22 @@ mod tests {
             (page.starts, page.ends, area)
         };
         assert_eq!(
-            play(video, false),
+            play(&[video], false),
             (1, 0, Some(video)),
             "kept whole, all of it drawn each frame"
         );
         assert_eq!(
-            play(busy, false),
+            play(&[busy, rest], false),
+            (1, 0, Some(video)),
+            "and where what stays as it was is a rectangle of its own"
+        );
+        assert_eq!(
+            play(&[busy], false),
             (2, 1, Some(busy)),
             "laid out again without what is never drawn"
         );
         assert_eq!(
-            play(whole, true),
+            play(&[whole], true),
             (2, 1, Some(busy)),
             "and without what the box around it and a clock names"
         );

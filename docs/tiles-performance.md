@@ -1981,9 +1981,13 @@ The test's page is lossless two seconds after it last changed, the video's
 region its own again, three regions started in all: the video's, the
 page's with it, and the video's. Another holds the damage's part
 (`a_region_keeps_what_is_drawn_with_it`): a picture drawn whole each frame
-keeps its region though three tenths of it never change, where damage
-naming only what moves is laid out again without the rest, and so is
-damage that is the box around the video and a clock outside the region.
+keeps its region though three tenths of it never change, whether they are
+in one rectangle of damage with what moves or in one of their own, in
+which nothing changed; where damage naming only what moves is laid out
+again without the rest, and so is damage that is the box around the video
+and a clock outside the region. A rectangle of damage in which nothing
+changed was at first taken for nothing drawn; taking it for drawn left
+every frame of every capture above as it was.
 
 What it does not reach is a player that draws more than its video each
 frame — one whose damage is its whole window, controls and all — which
