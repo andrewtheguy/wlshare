@@ -1871,3 +1871,126 @@ further than the frames' own record:
   idling out its second whenever the chart's tiles fall short and being
   laid out again when the stills come to its worth; that is a reading of
   the rule, not something measured.
+
+## A page beside a video
+
+A region is laid out again over what moves in it only where that is at
+most half of it ([above](#a-region-that-shrinks)), and one a single change
+began is kept for what moves in it where that is half of it or more
+([What is worth a stream](#what-is-worth-a-stream)). Between the two a
+video kept a page: a video playing over the left two thirds of a page is
+its own region, and one update that changes the page around it, the list
+beside it and the title below, as a scroll of the page does, is past an
+update's stills, so a region begins over the box around that change, which
+is the page and the video's region with it. Half a second on the video is
+over half of that region, which is kept for it, and the list and the title
+were the video's, lossy, for as long as it played. A second of such updates
+ends the same way. zDesk's Motion kept a stream as long too, never laying
+out again one that covered what moved, but began no region at one change: a
+page had to move for four tenths of a second to join a video's region, and
+a flick of the wheel did not.
+
+No capture has it — none scrolls a page beside a video that plays — so a
+test plays it, a video over 58% of a desktop of 1280 by 768 and the rest
+changed around it once, or for a second
+(`a_region_shrinks_to_what_is_still_drawn`): one region over the whole
+desktop from then on, 358 539 pixels of the page off ten seconds later.
+
+What tells the page from the video is that nothing of the page changes.
+The first rule tried was that alone: the box around every tile of a region
+that changed, and the region laid out again over it once it has left a
+part of the region out for a time. On mixed-1920x1080, by 0.0.131 — whose
+libx264 is set for the processor ahead of the bytes, so the megabytes here
+are not those of the sections above — the regions started and the bytes,
+by the part left out and for how long, before that rule judged again what
+still moved:
+
+| The part left out | 1 s | 2 s | 3 s | 5 s |
+|---|---:|---:|---:|---:|
+| never | | 16, 166.18 MB | | |
+| any tile | 85, 171.71 | 65, 169.01 | 48, 167.85 | 31, 166.91 |
+| an eighth | 85, 171.71 | 59, 168.63 | 45, 167.63 | 23, 166.54 |
+| a quarter | 80, 171.12 | 46, 167.90 | 30, 166.82 | 16, 166.18 |
+
+`mixed`'s video has still parts of its own: `Multicolored_Explosions-4k.webm`
+opens on black, its regions growing out from the middle of its window for
+its first seven seconds, and a quarter of the picture or more goes
+unchanged for seconds at a time, left out and brought back when the colour
+reaches it. Judging again, at an eighth and two seconds, it is 59 regions
+still, 58 of them started while the video plays where 15 of the 16 were.
+The pixels that change cannot tell a video's dark corner from a page.
+
+The compositor's damage can. A player draws its whole picture every frame,
+the dark corner with the rest, and the damage names all of it; a page
+beside it is not drawn, and is in no damage. Chromium's is as exact: the
+`small` capture's video of 320 by 180 points is 57 600 pixels of damage a
+frame, the video and no more. So what a region has drawn is the damage that
+fell in it, changed or not, wherever every tile that changed in that damage
+is the region's. Where a tile outside it changed too — a clock across the
+desktop ticking in the same frame — wlr-screencopy's damage is one box
+around both, which names what lies between them, and only the region's
+tiles that changed are taken for drawn. A region is laid out again over the
+box around all it has drawn once that has left a part of it out for a
+time, judged first as one whose motion narrowed is. Swept the same way, on
+mixed and many at 1920x1080:
+
+| The part left out | 1 s | 2 s | 3 s |
+|---|---:|---:|---:|
+| never | | mixed 16, 166.18 MB; many 39, 16.58 MB | |
+| any tile | 14, 166.08; 32, 18.73 | 14, 166.09; 35, 18.57 | 16, 166.18; 39, 16.58 |
+| a sixteenth | 14, 166.08; 33, 16.94 | 14, 166.09; 36, 16.88 | 16, 166.18; 39, 16.58 |
+| an eighth | 14, 166.08; 36, 16.56 | 14, 166.09; 39, 16.58 | 16, 166.18; 39, 16.58 |
+| a quarter | 14, 166.08; 39, 16.58 | 14, 166.09; 39, 16.58 | 16, 166.18; 39, 16.58 |
+
+walk, video, window and small at 1920x1080 and browser at 2880x1800@2 are
+the same to the byte at every one of them. Nothing here is started again
+and again: the rule is quiet where it is not wanted. At any tile `many` is
+an eighth more bytes for four regions fewer, and at a sixteenth 2% more for
+three, strips of a few tiles laid out again for. It is an eighth, the least
+that leaves `many` as it was, and two seconds, as long as a region whose
+motion narrowed waits. The captures do not choose between one second and
+two, none having a page read beside a video: read in flicks of the wheel,
+the page is the video's region again at each flick that is past an update's
+stills and laid out again at each pause long enough, a keyframe either way,
+and two seconds asks more of a pause than one. That is a reading of the
+rule, not something measured.
+
+Over every sample at 1920x1080 and 2880x1800@2 and the `small` and `many`
+captures, played by `motion-bench --libx264 --tiles-only --frames` on
+`main` and with the rule, every frame of every capture is the same — its
+bytes, its regions, what the page held — but three:
+
+| Capture | bytes, MB | regions started | frames held lossless | held MSE |
+|---|---:|---:|---:|---:|
+| mixed-1920x1080 | 166.18 → 166.09 | 16 → 14 | 1058 → 1058 of 3515 | 2.475 → 2.471 |
+| mixed-2880x1800@2 | 325.90 → 325.59 | 21 → 19 | 1104 → 1104 of 3328 | 1.446 → 1.445 |
+| uncover-2880x1800@2 | 1.61 → 1.78 | 2 → 3 | 3 → 3 of 49 | 0.582 → 0.546 |
+
+On `mixed` the video leaves the full screen for its window at 205 s. At
+1920x1080 its region was the whole desktop's until the motion had kept to
+under half of it for two seconds, then one over what moved then, 1024 by
+640, started again twice as more of the picture moved, at 1088 and at 1152
+by 640; now it is laid out once, half a second sooner, over what the
+window draws, 1152 by 640, and that is the two regions fewer, as at
+2880x1800@2. uncover at 2880x1800@2 is what the
+rule costs where it is not wanted: the region a window's uncovering began,
+1280 by 1408, is laid out again over 960 by 1408 a second and a half
+before it ends, a keyframe more, 0.17 MB.
+
+The test's page is lossless two seconds after it last changed, the video's
+region its own again, three regions started in all: the video's, the
+page's with it, and the video's. Another holds the damage's part
+(`a_region_keeps_what_is_drawn_with_it`): a picture drawn whole each frame
+keeps its region though three tenths of it never change, whether they are
+in one rectangle of damage with what moves or in one of their own, in
+which nothing changed; where damage naming only what moves is laid out
+again without the rest, and so is damage that is the box around the video
+and a clock outside the region. A rectangle of damage in which nothing
+changed was at first taken for nothing drawn; taking it for drawn left
+every frame of every capture above as it was.
+
+What it does not reach is a player that draws more than its video each
+frame — one whose damage is its whole window, controls and all — which
+keeps what it draws, as before; and a compositor whose damage is the whole
+output every frame, on which only pixels would tell, and the region is
+kept as it was.
