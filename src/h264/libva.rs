@@ -50,6 +50,7 @@ pub const VAConfigAttribRTFormat: VAConfigAttribType = 0;
 pub const VAConfigAttribRateControl: VAConfigAttribType = 5;
 pub const VAConfigAttribEncPackedHeaders: VAConfigAttribType = 10;
 pub const VAConfigAttribEncMaxRefFrames: VAConfigAttribType = 13;
+pub const VAConfigAttribEncQualityRange: VAConfigAttribType = 21;
 
 /// An attribute's value where the driver does not support it.
 pub const VA_ATTRIB_NOT_SUPPORTED: u32 = 0x8000_0000;
@@ -72,6 +73,10 @@ pub const VAEncPictureParameterBufferType: VABufferType = 23;
 pub const VAEncSliceParameterBufferType: VABufferType = 24;
 pub const VAEncPackedHeaderParameterBufferType: VABufferType = 25;
 pub const VAEncPackedHeaderDataBufferType: VABufferType = 26;
+pub const VAEncMiscParameterBufferType: VABufferType = 27;
+
+/// `VAEncMiscParameterType`'s.
+pub const VAEncMiscParameterTypeQualityLevel: u32 = 6;
 
 /// `VAEncPackedHeaderTypeH264`, as `VAEncPackedHeaderParameterBuffer::type_`
 /// takes it: `VAEncPackedHeaderSequence`, `Picture` and `Slice`.
@@ -159,6 +164,16 @@ pub struct VAEncPackedHeaderParameterBuffer {
     pub type_: u32,
     pub bit_length: u32,
     pub has_emulation_bytes: u8,
+    pub va_reserved: [u32; 4],
+}
+
+/// A `VAEncMiscParameterBuffer` whose data is a
+/// `VAEncMiscParameterBufferQualityLevel`: the type, then the structure.
+#[repr(C)]
+#[derive(Default)]
+pub struct VAEncMiscParameterQualityLevel {
+    pub type_: u32,
+    pub quality_level: u32,
     pub va_reserved: [u32; 4],
 }
 
@@ -329,6 +344,7 @@ const _: () = {
     assert!(size_of::<VAEncPackedHeaderParameterBuffer>() == 28);
     assert!(offset_of!(VAEncPackedHeaderParameterBuffer, has_emulation_bytes) == 8);
     assert!(offset_of!(VAEncPackedHeaderParameterBuffer, va_reserved) == 12);
+    assert!(size_of::<VAEncMiscParameterQualityLevel>() == 24);
     assert!(size_of::<VAEncSequenceParameterBufferH264>() == 1132);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, intra_period) == 4);
     assert!(offset_of!(VAEncSequenceParameterBufferH264, picture_width_in_mbs) == 24);

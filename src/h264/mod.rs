@@ -36,15 +36,16 @@
 //! decoder passes over.
 //!
 //! **Which encoder.** The daemon looks once, at startup ([`Encoder::find`]):
-//! with `hardware_h264` on, each render node in turn, the low-power encoder
-//! first — Intel's fixed-function block, which leaves the execution units to
-//! the desktop — and the shader one after it, each tried on two frames of a
-//! small picture at two quantizers, since a driver lists more than it will
-//! code; with none working, or the key off, libx264, tried the same way. What
-//! works is what every session uses; with nothing working the daemon does not
-//! start, since neither the video stream nor a region has another codec. The
-//! low-power block codes a constant quantizer without the HuC firmware, which
-//! only bitrate control needs.
+//! with `hardware_h264` on, each render node in turn, the shader encoder
+//! first, which sends the fewer bytes for the closer picture, and the
+//! low-power one after it, Intel's fixed-function block, each at the
+//! highest quality level its driver has ([`vaapi`]) and each tried on two
+//! frames of a small picture at two quantizers, since a driver lists more
+//! than it will code; with none working, or the key off, libx264, tried the
+//! same way. What works is what every session uses; with nothing working the
+//! daemon does not start, since neither the video stream nor a region has
+//! another codec. The low-power block codes a constant quantizer without the
+//! HuC firmware, which only bitrate control needs.
 //!
 //! **Failure ends the session.** A coder that cannot be opened, refuses a
 //! stream or fails one midway fails the encode of the picture it codes
