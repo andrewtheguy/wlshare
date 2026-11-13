@@ -404,7 +404,8 @@ word and its ceiling. What a frame holds is fixed:
   is the framebuffer's size rounded up to even sides, which libx264 requires
   and 4:2:0 cannot crop below — its last row again below it and black to its
   right — and a decoder draws it cut to the rectangle from its top-left. The
-  hardware's and libx264's both at High profile with CABAC; no B-frames, so each frame in is one out, and no frame is dropped. Every
+  hardware's and libx264's both at High profile, the hardware's with CABAC
+  and libx264's with CAVLC; no B-frames, so each frame in is one out, and no frame is dropped. Every
   IDR has its sequence and picture parameter sets ahead of it, so the gateway
   reads the stream's `avc1` codec string out of the stream itself.
 - **Each frame at the quantizer the walk asks.** The 1–100 dial both
@@ -429,12 +430,22 @@ word and its ceiling. What a frame holds is fixed:
   picture's, and its weighted prediction, which a desktop has no fades for,
   so that x264 makes no half-size picture to estimate a rate on. A page
   scrolled moves farther than a diamond search over 16 pixels reaches,
-  which is why the search is the multi-hexagon over 128; `superfast` over
-  `ultrafast` is CABAC, the deblocking filter, the intra partitions and the
-  8×8 transform, which halve a video's bytes. Together they send about two
-  fifths of `ultrafast`'s bytes at the same quality, for about 1.7 times its
-  processor time. What the rate control, the preset and the search each cost
-  and save is in [The video's encoder](video-performance.md).
+  which is why the search is the multi-hexagon over 128, which costs a
+  scroll and a dragged window less of the processor than coding what a
+  short search does not find. The rest is set for the processor's time
+  ahead of the bytes: of what `superfast` has over `ultrafast` it keeps the
+  intra partitions and the 8×8 transform, which cost next to nothing, and
+  not CABAC, the search to a fraction of a pixel or the deblocking filter,
+  CAVLC and whole-pixel motion in their place, and with no sub-pixel search
+  x264 makes no half-pel planes of each picture. That is about seven tenths
+  of the processor time a frame for a ninth more bytes over the samples
+  and a quarter more over the longer captures; a video is half a decibel
+  coarser at the ceiling and up to one down the walk, most of that the
+  filter's, and the rest of a desktop as it was. Against `ultrafast` as it
+  comes, about two fifths of the bytes for about a quarter more of the
+  processor time.
+  What the rate control, the preset, the search and these settings each
+  cost and save is in [The video's encoder](video-performance.md).
 - **What did not change is taken on trust.** libx264 is handed the whole
   picture and, left to itself, works out macroblock by macroblock that most
   of a desktop is as the frame before had it, a transform and a quantizer
@@ -445,8 +456,8 @@ word and its ceiling. What a frame holds is fixed:
   x264 skips those without looking, unless the frame is asked a finer
   quantizer than they were coded at. Flagged from the first frame they would
   stay as their first coding left them, short of the picture the second
-  brings. What is left is the whole picture's whatever changed: the copy in,
-  the half-pel planes, each skipped macroblock carried forward. What the
+  brings. What is left is the whole picture's whatever changed: the copy in
+  and each skipped macroblock carried forward. What the
   flag saves, and what flagging at once loses, is in
   [What did not change](video-performance.md#what-did-not-change).
 - **A desktop that stops is settled.** Half a second after the stream's last
@@ -1107,7 +1118,8 @@ the picture.
   driver reaches — looked for with `hardware_h264 = true` in the
   configuration, the default — it is that one, which is what this picture is
   for: the processor pays for the conversion to NV12 and nothing of the
-  search. On a host with none, or with the key off, it is libx264 at its
+  search ([beside libx264](video-performance.md#the-hardware-beside-libx264):
+  fewer of a video's bytes, more of a scroll's). On a host with none, or with the key off, it is libx264 at its
   `superfast` preset, its motion searched over 128 pixels
   ([measured](video-performance.md#the-preset-and-the-search)).
   `src/h264/` is that encoder, the GPU's through libva itself or libx264
@@ -1125,8 +1137,10 @@ the picture.
   START; a region's dial is wlshare's, held. The
   hardware's is High profile with CABAC and the 8×8 transform, one slice, the
   frame before its one reference, no reordering, which its VUI says so a
-  decoder holds no picture back; libx264's is High too, CABAC and the 8×8
-  transform, its adaptive quantization off, tuned `zerolatency` — no lookahead, the
+  decoder holds no picture back; libx264's is High too, CAVLC and the 8×8
+  transform, its motion to the whole pixel and no deblocking filter
+  ([measured](video-performance.md#the-processor-ahead-of-the-bytes)), its
+  adaptive quantization off, tuned `zerolatency` — no lookahead, the
   picture sliced among the machine's cores less two, at most eight — with no scene
   cut, and with its version SEI ahead of a stream's first IDR, which a
   decoder passes over. The gateway announces the stream from that parameter

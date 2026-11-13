@@ -115,6 +115,23 @@ use crate::rfb::msg;
 use crate::rfb::tiles::TilesEncoder;
 use crate::rfb::video::VideoEncoder;
 
+/// How long the encoder's threads are left before the processor clock is
+/// read.
+const REST: Duration = Duration::from_millis(3);
+
+/// The processor time the process has taken since `from`, on every thread.
+///
+/// Read as libx264 returns, the clock is short of what its other threads
+/// took: at two threads on lab1, a frame of a still 1920x1080 desktop read
+/// 1.7 ms where a profile, and the same run held to one processor, say 4.8.
+/// What was missed was counted in whatever the process did next. Left 2 ms
+/// the clock has all of it, so it is read after [`REST`], which takes no
+/// processor time itself.
+fn spent(from: ProcessTime) -> Duration {
+    std::thread::sleep(REST);
+    from.elapsed()
+}
+
 // The daemon's own modules, of which the bench uses the encoders, the
 // decoder and the client's half of the wire, and nothing more.
 #[allow(dead_code)]
@@ -653,7 +670,7 @@ impl Tiles {
         self.out.clear();
         let cpu = ProcessTime::now();
         let update = self.encoder.encode(now, &mut self.out)?;
-        let cost = cpu.elapsed();
+        let cost = spent(cpu);
         // No link: every update crosses at once, so the settle sends as
         // much a tick as it ever does.
         self.encoder.delivered(Duration::ZERO);
@@ -675,7 +692,7 @@ impl Tiles {
             self.encoder.forget();
         }
         self.encoder.read(pixels, stride, changed, now)?;
-        let read = cpu.elapsed();
+        let read = spent(cpu);
         let (cost, sent) = self.encode(now)?;
         Ok((read + cost, sent))
     }
@@ -748,7 +765,7 @@ impl Wlsv {
         let cpu = ProcessTime::now();
         let mut coder = encoder.coder()?;
         let encoder = VideoEncoder::new(&mut coder, w, h)?;
-        let made = cpu.elapsed();
+        let made = spent(cpu);
         let picture = vec![0; usize::from(w) * 4 * usize::from(h)];
         Ok((
             Self {
@@ -906,7 +923,7 @@ fn bench(
             let made = w
                 .encoder
                 .encode(!w.started || frame.keyframe, args.quality, &mut w.out)?;
-            let wlsv_cpu = cpu.elapsed() + setup;
+            let wlsv_cpu = spent(cpu) + setup;
             w.started = true;
             wlsv.frames += 1;
             wlsv.cpu += wlsv_cpu;

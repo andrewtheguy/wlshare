@@ -108,18 +108,6 @@ mod wlcap;
 #[global_allocator]
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-/// The processor time the process has taken, on all of its threads.
-fn process_cpu() -> Duration {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid `timespec` for the call to write.
-    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-    assert_eq!(rc, 0, "the process's processor clock");
-    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-}
-
 /// What the session writes around the encoder's rectangles: the update's
 /// header and its fence.
 const FRAMING: usize = 4 + 13;
@@ -559,7 +547,7 @@ fn main() -> Result<(), Error> {
         let d = desk.as_ref().unwrap();
         let (w, h) = d.size;
         let started = Instant::now();
-        let cpu_started = process_cpu();
+        let cpu_started = sim::process_cpu();
         if encoder.as_ref().is_none_or(|e| e.size() != d.size) {
             let mut made = TilesEncoder::new(w, h, picture, Box::new(coders.coder()?))?;
             let (quality, coarse) = pace(&walk);
@@ -579,10 +567,10 @@ fn main() -> Result<(), Error> {
             encoder.read(&d.pixels, usize::from(w) * 4, damage.as_deref(), now)?;
         }
         let update = encoder.encode(now, &mut out)?;
-        let cpu = process_cpu() - cpu_started;
+        let took = started.elapsed();
+        let cpu = sim::cpu_since(cpu_started);
         encoder_cpu += cpu;
-        let encode =
-            encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
+        let encode = encode_ms.map_or(took, |ms| Duration::from_secs_f64(ms / 1e3));
         dirty = false;
         damage = Some(Vec::new());
         whole = false;

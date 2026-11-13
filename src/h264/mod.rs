@@ -9,8 +9,9 @@
 //! an H.264 encoder a VA-API driver reaches — Intel's iHD, AMD's Mesa — a
 //! picture that moves costs the processor its conversion to NV12 and nothing
 //! of the search. On a host with none, libx264 at `superfast`, its motion
-//! searched over 128 pixels, codes it, in about two fifths of `ultrafast`'s
-//! bytes for about 1.7 times its processor time.
+//! searched over 128 pixels, codes it, set for the processor's time ahead of
+//! the bytes ([`x264`]): in about two fifths of `ultrafast`'s bytes for about
+//! a quarter more of its processor time.
 //!
 //! **What a stream is.** Every frame at the quantizer its encode is handed,
 //! from the dial it is asked at, with no bitrate and nothing dropped: the
@@ -22,8 +23,8 @@
 //! so each backend here is the library's own API. No B-frames, one frame in
 //! and one out, so a frame is on the wire the moment it is coded: the
 //! hardware's at High profile with CABAC, one slice, the frame before as its
-//! one reference; libx264's at High profile too, with its `zerolatency`
-//! tuning, no scene cut, and
+//! one reference; libx264's at High profile too, with CAVLC, its
+//! `zerolatency` tuning, no scene cut, and
 //! [`encoder_threads`] threads, as slices. BT.601 at studio swing, said in
 //! the stream's VUI. The picture coded is the stream's rounded up to even
 //! sides, which libx264 requires and 4:2:0 cannot crop below: a picture of an
@@ -532,12 +533,6 @@ mod tests {
         (40 + x / 2 + y) as u8
     }
 
-    /// What libx264's deblocking filter moves a pixel by in these pictures,
-    /// beyond a few levels: at a macroblock edge its strong filter rewrites
-    /// the three rows past it and averages the fourth into them, so a step of
-    /// 50 levels four rows in moves the row before it by about 10.
-    const DEBLOCK_SLACK: u8 = 6;
-
     /// A grey picture of that luma as `B, G, R, X`: equal channels, so BT.601
     /// gives the luma back as itself at studio swing's scale.
     fn picture(w: usize, h: usize) -> Vec<u8> {
@@ -587,9 +582,10 @@ mod tests {
     /// Frames `encoder` codes decode with libavcodec's software decoder to
     /// the picture they were coded from: the first an IDR with its parameter
     /// sets, the next a P frame of the damage alone, and a keyframe asked for
-    /// one. Within a few levels of the picture, and `slack` more: libx264's
-    /// [`DEBLOCK_SLACK`], and the hardware's pixels not held to libx264's,
-    /// only to a rectangle's being coded where it changed.
+    /// one. Within a few levels of the picture, and `slack` more: none for
+    /// libx264, whose deblocking filter is off and so moves no pixel beside
+    /// a macroblock's edge, and more for the hardware, whose pixels are not
+    /// held to libx264's, only to a rectangle's being coded where it changed.
     fn frames_decode_to_the_picture(encoder: &Encoder, (w, h): (usize, usize), slack: u8) {
         let mut coder = encoder.coder().unwrap();
         let mut stream = coder.open(w as u16, h as u16).unwrap();
@@ -765,7 +761,7 @@ mod tests {
         Encoder::X264
             .try_frames()
             .expect("libx264 through its own API");
-        frames_decode_to_the_picture(&Encoder::X264, (96, 70), DEBLOCK_SLACK);
+        frames_decode_to_the_picture(&Encoder::X264, (96, 70), 0);
     }
 
     /// libx264's quantizer follows the dial frame by frame.
@@ -773,6 +769,11 @@ mod tests {
     fn libx264_moves_its_quantizer_frame_by_frame() {
         the_quantizer_moves_frame_by_frame(&Encoder::X264, true);
     }
+
+    /// How far a pixel coded at wlshare's dial may decode from its picture:
+    /// a step coarser than the fine end the other pictures are coded at, and
+    /// a rectangle's edge inside a macroblock rings a level or two more.
+    const AT_THE_DIAL: u8 = 8;
 
     /// The video encoding's frames, through their framing, decode with
     /// libavcodec's software decoder to the desktop they were read from: the
@@ -814,7 +815,7 @@ mod tests {
             types.contains(&7) && types.contains(&8) && types.contains(&5),
             "the first frame is an IDR with its parameter sets: {types:?}"
         );
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, AT_THE_DIAL);
 
         // Damage, in a buffer whose rows outside it are not the picture.
         let damage = Rect {
@@ -836,11 +837,11 @@ mod tests {
             types.contains(&1) && !types.contains(&5),
             "a P frame: {types:?}"
         );
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, AT_THE_DIAL);
 
         let unit = frame(&mut encoder, &pixels, None, true);
         assert!(nal_types(&unit).contains(&5), "an IDR where one was asked");
-        decodes_to(&mut decoder, &unit, &pixels, w, h, 6 + DEBLOCK_SLACK);
+        decodes_to(&mut decoder, &unit, &pixels, w, h, AT_THE_DIAL);
     }
 
     /// A region of odd sides, as one clipped to the edge of an odd desktop
@@ -848,11 +849,12 @@ mod tests {
     /// region's own pixels decode to the picture.
     #[test]
     fn libx264_codes_a_region_of_odd_sides() {
-        frames_decode_to_the_picture(&Encoder::X264, (95, 69), DEBLOCK_SLACK);
+        frames_decode_to_the_picture(&Encoder::X264, (95, 69), 0);
     }
 
-    /// libx264's stream is High profile, the hardware's, with no B-frames to
-    /// hold a picture back: each frame in is one frame out.
+    /// libx264's stream is High profile, the hardware's, its entropy coding
+    /// CAVLC, with no B-frames to hold a picture back: each frame in is one
+    /// frame out.
     #[test]
     fn libx264_codes_high_one_frame_in_one_out() {
         let (w, h) = (64usize, 48usize);
@@ -867,6 +869,13 @@ mod tests {
             .position(|s| s[..3] == [0, 0, 1] && s[3] & 0x1f == 7)
             .expect("an SPS");
         assert_eq!(unit[sps + 4], 100, "High");
+        // A picture parameter set begins with its own id and its sequence's,
+        // each 0 and so one bit, and then `entropy_coding_mode_flag`.
+        let pps = unit
+            .windows(4)
+            .position(|s| s[..3] == [0, 0, 1] && s[3] & 0x1f == 8)
+            .expect("a PPS");
+        assert_eq!(unit[pps + 4] >> 5, 0b110, "both ids 0, and CAVLC");
         for _ in 0..5 {
             unit.clear();
             assert!(
@@ -912,7 +921,7 @@ mod tests {
     /// A coloured picture through libx264 at 4:2:0 decodes with libavcodec's
     /// software decoder to its own luma and both its chromas, each in its own
     /// plane: Cb as Cb and Cr as Cr, away from the quadrants' edges, where
-    /// 4:2:0 and the deblocking filter blend one colour into the next.
+    /// 4:2:0 blends one colour into the next.
     #[test]
     fn libx264_keeps_a_coloured_pictures_chroma_at_420() {
         let (w, h) = (96usize, 64usize);

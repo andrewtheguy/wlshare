@@ -9,7 +9,12 @@ the GPU's, and its cost to the processor is the conversion and the copy onto
 its surface, which did not change. Its preset and motion search came later
 ([The preset and the search](#the-preset-and-the-search)), and the
 retired VP9 was measured against it as a software encoder
-([Against the retired VP9](#against-the-retired-vp9)).
+([Against the retired VP9](#against-the-retired-vp9)). Since 2026-11-12 it
+is set for the processor's time ahead of the bytes
+([The processor ahead of the bytes](#the-processor-ahead-of-the-bytes)),
+and the processor times measured before that day, libx264's on more than
+one thread, read low ([The clock](#the-clock)). What the hardware's encoder
+sends beside it is [The hardware beside libx264](#the-hardware-beside-libx264).
 
 **How.** lab1 (8 vCPUs of an AMD EPYC Rome, 4 cores with 2 threads each,
 16 GB), idle and alone, swap off, libx264 by `--libx264`, so the encoder had
@@ -382,3 +387,222 @@ again, for a frame of 12 to 73 KB at 1920x1080. Over the mixed session at
 206 KB, and the changes shown are as late as they were: 245 ms at the 95th
 percentile where 234. What a settle can add to a picture already at its
 quantizer is little, x264 dropping a residual that small.
+
+## The processor ahead of the bytes
+
+Measured on 2026-11-12. The software encoder runs on a host with no GPU for
+it, beside the desktop it shares, and what it had been set by was bytes:
+`superfast` and the wide search send two fifths of `ultrafast`'s. The
+question was what libx264 can give up to take less of the processor, the
+bytes and the picture counting for less than that. The hardware's encoder
+is not in this: its settings are as they were.
+
+**How.** lab1 (four vCPUs of an AMD EPYC Rome, two cores of two threads,
+8 GB, the instance of that day), idle and alone, swap off, so libx264 had
+two threads. `motion-bench --libx264` over `frame-samples`' terminal, drag,
+uncover, browser and video at 1920x1080 and 3840x2160@2, 120 frames each
+(uncover's 48–49), `WLSV` held at wlshare's dial (90, QP 18): each setting
+over every sample before the next, twice, the lower processor time kept.
+The settings were changed one at a time from the encoder as it stood
+(`superfast`, the multi-hexagon over 128, a constant quantizer, CABAC), then
+together. The figures are geometric means over the ten samples against that
+encoder: the processor time a frame, the bytes, and how far the page was
+from the desktop while it moved, the PSNR over B, G and R. What was taken
+was then run at dials 50 and 20, once, and over the longer captures. The
+runs, their scripts and every table are the artifacts'
+`bench/x264-cpu-20261112/`.
+
+**What it showed.**
+
+| Setting | CPU a frame | still (terminal, drag, uncover) | browser | video | Bytes | dB moving |
+|---|---:|---:|---:|---:|---:|---:|
+| CAVLC in CABAC's place | 0.93 | 0.96 | 0.92 | 0.87 | 1.09 | 0.00 |
+| no sub-pixel search | 0.85 | 0.82 | 0.89 | 0.93 | 1.03 | −0.04 |
+| the deblocking filter off | 0.94 | 0.93 | 0.97 | 0.95 | 1.00 | +0.11 |
+| no 8×8 transform | 1.00 | 1.00 | 0.99 | 1.02 | 0.98 | +0.11 |
+| no intra partitions in a P frame | 0.98 | 0.98 | 1.02 | 0.97 | 1.05 | −0.12 |
+| the search over 64 | 1.00 | 0.99 | 1.16 | 0.88 | 1.16 | −0.04 |
+| the search over 32 | 0.99 | 0.96 | 1.33 | 0.82 | 1.30 | −0.07 |
+| a diamond search over 16 | 1.04 | 1.04 | 1.46 | 0.74 | 2.56 | −0.19 |
+| one thread where two | 0.95 | 0.95 | 0.93 | 0.96 | 0.98 | −0.01 |
+| CAVLC and no sub-pixel search | 0.77 | 0.76 | 0.79 | 0.79 | 1.12 | −0.04 |
+| and the filter off: **taken** | 0.72 | 0.70 | 0.73 | 0.74 | 1.11 | +0.07 |
+| and no intra partitions in a P frame | 0.70 | 0.69 | 0.72 | 0.70 | 1.16 | −0.15 |
+| `ultrafast`, the search over 128 | 0.69 | 0.68 | 0.74 | 0.69 | 1.25 | −0.22 |
+| `ultrafast` as it comes | 0.57 | 0.63 | 0.60 | 0.42 | 3.04 | −0.24 |
+
+- **Three settings carry it.** With no sub-pixel search x264 makes no
+  half-pel planes, three more pictures filtered out of every one it codes
+  whatever changed in it, which is most of a frame's work where little of a
+  desktop moved: 18% off the still samples. CAVLC is 13% off a video, whose
+  bytes are what CABAC is paid by. The deblocking filter is 3–7%, and at
+  this dial the page is closer without it.
+- **The wide search stays.** A shorter one takes 12–26% off a video and
+  nothing else: a scroll it does not find costs more of the processor to
+  code than the search did, 1.2 to 1.5 times, for 2 to 5 times the bytes,
+  and under the diamond a dragged window is 9 to 20 times its bytes.
+  `ultrafast` as it comes is
+  the least of the processor, four tenths of a video's, for three times the
+  bytes over the samples and 6.6 times a scroll's.
+- **What was left.** The intra partitions and the 8×8 transform, the rest of
+  what `superfast` has over `ultrafast`: giving both up is 4% less of the
+  processor for 13% more bytes and 0.3 dB.
+- **Down the walk** what was taken is 0.73 of the processor time at dial 50
+  and 0.76 at 20, for 1.17 and 1.19 times the bytes. The page is 0.2 dB
+  further off there, most of it video, which is 0.5 dB coarser at the
+  ceiling, 0.9–1.0 at 50 and 0.7–0.8 at 20; without the filter's part, the
+  other two settings alone, a video is 0.1–0.3 dB coarser at every dial.
+- **The tiles' regions**, the same encoder at wlshare's dial: the held
+  picture's processor time over the samples is 0.92 of what it was, a video's
+  0.85, for 1.04 times its bytes, the rest of its time being its stills.
+
+What was taken, at wlshare's dial, `WLSV`:
+
+| Sample | CPU ms a frame | p95 | KB a frame | dB moving |
+|---|---|---|---|---|
+| `terminal-1920x1080` | 4.6 → 3.3 (−28%) | 7.1 → 4.2 | 4.4 → 4.6 | 51.6 → 51.7 |
+| `terminal-3840x2160@2` | 17.6 → 12.0 (−32%) | 23.4 → 13.2 | 11.4 → 11.5 | 52.9 → 53.1 |
+| `drag-1920x1080` | 5.4 → 3.6 (−33%) | 6.6 → 4.4 | 1.5 → 1.7 | 50.4 → 50.4 |
+| `drag-3840x2160@2` | 18.9 → 13.8 (−27%) | 22.7 → 16.8 | 2.8 → 3.4 | 52.0 → 52.0 |
+| `uncover-1920x1080` | 6.3 → 4.6 (−27%) | 10.7 → 6.2 | 8.7 → 9.1 | 46.6 → 46.7 |
+| `uncover-3840x2160@2` | 23.6 → 16.4 (−30%) | 28.4 → 22.2 | 19.0 → 20.4 | 50.8 → 51.1 |
+| `browser-1920x1080` | 9.6 → 7.0 (−27%) | 15.0 → 10.5 | 14.8 → 16.3 | 44.5 → 44.7 |
+| `browser-3840x2160@2` | 52.1 → 38.1 (−27%) | 91.8 → 66.5 | 111.5 → 118.7 | 47.5 → 48.2 |
+| `video-1920x1080` | 17.8 → 12.4 (−31%) | 24.1 → 16.7 | 68.1 → 82.0 | 44.4 → 43.9 |
+| `video-3840x2160@2` | 66.9 → 52.8 (−21%) | 96.2 → 76.0 | 154.9 → 188.1 | 47.1 → 46.6 |
+
+Over more of a desktop than the samples, once each: the walk and the minutes
+at the desk (`mixed`) whole, the video in a window, and the small movements
+(`small`, `many`), at 1920x1080 and 2880x1800@2. The processor time is as
+the samples had it, 0.70 of what it was and 0.67 to 0.77 by capture, and
+the bytes are more than theirs: 1.26 times, the walk 1.15–1.16, the window,
+`small` and `mixed` 1.20–1.25, and `many`, which sends the fewest, 1.5. The
+held picture over the same captures: 0.87 of the processor time for 1.12
+times the bytes, 0.15 dB further off.
+
+| Capture | CPU ms a frame | p95 | KB a frame | dB moving |
+|---|---|---|---|---|
+| `walk-1920x1080` | 20.2 → 14.2 (−30%) | 40.5 → 30.4 | 74.4 → 86.6 | 43.9 → 43.5 |
+| `walk-2880x1800@2` | 53.4 → 40.9 (−23%) | 107.4 → 84.5 | 147.3 → 169.1 | 45.5 → 45.1 |
+| `window-1920x1080` | 8.5 → 5.7 (−33%) | 10.1 → 7.1 | 28.6 → 34.6 | 44.5 → 45.8 |
+| `window-2880x1800@2` | 17.4 → 12.6 (−28%) | 20.7 → 17.3 | 46.9 → 56.3 | 44.6 → 44.6 |
+| `small-1920x1080` | 4.6 → 3.1 (−33%) | 6.6 → 4.6 | 1.3 → 1.6 | 44.4 → 44.3 |
+| `small-2880x1800@2` | 10.9 → 7.5 (−32%) | 16.1 → 11.9 | 2.5 → 3.1 | 46.9 → 46.9 |
+| `mixed-1920x1080` | 11.9 → 8.2 (−31%) | 22.5 → 16.0 | 35.8 → 44.9 | 42.1 → 42.1 |
+| `mixed-2880x1800@2` | 30.8 → 22.6 (−26%) | 55.6 → 42.2 | 79.6 → 96.3 | 45.6 → 45.3 |
+| `many-1920x1080` | 5.4 → 3.6 (−33%) | 7.4 → 5.1 | 4.1 → 6.0 | 43.7 → 43.7 |
+| `many-2880x1800@2` | 13.4 → 9.4 (−29%) | 19.0 → 14.1 | 7.5 → 11.5 | 46.4 → 46.3 |
+
+### The clock
+
+`motion-bench`, `walk-sim` and `tiles-walk-sim` read the process's
+processor clock around each encode, and read as libx264 returns it is short
+of what libx264's other threads took: on lab1 at two threads, a frame of
+the terminal at 1920x1080 read 1.7 ms where a profile, and the same run
+held to one processor, say 4.8. What was missed was counted in whatever the
+process did next, so a run's whole time was right and the encoder's share
+of it low, by more the shorter the frame: a video's frame at 1920x1080 read
+14.1 ms where it is 17.5. Left 2 ms the clock has all of it, and since
+2026-11-12 the three read it after 3 ms of sleep, which takes no processor
+time. With that, two threads read 3–12% over one on the terminal, the
+browser and video, and four 11–24%, which is the sliced picture's own cost:
+the "four threads where two" above, 1.52 times the processor time, is 1.04
+to 1.17 read this way. Every processor time of libx264's in this document
+from before that day, on more than one thread, is low the same way, the
+still samples' most, and a ratio between two settings is off with it; the
+bytes and the decibels do not come from the clock.
+
+
+## The hardware beside libx264
+
+Measured on 2026-11-12, once libx264 was set for the processor: what a host
+whose GPU has an encoder sends, and how close its page is, beside a host
+with none, at the same quantizer. Nothing was changed by it: the hardware's
+encoder is as it was.
+
+**How.** testdesktop2 (two cores of an i5-8400T, its UHD 630 by iHD 25.2.3,
+the low-power encoder, which the daemon finds there first). `motion-bench`
+over the ten samples of [the section above](#the-processor-ahead-of-the-bytes),
+`WLSV` held at dials 90, 50 and 20 and the tiles picture held, by the
+hardware and by `--libx264`, which has one thread on two cores: each twice,
+the bytes the same both times. Why the bytes differ was then read out of
+the streams themselves, written to files by a build made for it and decoded
+by libavcodec for each frame's motion vectors and macroblock types, and out
+of a picture slid by a distance at a time through each encoder. The runs,
+the streams and the scripts are the artifacts'
+`bench/x264-cpu-20261112/hardware-beside/`.
+
+`WLSV` at wlshare's dial, libx264 → the hardware:
+
+| Sample | KB a frame | × | dB moving |
+|---|---|---:|---|
+| `terminal-1920x1080` | 4.4 → 5.8 | 1.32 | 51.5 → 51.9 |
+| `terminal-3840x2160@2` | 11.4 → 14.2 | 1.24 | 53.1 → 53.0 |
+| `drag-1920x1080` | 1.6 → 11.8 | 7.37 | 50.3 → 49.4 |
+| `drag-3840x2160@2` | 3.2 → 63.3 | 19.61 | 52.0 → 50.5 |
+| `uncover-1920x1080` | 9.1 → 10.7 | 1.17 | 46.7 → 46.8 |
+| `uncover-3840x2160@2` | 20.7 → 23.0 | 1.11 | 51.1 → 51.0 |
+| `browser-1920x1080` | 14.9 → 55.6 | 3.74 | 44.7 → 44.3 |
+| `browser-3840x2160@2` | 108.3 → 223.8 | 2.07 | 48.2 → 47.2 |
+| `video-1920x1080` | 81.9 → 72.3 | 0.88 | 43.9 → 45.1 |
+| `video-3840x2160@2` | 187.8 → 169.5 | 0.90 | 46.6 → 47.5 |
+
+The hardware's bytes against libx264's down the walk, the geometric mean of
+the two sizes, and how much closer its page is at each size, in dB:
+
+| | dial 90 | 50 | 20 |
+|---|---|---|---|
+| terminal | 1.28, +0.4 and −0.2 | 1.08, −0.9 and −3.2 | 1.04, −0.2 and −1.4 |
+| drag | 12.0, −1.0 and −1.5 | 10.2, −2.0 and −2.6 | 8.4, −0.9 and −2.1 |
+| uncover | 1.14, +0.1 and −0.1 | 0.99, −0.5 and 0.0 | 0.94, −0.3 and −0.1 |
+| browser | 2.78, −0.3 and −1.0 | 2.43, −0.7 and −0.8 | 2.22, −0.7 and −0.3 |
+| video | 0.89, +1.2 and +0.9 | 0.71, +0.7 and +0.7 | 0.72, +0.9 and +1.0 |
+| all ten | 2.13, −0.15 | 1.80, −0.94 | 1.67, −0.39 |
+
+- **A video is the hardware's.** A tenth fewer bytes at the ceiling and
+  three tenths fewer down the walk, its page 0.7 to 1.2 dB closer: it has
+  the CABAC, the search to a fraction of a pixel and the deblocking filter
+  libx264 gave up for the processor.
+- **A page scrolled past 160 pixels in a frame is not found.** The
+  low-power encoder's search reaches that far and no further. A picture
+  slid down by a distance each frame, at 1920x1080, is coded from the frame
+  before through 160 pixels, in a sixth of a keyframe's bytes at most, and
+  at 192 every frame is 731 KB, a keyframe's size or more; sideways it is
+  found through 128, and at 160 in one of the two pictures tried. The
+  scrolled page moves about 20 to 240 pixels a frame at 1920x1080, and
+  twice that at 3840x2160@2, as libx264's vectors have it:
+
+  | The page moved, a frame | Frames | The hardware has libx264's vector | libx264, KB a frame | The hardware | × | The hardware's intra |
+  |---|---:|---:|---:|---:|---:|---:|
+  | 1920x1080, to 160 pixels | 65 | 64 | 7.6 | 20.9 | 2.8 | 3% |
+  | 1920x1080, past 160 | 51 | 2 | 21.2 | 100.0 | 4.7 | 19% |
+  | 3840x2160@2, to 192 | 59 | 55 | 96.3 | 160.8 | 1.7 | 10% |
+  | 3840x2160@2, past 192 | 57 | 0 | 119.9 | 296.0 | 2.5 | 20% |
+
+  The frames past its reach are 82% of what it sends over libx264 at
+  1920x1080 and 73% at 3840x2160@2, a fifth of each coded as intra with
+  some shorter vector over the rest. libx264's search over 128 starts from
+  the vectors around it, and found every distance slid, to 256; so did the
+  shader encoder of the same GPU, which the daemon takes second.
+- **A dragged window is found, and coded anyway.** The sample's window
+  moves 32 pixels a frame or less, a quarter of the picture; the hardware
+  has libx264's vector in 109 of 119 frames at 1920x1080 and codes next to
+  nothing as intra. What it does not do is skip: it codes 8 times as many
+  macroblocks as libx264 where libx264 skips them, 9% of the picture's to
+  1%, at about 14 bytes each, more than a vector takes, and 65 times as
+  many at 3840x2160@2. That is the 7 to 20 times, of few bytes, 12 KB a
+  frame at 1920x1080. The same shows where nothing moves at all: after a
+  keyframe of a still page at 1920x1080 the hardware's next four frames
+  are 38, 4.3, 2.0 and 1.1 KB, and libx264's 136 bytes and 12 each; and
+  within its reach a scroll is 1.7 to 2.8 times libx264's bytes with the
+  same vector.
+- **Where little moves** they are near each other: a terminal and an
+  uncovered window in 1.1 to 1.3 times the bytes at the ceiling and within
+  a tenth down the walk, the page within a decibel but for the terminal at
+  3840x2160@2, 3.2 dB further at dial 50 and 1.4 at 20.
+- **The tiles' regions.** Five of the ten samples' held pictures have no
+  region, and are the same bytes by either. Over the ten the hardware's is
+  1.06 times libx264's bytes: a video 0.93 of them and 0.8 to 0.9 dB
+  closer, the scroll at 3840x2160@2 1.86 times and 1.1 dB further, the
+  terminal and the uncovered window at that size within a tenth, 1.1 and
+  0.4 dB further.
