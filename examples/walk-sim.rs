@@ -97,18 +97,6 @@ mod wlcap;
 #[global_allocator]
 static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-/// The processor time the process has taken, on all of its threads.
-fn process_cpu() -> Duration {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `ts` is a valid `timespec` for the call to write.
-    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-    assert_eq!(rc, 0, "the process's processor clock");
-    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
-}
-
 /// What a page holds of the stream: each frame decoded by libavcodec's
 /// software decoder and turned back to `B, G, R, X`, cut to the desktop.
 struct Page {
@@ -336,7 +324,7 @@ fn main() -> Result<(), Error> {
             walk.quality()
         };
         out.clear();
-        let (started, cpu_from) = (Instant::now(), process_cpu());
+        let (started, cpu_from) = (Instant::now(), sim::process_cpu());
         let produced = if settling {
             encoder.settle(&mut out)?
         } else {
@@ -349,10 +337,10 @@ fn main() -> Result<(), Error> {
             // skip, as it skips it.
             encoder.encode(keyframe, quality, &mut out)?
         };
-        let spent = process_cpu().saturating_sub(cpu_from);
+        let took = started.elapsed();
+        let spent = sim::cpu_since(cpu_from);
         cpu += spent;
-        let encode =
-            encode_ms.map_or_else(|| started.elapsed(), |ms| Duration::from_secs_f64(ms / 1e3));
+        let encode = encode_ms.map_or(took, |ms| Duration::from_secs_f64(ms / 1e3));
         dirty = false;
         damage = Some(Vec::new());
         asked_key = false;

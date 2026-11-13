@@ -14,6 +14,35 @@ use crate::wlcap::Reader;
 
 pub type Error = Box<dyn std::error::Error>;
 
+/// The processor time the process has taken, on all of its threads.
+pub fn process_cpu() -> Duration {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid `timespec` for the call to write.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "the process's processor clock");
+    Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
+
+/// How long the encoder's threads are left before the processor clock is
+/// read.
+const REST: Duration = Duration::from_millis(3);
+
+/// The processor time the process has taken since [`process_cpu`] read
+/// `from`, on all of its threads.
+///
+/// Read as libx264 returns, the clock is short of what its other threads
+/// took, by more than half of a short frame's at two threads on lab1, and
+/// what was missed is counted in whatever the process does next; left 2 ms
+/// it has all of it. So it is read after [`REST`], which takes no processor
+/// time itself, and an encode's wall time is to be read before this is asked.
+pub fn cpu_since(from: Duration) -> Duration {
+    std::thread::sleep(REST);
+    process_cpu().saturating_sub(from)
+}
+
 pub struct Desk {
     pub at: Duration,
     pub size: (u16, u16),
