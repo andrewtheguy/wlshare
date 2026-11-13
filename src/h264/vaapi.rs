@@ -11,6 +11,18 @@
 //! jumping between 18 and 51 came out at the quantizer asked, on both, with no
 //! keyframe but the first.
 //!
+//! **Which encoder, and how hard it looks**
+//! ([measured](../../docs/video-performance.md#the-hardware-beside-libx264)).
+//! Where a driver has both of Intel's, the shader encoder is tried ahead of
+//! the low-power, fixed-function one, and either is asked for the highest of
+//! its quality levels where it has several: left at the driver's own level,
+//! the low-power encoder's search stops 160 pixels from where a macroblock
+//! was, short of a page scrolled, and at the highest it finds a slide of 256.
+//! On a UHD 630 the level takes a third off the low-power encoder's bytes
+//! over the desktop samples and the shader encoder at it takes over half,
+//! the page as close or closer, for a few milliseconds more of the GPU a
+//! frame.
+//!
 //! **A stream.** One input surface, which each picture is copied into, two
 //! reconstructed ones, the picture coded and the one it refers to, in turn,
 //! and one buffer the frame is coded into; one frame in flight, synced before
@@ -37,12 +49,17 @@ use super::{Backend, Encoder, Planes};
 /// Where render nodes are.
 const DRI: &str = "/dev/dri";
 
+/// The quality level asked of a driver that has several: the highest, which
+/// VA-API numbers 1, the higher numbers trading the picture and its bytes for
+/// the encoder's speed and power.
+const QUALITY_LEVEL: u32 = 1;
+
 /// The frames after an IDR at which the next is one whatever is asked: the
 /// picture order count is twice the count, an `int` in every decoder.
 const MAX_SINCE_IDR: u32 = 1 << 30;
 
 /// Look for a working VA-API H.264 encoder: each render node in turn, the
-/// low-power encoder ahead of the shader one, each tried on two frames.
+/// shader encoder ahead of the low-power one, each tried on two frames.
 /// `None` with nothing working, the reasons logged.
 pub fn find() -> Option<Encoder> {
     let mut nodes: Vec<PathBuf> = match std::fs::read_dir(DRI) {
@@ -66,7 +83,7 @@ pub fn find() -> Option<Encoder> {
         return None;
     }
     for node in nodes {
-        for low_power in [true, false] {
+        for low_power in [false, true] {
             let encoder = Encoder::Vaapi {
                 device: node.clone(),
                 low_power,
@@ -215,6 +232,8 @@ pub struct Stream {
     sequence: Sequence,
     /// The headers the driver takes from the daemon: `VA_ENC_PACKED_HEADER_*`.
     packed: u32,
+    /// The driver has quality levels, and is asked for [`QUALITY_LEVEL`].
+    levels: bool,
     reference: Option<Reference>,
     frame_num: u32,
     since_idr: u32,
@@ -248,6 +267,7 @@ impl Stream {
                 size: (width as u32, height as u32),
             },
             packed: 0,
+            levels: false,
             reference: None,
             frame_num: 0,
             since_idr: 0,
@@ -269,6 +289,7 @@ impl Stream {
                 attrib(va::VAConfigAttribRateControl),
                 attrib(va::VAConfigAttribEncPackedHeaders),
                 attrib(va::VAConfigAttribEncMaxRefFrames),
+                attrib(va::VAConfigAttribEncQualityRange),
             ];
             status(
                 va::vaGetConfigAttributes(
@@ -280,7 +301,7 @@ impl Stream {
                 ),
                 "asking for High profile's encoder",
             )?;
-            let [rt, rc, packed, refs] = attribs.map(|a| a.value);
+            let [rt, rc, packed, refs, levels] = attribs.map(|a| a.value);
             anyhow::ensure!(
                 rt != va::VA_ATTRIB_NOT_SUPPORTED && rt & va::VA_RT_FORMAT_YUV420 != 0,
                 "the encoder takes no 4:2:0"
@@ -293,6 +314,8 @@ impl Stream {
                 refs == va::VA_ATTRIB_NOT_SUPPORTED || refs & 0xffff >= 1,
                 "the encoder takes no reference picture"
             );
+            // One level or none says the encoder has the one setting.
+            stream.levels = levels != va::VA_ATTRIB_NOT_SUPPORTED && levels > 1;
             let mut config = vec![
                 va::VAConfigAttrib {
                     type_: va::VAConfigAttribRTFormat,
@@ -644,6 +667,18 @@ impl Backend for Stream {
                     &sequence.sps(),
                     "making the sequence parameter set",
                 )?;
+                // The level holds for the sequence it is sent with.
+                if self.levels {
+                    buffers.add(
+                        va::VAEncMiscParameterBufferType,
+                        &va::VAEncMiscParameterQualityLevel {
+                            type_: va::VAEncMiscParameterTypeQualityLevel,
+                            quality_level: QUALITY_LEVEL,
+                            ..Default::default()
+                        },
+                        "asking for the quality level",
+                    )?;
+                }
             }
 
             let mut pic: va::VAEncPictureParameterBufferH264 = std::mem::zeroed();

@@ -1119,7 +1119,7 @@ the picture.
   configuration, the default — it is that one, which is what this picture is
   for: the processor pays for the conversion to NV12 and nothing of the
   search ([beside libx264](video-performance.md#the-hardware-beside-libx264):
-  fewer of a video's bytes, more of a scroll's). On a host with none, or with the key off, it is libx264 at its
+  fewer bytes of all but a dragged window's). On a host with none, or with the key off, it is libx264 at its
   `superfast` preset, its motion searched over 128 pixels
   ([measured](video-performance.md#the-preset-and-the-search)).
   `src/h264/` is that encoder, the GPU's through libva itself or libx264
@@ -1146,9 +1146,11 @@ the picture.
   decoder passes over. The gateway announces the stream from that parameter
   set, `avc1.` and its profile and level, and the browser's decoder takes it
   in hardware where it has one. At startup the daemon tries each render node,
-  the low-power encoder first — Intel's fixed-function block, which leaves
-  the execution units to the desktop and codes CQP without the HuC firmware —
-  and the shader one after it, then libx264, each on two frames of a small
+  the shader encoder first and the low-power one after it — Intel's
+  fixed-function block, which codes CQP without the HuC firmware — each
+  asked for the highest quality level its driver has
+  ([what both are worth](video-performance.md#the-hardware-beside-libx264)),
+  then libx264, each on two frames of a small
   picture at two quantizers, decoded and held to them, since a driver lists
   more than it codes; a VA-API encoder must also take the daemon's sequence
   parameter set packed, whose colour description VA's parameters cannot
