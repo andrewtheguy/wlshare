@@ -228,8 +228,8 @@ fast: above all a virtual machine borrowing its host's, the pictures crossing
 a bridge inside the one machine, or else a wired machine on a LAN faster than
 gigabit. That machine runs the encoding agent, `wlshare-enc-agent`, a package
 of its own. It is not for Wi-Fi or a link between sites: the pictures cross
-uncompressed. [`docs/enc-agent.md`](docs/enc-agent.md) is how to set the two
-up, with a virtual machine and its host from start to finish.
+uncompressed and unencrypted. [`docs/enc-agent.md`](docs/enc-agent.md) is how
+to set the two up, with a virtual machine and its host from start to finish.
 
 ## Building
 
