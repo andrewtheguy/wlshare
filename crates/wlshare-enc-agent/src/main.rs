@@ -4,8 +4,8 @@
 //! The agent looks for its encoder once, at startup, as a daemon does
 //! ([`vaapi::find`]), and with none does not start: an agent is a GPU, not
 //! another processor to run libx264 on. Then it listens, and every
-//! connection that proves the pre-shared key is one stream, on a VA display
-//! of its own ([`serve`]). The key is a file, generated
+//! connection that proves the pre-shared key is one stream ([`serve`]), for
+//! one daemon at a time, whose streams share a VA display. The key is a file, generated
 //! on a first start, which the daemon's `[enc_agent]` table needs a copy of.
 
 use std::net::{SocketAddr, TcpListener};
@@ -23,7 +23,7 @@ use wlshare_core::h264::{Backend, vaapi};
     name = "wlshare-enc-agent",
     version,
     about = "Lends this machine's hardware H.264 encoder to a wlshare daemon on another (experimental)",
-    long_about = "Lends this machine's hardware H.264 encoder, through VA-API, to a wlshare daemon on a machine that has none. The daemon names this one in its [enc_agent] table and holds a copy of the key file. Experimental: the pictures cross the network in the clear, so this is for a trusted LAN, or inside a tunnel."
+    long_about = "Lends this machine's hardware H.264 encoder, through VA-API, to a wlshare daemon on a machine that has none. The daemon names this one in its [enc_agent] table and holds a copy of the key file. One daemon at a time: while one has a stream open, nobody is let in from any other address. Experimental: the pictures cross the network in the clear, so this is for a trusted LAN, or inside a tunnel."
 )]
 struct Args {
     /// The address to listen on for daemons.
@@ -55,14 +55,19 @@ fn main() -> anyhow::Result<()> {
         "encoding agent on {}: experimental, the pictures in the clear",
         args.listen
     );
-    // Each stream on a display of its own, as each session of a daemon is,
-    // so that the streams share nothing of the device.
+    // A display for the daemon the agent is coding for, opened as it takes
+    // its first stream and closed with its last: its streams share it, as
+    // a session's share theirs, and none waits on the driver being loaded
+    // again.
     serve::serve(
         listener,
         key.into(),
-        Arc::new(move |coded| {
+        Arc::new(move || {
             let display = Arc::new(vaapi::Display::open(&device)?);
-            Ok(Box::new(vaapi::Stream::open(display, low_power, coded)?) as Box<dyn Backend>)
+            Ok(Arc::new(move |coded| {
+                let stream = vaapi::Stream::open(display.clone(), low_power, coded)?;
+                Ok(Box::new(stream) as Box<dyn Backend>)
+            }) as Arc<serve::Streams>)
         }),
     );
     Ok(())

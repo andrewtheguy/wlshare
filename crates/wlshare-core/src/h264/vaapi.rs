@@ -39,7 +39,7 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use log::{debug, info, warn};
 
@@ -161,15 +161,23 @@ fn kind(low_power: bool) -> &'static str {
     if low_power { "low-power" } else { "shader" }
 }
 
-/// A VA display on a render node, initialized: one session's.
+/// A VA display on a render node, initialized: one session's, or at an agent
+/// one daemon's, whose streams are each a thread's.
 pub struct Display {
     display: va::VADisplay,
     /// The node, open for as long as the display is.
     _node: File,
+    /// Held for as long as anything of this display's is in libva's hands: a
+    /// stream being opened, a frame being coded, a stream being closed. A
+    /// session's streams are coded one after another by its own thread and
+    /// never wait on it; an agent's are each a thread's, and a driver is not
+    /// trusted to be called on one display from several at once.
+    lock: Mutex<()>,
 }
 
-// SAFETY: the display is libva's, which locks its own state, and its encoders
-// are each one stream's, used from one thread at a time, the session's.
+// SAFETY: the display is libva's, and every call made on it or on anything
+// of its is made holding its lock, so from one thread at a time, whichever
+// thread that is.
 unsafe impl Send for Display {}
 unsafe impl Sync for Display {}
 
@@ -203,15 +211,21 @@ impl Display {
             Ok(Self {
                 display,
                 _node: file,
+                lock: Mutex::new(()),
             })
         }
+    }
+
+    /// The display's lock, held: libva is this thread's to call.
+    fn held(&self) -> MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl Drop for Display {
     fn drop(&mut self) {
         // SAFETY: the display is this value's, every stream on it gone first,
-        // since each holds the display.
+        // since each holds the display, and so nothing holds its lock.
         unsafe { va::vaTerminate(self.display) };
     }
 }
@@ -294,7 +308,7 @@ pub struct Stream {
 }
 
 // SAFETY: as `Display`'s: the encoder is this value's, used from one thread at
-// a time.
+// a time, which holds the display's lock for as long as it calls libva.
 unsafe impl Send for Stream {}
 
 impl Stream {
@@ -330,6 +344,10 @@ impl Stream {
             since_idr: 0,
             idr_pic_id: 0,
         };
+        // Held past whatever of the stream a failure here drops, which locks
+        // for itself: the stream is declared first and so dropped last.
+        let display = stream.display.clone();
+        let _held = display.held();
         let dpy = stream.display.display;
         let profile = va::VAProfileH264High;
         let entrypoint = if low_power {
@@ -701,6 +719,8 @@ impl Backend for Stream {
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
+        let display = self.display.clone();
+        let _held = display.held();
         // The reference is the stream's again once this frame is coded: a
         // frame that fails, at any step, leaves the stream none, so the
         // frame after it is an IDR whatever it is asked as. A keyframe that
@@ -910,6 +930,8 @@ impl Backend for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        let display = self.display.clone();
+        let _held = display.held();
         let dpy = self.display.display;
         // SAFETY: each id is this stream's, made on its display, and the
         // invalid ones were never made.
@@ -952,6 +974,49 @@ mod tests {
         assert_eq!(reach(0, 64, usize::MAX / 32, 96), None);
         assert_eq!(reach(usize::MAX - 100, 2, 64, 96), None);
         assert_eq!(reach(0, 2, usize::MAX - 95, 96), None);
+    }
+
+    /// One display's streams, each opened, coded and closed by a thread of
+    /// its own, as an agent's are for the daemon it codes for: every frame
+    /// of every one is made, an IDR first and P frames after it. Passes
+    /// with a word where this machine has no encoder.
+    #[test]
+    fn a_displays_streams_are_each_a_threads() {
+        let Some((node, low_power)) = find(moves_its_quantizer) else {
+            eprintln!("no VA-API H.264 encoder on this machine; its display is not shared");
+            return;
+        };
+        let display = Arc::new(Display::open(&node).unwrap());
+        let threads: Vec<_> = (0..4u16)
+            .map(|n| {
+                let display = display.clone();
+                std::thread::spawn(move || {
+                    let (w, h) = (96 + 32 * n, 64 + 16 * n);
+                    let mut stream =
+                        Stream::open(display, low_power, (w.into(), h.into())).unwrap();
+                    let mut planes = Planes::new(w, h);
+                    let mut state = 0x9E37_79B9u32 + u32::from(n);
+                    for frame in 0..40 {
+                        for sample in planes.y.iter_mut().chain(&mut planes.uv) {
+                            state ^= state << 13;
+                            state ^= state >> 17;
+                            state ^= state << 5;
+                            *sample = state as u8;
+                        }
+                        let mut unit = Vec::new();
+                        assert!(stream.frame(&planes, false, 28, &mut unit).unwrap());
+                        assert_eq!(
+                            crate::h264::nal_types(&unit).contains(&5),
+                            frame == 0,
+                            "stream {n}, frame {frame}"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 
     /// Planes that are not the stream's picture, or do not hold the rows

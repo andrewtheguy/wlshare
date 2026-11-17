@@ -194,6 +194,12 @@ name = "wlshare"
 # the next session tries the agent again. With hardware_h264 off the table is
 # not used.
 #
+# An agent codes for one wlshare at a time: while this one has a stream open
+# there, the agent lets nobody in from any other address, and a second
+# wlshare set to the same agent is kept out until this one has none, its
+# sessions ending meanwhile as with an agent away. Give each wlshare an agent
+# of its own.
+#
 # The two share a key, a file. The agent generates one on first start
 # ($XDG_CONFIG_HOME/wlshare/enc_agent.key, or its --key-file); copy it here,
 # readable by this account alone. Each end proves the key to the other before

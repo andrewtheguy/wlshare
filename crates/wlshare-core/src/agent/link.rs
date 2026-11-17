@@ -57,10 +57,17 @@
 //! **No fallback.** An agent that is away, refuses the key or fails a frame
 //! fails the stream as any coder's failure does, and the session with it: a
 //! daemon set to an agent has no other H.264 encoder.
+//!
+//! **How long.** A handshake is done within [`HANDSHAKE_WITHIN`] and a frame
+//! within [`FRAME_WITHIN`], first byte to last, however the other end spaces
+//! its bytes ([`Timed`]); and an end that is no longer there is found out
+//! within [`KEEPALIVE`], whether the connection stands idle or holds bytes
+//! never acknowledged ([`keepalive`]).
 
-use std::io::Read;
+use std::io::{IoSlice, Read, Write};
+use std::net::TcpStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use hmac::{Hmac, KeyInit as _};
@@ -92,8 +99,30 @@ pub const MIN_KEY: usize = 32;
 /// The longest side of a picture an agent takes, past any H.264 level's.
 pub const MAX_SIDE: usize = 8192;
 
-/// How long either end waits on the other within the handshake or a frame.
-pub const IO: Duration = Duration::from_secs(10);
+/// How long a handshake may take, its first byte to its last: at the agent
+/// until the key is proved, and at the daemon until the agent has opened its
+/// encoder and said so.
+pub const HANDSHAKE_WITHIN: Duration = Duration::from_secs(5);
+
+/// How long a frame may take: at the daemon the picture sent, coded and the
+/// access unit read back, which is how long a session stands still on an
+/// agent that has stopped answering; at the agent, a request read from its
+/// first byte to its last. A 3840×2160 picture is a second of a 100 Mbit
+/// link, and a link slower than that is not one for raw pictures.
+pub const FRAME_WITHIN: Duration = Duration::from_secs(5);
+
+/// How long an end that has gone without a word is waited on before its
+/// connection is closed: a stream is idle for as long as the desktop is
+/// still, so only the keepalive tells. Half of it before the first probe,
+/// and the rest three probes unanswered, the count said and not left
+/// to the system's, which on Linux is nine. And as long for what was sent
+/// to be acknowledged, since a connection with a frame in flight is not
+/// idle and is not probed: there it is the retransmissions that tell, which
+/// left to the system go on for a quarter of an hour.
+pub const KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// The keepalive probes that go unanswered before an end is taken for gone.
+const PROBES: u32 = 3;
 
 /// The daemon's one message after the handshake: a frame to code.
 pub const FRAME: u8 = 1;
@@ -116,6 +145,129 @@ pub const NONE: u8 = 2;
 pub enum Role {
     Daemon,
     Agent,
+}
+
+/// Have an end that is no longer there found out within [`KEEPALIVE`],
+/// whether the connection stands idle or holds bytes it never acknowledged.
+pub fn keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    let socket = socket2::SockRef::from(stream);
+    socket.set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(KEEPALIVE / 2)
+            .with_interval(KEEPALIVE / 2 / PROBES)
+            .with_retries(PROBES),
+    )?;
+    socket.set_tcp_user_timeout(Some(KEEPALIVE))
+}
+
+/// A connection read and written until a moment and no later, however the
+/// other end spaces its bytes: each read and each write is given what is
+/// left of the time, where a socket's own timeout is one call's and starts
+/// again with every byte that arrives.
+pub struct Timed<'a> {
+    stream: &'a TcpStream,
+    /// When what is read and written now is to be done, and the time it
+    /// was given; `None` waits for as long as the other end takes.
+    until: Option<(Instant, Duration)>,
+}
+
+impl<'a> Timed<'a> {
+    /// The connection, waited on for as long as it takes until
+    /// [`Self::within`] says otherwise.
+    pub fn new(stream: &'a TcpStream) -> Self {
+        Self {
+            stream,
+            until: None,
+        }
+    }
+
+    /// What is read and written from now is done within `limit`.
+    pub fn within(&mut self, limit: Duration) {
+        self.until = Some((Instant::now() + limit, limit));
+    }
+
+    /// What is read and written from now takes as long as it takes.
+    pub fn at_leisure(&mut self) {
+        self.until = None;
+    }
+
+    /// The time left, `None` where there is no limit; an error with none.
+    fn left(&self) -> std::io::Result<Option<Duration>> {
+        let Some((until, limit)) = self.until else {
+            return Ok(None);
+        };
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(late(limit));
+        }
+        Ok(Some(left))
+    }
+
+    /// A call's error, said as the limit it ran into where it is the
+    /// socket's timeout: the system's word for that is "resource temporarily
+    /// unavailable", which tells nobody what happened.
+    fn said(&self, error: std::io::Error) -> std::io::Error {
+        use std::io::ErrorKind::{TimedOut, WouldBlock};
+        match self.until {
+            Some((_, limit)) if matches!(error.kind(), TimedOut | WouldBlock) => late(limit),
+            _ => error,
+        }
+    }
+}
+
+/// The error of what was not done within `limit`.
+fn late(limit: Duration) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("not done within {limit:?}"),
+    )
+}
+
+impl Read for Timed<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(self.left()?)?;
+        let mut stream = self.stream;
+        stream.read(buf).map_err(|e| self.said(e))
+    }
+}
+
+impl Write for Timed<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(self.left()?)?;
+        let mut stream = self.stream;
+        stream.write(buf).map_err(|e| self.said(e))
+    }
+
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(self.left()?)?;
+        let mut stream = self.stream;
+        stream.write_vectored(bufs).map_err(|e| self.said(e))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Write every byte of `slices`, in order, from where they lie: a picture's
+/// rows go to the connection without being gathered into one buffer first.
+pub fn write_all_vectored(
+    to: &mut impl Write,
+    mut slices: &mut [IoSlice<'_>],
+) -> std::io::Result<()> {
+    loop {
+        // Past the slices with nothing in them, which no write would take.
+        IoSlice::advance_slices(&mut slices, 0);
+        if slices.is_empty() {
+            return Ok(());
+        }
+        match to.write_vectored(slices) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) => IoSlice::advance_slices(&mut slices, written),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// The hello an end opens with, around its random.
@@ -271,6 +423,107 @@ mod tests {
         assert!(!passes(&key, Role::Daemon, &daemon, &agent));
         assert!(!passes(&key, Role::Agent, &agent, &daemon));
         assert!(!passes(&key, Role::Agent, &[3u8; NONCE], &agent));
+    }
+
+    /// A loopback connection's two ends.
+    fn pair() -> (TcpStream, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let near = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        (near, listener.accept().unwrap().0)
+    }
+
+    /// An end gone without a word is found out within [`KEEPALIVE`], as the
+    /// socket itself says it is set: the wait before the first probe and
+    /// every probe after it, and the wait for what was sent to be
+    /// acknowledged.
+    #[test]
+    fn an_end_gone_is_found_out_within_the_keepalive() {
+        let (stream, _far) = pair();
+        keepalive(&stream).unwrap();
+        let socket = socket2::SockRef::from(&stream);
+        assert!(socket.keepalive().unwrap());
+        assert_eq!(
+            socket.tcp_keepalive_time().unwrap()
+                + socket.tcp_keepalive_interval().unwrap()
+                    * socket.tcp_keepalive_retries().unwrap(),
+            KEEPALIVE
+        );
+        assert_eq!(socket.tcp_user_timeout().unwrap(), Some(KEEPALIVE));
+    }
+
+    /// What is to be done within a time is not done later for arriving a
+    /// byte at a time, each inside the socket's own timeout; the error says
+    /// the time, and with no limit the bytes are waited for.
+    #[test]
+    fn a_limit_is_on_the_whole_and_not_on_each_byte() {
+        let (near, mut far) = pair();
+        let dripping = std::thread::spawn(move || {
+            for byte in 0..20u8 {
+                if far.write_all(&[byte]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let mut timed = Timed::new(&near);
+        let mut some = [0; 4];
+        timed.read_exact(&mut some).unwrap();
+        assert_eq!(some, [0, 1, 2, 3]);
+
+        timed.within(Duration::from_millis(300));
+        let began = Instant::now();
+        let why = timed.read_exact(&mut [0; 64]).unwrap_err();
+        assert_eq!(why.kind(), std::io::ErrorKind::TimedOut);
+        assert!(why.to_string().contains("300ms"), "{why}");
+        assert!(
+            began.elapsed() < Duration::from_millis(900),
+            "{:?}",
+            began.elapsed()
+        );
+        drop(near);
+        dripping.join().unwrap();
+    }
+
+    /// Slices are written whole and in order, through writes that take part
+    /// of one and writes that take several.
+    #[test]
+    fn slices_are_written_whole_and_in_order() {
+        /// Takes at most so many bytes a write.
+        struct Sips(Vec<u8>, usize);
+        impl Write for Sips {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let taken = buf.len().min(self.1);
+                self.0.extend_from_slice(&buf[..taken]);
+                Ok(taken)
+            }
+            fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+                let mut left = self.1;
+                for buf in bufs {
+                    let taken = buf.len().min(left);
+                    self.0.extend_from_slice(&buf[..taken]);
+                    left -= taken;
+                }
+                Ok(self.1 - left)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let parts: [&[u8]; 7] = [
+            b"",
+            b"a pic",
+            b"",
+            b"ture's rows",
+            b", ",
+            b"one after another",
+            b"",
+        ];
+        for sip in [1, 3, 7, 100] {
+            let mut slices: Vec<IoSlice<'_>> = parts.iter().map(|p| IoSlice::new(p)).collect();
+            let mut to = Sips(Vec::new(), sip);
+            write_all_vectored(&mut to, &mut slices).unwrap();
+            assert_eq!(to.0, parts.concat(), "{sip} bytes a write");
+        }
     }
 
     #[test]

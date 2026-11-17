@@ -176,7 +176,8 @@ impl Config {
     }
 
     /// What the types cannot say: a rate that is a rate, a timeout a handshake
-    /// can finish inside, and one answer to the question of who may connect.
+    /// can finish inside, one answer to the question of who may connect, and
+    /// an agent somewhere a connection can be made to.
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.max_fps > 0, "max_fps must be at least 1");
         anyhow::ensure!(
@@ -191,6 +192,10 @@ impl Config {
             !(self.pam.is_some() && self.password.is_some()),
             "[pam] and [password] are two answers to the same question; keep one"
         );
+        if let Some(agent) = &self.enc_agent {
+            wlshare_core::agent::client::Agent::check(&agent.address)
+                .context("the [enc_agent] table's address")?;
+        }
         Ok(())
     }
 
@@ -338,8 +343,13 @@ mod tests {
                 .key_file(Path::new("/etc/x/config.toml")),
             PathBuf::from("/k")
         );
-        // An agent is somewhere.
+        // An agent is somewhere, at a port: an address with none is the
+        // configuration's mistake, said when it is read and not found out
+        // as an agent that never answers.
         assert!(toml::from_str::<Config>("[enc_agent]\n").is_err());
+        let portless: Config = toml::from_str("[enc_agent]\naddress = \"gpu.lan\"").unwrap();
+        let why = format!("{:#}", portless.validate().unwrap_err());
+        assert!(why.contains("[enc_agent]") && why.contains("port"), "{why}");
     }
 
     #[test]

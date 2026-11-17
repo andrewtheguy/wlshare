@@ -728,16 +728,42 @@ quantizer each was asked at.
   refused in the hello.
 - **No fallback.** A daemon set to an agent has no other H.264 encoder and
   looks for none. It starts whether or not the agent answers, saying which,
-  since the agent may be back before a session needs it. A stream that cannot
-  be opened — the agent away, a key that is not its own — or that fails a
-  frame fails its encode as any coder's failure does, and the session with
-  it, the log saying why; the next session tries the agent again. With
-  `hardware_h264` off the table is not used, and its key not read.
-- **So many connections.** The agent has at most 32 connections at once,
-  each a thread, a socket and, past its handshake, an encoder on the GPU, and
-  closes one past that unanswered, which fails that stream as an agent away
-  does: a bound on what whoever reaches the port can make it hold without
-  the key. A connection's place is given back when it ends, however it ends.
+  since the agent may be back before a session needs it; an agent that does
+  answer has its encoder tried as a local one is, and with an encoder that
+  fails the trial the daemon does not start, as it does not on a host where
+  nothing works. A stream that cannot be opened — the agent away, a key that
+  is not its own — or that fails a frame fails its encode as any coder's
+  failure does, and the session with it, the log saying why; the next
+  session tries the agent again. With `hardware_h264` off the table is not
+  used, and its key not read; its address is held to a host and a port
+  whenever the configuration is read.
+- **One daemon at a time.** The daemon with a stream open is the agent's
+  user, known by its address, until its last stream closes. While it is, a
+  connection from any other address is closed as it is accepted, before a
+  thread or a handshake, so nobody elsewhere on the network comes between
+  the user and its streams, with the key or without; and a second daemon set
+  to the same agent is kept out until the first has no stream, its sessions
+  failing meanwhile as with an agent away. An agent nobody is using lets any
+  address try the key, and the first to prove it and ask for a stream is the
+  user. The agent opens one VA display for its user, with the user's first
+  stream, and closes it with the last: the streams share it, each calling
+  libva under the display's lock, so a stream opened is an encoder made and
+  not the driver loaded again.
+- **So many, and so long.** The agent codes at most 32 streams at once, each
+  a thread, a socket and an encoder on the GPU, and tells a daemon that asks
+  for one more that there is none. A connection that has not yet proved the
+  key is no stream and takes no stream's place: the agent keeps 32 of those,
+  each a thread and a socket, and one more closes the oldest, so whoever is
+  let in without the key can neither fill the agent nor keep a
+  daemon out, whose handshake is over in milliseconds. Every wait has an
+  end, as a whole and not a byte at a time: 5 seconds for a handshake and 5
+  for a frame, sent and answered, which is the longest a session stands
+  still on an agent that has stopped answering; and either end gone without
+  a word is found out within 30 seconds, by TCP's keepalive where the stream
+  stands idle and by its user timeout where bytes were never acknowledged.
+  The daemon looks the agent's name up for its first stream and not again
+  until its addresses stop answering, and sends a picture's rows from where
+  they lie, with no copy of the picture gathered first.
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the

@@ -3,19 +3,27 @@
 //!
 //! A stream is a connection: opened, each end's key proved to the other, and
 //! asked for an encoder over the picture's size; then every frame is what
-//! changed of the picture, sent, and the access unit, read back. A stream
-//! dropped closes its connection, which ends the agent's encoder.
+//! changed of the picture, sent from where it lies, and the access unit, read
+//! back. A stream dropped closes its connection, which ends the agent's
+//! encoder.
+//!
+//! A session waits on its stream, so every wait here has an end: a
+//! connection is made within three seconds an address, a handshake done within
+//! [`HANDSHAKE_WITHIN`] and a frame within [`FRAME_WITHIN`], each as a whole,
+//! and an agent gone while its stream stood idle has failed the connection
+//! by the keepalive before the next frame is sent. The agent's name is
+//! looked up once and not for every stream.
 
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::io::{IoSlice, Read, Write};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::Context as _;
 
 use crate::agent::link::{
-    FAILED, FRAME, IO, KEYFRAME, MAX_SIDE, Mac as _, NONCE, NONE, OK, PROOF, REFINE, Role, Span,
-    hello, nonce, proof, read_hello,
+    FAILED, FRAME, FRAME_WITHIN, HANDSHAKE_WITHIN, KEYFRAME, MAX_SIDE, Mac as _, NONE, OK, PROOF,
+    REFINE, Role, Span, Timed, hello, keepalive, nonce, proof, read_hello, write_all_vectored,
 };
 use crate::h264::{Backend, Planes};
 
@@ -74,6 +82,9 @@ fn changed(planes: &Planes) -> Vec<Span> {
 pub struct Agent {
     address: String,
     key: Arc<[u8]>,
+    /// The addresses the name was last found at, every clone's: none until
+    /// a stream looks, and none again once they have stopped answering.
+    found: Arc<Mutex<Vec<SocketAddr>>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -91,7 +102,28 @@ impl Agent {
         Self {
             address,
             key: key.into(),
+            found: Arc::default(),
         }
+    }
+
+    /// Whether `address` is one an agent can be at, a host and a port: an
+    /// error says what it is short of, before anything is looked up.
+    pub fn check(address: &str) -> anyhow::Result<()> {
+        if address.parse::<SocketAddr>().is_ok() {
+            return Ok(());
+        }
+        let (host, port) = address
+            .rsplit_once(':')
+            .with_context(|| format!("{address:?} names no port: an agent is at host:port"))?;
+        anyhow::ensure!(
+            !host.is_empty() && !host.contains([':', '[', ']']),
+            "{address:?} is no host:port: an IPv6 address goes in brackets, [address]:port"
+        );
+        anyhow::ensure!(
+            port.parse::<u16>().is_ok_and(|port| port != 0),
+            "{address:?} names no port: {port:?} is not one"
+        );
+        Ok(())
     }
 
     /// Where the agent listens, as configured.
@@ -99,49 +131,52 @@ impl Agent {
         &self.address
     }
 
-    /// A connection to the agent, each end's key proved to the other.
-    fn connect(&self) -> anyhow::Result<(TcpStream, [u8; NONCE], [u8; NONCE])> {
+    /// A connection to the agent, nothing yet said on it.
+    ///
+    /// The name is looked up by the first stream and by none after it, a
+    /// lookup being the resolver's to take its time over, on the session
+    /// that waits; until its addresses stop answering, when they are
+    /// forgotten and the next stream looks again, an agent's address being
+    /// free to change.
+    fn connect(&self) -> anyhow::Result<TcpStream> {
+        let found = |found: &Mutex<Vec<SocketAddr>>| {
+            found.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        };
+        let mut addresses = found(&self.found);
+        if addresses.is_empty() {
+            addresses = self
+                .address
+                .to_socket_addrs()
+                .context("looking its address up")?
+                .collect();
+            anyhow::ensure!(!addresses.is_empty(), "its name has no address");
+            *self.found.lock().unwrap_or_else(PoisonError::into_inner) = addresses.clone();
+        }
         let mut refused = None;
-        let mut link = None;
-        for address in self
-            .address
-            .to_socket_addrs()
-            .context("looking its address up")?
-        {
-            match TcpStream::connect_timeout(&address, CONNECT) {
-                Ok(stream) => {
-                    link = Some(stream);
-                    break;
+        for address in &addresses {
+            match TcpStream::connect_timeout(address, CONNECT) {
+                Ok(link) => {
+                    link.set_nodelay(true)?;
+                    keepalive(&link)?;
+                    return Ok(link);
                 }
                 Err(e) => refused = Some(e),
             }
         }
-        let mut link = match (link, refused) {
-            (Some(link), _) => link,
-            (None, Some(e)) => return Err(e).context("connecting"),
-            (None, None) => anyhow::bail!("its name has no address"),
-        };
-        link.set_nodelay(true)?;
-        link.set_read_timeout(Some(IO))?;
-        link.set_write_timeout(Some(IO))?;
-        let ours = nonce();
-        link.write_all(&hello(&ours)).context("sending the hello")?;
-        let theirs = read_hello(&mut link)?;
-        let mut proved = [0; PROOF];
-        link.read_exact(&mut proved)
-            .context("reading its proof of the key")?;
-        proof(&self.key, Role::Agent, &ours, &theirs)?
-            .verify_slice(&proved)
-            .map_err(|_| anyhow::anyhow!("its key is not this daemon's"))?;
-        Ok((link, ours, theirs))
+        self.found
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        Err(refused.expect("an address was tried")).context("connecting")
     }
 }
 
 /// One stream on an agent: the connection it is coded over.
 pub struct Stream {
     link: TcpStream,
-    /// A frame's request, kept for the next one's bytes.
-    request: Vec<u8>,
+    /// A frame's request less its rows, which are sent from the planes: the
+    /// frame's header and each rectangle's, kept for the next one's bytes.
+    head: Vec<u8>,
     /// The most bytes an access unit of this picture is taken to be.
     most: usize,
 }
@@ -154,7 +189,23 @@ impl Stream {
                 width <= MAX_SIDE && height <= MAX_SIDE,
                 "a {width}x{height} picture is past the {MAX_SIDE} pixels a side an agent takes"
             );
-            let (mut link, ours, theirs) = agent.connect()?;
+            let link = agent.connect()?;
+            // The handshake as a whole, the agent's opening of its encoder
+            // included, in the one time.
+            let mut timed = Timed::new(&link);
+            timed.within(HANDSHAKE_WITHIN);
+            let ours = nonce();
+            timed
+                .write_all(&hello(&ours))
+                .context("sending the hello")?;
+            let theirs = read_hello(&mut timed)?;
+            let mut proved = [0; PROOF];
+            timed
+                .read_exact(&mut proved)
+                .context("reading its proof of the key")?;
+            proof(&agent.key, Role::Agent, &ours, &theirs)?
+                .verify_slice(&proved)
+                .map_err(|_| anyhow::anyhow!("its key is not this daemon's"))?;
             let mut open = [0; PROOF + 4];
             open[..PROOF].copy_from_slice(
                 &proof(&agent.key, Role::Daemon, &ours, &theirs)?
@@ -163,11 +214,11 @@ impl Stream {
             );
             open[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
             open[PROOF + 2..].copy_from_slice(&(height as u16).to_be_bytes());
-            link.write_all(&open).context("asking for a stream")?;
-            status(&mut link).context("opening a stream")?;
+            timed.write_all(&open).context("asking for a stream")?;
+            status(&mut timed).context("opening a stream")?;
             Ok(Self {
                 link,
-                request: Vec::new(),
+                head: Vec::new(),
                 // Raw 4:2:0 is 384 bytes a macroblock, and the agent's own
                 // buffer is that and headroom ([`crate::h264::vaapi::Stream::open`]).
                 most: width.div_ceil(16) * height.div_ceil(16) * 400 + 64 * 1024,
@@ -179,7 +230,7 @@ impl Stream {
 
 /// Read the agent's status byte: `true` for [`OK`], `false` for [`NONE`], and
 /// for [`FAILED`] the reason it gives, as the error.
-fn status(link: &mut TcpStream) -> anyhow::Result<bool> {
+fn status(link: &mut impl Read) -> anyhow::Result<bool> {
     let mut status = [0];
     link.read_exact(&mut status)
         .context("waiting for its answer")?;
@@ -205,35 +256,53 @@ impl Backend for Stream {
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
+        /// The frame's own header: its tag, flags, quantizer and count.
+        const FRAME_HEAD: usize = 7;
+        /// A rectangle's: its four numbers.
+        const SPAN_HEAD: usize = 8;
         let spans = changed(planes);
-        let request = &mut self.request;
-        request.clear();
-        request.extend_from_slice(&[
+        let head = &mut self.head;
+        head.clear();
+        head.extend_from_slice(&[
             FRAME,
             if keyframe { KEYFRAME } else { 0 } | if planes.refine { REFINE } else { 0 },
             qp,
         ]);
-        request.extend_from_slice(&(spans.len() as u32).to_be_bytes());
+        head.extend_from_slice(&(spans.len() as u32).to_be_bytes());
         for span in &spans {
-            request.extend_from_slice(&span.header());
+            head.extend_from_slice(&span.header());
+        }
+        // The request as it is sent: the headers, and between them the rows
+        // where they lie in the planes, so that a picture is not copied
+        // into a buffer of its own on its way to the connection. A
+        // rectangle the planes' whole stride across is one run of each.
+        let stride = planes.stride;
+        let mut request = vec![IoSlice::new(&head[..FRAME_HEAD])];
+        for (span, header) in spans.iter().zip(head[FRAME_HEAD..].chunks(SPAN_HEAD)) {
+            request.push(IoSlice::new(header));
             for (plane, rows) in [
                 (&planes.y, span.y..span.y + span.h),
                 (&planes.uv, span.y / 2..(span.y + span.h) / 2),
             ] {
-                for row in rows {
-                    request.extend_from_slice(&plane[row * planes.stride + span.x..][..span.w]);
+                if span.w == stride {
+                    request.push(IoSlice::new(&plane[rows.start * stride..rows.end * stride]));
+                } else {
+                    request.extend(
+                        rows.map(|row| IoSlice::new(&plane[row * stride + span.x..][..span.w])),
+                    );
                 }
             }
         }
+        // The picture sent and the access unit read back in the one time.
+        let mut link = Timed::new(&self.link);
+        link.within(FRAME_WITHIN);
         let coded = (|| {
-            self.link
-                .write_all(request)
-                .context("sending it a picture")?;
-            if !status(&mut self.link)? {
+            write_all_vectored(&mut link, &mut request).context("sending it a picture")?;
+            if !status(&mut link)? {
                 return Ok(false);
             }
             let mut length = [0; 4];
-            self.link.read_exact(&mut length)?;
+            link.read_exact(&mut length)?;
             let length = u32::from_be_bytes(length) as usize;
             anyhow::ensure!(
                 length <= self.most,
@@ -241,7 +310,7 @@ impl Backend for Stream {
             );
             let start = out.len();
             out.resize(start + length, 0);
-            if let Err(e) = self.link.read_exact(&mut out[start..]) {
+            if let Err(e) = link.read_exact(&mut out[start..]) {
                 out.truncate(start);
                 return Err(e).context("reading its frame");
             }
@@ -345,6 +414,34 @@ mod tests {
                 }
             ]
         );
+    }
+
+    /// An agent is at a host and a port, and an address that is not is told
+    /// what it is short of.
+    #[test]
+    fn an_agents_address_is_a_host_and_a_port() {
+        for good in [
+            "192.168.1.20:5990",
+            "gpu.lan:5990",
+            "[fe80::1]:5990",
+            "gpu:1",
+        ] {
+            Agent::check(good).unwrap_or_else(|e| panic!("{good}: {e:#}"));
+        }
+        for bad in [
+            "gpu.lan",
+            "gpu.lan:",
+            ":5990",
+            "gpu.lan:0",
+            "gpu.lan:port",
+            "gpu.lan:70000",
+            "fe80::1:5990",
+            "[fe80::1]",
+            "",
+        ] {
+            let why = Agent::check(bad).expect_err(bad).to_string();
+            assert!(why.contains("port"), "{bad}: {why}");
+        }
     }
 
     /// Every sample of what changed is in exactly one rectangle, however the

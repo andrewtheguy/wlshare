@@ -52,7 +52,9 @@
 //! HuC firmware, which only bitrate control needs. A daemon configured with an agent, and
 //! `hardware_h264` on, looks for nothing here: the agent's encoder is its
 //! one, tried the same way, and a daemon whose agent is away starts all the
-//! same and says so, since the agent may be back before a session needs it.
+//! same and says so, since the agent may be back before a session needs it;
+//! one whose agent answers with an encoder that fails the trial does not
+//! start, having no other.
 //!
 //! **Failure ends the session.** A coder that cannot be opened, refuses a
 //! stream or fails one midway fails the encode of the picture it codes
@@ -108,23 +110,35 @@ impl Encoder {
     /// neither working.
     ///
     /// With `hardware` and an `agent`, the agent's and no other, whether or
-    /// not it answers now: it is tried, and one that fails is said to, but a
-    /// session is what finds out whether it is there when needed. The trial
-    /// waits no longer on an agent that says nothing than the link's own
-    /// limits on a connection and on each read. Without `hardware` an agent
-    /// is not asked.
+    /// not it answers now: an agent that opens no stream — away, or of
+    /// another key — is said to, and is the encoder all the same, since a
+    /// session is what finds out whether it is there when needed. One that
+    /// opens a stream is there, and its encoder is tried as any is: failing
+    /// the trial it is no encoder, and with no other the daemon does not
+    /// start, as it does not on a host where nothing works. The trial waits
+    /// no longer on an agent that says nothing than the link's own limits on
+    /// a connection, a handshake and a frame. Without `hardware` an agent is
+    /// not asked.
     pub fn find(hardware: bool, agent: Option<remote::Agent>) -> anyhow::Result<Self> {
         if hardware {
             if let Some(agent) = agent {
                 let encoder = Self::Remote(agent.clone());
-                match encoder.try_frames() {
-                    Ok(()) => info!(
-                        "hardware H.264: the agent at {}, experimental",
-                        agent.address()
-                    ),
+                match encoder.trial_stream() {
                     Err(e) => warn!(
                         "{e:#}: a session that needs H.264 fails until it answers, since a daemon set to an agent has no other encoder"
                     ),
+                    Ok(stream) => {
+                        Self::trial(stream).with_context(|| {
+                            format!(
+                                "the encoding agent at {} answers and its encoder fails its trial, and a daemon set to an agent has no other",
+                                agent.address()
+                            )
+                        })?;
+                        info!(
+                            "hardware H.264: the agent at {}, experimental",
+                            agent.address()
+                        );
+                    }
                 }
                 return Ok(encoder);
             }
@@ -166,9 +180,20 @@ impl Encoder {
     /// by libavcodec and its median macroblock held to the QP asked, so an
     /// encoder that cannot move its quantizer between frames is not one.
     fn try_frames(&self) -> anyhow::Result<()> {
-        let mut coder = self.coder()?;
+        Self::trial(self.trial_stream()?)
+    }
+
+    /// A stream over the trial's picture, opened: for an agent, that it is
+    /// there, holds the key and has an encoder.
+    fn trial_stream(&self) -> anyhow::Result<Box<dyn H264Stream>> {
         let (w, h) = PROBE_SIZE;
-        let mut stream = coder.open(w, h).map_err(|e| anyhow::anyhow!("{e}"))?;
+        self.coder()?.open(w, h).map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// The trial of an encoder, on a stream of it over the trial's picture
+    /// ([`Self::try_frames`]).
+    fn trial(mut stream: Box<dyn H264Stream>) -> anyhow::Result<()> {
+        let (w, h) = PROBE_SIZE;
         let mut decoder = crate::decode::Decoder::with_qps()?;
         for (n, (quality, nal, kind)) in [(50, 5, "an IDR picture"), (100, 1, "a P frame")]
             .into_iter()
@@ -1085,7 +1110,12 @@ mod tests {
             serve::serve(
                 listener,
                 KEY.into(),
-                Arc::new(move |coded| encoder.coder()?.backend(coded)),
+                // A coder for the daemon it codes for, as a session has one.
+                Arc::new(move || {
+                    let coder = std::sync::Mutex::new(encoder.coder()?);
+                    Ok(Arc::new(move |coded| coder.lock().unwrap().backend(coded))
+                        as Arc<serve::Streams>)
+                }),
             )
         });
         address
@@ -1094,6 +1124,57 @@ mod tests {
     /// The encoder of a daemon set to an agent that codes by `encoder`.
     fn agent(encoder: Encoder) -> Encoder {
         Encoder::Remote(remote::Agent::new(agent_at(encoder), KEY.to_vec()))
+    }
+
+    /// A daemon set to an agent starts with the agent away, since it may be
+    /// back; and does not start with an agent that is there and whose
+    /// encoder fails the trial, here one deaf to the quantizer, since that
+    /// encoder is the only one it would have.
+    #[test]
+    fn a_daemon_starts_with_its_agent_away_and_not_with_its_encoder_failing() {
+        // Nothing listens on the port for TCP's multiplexer, 1.
+        let away = remote::Agent::new("127.0.0.1:1".to_owned(), KEY.to_vec());
+        assert!(matches!(
+            Encoder::find(true, Some(away)),
+            Ok(Encoder::Remote(_))
+        ));
+
+        let there = remote::Agent::new(agent_at(Encoder::X264), KEY.to_vec());
+        assert!(matches!(
+            Encoder::find(true, Some(there)),
+            Ok(Encoder::Remote(_))
+        ));
+
+        /// An encoder that codes every frame at one quantizer.
+        struct Deaf(Box<dyn Backend>);
+        impl Backend for Deaf {
+            fn frame(
+                &mut self,
+                planes: &Planes,
+                keyframe: bool,
+                _: u8,
+                out: &mut Vec<u8>,
+            ) -> anyhow::Result<bool> {
+                self.0.frame(planes, keyframe, 28, out)
+            }
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            serve::serve(
+                listener,
+                KEY.into(),
+                Arc::new(|| {
+                    Ok(Arc::new(|coded| {
+                        let deaf = Deaf(Encoder::X264.coder()?.backend(coded)?);
+                        Ok(Box::new(deaf) as Box<dyn Backend>)
+                    }) as Arc<serve::Streams>)
+                }),
+            )
+        });
+        let deaf = remote::Agent::new(address.clone(), KEY.to_vec());
+        let why = format!("{:#}", Encoder::find(true, Some(deaf)).unwrap_err());
+        assert!(why.contains(&address) && why.contains("QP 16"), "{why}");
     }
 
     /// A stream through an agent is a stream: its frames decode to the
