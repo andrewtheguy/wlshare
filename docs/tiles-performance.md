@@ -511,8 +511,12 @@ bytes are the same; every sample ends as many pixels off either way:
 |---|---:|---:|
 | held, mixed-1920x1080 | 171.9 MB | 171.1 MB, −0.5% |
 | held, mixed-2880x1800@2 | 348.6 MB | 343.9 MB, −1.4% |
-| held, every sample | 1,174.7 MB | 1,169.2 MB, −0.47% |
-| lossless, every sample | 15,026.7 MB | 15,026.1 MB, −0.00% |
+| held, every sample | 1,206.2 MB | 1,200.7 MB, −0.46% |
+| lossless, every sample | 17,137.1 MB | 17,136.4 MB, −0.00% |
+
+The video and window rows of every sample are of those samples as recut on
+2026-11-17, counted again by the same two builds that day
+(`cache-16384-20261109/recut-20261117/`); they save a few KB still.
 
 Walked, the bytes a larger cache saves go to frames, and nothing moves past
 what two runs of one build differ by:
@@ -793,11 +797,17 @@ runs; changes that move no byte checked the same with `--encode 20`, which
 is deterministic; and the encoder alone over the samples, the walk held at
 a dial, three rounds, for its processor time. Flood is in every run, for
 reference. The runs are `bench/progressive-opt-20261030/` in the artifacts.
+The video and window samples were recut again on 2026-11-17, to the first
+explosion at its peak where they had been its growth out of black; their
+figures here are of both builds walked again over them that day
+(`progressive-opt-20261030/recut-20261117/`), on lab1 as rebuilt then, four
+vCPUs of EPYC Milan where the rest had eight of Rome, so their times and
+rates are not to be set beside the other rows', only beside each other.
 
 **The settle.** Below the walk's ceiling a tick sent 40 tiles a quarter of a
 second, however idle the link, so a desktop that stopped took as long to
 settle as its tiles took at that pace: a 4K video on 10 Mbit/s stopped, and
-21 s of 5 KB ticks followed on a link carrying 160 kbit/s. The settle is now
+26 s of 5 KB ticks followed on a link carrying 160 kbit/s. The settle is now
 paced by the link ([It settles](architecture.md#the-tiles-encoding)): the
 bytes a tick sends walk on how long the updates that carried one queued, and
 on a still desktop the next tick goes at the fence. The upgrades of a tile no
@@ -809,9 +819,9 @@ The settle, summed over each scenario's runs, main then the branch:
 | Scenario | Settle | Mean PSNR, 4K at 5 Mbit/s |
 |---|---|---|
 | browser | 66.7 → 15.2 s | 32.9 → 32.0 dB |
-| video | 124.7 → 20.9 s | 41.7 → 44.8 dB |
+| video | 158.9 → 22.0 s | 39.0 → 39.5 dB |
 | walk | 110.6 → 11.8 s | 41.7 → 42.2 dB |
-| window | 27.4 → 11.6 s | 40.5 → 41.1 dB |
+| window | 32.6 → 10.6 s | 40.7 → 39.9 dB |
 | drag | 25.3 → 10.7 s | 38.1 → 39.9 dB |
 | mixed, both sizes | 23.2 → 4.0 s | |
 
@@ -845,16 +855,19 @@ sessions sent the same bytes; on lab1:
 | drag-3840x2160@2 | 10 | 19.8 → 21.5 | 32 → 32 | 311 → 229 | 2.06 → 0.89 |
 
 **The processor.** The encoder alone, the median of three, main then the
-branch, the same bytes but the drag's:
+branch, the same bytes but the drag's and, recut, the 4K video's (0.7% more
+at 90, 3% at 40). The video and window rows are of the samples recut on
+2026-11-17, on lab1 rebuilt that day (four vCPUs of EPYC Milan); the
+others are of eight vCPUs of Rome:
 
 | Sample | Dial 90 | Dial 40 |
 |---|---|---|
-| video-3840x2160@2 | 8.54 → 5.93 s | 8.29 → 5.76 s |
-| video-1920x1080 | 2.01 → 1.69 s | |
+| video-3840x2160@2 | 7.02 → 5.72 s | 7.22 → 5.57 s |
+| video-1920x1080 | 2.15 → 1.80 s | |
 | walk-1920x1080 | 3.14 → 2.62 s | |
 | browser-2880x1800@2 | 2.99 → 2.60 s | 2.72 → 2.48 s |
 | drag-2880x1800@2 | 1.28 → 0.77 s | |
-| window-1920x1080 | 0.73 → 0.68 s | |
+| window-1920x1080 | 0.84 → 0.80 s | |
 | terminal-1920x1080 | 0.19 → 0.15 s | |
 
 Four changes, in order of what they took off:
@@ -864,7 +877,12 @@ Four changes, in order of what they took off:
   held, so most went back to the allocator and came from it zeroed every
   update, and the eight coding threads queued on the lock. Each thread now
   keeps a stash, moved to and from a pool of two 4K updates' worth 32 at a
-  time: a third off a 4K video, a sixth off a 1080p one and the walk.
+  time: a third off a 4K video, a sixth off a 1080p one and the walk, on
+  eight vCPUs. On four (lab1 rebuilt 2026-11-17) the lock is not where the
+  time goes: the branch before them and after are within 4% of each other
+  on the video and window samples, recut or as they were, the window the
+  most and the spare buffers then the slower, and both a sixth to a fifth
+  off main's 4K video.
 - A first pass coded the full stage beside its own to compare wherever the
   full stage kept at most half as many coefficients again, which at 75 is
   nearly every tile: a scroll and a drag tried it for 99% of their tiles,
@@ -882,24 +900,26 @@ Four changes, in order of what they took off:
 
 In the walks, which code more of what moves as the encoder gets faster,
 the encoder's processor time over each scenario's runs fell 15% on the
-browser to 33% on the terminal, 21 to 22% on the video, the walk and the mixed
-sessions, and its share of a core at 100 Mbit/s:
+browser to 33% on the terminal, 21 to 22% on the walk and the mixed
+sessions, and 14% on the video and 12% on the window on their four
+processors, and its share of a core at 100 Mbit/s:
 
 | Capture | Share of a core | Per update | fps |
 |---|---|---|---|
-| video-3840x2160@2 | 136 → 105% | 71.6 → 47.4 ms | 18.9 → 22.0 |
+| video-3840x2160@2 | 92.8 → 82.5% | 55.4 → 43.0 ms | 16.7 → 19.1 |
 | mixed-2880x1800@2 | 45.2 → 32.0% | 29.2 → 20.5 ms | 15.5 → 15.6 |
 | browser-2880x1800@2 | 37.3 → 34.4% | 24.1 → 20.3 ms | 15.3 → 16.7 |
 | drag-2880x1800@2 | 23.5 → 14.7% | 10.1 → 6.1 ms | 23.2 → 24.1 |
-| window-3840x2160@2 | 42.4 → 35.5% | 19.4 → 16.1 ms | 21.9 → 22.1 |
+| window-3840x2160@2 | 38.2 → 34.1% | 17.0 → 14.7 ms | 22.4 → 23.3 |
 | mixed-1920x1080 | 17.9 → 15.2% | 11.1 → 9.4 ms | 16.0 → 16.1 |
 | flood-1920x1080 | 51.7 → 46.5% | 56.1 → 47.9 ms | 9.2 → 9.7 |
 
 The frame rates and what changed shown at 5 and 10 Mbit/s are otherwise
 within a run's noise, which with measured encode times is a frame or two a
-second and up to a hundred milliseconds on one run: the 4K window at 5
-Mbit/s showed its changes at a median 440 ms where main's run showed them
-at 308, and with `--encode 20` its every update while it plays is main's.
+second and up to a hundred milliseconds on one run: the 4K window at 10
+Mbit/s showed its changes at a median 271 ms where main's run showed them
+at 205, and with `--encode 20` its updates while it plays are main's to
+within a few tens of bytes and their median 208 ms to main's 207.
 
 **Tried, and not kept.** A first pass at the coarsest stage while the last
 update's fence was late, as the host's first passes go to 25 when its socket
@@ -1187,58 +1207,67 @@ the artifacts as `bench/median-tiles-20261110/`.
 its planar figures are not the eight cores' of
 [Lossless tiles](#lossless-tiles)), alone: `motion-bench --tiles-only
 --lossless` and `--tiles-only --median` over every sample at every size,
-twice each, one after the other. Every frame of every capture was exact on
+twice each, one after the other. The figures below are of the same build
+run again so on 2026-11-17, once the video and window samples were recut
+to the first explosion at its peak, on lab1 rebuilt that day (four vCPUs
+of EPYC Milan), every sample again so that the table is of one machine
+(`median-tiles-20261110/recut-20261117/`); the samples that did not change
+gave their bytes of before. Every frame of every capture was exact on
 the bench's page under both, and a picture's bytes were the same in both
 its runs. Summed over the sizes, flood for reference, the processor's time
 over every thread, the mean of the two runs:
 
 | Scenario | CPU, lossless → median | Bytes, lossless → median |
 |---|---:|---:|
-| browser | 11.0 → 10.9 s | 3.58 → 3.58 MB |
-| drag | 3.9 → 3.9 s | 0.52 → 0.52 MB |
+| browser | 10.8 → 10.7 s | 3.58 → 3.58 MB |
+| drag | 4.0 → 3.9 s | 0.52 → 0.52 MB |
 | terminal | 0.5 → 0.5 s | 0.91 → 0.94 MB (1.03×) |
 | uncover | 2.1 → 2.0 s | 2.72 → 2.72 MB |
 | still | 0.2 → 0.2 s | 0.60 → 0.60 MB |
-| video | 20.3 → 21.1 s (1.04×) | 2,679 → 1,670 MB (0.62×) |
-| walk | 32.0 → 31.5 s (0.99×) | 3,623 → 2,222 MB (0.61×) |
-| window | 4.7 → 4.9 s (1.05×) | 706 → 457 MB (0.65×) |
-| mixed | 60.0 → 62.0 s (1.03×) | 8,011 → 5,522 MB (0.69×) |
-| flood | 28.8 → 30.3 s (1.05×) | 3,446 → 2,713 MB (0.79×) |
-| all but flood | 135 → 137 s (1.02×) | 15,027 → 9,879 MB (0.66×) |
+| video | 27.0 → 28.6 s (1.06×) | 4,262 → 2,686 MB (0.63×) |
+| walk | 30.8 → 29.9 s (0.97×) | 3,623 → 2,222 MB (0.61×) |
+| window | 6.4 → 7.2 s (1.13×) | 1,234 → 789 MB (0.64×) |
+| mixed | 58.3 → 59.5 s (1.02×) | 8,011 → 5,522 MB (0.69×) |
+| flood | 27.4 → 28.0 s (1.02×) | 3,446 → 2,713 MB (0.79×) |
+| all but flood | 140 → 142 s (1.02×) | 17,138 → 11,228 MB (0.66×) |
 
 The milliseconds a frame with their 95th percentile, and the link at the
 capture's frame rate:
 
 | Capture | Lossless: ms a frame, MB, Mbit/s | Median: ms a frame, MB, Mbit/s |
 |---|---:|---:|
-| window, 1920×1080 | 2.47 (3.2), 49, 91 | 2.62 (3.6), 31, 58 |
-| video, 1920×1080 | 7.67 (9.9), 149, 249 | 8.08 (10.7), 96, 160 |
-| walk, 1920×1080 | 8.62 (15.1), 219, 116 | 8.96 (16.5), 148, 78 |
-| mixed, 1920×1080 | 4.77 (11.6), 2,498, 89 | 4.96 (12.4), 1,730, 62 |
-| mixed, 2880×1800 | 12.99 (27.3), 5,513, 196 | 13.39 (29.2), 3,792, 135 |
-| video, 2880×1800 | 22.23 (28.9), 377, 588 | 23.98 (32.3), 246, 383 |
-| video, 3840×2160 | 32.63 (42.9), 432, 722 | 32.10 (43.2), 244, 408 |
+| window, 1920×1080 | 3.81 (5.4), 88, 166 | 4.38 (5.9), 56, 106 |
+| video, 1920×1080 | 11.20 (18.5), 232, 314 | 11.78 (18.7), 153, 207 |
+| walk, 1920×1080 | 9.01 (15.8), 219, 116 | 9.15 (16.3), 148, 78 |
+| mixed, 1920×1080 | 4.87 (11.9), 2,498, 89 | 4.91 (12.3), 1,730, 62 |
+| mixed, 2880×1800 | 12.38 (25.6), 5,513, 196 | 12.68 (27.2), 3,792, 135 |
+| video, 2880×1800 | 28.62 (42.8), 596, 930 | 31.67 (43.2), 390, 608 |
+| video, 3840×2160 | 42.80 (71.5), 678, 919 | 42.35 (71.2), 391, 530 |
 
 - **The link.** Two thirds of the lossless tiles' bytes: the moving frames
-  14,515 MB to 9,367 over all but flood, the still stream's 512 MB as they
-  were. By capture, where the desktop moves, 0.48 to 0.71 of the lossless
-  tiles' bytes, the least at 4K: a video at 1920×1080 160 Mbit/s at its
-  frame rate where theirs is 249, at 4K 408 where theirs is 722, and the
+  16,329 MB to 10,419 over all but flood, the still stream's 808 MB as they
+  were. By capture, where the desktop moves, 0.48 to 0.70 of the lossless
+  tiles' bytes, the least at 4K: a video at 1920×1080 207 Mbit/s at its
+  frame rate where theirs is 314, at 4K 530 where theirs is 919, and the
   mixed session 62 where theirs is 89.
-- **The processor.** 2% more over all but flood, inside what two runs
-  differ by: the lossless tiles' two 134.4 and 134.9 s, the predictor's
-  137.8 and 136.0. By capture, where the desktop moves, 0.88 to 1.10 of the
-  lossless tiles', the most on a small video and the least at 4K: a video
-  at 1920×1080 0.4 ms more a frame, its 95th percentile 0.8 more.
+- **The processor.** 2% more over all but flood, the two runs of each
+  within 0.3 s: the lossless tiles' 140.1 and 139.8 s, the predictor's 142.3
+  and 142.6. By capture, where the desktop moves, 0.86 to 1.35 of the
+  lossless tiles', the most on a small window and the least on the walk at
+  4K: a video at 1920×1080 0.6 ms more a frame, its 95th percentile 0.3
+  more, and a window there 0.6 ms more of 3.8.
 - **A page.** A browser, a drag and an uncovering go through the still
   stream whole, the same bytes under both. A terminal has moving runs, 7 to
   11 KB a capture, which the predictor codes 2 to 4 KB larger: 3% of the
   terminal's bytes.
-- **Against the scratch copy.** The bytes are the scratch copy's of the day
-  before, capture for capture, and the lossless tiles' as well; its
-  processor was 4% more than planar's, its runs 139.2 s both.
+- **Against the scratch copy.** The bytes are the scratch copy's
+  ([Through motion-bench](#through-motion-bench)), capture for capture, and
+  the lossless tiles' as well; run again beside it, its processor was 3%
+  more than planar's, its runs 142.6 and 144.3 s.
 
-**The page's decoder.** zDesk's WebAssembly module as its page loads it
+**The page's decoder.** Measured on the video and window samples as they
+were before 2026-11-17, the explosion growing out of black, and not run
+again on the recut. zDesk's WebAssembly module as its page loads it
 (`zdesk-egfx` of the branch that brought the picture, its threads with it),
 in a worker of a page of its own in Chrome 156: the updates
 `motion-bench` sent over five samples, written out as they were sent under
@@ -1392,7 +1421,12 @@ still stream under each. lab1 (four cores of EPYC Rome, so its planar
 figures are not the eight cores' of [Lossless tiles](#lossless-tiles)),
 alone: `motion-bench --tiles-only --lossless` over every sample at every
 size, planar and the median twice each, JPEG-LS once. Archived in the
-artifacts as `bench/lossless-median-20261109/`.
+artifacts as `bench/lossless-median-20261109/`. The figures below are of
+the same scratch tree run again so on 2026-11-17, once the video and window
+samples were recut to the first explosion at its peak, on lab1 rebuilt that
+day (four vCPUs of EPYC Milan), every sample again so that the table is of
+one machine (`lossless-median-20261109/recut-20261117/`); the samples that
+did not change gave their bytes of before.
 
 Every frame of every capture came back exact under each coder. Summed over
 the sizes, flood for reference, the processor's time over every thread, the
@@ -1400,39 +1434,40 @@ mean of the runs:
 
 | Scenario | CPU: planar, median, JPEG-LS | Bytes: planar, median, JPEG-LS |
 |---|---:|---:|
-| browser | 10.7, 10.8, 10.6 s | 3.6, 3.6, 3.6 MB |
-| drag | 3.9, 3.9, 4.0 s | 0.52, 0.52, 0.52 MB |
-| terminal | 0.5, 0.5, 0.5 s | 0.91, 0.94, 0.97 MB |
-| uncover | 2.1, 2.0, 2.0 s | 2.7, 2.7, 2.7 MB |
+| browser | 10.5, 10.4, 10.8 s | 3.6, 3.6, 3.6 MB |
+| drag | 3.9, 3.9, 3.9 s | 0.52, 0.52, 0.52 MB |
+| terminal | 0.5, 0.5, 0.6 s | 0.91, 0.94, 0.97 MB |
+| uncover | 2.0, 2.0, 2.1 s | 2.7, 2.7, 2.7 MB |
 | still | 0.2, 0.2, 0.2 s | 0.6, 0.6, 0.6 MB |
-| video | 20.4, 21.5 (1.05×), 134.4 (6.6×) s | 2,679, 1,670 (0.62×), 1,370 (0.51×) MB |
-| walk | 32.1, 31.8 (0.99×), 172.5 (5.4×) s | 3,623, 2,222 (0.61×), 1,919 (0.53×) MB |
-| window | 4.8, 4.9 (1.04×), 36.9 (7.8×) s | 706, 457 (0.65×), 398 (0.56×) MB |
-| mixed | 59.9, 63.6 (1.06×), 458.0 (7.6×) s | 8,011, 5,522 (0.69×), 4,671 (0.58×) MB |
-| flood | 28.7, 30.7 (1.07×), 173.7 (6.1×) s | 3,446, 2,713 (0.79×), 3,554 (1.03×) MB |
-| all but flood | 135, 139 (1.04×), 819 (6.1×) s | 15,027, 9,879 (0.66×), 8,367 (0.56×) MB |
+| video | 26.9, 28.6 (1.06×), 184.7 (6.9×) s | 4,262, 2,686 (0.63×), 2,228 (0.52×) MB |
+| walk | 30.2, 29.9 (0.99×), 161.1 (5.3×) s | 3,623, 2,222 (0.61×), 1,919 (0.53×) MB |
+| window | 6.4, 7.1 (1.12×), 56.1 (8.8×) s | 1,234, 789 (0.64×), 694 (0.56×) MB |
+| mixed | 58.4, 60.9 (1.04×), 432.1 (7.4×) s | 8,011, 5,522 (0.69×), 4,671 (0.58×) MB |
+| flood | 26.8, 28.5 (1.06×), 156.1 (5.8×) s | 3,446, 2,713 (0.79×), 3,554 (1.03×) MB |
+| all but flood | 139, 143 (1.03×), 852 (6.1×) s | 17,138, 11,228 (0.66×), 9,520 (0.56×) MB |
 
 At 1920×1080, the milliseconds a frame with their 95th percentile:
 
 | Capture | Planar: ms a frame, MB | Median: ms a frame, MB | JPEG-LS: ms a frame, MB |
 |---|---:|---:|---:|
-| window | 2.57 (3.4), 49 | 2.77 (3.8), 31 | 20.7 (31), 28 |
-| video | 7.56 (9.9), 149 | 8.18 (10.9), 96 | 65.5 (99), 82 |
-| walk | 8.79 (14.7), 219 | 9.27 (17.2), 148 | 64.0 (111), 129 |
-| mixed | 4.88 (12.2), 2,498 | 5.03 (12.4), 1,730 | 39.6 (118), 1,495 |
+| window | 3.82 (5.9), 88 | 4.47 (6.2), 56 | 33.3 (41), 50 |
+| video | 11.14 (19.3), 232 | 11.46 (18.6), 153 | 87.3 (110), 134 |
+| walk | 8.78 (15.4), 219 | 8.82 (16.3), 148 | 60.4 (103), 129 |
+| mixed | 4.93 (12.4), 2,498 | 5.09 (12.4), 1,730 | 37.7 (112), 1,495 |
 
-- **The median predictor.** Two thirds of the lossless tiles' bytes for 4%
-  more of the processor: the moving frames 14,515 MB to 9,367 over all but
-  flood, the still stream's 512 MB as they were. By capture, where the
-  desktop moves, 0.48 to 0.71 of planar's bytes for 0.88 to 1.11 of its
-  processor, the two planar runs 133.9 and 135.1 s over all but flood and
-  the median's both 139.2. A video at 1920×1080 is 159 Mbit/s at its frame
-  rate where planar's is 248, and at 4K 244 MB for 32.5 ms a frame where
-  planar's is 432 for 32.7. Written as planar's coder is, it adds 0.6 ms
-  to a video's frame at 1920×1080, where the scratch bench's added 5.
+- **The median predictor.** Two thirds of the lossless tiles' bytes for 3%
+  more of the processor: the moving frames 16,329 MB to 10,419 over all but
+  flood, the still stream's 808 MB as they were. By capture, where the
+  desktop moves, 0.48 to 0.70 of planar's bytes for 0.88 to 1.18 of its
+  processor, the two planar runs 139.1 and 139.0 s over all but flood and
+  the median's 142.6 and 144.3. A video at 1920×1080 is 207 Mbit/s at its
+  frame rate where planar's is 314, and at 4K 391 MB for 42.6 ms a frame
+  where planar's is 678 for 42.4. Written as planar's coder is, it adds
+  0.3 ms to a video's frame at 1920×1080, where the scratch bench's added 5
+  on the samples as they were.
 - **JPEG-LS.** 0.56 of the bytes, ten points fewer than the median, for 6.1
-  times the processor, 5.9 times the median's: a video at 1920×1080 65 ms of
-  the processor a frame, at 2880×1800 172. On flood it is more than
+  times the processor, 6.0 times the median's: a video at 1920×1080 87 ms of
+  the processor a frame, at 2880×1800 239. On flood it is more than
   planar's bytes.
 - **A page.** A browser, a drag and an uncovering go through the still
   stream whole, the same bytes under each coder, so what the scratch bench
@@ -1450,7 +1485,12 @@ swap, `motion-bench --libx264 --tiles-only --frames` over the 1080p samples
 and the larger ones named, against main at `8a83c5f`, whose held stills were
 a fast PNG and whose settle went at the pace from its first tick. Two
 changes, one for each thing a user asked for: fewer bytes for a still, and
-no step up in what the link carries when a video stops.
+no step up in what the link carries when a video stops. The video and
+window rows below are of the samples recut on 2026-11-17 to the first
+explosion at its peak, run again so the same day: their bytes and the link
+on this machine as on lab1, their CPU on lab1 rebuilt that day (four vCPUs
+of EPYC Milan), the mean of two runs, the other rows' as they were on Rome.
+Archived in the artifacts as `bench/webp-stills-recut-20261117/`.
 
 **The stills are WebP.** A held list's still is a lossless WebP by libwebp
 in place of the `png` crate's fast PNG. The coders like for like, the
@@ -1476,13 +1516,15 @@ encoder's time, three quarters of preset 0's for a fifth more, and presets
 and an interface are where WebP gains, a fifth to a half of the PNG; a
 photograph is where it gains least and costs most, since nothing lossless
 is far under its entropy: the settle of a 1080p video's last frame is
-1.58 MB as PNG in 15 ms, 1.19 MB at preset 0 in 56 and 1.12 MB at preset 1
-in 247, a quarter of a second of one core, once, when a video stops.
+1.96 MB as PNG in 13 ms, 1.42 MB at preset 0 in 56 and 1.34 MB at preset 1
+in 300, a third of a second of one core, once, when a video stops (the
+recut sample's last frame on lab1 rebuilt 2026-11-17; the old cut's, 1.58,
+1.18 and 1.12 MB, took 11, 47 and 268 ms there).
 
 **The settle eases in.** On main the settle after the 1080p video sent its
-first tick of 191 kB half a second after the stream's END and 200 kB every
-50 ms from there: 33 Mbit/s over its busiest quarter second where the
-stream had been 20. Two things made it more than the pace it was meant to
+first tick of 217 kB 0.94 s after the stream's END and 140 to 270 kB every
+53 ms from there: 28 Mbit/s over its busiest quarter second where the
+stream had been 17. Two things made it more than the pace it was meant to
 keep to: a tick checked its bytes between runs, and a run is a row, 30
 tiles of a photograph, more than a tick's bytes by itself; and the ticks'
 own bytes counted toward the pace, so a settle raised the rate it kept to.
@@ -1500,10 +1542,10 @@ now, WebP and the eased settle together, against main:
 
 | Capture | Bytes | CPU | Settle's busiest 250 ms | Its first tick | Settled after |
 |---|---:|---:|---:|---:|---:|
-| video-1920x1080 | 13.0 → 12.1 MB | 1.58 → 2.64 s | 32.9 → 16.7 Mbit/s | 191 → 8 kB | 0.95 → 1.48 s |
-| video-2880x1800@2 | 26.3 → 24.7 MB | 5.29 → 6.96 s | 29.0 → 21.2 Mbit/s | 138 → 14 kB | 1.77 → 1.93 s |
-| window-1920x1080 | 4.32 → 5.16 MB | 0.59 → 0.93 s | 10.4 → 6.1 Mbit/s | 150 → 16 kB | 1.39 → 1.20 s |
-| window-2880x1800@2 | 7.14 → 8.37 MB | 1.78 → 1.62 s | 21.2 → 8.7 Mbit/s | 7 → 11 kB | 1.62 → 1.56 s |
+| video-1920x1080 | 13.7 → 12.8 MB | 1.68 → 2.09 s | 28.4 → 18.2 Mbit/s | 217 → 7 kB | 1.41 → 1.89 s |
+| video-2880x1800@2 | 28.5 → 27.1 MB | 5.43 → 6.10 s | 33.9 → 21.2 Mbit/s | 211 → 13 kB | 1.91 → 2.01 s |
+| window-1920x1080 | 5.54 → 5.20 MB | 0.57 → 0.73 s | 12.3 → 5.5 Mbit/s | 160 → 11 kB | 1.29 → 1.63 s |
+| window-2880x1800@2 | 9.35 → 8.68 MB | 1.69 → 1.97 s | 25.4 → 13.6 Mbit/s | 7 → 1 kB | 1.67 → 1.98 s |
 | browser-1920x1080 | 2.27 → 1.30 MB | 0.95 → 0.84 s | 4.7 Mbit/s → none | 146 kB → none | 0.81 s → at once |
 | uncover-1920x1080 | 1.30 → 0.29 MB | 0.23 → 0.18 s | none | none | at once |
 | still-1920x1080 | 455 → 96 kB | 45 → 44 ms | none | none | at once |
@@ -1512,12 +1554,14 @@ now, WebP and the eased settle together, against main:
 | terminal-1920x1080 | 1.11 → 0.13 MB | 78 → 81 ms | 2.3 Mbit/s → none | 71 kB → none | 0.10 s → at once |
 | drag-1920x1080 | 550 → 31 kB | 0.27 → 0.16 s | 2.5 Mbit/s → none | 77 kB → none | 1.94 s → at once |
 
-The stream's rate over each video's last second was 19.5 Mbit/s at 1080p
-and 42 at 2880x1800@2, 8 and 12 in the windows: the settle is now under
-the stream it follows at every size, from a first tick of 8 to 16 kB, and
-no tick is past 135 kB where the largest was 253. What it pays is the time
-to lossless, half a second more after the 1080p video, a sixth after the
-larger, and none after a window.
+The stream's rate over each video's last second was 17.1 Mbit/s at 1080p
+and 36.5 at 2880x1800@2, 7.9 and 13.0 in the windows: the settle now keeps
+about to the stream it follows, under it after the larger video and the
+smaller window and a twentieth over it after the 1080p video (18.2) and the
+larger window (13.6), from a first tick of 1 to 13 kB, and no tick is past
+134 kB where the largest was 272. What it pays is the time to lossless,
+half a second more after the 1080p video, a tenth after the larger, and a
+third after a window.
 
 Where no settle is left at all, the smaller still is why: a page of text
 at 1080p is 96 kB, within the 128 KiB of stills an update carries, so it
@@ -1526,14 +1570,16 @@ drag and the window uncovered send no H.264 at all, every frame of theirs
 lossless on the page where 0 to 108 of 120 were. The two larger pages of
 text are still past the budget, and start over once where they did twice.
 
-What rose is a video in a window. Its page was past the budget as PNG, so
-the first picture began a region the video then played in, one stream for
-the whole capture; as WebP the page is lossless at once, and the video
-that fades in grows under the update's stills for most of a second
-until a region carries all of it, up to 110 kB a frame, 0.8 MB more at
-1080p and 1.2 at 2880x1800@2. That is the budget's known cost
-([above](#the-settles-pace)), which a still a quarter the size now meets
-in another place.
+A video in a window is one stream under both. Its first picture, the
+video already at its peak, is past the budget as WebP as it was as PNG, so
+a region begins at once and the video plays in it for the whole capture,
+and the smaller stills take 6 to 7% off. On the samples as they were
+before 2026-11-17, the video fading in from black, the page was lossless at
+once as WebP, and the video grew under the update's stills for most of a
+second until a region carried all of it, up to 110 kB a frame, 0.8 MB more
+at 1080p and 1.2 at 2880x1800@2: the budget's known cost
+([above](#the-settles-pace)), which a still a quarter the size meets
+wherever a video begins small.
 
 The budget was swept again for WebP the same day, the same way: the stills
 an update carries, which is also the most a tick sends, at 32, 64, 128 and
@@ -1542,11 +1588,11 @@ frames the page held lossless:
 
 | Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
 |---|---:|---:|---:|---:|
-| video-1920x1080 | 10.7 MB, 21 Mbit/s | 11.3 MB, 23 | 12.1 MB, 30 | 13.2 MB, 43 |
-| video-2880x1800@2 | 24.4 MB, 68 | 23.1 MB, 43 | 24.7 MB, 47 | 26.9 MB, 65 |
+| video-1920x1080 | 12.5 MB, 23 Mbit/s | 12.6 MB, 23 | 12.8 MB, 23 | 13.0 MB, 26 |
+| video-2880x1800@2 | 27.0 MB, 44 | 27.0 MB, 44 | 27.1 MB, 47 | 27.2 MB, 51 |
 | walk-1920x1080 | 16.1 MB, 20 | 17.0 MB, 22 | 18.0 MB, 32 | 19.4 MB, 55 |
-| window-1920x1080 | 3.87 MB, 8 | 4.85 MB, 13 | 5.16 MB, 15 | 5.16 MB, 15 |
-| window-2880x1800@2 | 6.39 MB, 13 | 6.38 MB, 13 | 8.37 MB, 21 | 8.37 MB, 21 |
+| window-1920x1080 | 5.08 MB, 16 | 5.14 MB, 18 | 5.20 MB, 20 | 5.29 MB, 23 |
+| window-2880x1800@2 | 8.58 MB, 21 | 8.61 MB, 22 | 8.68 MB, 25 | 8.81 MB, 29 |
 | browser-1920x1080 | 2.02 MB, 10, 0 of 120 | 2.05 MB, 11, 0 | 1.30 MB, 4, 120 | 1.30 MB, 4, 120 |
 | uncover-1920x1080 | 0.53 MB, 9, 2 of 48 | 0.54 MB, 10, 2 | 0.29 MB, 3, 48 | 0.29 MB, 3, 48 |
 | terminal-1920x1080 | 0.52 MB, 14, 108 of 120 | 0.52 MB, 15, 111 | 0.13 MB, 3, 120 | 0.13 MB, 3, 120 |
@@ -1556,20 +1602,19 @@ frames the page held lossless:
 | mixed-1920x1080 | 134.9 MB, 22 | 134.4 MB, 22 | 134.7 MB, 22 | 134.5 MB, 22 |
 | mixed-2880x1800@2 | 273.4 MB, 46 | 273.2 MB, 46 | 273.5 MB, 46 | 273.9 MB, 46 |
 
-The budget stays 128 KiB. Below it a page at 1080p is past the stills
-again — the browser, the terminal, the window uncovered and the page of
-text each start as a region, lossy, for 1.6 to 5 times the bytes and
-about three to five times the busiest quarter second — for 7 Mbit/s off the
-1080p video's busiest and 11 off the walk's; at 32 KiB the larger video
-lays its regions out 27 times where it did 11, and a settle of 36 kB a
-tick takes 4.7 s. Above it the two larger pages of text are lossless at
-once, a third of their bytes, and a video's growth under the stills is
-two fifths more of the link's busiest quarter second, 43 and 65 Mbit/s. The
-windows' video is one stream again only where the page is past the
-budget, at 32 KiB, or at 64 at 2880x1800@2. The sessions at the desk are
-within a half of one per cent at every budget: the constant decides how
-a picture starts and how a video begins, and little of what a session
-sends.
+The budget stays 128 KiB. Below it a page at 1080p is past the stills again
+— the browser, the terminal, the window uncovered and the page of text each
+start as a region, lossy, for 1.6 to 5 times the bytes and about three to
+five times the busiest quarter second — for nothing off the 1080p video's
+busiest, 3 to 4 Mbit/s off the larger video's and the windows', and 11 off
+the walk's; at 32 KiB a settle of 41 kB a tick takes 5.2 s after the larger
+video. Above it the two larger pages of text are lossless at once, a third
+of their bytes, and a video's growth under the stills is a tenth more of the
+link's busiest quarter second, 26 and 51 Mbit/s, and a sixth more in the
+windows. The windows' video is one stream at every budget, its first picture
+past each. The sessions at the desk are within a half of one per cent at
+every budget: the constant decides how a picture starts and how a video
+begins, and little of what a session sends.
 
 That sweep moved one constant that did two things. They are two now, the
 stills an update carries (`HELD_BYTES`) and the most a tick sends
@@ -1584,21 +1629,20 @@ tick, and the time to lossless:
 
 | Capture | 32 KiB | 64 KiB | 128 KiB | 256 KiB |
 |---|---:|---:|---:|---:|
-| video-1920x1080 | 5.6 Mbit/s, 36 kB, 2.37 s | 10.8, 70 kB, 1.67 s | 16.7, 118 kB, 1.48 s | 18.9, 209 kB, 1.43 s |
-| video-2880x1800@2 | 5.6, 36 kB, 4.66 s | 10.9, 69 kB, 2.76 s | 21.2, 134 kB, 1.93 s | 35.8, 249 kB, 1.63 s |
+| video-1920x1080 | 5.7 Mbit/s, 41 kB, 2.99 s | 10.8, 70 kB, 2.12 s | 18.2, 127 kB, 1.89 s | 21.5, 252 kB, 1.93 s |
+| video-2880x1800@2 | 5.7, 41 kB, 5.20 s | 10.8, 69 kB, 3.05 s | 21.2, 134 kB, 2.01 s | 38.1, 263 kB, 1.70 s |
 | walk-1920x1080 | 5.7, 37 kB, 2.00 s | 10.8, 69 kB, 1.43 s | 15.2, 116 kB, 1.26 s | 16.1, 192 kB, 1.21 s |
-| window-1920x1080 | 5.5, 36 kB, 1.29 s | 6.1, 50 kB, 1.27 s | 6.1, 85 kB, 1.20 s | 7.5, 142 kB, 1.21 s |
-| window-2880x1800@2 | 5.7, 36 kB, 1.92 s | 10.3, 67 kB, 1.63 s | 8.7, 94 kB, 1.57 s | 10.4, 170 kB, 1.57 s |
+| window-1920x1080 | 5.5, 37 kB, 1.78 s | 7.2, 57 kB, 1.64 s | 5.5, 100 kB, 1.63 s | 11.0, 196 kB, 1.63 s |
+| window-2880x1800@2 | 5.7, 37 kB, 2.42 s | 10.8, 69 kB, 2.02 s | 13.6, 119 kB, 1.98 s | 12.7, 217 kB, 2.11 s |
 
-Both stay 128 KiB. A tick of 256 KiB settles a twentieth of a second
-sooner at 1080p and 0.3 s after the larger video, for an update twice the
-size and a settle of 36 Mbit/s there beside the stream's 42; one of 64 KiB
-is an update half the size for 0.2 s more to lossless at 1080p and 0.8 s
-after the larger video, whose settle the 50 ms between ticks then holds
-to 11 Mbit/s; one of 32 KiB takes 4.7 s there. Apart, neither finds a better place than
-together: the pairs off the axes, 64 and 64 and 256 and 64, are their
-stills' row and their tick's column, and the windows' video is one stream
-only where the stills are too few for a page.
+Both stay 128 KiB. A tick of 256 KiB settles 0.3 s sooner after the
+larger video and no sooner after the 1080p one or a window, for an update
+twice the size and a settle of 38 Mbit/s there beside the stream's 36.5;
+one of 64 KiB is an update half the size for 0.2 s more to lossless at
+1080p and 1.0 s after the larger video, whose settle the 50 ms between
+ticks then holds to 11 Mbit/s; one of 32 KiB takes 5.2 s there. Apart,
+neither finds a better place than together: the pairs off the axes, 64 and
+64 and 256 and 64, are their stills' row and their tick's column.
 
 ## What is worth a stream
 
@@ -1689,25 +1733,31 @@ the same tiles that are neither the one to their left nor the one above
 took 0.15 ms and gave the same verdict all 31 times, none of them close —
 30 dear by 4.6 to 206 times the bytes, one cheap by 67 — but a still came to
 1.2 to 2.8 bytes for each such pixel, by what it showed, where the WebP is
-what the still would be. So the tiles are coded.
+what the still would be. So the tiles are coded. On the video and window
+samples as recut on 2026-11-17 (the same build, on lab1 rebuilt that day)
+it ran five times where it had run twice: twice on the video at 1920x1080,
+once on the larger, and once on each window, every time dear, by 27 to 99
+times the bytes; sixteen tiles took 8.2 to 10.1 ms, 0.85% and 0.14% of the
+encoder's time on the two videos, and 1.5% and 0.6% on the windows, the
+1080p window's now the most of any.
 
 The guess first took a tile to have changed once in each tenth of a second
 it changed in, which is all the churn kept, and was held to half of
 `MOVING_BYTES` for it. A still goes with every update, though, and over
 those 31 a tile had changed 1.0 to 2.7 times a tenth, 2.1 to 2.6 under a
-video: a guess of 85 to 128 KiB over something changing three times a tenth
-would have ended a region whose stills then came to `MOVING_BYTES` and
-began it again. So the churn counts every change, the guess takes a still
-for each, and it is held to `MOVING_BYTES` whole. None of the 31 verdicts
-is another: every sample at both sizes, `small` at both and `many` at
-1920x1080 are the same to the byte. `many` at 2880x1800@2 is not
-([below](#many-small-movements-at-once)), the one capture with a guess
-near the line. And where more than four components are to be coded so in
-one layout, they share the 64 tiles four would take, one each at the
-least, and of more than 64 components that many are coded a layout, the
-rest in turn at the layouts after, so a desktop with many things moving
-under such a region is coded no more than one with four; no capture has
-more than three.
+video (1.5 to 2.6 over the recut five): a guess of 85 to 128 KiB over
+something changing three times a tenth would have ended a region whose
+stills then came to `MOVING_BYTES` and began it again. So the churn counts
+every change, the guess takes a still for each, and it is held to
+`MOVING_BYTES` whole. None of the 31 verdicts, nor of the recut five, is
+another: every sample at both sizes, `small` at both and `many` at 1920x1080
+are the same to the byte. `many` at 2880x1800@2 is not
+([below](#many-small-movements-at-once)), the one capture with a guess near
+the line. And where more than four components are to be coded so in one
+layout, they share the 64 tiles four would take, one each at the least, and
+of more than 64 components that many are coded a layout, the rest in turn at
+the layouts after, so a desktop with many things moving under such a region
+is coded no more than one with four; no capture has more than three.
 
 Over the two captures, and the samples at the same sizes (`mixed` and
 `walk` whole), the rule before and now:
@@ -1718,10 +1768,10 @@ Over the two captures, and the samples at the same sizes (`mixed` and
 | small-2880x1800@2 | 8.22 → 8.21 | 11 → 3 | 1454 → 1668 of 1789 | 0.05 → 0.04 |
 | mixed-1920x1080 | 134.68 → 135.05 | 15 → 13 | 991 → 1058 of 3515 | 2.47 → 2.47 |
 | mixed-2880x1800@2 | 273.44 → 273.37 | 20 → 18 | 1045 → 1104 of 3328 | 1.32 → 1.32 |
-| window-1920x1080 | 5.16 → 4.99 | 7 → 8 | 9 → 12 | 1.26 → 1.24 |
-| window-2880x1800@2 | 8.37 → 8.37 | 8 → 8 | 8 → 8 | 0.62 → 0.62 |
-| video-1920x1080 | 12.06 → 12.18 | 9 → 9 | 6 → 6 | 2.18 → 2.17 |
-| video-2880x1800@2 | 24.71 → 24.65 | 11 → 11 | 4 → 4 | 1.71 → 1.70 |
+| window-1920x1080 | 5.20 → 5.52 | 1 → 5 | 0 → 0 | 2.40 → 2.31 |
+| window-2880x1800@2 | 8.68 → 8.93 | 1 → 4 | 0 → 0 | 2.61 → 1.44 |
+| video-1920x1080 | 12.75 → 12.75 | 2 → 2 | 0 → 0 | 3.34 → 3.34 |
+| video-2880x1800@2 | 27.09 → 27.09 | 1 → 1 | 0 → 0 | 2.73 → 2.73 |
 | walk-1920x1080 | 17.96 → 18.18 | 15 → 17 | 9 → 9 | 2.50 → 2.48 |
 | walk-2880x1800@2 | 29.54 → 29.75 | 18 → 18 | 6 → 6 | 1.73 → 1.73 |
 | uncover-2880x1800@2 | 0.97 → 1.54 | 1 → 2 | 2 → 3 of 49 | 1.83 → 0.62 |
@@ -1730,26 +1780,36 @@ The two regions left of `small` at 1920x1080 are the first picture's and
 the video's. browser, drag, terminal and flood at both sizes and uncover
 at 1920x1080 are the same to the byte, and every capture ends lossless.
 The encoder's time is within its noise on all of them. uncover at
-2880x1800@2 is the one that sends more, 0.6 MB, in two regions where it
-had one: a third of the error held, for half as many bytes again.
+2880x1800@2 sends more, 0.6 MB, in two regions where it had one: a third
+of the error held, for half as many bytes again. So does the video in a
+window: its first picture began one region, the page with the video,
+which `main` kept for the whole sample; now what moves in it is judged,
+the explosion filling more of the window each time, and laid out again
+in its first second and a half and once more after three seconds, four
+and three keyframes more, 0.3 MB at 1920x1080 and 0.25 at 2880x1800@2,
+the page around it held closer. (The video and window rows are of the samples
+as recut on 2026-11-17, run again by the same two builds.)
 
 `motion_debug` marks each region for zDesk's page to outline, and codes
-nothing: a MARK after a region's START and wherever what it says changes,
-15 bytes each, last in an update that carries something else. Played with
-it and without (`motion-bench --motion-debug`), video-1920x1080,
+nothing: a MARK after a region's START and wherever what it says changes, 15
+bytes each, last in an update that carries something else. Played with it
+and without (`motion-bench --motion-debug`), video-1920x1080,
 window-2880x1800@2, both mixed, walk-1920x1080 and uncover-2880x1800@2 are
 the same in every count the bench keeps and in every frame's — bytes,
-stills, frames, regions, what the page held — but the marks: 60, 78, 185,
-203, 106 and 4 of them for 9, 8, 16, 21, 17 and 2 regions, 2775 bytes beside
-mixed-1920x1080's 135 MB; and `check` passes with it. A region has several
-because its mark is the box around the pixels that changed, found by
+stills, frames, regions, what the page held — but the marks: 62, 47, 185,
+203, 106 and 4 of them for 2, 4, 16, 21, 17 and 2 regions, 2775 bytes beside
+mixed-1920x1080's 135 MB; and `check` passes with it. (The video and the
+window are of the samples recut on 2026-11-17, run again so on lab1 rebuilt
+that day; they had 60 and 78 marks for 9 and 8 regions.) A region has
+several because its mark is the box around the pixels that changed, found by
 comparing each changed tile with the picture before whatever the damage
 named, and grows as pixels further out change; the comparison is made only
 with `motion_debug`, and the encoder's time with it was from 2% less to 4%
-more than without. Until protocol 14 the
-outline was painted into each region's frames, which coded it: 0.4% and
-0.2% more bytes on video-1920x1080 and window-2880x1800@2, and frames that
-were not the ones a session without it sends.
+more than without, and on the recut video and window, the mean of two runs,
+5% and 1% more. Until protocol 14 the outline was painted into each region's
+frames, which coded it: 0.4% and 0.2% more bytes on video-1920x1080 and
+window-2880x1800@2, and frames that were not the ones a session without it
+sends.
 
 ## A region that shrinks
 
