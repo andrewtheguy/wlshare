@@ -508,9 +508,7 @@ impl Stream {
                 ),
                 "making the encoder",
             )?;
-            // Raw 4:2:0 is 384 bytes a macroblock; the rest is headroom for
-            // the headers and a coarse estimate.
-            let size = mbs.0 * mbs.1 * 400 + 64 * 1024;
+            let size = super::most_coded((mbs.0 as usize * 16, mbs.1 as usize * 16)) as u32;
             status(
                 va::vaCreateBuffer(
                     dpy,

@@ -25,10 +25,10 @@ use anyhow::Context as _;
 
 use crate::agent::link::{
     FRAME_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, PROOF, Role, SPAN_HEAD,
-    Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_proof,
-    read_status, write_all_vectored,
+    Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_opened,
+    read_proof, write_all_vectored,
 };
-use crate::h264::{Backend, Planes};
+use crate::h264::{Backend, Planes, most_coded};
 
 /// How long a connection to the agent may take to open.
 const CONNECT: Duration = Duration::from_secs(3);
@@ -241,13 +241,12 @@ impl Stream {
         timed
             .write_all(&open_request(&proved, (width, height)))
             .context("asking for a stream")?;
-        read_status(&mut timed).context("opening a stream")?;
+        read_opened(&mut timed).context("opening a stream")?;
         Ok(Self {
             link,
             head: Vec::new(),
-            // Raw 4:2:0 is 384 bytes a macroblock, and the agent's own
-            // buffer is that and headroom ([`crate::h264::vaapi::Stream::open`]).
-            most: width.div_ceil(16) * height.div_ceil(16) * 400 + 64 * 1024,
+            // The agent's own buffer for one.
+            most: most_coded((width, height)),
         })
     }
 }
@@ -275,24 +274,11 @@ impl Backend for Stream {
         }
         // The request as it is sent: the headers, and between them the rows
         // where they lie in the planes, so that a picture is not copied
-        // into a buffer of its own on its way to the connection. A
-        // rectangle the planes' whole stride across is one run of each.
-        let stride = planes.stride;
+        // into a buffer of its own on its way to the connection.
         let mut request = vec![IoSlice::new(&head[..FRAME_HEAD])];
         for (span, header) in spans.iter().zip(head[FRAME_HEAD..].chunks(SPAN_HEAD)) {
             request.push(IoSlice::new(header));
-            for (plane, rows) in [
-                (&planes.y, span.y..span.y + span.h),
-                (&planes.uv, span.y / 2..(span.y + span.h) / 2),
-            ] {
-                if span.w == stride {
-                    request.push(IoSlice::new(&plane[rows.start * stride..rows.end * stride]));
-                } else {
-                    request.extend(
-                        rows.map(|row| IoSlice::new(&plane[row * stride + span.x..][..span.w])),
-                    );
-                }
-            }
+            span.rows(planes, &mut request);
         }
         // The picture sent and the access unit read back in the one time.
         let mut link = Timed::new(&self.link);

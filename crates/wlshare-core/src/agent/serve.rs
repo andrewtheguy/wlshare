@@ -27,6 +27,7 @@
 //! encoder, and a place among the streams ([`STREAMS`]).
 
 use std::collections::VecDeque;
+use std::io::ErrorKind::{ConnectionAborted, ConnectionReset};
 use std::io::{BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -37,8 +38,8 @@ use log::{info, warn};
 
 use crate::agent::allow::Net;
 use crate::agent::link::{
-    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, NONE, OK, Role, Span,
-    Timed, coded_head, failed, hello, keepalive, nonce, proof, read_hello, read_open_request,
+    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, NO_FRAME, OPENED, Role,
+    Span, Timed, coded_head, failed, hello, keepalive, nonce, proof, read_hello, read_open_request,
 };
 use crate::h264::{Backend, Planes};
 
@@ -57,6 +58,11 @@ pub const STREAMS: usize = 32;
 /// stranger that opens this many more inside a daemon's handshake closes
 /// that too, and is at an address the allowlist was not to hold.
 const UNPROVED: usize = 32;
+
+/// How long the agent waits before it accepts again after an error that is
+/// not one connection's: the machine's, out of descriptors or of memory,
+/// which stands for a while and is not to be spun on or fill the log.
+const ACCEPT_AGAIN: Duration = Duration::from_secs(1);
 
 /// How much of a picture is read from the connection at a time.
 const READ_AHEAD: usize = 256 * 1024;
@@ -273,6 +279,11 @@ fn accept(
             Ok(stream) => stream,
             Err(e) => {
                 warn!("accepting a connection: {e}");
+                // A connection gone before it was accepted is its own
+                // error, and the next is there to take.
+                if !matches!(e.kind(), ConnectionAborted | ConnectionReset) {
+                    std::thread::sleep(ACCEPT_AGAIN);
+                }
                 continue;
             }
         };
@@ -398,7 +409,7 @@ fn connection(
         }
     };
     let mut planes = Planes::new(width as u16, height as u16);
-    to.write_all(&[OK])?;
+    to.write_all(&OPENED)?;
     info!("{peer}: a {width}x{height} stream");
 
     let mut from = BufReader::with_capacity(READ_AHEAD, from);
@@ -422,18 +433,9 @@ fn connection(
         reply.extend_from_slice(&coded_head(0));
         let coded: anyhow::Result<bool> = (|| {
             let frame = Frame::read(tag[0], &mut from)?;
-            let stride = planes.stride;
             for _ in 0..frame.spans {
                 let span = Span::read(&mut from, (width, height))?;
-                for (plane, rows) in [
-                    (&mut planes.y, span.y..span.y + span.h),
-                    (&mut planes.uv, span.y / 2..(span.y + span.h) / 2),
-                ] {
-                    for row in rows {
-                        from.read_exact(&mut plane[row * stride + span.x..][..span.w])
-                            .context("reading a rectangle's rows")?;
-                    }
-                }
+                span.read_rows(&mut from, &mut planes)?;
                 planes.touch((span.x, span.y), (span.x + span.w, span.y + span.h));
                 served.pictures += (span.w * span.h * 3 / 2) as u64;
             }
@@ -454,7 +456,7 @@ fn connection(
                 served.frames += 1;
                 served.stream += u64::from(length);
             }
-            Ok(false) => to.write_all(&[NONE]).context("answering a frame")?,
+            Ok(false) => to.write_all(&NO_FRAME).context("answering a frame")?,
             Err(e) => {
                 // Told why, if it is still there to be told.
                 let _ = to.write_all(&failed(&format!("{e:#}")));
@@ -471,7 +473,7 @@ fn connection(
 mod tests {
     use super::*;
     use crate::agent::client::{Agent, Stream};
-    use crate::agent::link::{FAILED, FRAME, MIN_KEY, PROOF};
+    use crate::agent::link::{FAILED, FRAME, MIN_KEY, OK, PROOF};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// The key the tests' agents and their daemons share.

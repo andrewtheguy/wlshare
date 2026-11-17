@@ -106,6 +106,15 @@ impl Planes {
     }
 }
 
+/// The most bytes an access unit of a `width`×`height` picture is taken to
+/// be: the size of the buffer the hardware codes a frame into
+/// ([`vaapi::Stream`]), and so the most a daemon takes of one from an agent.
+/// Raw 4:2:0 is 384 bytes a macroblock; the rest is headroom for the headers
+/// and a coarse estimate.
+pub fn most_coded((width, height): (usize, usize)) -> usize {
+    width.div_ceil(16) * height.div_ceil(16) * 400 + 64 * 1024
+}
+
 /// The NAL unit types of an Annex B access unit, in order.
 pub fn nal_types(unit: &[u8]) -> Vec<u8> {
     let mut types = Vec::new();

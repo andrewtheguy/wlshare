@@ -66,6 +66,7 @@
 
 use std::io::{IoSlice, Read, Write};
 use std::net::TcpStream;
+use std::ops::Range;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -73,6 +74,8 @@ use anyhow::Context as _;
 use hmac::{Hmac, KeyInit as _};
 use rand::Rng as _;
 use sha2::Sha256;
+
+use crate::h264::Planes;
 
 pub use hmac::Mac;
 
@@ -374,9 +377,26 @@ pub fn failed(why: &str) -> Vec<u8> {
     message
 }
 
+/// The agent's answer to a stream's request it has opened an encoder for.
+pub const OPENED: [u8; 1] = [OK];
+
+/// The agent's answer to a frame its encoder made none of.
+pub const NO_FRAME: [u8; 1] = [NONE];
+
+/// Read the agent's answer to a stream's request: its reason as the error
+/// where it opened none, and an error for [`NONE`], which answers a frame
+/// and no request.
+pub fn read_opened(from: &mut impl Read) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        read_status(from)?,
+        "it answered {NONE}, a frame's status and none of a stream's opening"
+    );
+    Ok(())
+}
+
 /// Read the agent's status byte: `true` for [`OK`], `false` for [`NONE`], and
 /// for [`FAILED`] the reason it gives, as the error.
-pub fn read_status(from: &mut impl Read) -> anyhow::Result<bool> {
+fn read_status(from: &mut impl Read) -> anyhow::Result<bool> {
     let mut status = [0];
     from.read_exact(&mut status)
         .context("waiting for its answer")?;
@@ -497,6 +517,42 @@ impl Span {
         );
         Ok(Self { x, y, w, h })
     }
+
+    /// The rows of each plane the rectangle is, in the order they cross the
+    /// link after its header: the luma's, then the chroma's, half as many.
+    fn plane_rows(&self) -> [Range<usize>; 2] {
+        [self.y..self.y + self.h, self.y / 2..(self.y + self.h) / 2]
+    }
+
+    /// The rectangle's rows as the daemon sends them, each the rectangle's
+    /// width of bytes, added to `to` from where they lie in `planes`. A
+    /// rectangle the planes' whole stride across is one run of each plane.
+    pub fn rows<'a>(&self, planes: &'a Planes, to: &mut Vec<IoSlice<'a>>) {
+        let stride = planes.stride;
+        for (plane, rows) in [&planes.y, &planes.uv].into_iter().zip(self.plane_rows()) {
+            if self.w == stride {
+                to.push(IoSlice::new(&plane[rows.start * stride..rows.end * stride]));
+            } else {
+                to.extend(rows.map(|row| IoSlice::new(&plane[row * stride + self.x..][..self.w])));
+            }
+        }
+    }
+
+    /// Read the rectangle's rows into where they lie in `planes`, whose
+    /// picture the rectangle was held to ([`Self::read`]).
+    pub fn read_rows(&self, from: &mut impl Read, planes: &mut Planes) -> anyhow::Result<()> {
+        let stride = planes.stride;
+        for (plane, rows) in [&mut planes.y, &mut planes.uv]
+            .into_iter()
+            .zip(self.plane_rows())
+        {
+            for row in rows {
+                from.read_exact(&mut plane[row * stride + self.x..][..self.w])
+                    .context("reading a rectangle's rows")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -570,7 +626,83 @@ mod tests {
         assert_eq!(why, "the GPU is busy");
         assert!(coded(&[7]).unwrap_err().to_string().contains("no status"));
         assert!(coded(&[OK, 0, 0]).is_err());
-        assert!(read_status(&mut &[OK][..]).unwrap());
+
+        assert_eq!((OPENED, NO_FRAME), ([OK], [NONE]));
+        let opened = |answer: &[u8]| read_opened(&mut &answer[..]);
+        opened(&OPENED).unwrap();
+        let why = opened(&failed("no encoder")).unwrap_err().to_string();
+        assert_eq!(why, "no encoder");
+        let why = opened(&NO_FRAME).unwrap_err().to_string();
+        assert!(why.contains("a frame's status"), "{why}");
+    }
+
+    /// A rectangle's rows cross the link as its luma rows and then its
+    /// chroma rows, half as many, each its own width of the plane's row, and
+    /// are read into the same samples of another picture's planes and no
+    /// others.
+    #[test]
+    fn a_rectangles_rows_are_its_luma_and_then_its_chroma() {
+        let mut planes = Planes::new(100, 70);
+        let stride = planes.stride;
+        for (at, sample) in planes.y.iter_mut().enumerate() {
+            *sample = (at % 251) as u8;
+        }
+        for (at, sample) in planes.uv.iter_mut().enumerate() {
+            *sample = (at % 241) as u8;
+        }
+        let span = Span {
+            x: 16,
+            y: 32,
+            w: 36,
+            h: 4,
+        };
+        let mut slices = Vec::new();
+        span.rows(&planes, &mut slices);
+        let sent = slices.iter().flat_map(|s| s.iter().copied());
+        let sent: Vec<u8> = sent.collect();
+        let row = |plane: &[u8], row: usize| plane[row * stride + 16..][..36].to_vec();
+        let by_hand = [
+            row(&planes.y, 32),
+            row(&planes.y, 33),
+            row(&planes.y, 34),
+            row(&planes.y, 35),
+            row(&planes.uv, 16),
+            row(&planes.uv, 17),
+        ]
+        .concat();
+        assert_eq!(sent, by_hand);
+
+        let mut read = Planes::new(100, 70);
+        let mut expected = Planes::new(100, 70);
+        for at in 32..36 {
+            expected.y[at * stride + 16..][..36].copy_from_slice(&row(&planes.y, at));
+        }
+        for at in 16..18 {
+            expected.uv[at * stride + 16..][..36].copy_from_slice(&row(&planes.uv, at));
+        }
+        span.read_rows(&mut &sent[..], &mut read).unwrap();
+        assert!(read.y == expected.y && read.uv == expected.uv);
+        let short = &sent[..sent.len() - 1];
+        assert!(span.read_rows(&mut &short[..], &mut read).is_err());
+
+        // A rectangle the whole stride across is one run of each plane, of
+        // the same bytes.
+        let mut wide = Planes::new(64, 32);
+        wide.y
+            .iter_mut()
+            .enumerate()
+            .for_each(|(at, s)| *s = at as u8);
+        let span = Span {
+            x: 0,
+            y: 16,
+            w: 64,
+            h: 16,
+        };
+        let mut slices = Vec::new();
+        span.rows(&wide, &mut slices);
+        assert_eq!(slices.len(), 2);
+        assert_eq!(&*slices[0], &wide.y[16 * 64..32 * 64]);
+        assert_eq!(&*slices[1], &wide.uv[8 * 64..16 * 64]);
     }
 
     /// A proof is its key's, its role's and its connection's: none passes
