@@ -1110,6 +1110,7 @@ mod tests {
             serve::serve(
                 listener,
                 KEY.into(),
+                vec!["127.0.0.0/8".parse().unwrap()],
                 // A coder for the daemon it codes for, as a session has one.
                 Arc::new(move || {
                     let coder = std::sync::Mutex::new(encoder.coder()?);
@@ -1164,6 +1165,7 @@ mod tests {
             serve::serve(
                 listener,
                 KEY.into(),
+                vec!["127.0.0.0/8".parse().unwrap()],
                 Arc::new(|| {
                     Ok(Arc::new(|coded| {
                         let deaf = Deaf(Encoder::X264.coder()?.backend(coded)?);

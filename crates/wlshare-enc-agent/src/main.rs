@@ -3,10 +3,17 @@
 //!
 //! The agent looks for its encoder once, at startup, as a daemon does
 //! ([`vaapi::find`]), and with none does not start: an agent is a GPU, not
-//! another processor to run libx264 on. Then it listens, and every
-//! connection that proves the pre-shared key is one stream ([`serve`]), for
-//! one daemon at a time, whose streams share a VA display. The key is a file, generated
-//! on a first start, which the daemon's `[enc_agent]` table needs a copy of.
+//! another processor to run libx264 on. Then it listens, for connections
+//! from where it was told its daemon is and nowhere else (`--allow`, which
+//! has no default), and every one that proves the pre-shared key is one
+//! stream ([`serve`]), for one daemon at a time, whose streams share a VA
+//! display. The key is a file, generated on a first start, which the
+//! daemon's `[enc_agent]` table needs a copy of.
+//!
+//! It is for two machines with a fast link of their own between them: a
+//! virtual machine or container with no GPU and the host it runs on, or a
+//! sibling of it there, that has the host's encoder; or a machine wired to a
+//! LAN faster than gigabit and another on it.
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -15,7 +22,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::Parser;
 use log::info;
-use wlshare_core::agent::{link, serve};
+use wlshare_core::agent::{allow::Net, link, serve};
 use wlshare_core::h264::{Backend, vaapi};
 
 #[derive(Parser, Debug)]
@@ -23,12 +30,17 @@ use wlshare_core::h264::{Backend, vaapi};
     name = "wlshare-enc-agent",
     version,
     about = "Lends this machine's hardware H.264 encoder to a wlshare daemon on another (experimental)",
-    long_about = "Lends this machine's hardware H.264 encoder, through VA-API, to a wlshare daemon on a machine that has none. The daemon names this one in its [enc_agent] table and holds a copy of the key file. One daemon at a time: while one has a stream open, nobody is let in from any other address. Experimental: the pictures cross the network in the clear, so this is for a trusted LAN, or inside a tunnel."
+    long_about = "Lends this machine's hardware H.264 encoder, through VA-API, to a wlshare daemon on a machine that has none. The daemon names this one in its [enc_agent] table and holds a copy of the key file. For two machines with a fast link of their own: a virtual machine or container and its host, or a sibling there, that has the host's GPU, or two wired machines on a LAN faster than gigabit. --allow says where the daemon is, and a connection from anywhere else is closed unanswered, as is one with another key: name the daemon's own address, since an agent that allows a whole network lets every machine on it try the key. One daemon at a time: while one has a stream open, nobody is let in from any other address. Experimental: the pictures cross the network in the clear, so this is for a trusted LAN, or inside a tunnel."
 )]
 struct Args {
     /// The address to listen on for daemons.
     #[arg(long)]
     listen: SocketAddr,
+    /// Where the daemon connects from, as an IPv4 or IPv6 CIDR block: one
+    /// address is a /32 or a /128. At least one, and more by repeating the
+    /// option or with commas between them.
+    #[arg(long, value_name = "CIDR", required = true, value_delimiter = ',')]
+    allow: Vec<Net>,
     /// The pre-shared key, generated on first start when the file is missing
     /// (default: $XDG_CONFIG_HOME/wlshare/enc_agent.key).
     #[arg(long, value_name = "FILE")]
@@ -52,8 +64,13 @@ fn main() -> anyhow::Result<()> {
     let listener =
         TcpListener::bind(args.listen).with_context(|| format!("listening on {}", args.listen))?;
     info!(
-        "encoding agent on {}: experimental, the pictures in the clear",
-        args.listen
+        "encoding agent on {}, for a daemon at {}: experimental, the pictures in the clear",
+        args.listen,
+        args.allow
+            .iter()
+            .map(Net::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     // A display for the daemon the agent is coding for, opened as it takes
     // its first stream and closed with its last: its streams share it, as
@@ -62,6 +79,7 @@ fn main() -> anyhow::Result<()> {
     serve::serve(
         listener,
         key.into(),
+        args.allow,
         Arc::new(move || {
             let display = Arc::new(vaapi::Display::open(&device)?);
             Ok(Arc::new(move |coded| {

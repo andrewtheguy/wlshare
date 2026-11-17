@@ -678,6 +678,14 @@ the daemon's. The agent looks for its encoder at startup as a daemon does, the
 shader one first, and with none does not start: an agent is a GPU, not
 another processor to run libx264 on.
 
+It is for two machines with a fast link of their own between them, and no
+others: a virtual machine or container with no GPU and the host it runs on,
+or a sibling of it there, that has the host's encoder, the pictures crossing
+a bridge inside one machine; or a machine wired to a LAN faster than gigabit
+and another on it. Everything below is built for that link and is wrong for
+any other: raw pictures, in the clear, to an agent that is told its daemon's
+address and serves that one daemon.
+
 To the daemon the agent is one more H.264 coder (`Encoder::Remote` in
 `src/h264/`), and a stream on it one more backend beside VA-API's and
 libx264's, so the video encoder, the tiles encoder and the walk are as they
@@ -737,6 +745,15 @@ quantizer each was asked at.
   session tries the agent again. With `hardware_h264` off the table is not
   used, and its key not read; its address is held to a host and a port
   whenever the configuration is read.
+- **From where it allows.** The agent is told where its daemon connects
+  from, `--allow`, as IPv4 or IPv6 CIDR blocks (`agent/allow.rs`), one
+  address a `/32` or a `/128`. There is no default and it does not start
+  without one: on the link this is for the daemon's address is known, and
+  that address is the answer. A connection from anywhere else is closed as
+  it is accepted, before a thread, a byte or a look at who has the agent. A
+  block is written as its network, no bit set past its prefix, so that what
+  is allowed is what was written; an IPv4 daemon is matched as IPv4 on a
+  listener of both families.
 - **One daemon at a time.** The daemon with a stream open is the agent's
   user, known by its address, until its last stream closes. While it is, a
   connection from any other address is closed as it is accepted, before a
@@ -744,8 +761,14 @@ quantizer each was asked at.
   the user and its streams, with the key or without; and a second daemon set
   to the same agent is kept out until the first has no stream, its sessions
   failing meanwhile as with an agent away. An agent nobody is using lets any
-  address try the key, and the first to prove it and ask for a stream is the
-  user. The agent opens one VA display for its user, with the user's first
+  address it allows try the key, and the first to prove it and ask for a
+  stream is the user: with the daemon's address allowed and no other, that
+  is the daemon. Other machines trying the key at an idle agent is then an
+  allowlist written wider than the daemon, a misconfiguration and not a case
+  the agent is built for; what it holds to even so is that a connection
+  with another key, or none, is closed without a word, having cost a thread
+  and a socket for at most the handshake's time and got nothing of the
+  encoder. The agent opens one VA display for its user, with the user's first
   stream, and closes it with the last: the streams share it, each calling
   libva under the display's lock, so a stream opened is an encoder made and
   not the driver loaded again.
@@ -753,8 +776,8 @@ quantizer each was asked at.
   a thread, a socket and an encoder on the GPU, and tells a daemon that asks
   for one more that there is none. A connection that has not yet proved the
   key is no stream and takes no stream's place: the agent keeps 32 of those,
-  each a thread and a socket, and one more closes the oldest, so whoever is
-  let in without the key can neither fill the agent nor keep a
+  each a thread and a socket, and one more closes the oldest, so an allowed
+  address without the key can neither fill the agent nor keep a
   daemon out, whose handshake is over in milliseconds. Every wait has an
   end, as a whole and not a byte at a time: 5 seconds for a handshake and 5
   for a frame, sent and answered, which is the longest a session stands

@@ -7,14 +7,24 @@
 //! handshake is closed without a word, and one whose stream fails is told
 //! why and closed, which fails the daemon's stream and its session.
 //!
+//! An agent is for the one machine it lends its encoder to, over a link
+//! with nothing else on it worth the name: the virtual machine beside it on
+//! its host, or a wired machine on its LAN. So it is told where that daemon
+//! is ([`Net`]), with no default, and a connection from anywhere else is
+//! closed as it is accepted, before a thread or a byte. An agent whose
+//! allowlist is wider than its daemon is one set up wrong, and what follows
+//! is what such an agent still holds to, not what makes it right.
+//!
 //! An agent is one daemon's at a time: the daemon with a stream open, by
 //! its address, and nobody else is let in until its last stream closes.
 //!
-//! Whoever reaches the port can connect, so what a connection gets before it
-//! proves the key is little and counted apart: a thread, a socket, and the
-//! handshake's time to prove it in, as a whole ([`HANDSHAKE_WITHIN`]). Only
-//! a connection that has proved the key is a stream, with a buffer for its
-//! picture, an encoder, and a place among the streams ([`STREAMS`]).
+//! What a connection from an allowed address gets before it proves the key
+//! is little and counted apart: a thread, a socket, and the handshake's time
+//! to prove it in, as a whole ([`HANDSHAKE_WITHIN`]). One that proves
+//! another key, or none, is closed without a word, having got the agent's
+//! hello and its proof and nothing of its encoder. Only a connection that
+//! has proved the key is a stream, with a buffer for its picture, an
+//! encoder, and a place among the streams ([`STREAMS`]).
 
 use std::collections::VecDeque;
 use std::io::{BufReader, Read, Write};
@@ -25,6 +35,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use log::{info, warn};
 
+use crate::agent::allow::Net;
 use crate::agent::link::{
     FRAME, FRAME_WITHIN, HANDSHAKE_WITHIN, KEYFRAME, MAX_SIDE, Mac as _, NONE, OK, PROOF, REFINE,
     Role, Span, Timed, failed, hello, keepalive, nonce, proof, read_hello,
@@ -38,7 +49,7 @@ use crate::h264::{Backend, Planes};
 pub const STREAMS: usize = 32;
 
 /// The most connections that have not yet proved the key, each a thread and
-/// a socket, which is all that whoever is let in can make an agent hold
+/// a socket, which is all that an allowed address can make an agent hold
 /// without the key. They are no streams and take no stream's place, and one
 /// more closes the oldest of them: a daemon's handshake is over in
 /// milliseconds, so whatever has waited longest is the likeliest to be
@@ -77,15 +88,21 @@ struct User {
 
 /// Who an agent lets in and what it holds for them, against its [`Limits`].
 ///
+/// **From where it allows.** A connection from an address in none of the
+/// agent's networks is closed as it is accepted, whoever has the agent or
+/// nobody, and an agent with no network lets nobody in.
+///
 /// **One daemon at a time.** The daemon with a stream open is the agent's
 /// user, known by its address, until its last stream closes. While it is, a
 /// connection from any other address is closed as it is accepted, before a
 /// thread or a handshake, so nobody elsewhere on the network comes between
 /// the user and its streams, with the key or without; and its streams share
-/// what was opened for it. An agent nobody is using lets any address try the
-/// key, and the first to prove it and ask for a stream is the user.
+/// what was opened for it. An agent nobody is using lets any address it
+/// allows try the key, and the first to prove it and ask for a stream is the
+/// user.
 struct Door {
     limits: Limits,
+    allowed: Vec<Net>,
     open: Arc<Open>,
     /// The connections yet to prove the key, the oldest first, each by its
     /// number and a handle of its socket to close it by.
@@ -107,6 +124,12 @@ struct Coding(Arc<Door>);
 impl Door {
     fn user(&self) -> MutexGuard<'_, Option<User>> {
         self.user.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether a daemon may connect from `address`: one of the agent's
+    /// networks holds it.
+    fn allows(&self, address: IpAddr) -> bool {
+        self.allowed.iter().any(|net| net.contains(address))
     }
 
     /// The daemon elsewhere than `address` that the agent is coding for,
@@ -210,14 +233,15 @@ fn peer(stream: &TcpStream) -> String {
         .map_or_else(|_| "a daemon".to_owned(), |a| a.to_string())
 }
 
-/// Accept connections on `listener` for as long as it stands, each a stream
-/// for whoever holds `key`, coded on a thread of its own by an encoder of
-/// what `open` makes its daemon: one daemon's at a time, and [`STREAMS`] of
-/// its at once.
-pub fn serve(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>) {
+/// Accept connections on `listener` for as long as it stands, from the
+/// addresses `allowed` holds and no others, each a stream for whoever holds
+/// `key`, coded on a thread of its own by an encoder of what `open` makes
+/// its daemon: one daemon's at a time, and [`STREAMS`] of its at once.
+pub fn serve(listener: TcpListener, key: Arc<[u8]>, allowed: Vec<Net>, open: Arc<Open>) {
     accept(
         listener,
         key,
+        allowed,
         open,
         Limits {
             streams: STREAMS,
@@ -228,9 +252,16 @@ pub fn serve(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>) {
 }
 
 /// [`serve`], within `limits`.
-fn accept(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>, limits: Limits) {
+fn accept(
+    listener: TcpListener,
+    key: Arc<[u8]>,
+    allowed: Vec<Net>,
+    open: Arc<Open>,
+    limits: Limits,
+) {
     let door = Arc::new(Door {
         limits,
+        allowed,
         open,
         unproved: Mutex::default(),
         user: Mutex::default(),
@@ -248,6 +279,10 @@ fn accept(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>, limits: Limits
             continue;
         };
         let (peer, address) = (from.to_string(), from.ip().to_canonical());
+        if !door.allows(address) {
+            warn!("{peer}: closed unanswered, being from nowhere this agent allows");
+            continue;
+        }
         if let Some(user) = door.anothers(address) {
             warn!("{peer}: closed unanswered, the agent being the daemon at {user}'s");
             continue;
@@ -446,6 +481,11 @@ mod tests {
     /// The key the tests' agents and their daemons share.
     const KEY: [u8; MIN_KEY] = [0x5a; MIN_KEY];
 
+    /// Where the tests' daemons are: every address of loopback's.
+    fn loopback() -> Vec<Net> {
+        vec!["127.0.0.0/8".parse().unwrap()]
+    }
+
     /// What [`Echo`] makes of a picture: the coded picture's rows, luma and
     /// then chroma, and what it was asked of them.
     fn echo(planes: &Planes, keyframe: bool, qp: u8, out: &mut Vec<u8>) {
@@ -492,6 +532,7 @@ mod tests {
             serve(
                 listener,
                 KEY.into(),
+                loopback(),
                 Arc::new(|| {
                     Ok(Arc::new(|(width, _): (usize, usize)| match width {
                         32 => Ok(Box::new(Broken) as Box<dyn Backend>),
@@ -627,7 +668,7 @@ mod tests {
     fn agent_within(limits: Limits) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        std::thread::spawn(move || accept(listener, KEY.into(), echoes().0, limits));
+        std::thread::spawn(move || accept(listener, KEY.into(), loopback(), echoes().0, limits));
         address
     }
 
@@ -699,7 +740,7 @@ mod tests {
             unproved: 8,
             handshake: HANDSHAKE_WITHIN,
         };
-        std::thread::spawn(move || accept(listener, KEY.into(), open, limits));
+        std::thread::spawn(move || accept(listener, KEY.into(), loopback(), open, limits));
         let one = Agent::new(format!("127.0.0.1:{port}"), KEY.to_vec());
 
         let streams = [in_time(&one), in_time(&one), in_time(&one)];
@@ -727,6 +768,65 @@ mod tests {
         assert!(Stream::open(&one, (64, 64)).is_err());
     }
 
+    /// An agent lets a daemon in from where it allows and from nowhere
+    /// else: a connection from another address is closed unanswered, with
+    /// nobody using the agent and with the key in hand, and takes no
+    /// handshake's place; and the daemon where the agent allows has its
+    /// streams.
+    #[test]
+    fn an_agent_lets_in_whom_it_allows_and_nobody_else() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (open, made) = echoes();
+        let limits = Limits {
+            streams: 8,
+            unproved: 2,
+            handshake: Duration::from_secs(60),
+        };
+        let allowed = vec![
+            "127.0.0.2/32".parse().unwrap(),
+            "127.0.3.0/24".parse().unwrap(),
+        ];
+        std::thread::spawn(move || accept(listener, KEY.into(), allowed, open, limits));
+
+        // A daemon the agent allows, at the hello and no further, which a
+        // handshake begun elsewhere would close were it given a place.
+        let waiting = from_host(2, port);
+        read_hello(&mut &waiting).unwrap();
+        for _ in 0..4 {
+            let (said, took) = until_closed(&TcpStream::connect(("127.0.0.1", port)).unwrap());
+            assert!(said.is_empty(), "not so much as a hello");
+            assert!(took < Duration::from_secs(2), "{took:?}");
+        }
+        assert_eq!(by_hand(&from_host(2, port), 64, 64).unwrap(), OK);
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+        waiting
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let waited = (&waiting).read(&mut [0]).unwrap_err();
+        assert_eq!(waited.kind(), std::io::ErrorKind::WouldBlock, "still open");
+
+        let door = |allowed: &[&str]| Door {
+            limits,
+            allowed: allowed.iter().map(|net| net.parse().unwrap()).collect(),
+            open: echoes().0,
+            unproved: Mutex::default(),
+            user: Mutex::default(),
+        };
+        let two = door(&["127.0.0.2/32", "127.0.3.0/24", "fd00:1::/64"]);
+        for (address, allowed) in [
+            ("127.0.0.2", true),
+            ("127.0.3.200", true),
+            ("fd00:1::9", true),
+            ("127.0.0.1", false),
+            ("127.0.4.1", false),
+            ("fd00:2::9", false),
+        ] {
+            assert_eq!(two.allows(address.parse().unwrap()), allowed, "{address}");
+        }
+        assert!(!door(&[]).allows("127.0.0.1".parse().unwrap()));
+    }
+
     /// Two daemons that prove the key to an agent nobody is using are let
     /// in together, and the second to ask for a stream is told whose the
     /// agent is; as is the user, of one stream more than it may have.
@@ -738,6 +838,7 @@ mod tests {
                 unproved: 8,
                 handshake: HANDSHAKE_WITHIN,
             },
+            allowed: Vec::new(),
             open: echoes().0,
             unproved: Mutex::default(),
             user: Mutex::default(),

@@ -179,9 +179,23 @@ name = "wlshare"
 # on its CPU. That machine runs the encoding agent, a program of its own that
 # needs libva and a VA-API driver and nothing else of wlshare's:
 #
-#   wlshare-enc-agent --listen 192.168.1.20:5990 [--key-file FILE]
+#   wlshare-enc-agent --listen 192.168.1.20:5990 --allow 192.168.1.10/32 [--key-file FILE]
 #
-# and this table names where it listens. With it, and hardware_h264 on, every
+# and this table names where it listens: the address and the port are yours
+# to choose, 5990 being no default, and the agent has none. It is for two
+# machines with a fast link of their own: a virtual machine or container, as
+# this host would be, and the host it runs on, or a sibling there, that has
+# the host's GPU; or two wired machines on a LAN faster than gigabit.
+#
+# --allow is where this host connects from, as an IPv4 or IPv6 CIDR block,
+# and the agent does not start without one: a single address is a /32 (a
+# /128 for IPv6), and more are given by repeating the option. The agent
+# closes a connection from anywhere else unanswered. Name this host's own
+# address there and not its network: an agent that allows a whole network
+# lets every machine on it try the key, though one with the wrong key gets
+# no answer either.
+#
+# With the table, and hardware_h264 on, every
 # H.264 stream is coded there: wlshare sends the agent what changed of each
 # picture, uncompressed, and is sent the frame back, over TCP. A video that
 # fills a 1920x1080 screen is 3 MB a frame, about 750 Mbit/s at 30 frames a
