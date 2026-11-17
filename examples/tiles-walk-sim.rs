@@ -458,7 +458,7 @@ fn main() -> Result<(), Error> {
     // its default level is libx264's summary of every region's stream.
     // SAFETY: a store of the level, before any thread uses libavcodec.
     unsafe { ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_WARNING) };
-    let coders = h264::Encoder::find(!libx264).map_err(|e| format!("{e:#}"))?;
+    let coders = h264::Encoder::find(!libx264, None).map_err(|e| format!("{e:#}"))?;
     eprintln!("tiles-walk-sim: the regions are H.264 by {}", coders.name());
     let name = sim::run_name(&paths);
     let link_json = sim::rates_json(&rates);

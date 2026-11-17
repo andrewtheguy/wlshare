@@ -22,6 +22,16 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   ([The protocol version](#the-protocol-version)). It depends on `thiserror` alone, has no OS
   APIs, and each builder is tested against a decoder written from the
   documented layout and read back by its parser.
+- `crates/wlshare-core` is what the daemon shares with the encoding agent:
+  the hardware H.264 encoder, the GPU's through libva itself (`h264/`), and
+  both ends of the link that lends one machine's to a daemon on another
+  (`agent/`, [The encoding agent](#the-encoding-agent)). It links the
+  system's libva and libva-drm and nothing else outside Rust, and nothing
+  outside this repository depends on it.
+- `crates/wlshare-enc-agent` is the encoding agent, experimental: a binary
+  of its own, `wlshare-enc-agent`, built on `wlshare-core` alone, so that the
+  machine it lends the GPU of needs libva and a VA-API driver and nothing
+  else of the daemon's.
 - The package at the root, `wlshare`, is the daemon. `rfb/` decides every byte on the wire that
   is not a private extension's: handshake, message parsing and building,
   RSA-AES and its frames, the ZRLE encoder, the video encoder, the tiles
@@ -36,9 +46,9 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   `clipboard.rs` are the protocols it speaks, and `sway.rs` is sway's IPC, which
   makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
   `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
-  and `h264/` the H.264 encoder, the host's hardware through libva itself or
-  libx264 through its own API, for the video stream and the tiles picture's
-  moving regions; `walk.rs` is the walk of the quality and the frame rate a
+  and `h264/` the H.264 encoder for the video stream and the tiles picture's
+  moving regions: `wlshare-core`'s where the host has the hardware, libx264
+  through its own API where it has none, or an encoding agent's; `walk.rs` is the walk of the quality and the frame rate a
   link bears, and `wlcap.rs` the capture file of what a session's encoder was
   handed;
   `framebuffer.rs` is the shared pixels and damage;
@@ -417,7 +427,8 @@ word and its ceiling. What a frame holds is fixed:
   frames with no keyframe. libavcodec fixes the quantizer when it opens an
   encoder, its `h264_vaapi` and its libx264 alike, so neither encoder is
   reached through it. The hardware's is the daemon's own encoder over libva:
-  it writes the stream's sequence, picture and slice headers (`syntax.rs`)
+  it writes the stream's sequence, picture and slice headers (`syntax.rs`, in
+  `wlshare-core` with the encoder)
   and hands the driver them packed, with each picture's parameters, the
   walk's quantizer as the slice's `slice_qp_delta`; libavcodec's
   region-of-interest offset was no substitute, on testdesktop2's shader
@@ -653,6 +664,83 @@ walk reads, and, because the server sends nothing until the echo arrives, a
 frame the browser would only have overwritten unseen is never encoded at all.
 A browser that is not drawing must not be able to stop the desktop, so no echo
 is held past 500 ms — zDesk's `FENCE_HOLD_LIMIT`, its paint window's grace.
+
+### The encoding agent
+
+Experimental. A host with no GPU codes its H.264 by libx264, which is most of
+what a desktop in motion costs its processor. With an `[enc_agent]` table in
+the configuration, and `hardware_h264` on, every H.264 stream — the video,
+and each moving region of the tiles — is coded instead by the GPU of another
+machine, which runs the agent: `wlshare-enc-agent`, a binary of its own
+(`crates/wlshare-enc-agent`) built on `wlshare-core` alone, so that machine
+needs libva and a VA-API driver and neither a compositor nor anything else of
+the daemon's. The agent looks for its encoder at startup as a daemon does, the
+shader one first, and with none does not start: an agent is a GPU, not
+another processor to run libx264 on.
+
+To the daemon the agent is one more H.264 coder (`Encoder::Remote` in
+`src/h264/`), and a stream on it one more backend beside VA-API's and
+libx264's, so the video encoder, the tiles encoder and the walk are as they
+were. The daemon converts the picture to NV12 as for any encoder, sends the
+agent what changed of it, and is sent the access unit back; the agent keeps a
+copy of the picture and, over it, the encoder a daemon on its own machine
+would have had. The stream is that encoder's, frame for frame at the
+quantizer each was asked at.
+
+- **TCP, a connection a stream.** A picture is megabytes and every byte of it
+  matters: a hole in a picture is coded as garbage, and a lost access unit
+  breaks every frame predicted from it. Over UDP that is fragmentation,
+  reassembly, retransmission and pacing to write, which is TCP written again;
+  what UDP would buy, a late packet not holding up the next, is nothing on
+  the one link this is for, a LAN that loses none. So each stream is one TCP
+  connection with Nagle's algorithm off, a frame one request and one reply,
+  and a link slow or lossy enough to want more is the wrong place for raw
+  pictures at all.
+- **A pre-shared key, and nothing after it.** Both ends hold one key, a
+  file's bytes, which the agent generates on first start. Each end sends 32
+  random bytes and proves the key by an HMAC-SHA256 over both randoms and its
+  own role, the agent first, so a proof can be neither replayed to a later
+  connection nor reflected at its sender, and the daemon sends no picture to
+  an agent that has not proved it. That is all the key does: nothing after
+  the handshake is encrypted or authenticated, so the pictures cross the link
+  in the clear, and whoever can alter the connection's packets can alter
+  them. It keeps a stranger on the LAN from using the encoder or posing as
+  it; a link that is not a trusted LAN goes inside a tunnel (WireGuard, SSH).
+  Encrypting the link itself, a megabyte or a hundred a second through an
+  AEAD at each end, is the step after this one.
+- **What changed, uncompressed.** The daemon's planes know which macroblocks
+  a read wrote into since the last frame, and those are what is sent, as
+  rectangles of whole macroblocks merged across and down: a stream's first
+  frame is the whole picture, a typed letter a few kilobytes, a frame that
+  only refines no pixels at all. A video filling a 1920×1080 screen is the
+  whole picture every frame, 3 MB, 93 MB a second at 30 frames: three
+  quarters of a gigabit link, so the two machines want a faster link between
+  them, or to be one host. Compressing the pictures would give the daemon's
+  processor back part of what the agent took off it.
+- **The link's bytes** are `wlshare-core`'s (`agent/link.rs`), both ends
+  built and parsed there, big-endian, and laid out in that module: each end's
+  hello (`WLEA`, the link's version, the random), the agent's proof, the
+  daemon's proof and the coded picture's size, the agent's status; then for
+  each frame the daemon's flags (a keyframe, a refinement), quantizer and
+  rectangles, each with its luma and chroma rows, and the agent's access
+  unit. The version is the link's own, not the protocol version: both ends
+  are wlshare, built from one release, and an end of another version is
+  refused in the hello.
+- **No fallback.** A daemon set to an agent has no other H.264 encoder and
+  looks for none. It starts whether or not the agent answers, saying which,
+  since the agent may be back before a session needs it. A stream that cannot
+  be opened — the agent away, a key that is not its own — or that fails a
+  frame fails its encode as any coder's failure does, and the session with
+  it, the log saying why; the next session tries the agent again. With
+  `hardware_h264` off the table is not used.
+
+The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
+picture to the daemon's sample for sample, through an encoder that hands the
+picture back, and the daemon's tests put libx264 behind an agent on loopback
+and hold its frames, byte for byte, to libx264's on the daemon's own side of
+the link, through damage, frames of none, refinements and keyframes, and
+decode them with libavcodec; the hardware behind an agent, where the machine
+has one.
 
 ## The tiles encoding
 
@@ -1135,7 +1223,8 @@ the picture.
   fewer bytes of all but a dragged window's). On a host with none, or with the key off, it is libx264 at its
   `superfast` preset, its motion searched over 128 pixels
   ([measured](video-performance.md#the-preset-and-the-search)).
-  `src/h264/` is that encoder, the GPU's through libva itself or libx264
+  `src/h264/` is that encoder, the GPU's through libva itself
+  (`wlshare-core`) or libx264
   through its own API ([above](#the-video-encoding)), linked from the
   system's libva and libx264, and the `H264Coder` of the daemon's tiles
   encoder, which opens a stream of it for each region, as the video encoder

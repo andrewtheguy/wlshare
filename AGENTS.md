@@ -2,11 +2,17 @@
 
 - Strict no backward-compatibility or legacy paths no matter what.
 
-- Two crates: `wlshare` (the daemon, Linux + wlroots-based Wayland only),
+- Four crates: `wlshare` (the daemon, Linux + wlroots-based Wayland only),
   the package at the repository's root, whose RFB protocol is its own module
   (`src/rfb/`), not a crate; and under `crates/`, `wlshare-proto` (the
   private extensions' bytes), platform-independent and tested elsewhere with
-  `cargo test -p wlshare-proto`. Both are default members: a bare
+  `cargo test -p wlshare-proto`; `wlshare-core` (what the daemon shares with
+  the encoding agent: the hardware H.264 encoder through libva, and both ends
+  of the agent's link, its bytes built and parsed there and nowhere else),
+  Linux only; and `wlshare-enc-agent` (the experimental encoding agent, which
+  lends its machine's hardware encoder to a daemon on another: a binary of
+  its own built on `wlshare-core` alone, so that it links libva and nothing
+  else of the daemon's — keep it so). All are default members: a bare
   `cargo test` tests the workspace. The daemon's one
   client is the zDesk gateway; there is no native client. `wlshare-proto` is
   the one crate anything outside this repository depends on: the gateway pins
@@ -38,8 +44,8 @@
   `libxkbcommon-dev`, and building it needs
   `libpipewire-0.3-dev`, `libspa-0.2-dev` and `libclang-dev` for the audio
   capture and the camera — the last for bindgen, which PipeWire's, FFmpeg's
-  and x264's `-sys` crates run; libva's bindings are the daemon's own, written
-  out by hand (`h264/libva.rs`) — `libavcodec-dev` for the camera's H.264
+  and x264's `-sys` crates run; libva's bindings are `wlshare-core`'s own, written
+  out by hand (`h264/libva.rs` there) — `libavcodec-dev` for the camera's H.264
   decoder, and `libx264-dev` and `libva-dev` for the H.264 encoder of the
   video and the tiles' regions (`h264/`), libx264 through its own API and the
   GPU through libva itself, each linked dynamically from the system.
@@ -52,11 +58,15 @@
   tests, which decode with it.
 - Every protocol byte comes from the daemon's `rfb` module or, for a private
   extension, from `wlshare-proto`; the rest of the daemon writes none itself.
+  The encoding agent's link is not RFB and no extension: its bytes are
+  `wlshare-core`'s (`agent/link.rs`), versioned by the link's own `VERSION`,
+  which any change to them bumps, both ends being one release of wlshare.
   Every encoder gets an independent decoder in its tests. The daemon's
   H.264 encoder (`h264/`) is tested against libavcodec's software decoder:
   libx264 on every machine, and the hardware, through libva, where
   the machine has a VA-API encoder, its test passing with a word where it has
-  none; testdesktop2
+  none; the agent's link with libx264 behind it on every machine, held byte
+  for byte to libx264 without it; testdesktop2
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
   the hardware's is run for real.
 - The lossless pictures — the lossless tiles (`WLSL`: every changed tile

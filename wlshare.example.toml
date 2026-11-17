@@ -7,29 +7,10 @@
 # put an SSH tunnel in front.
 listen = "127.0.0.1:5900"
 
-# Who may connect: a login over RSA-AES from one of the two tables below, or --
-# with both left out -- anyone who reaches the port. Set one table or the other,
-# never both. Classic VncAuth is not offered: it names nobody, cuts the password
-# to eight characters, and leaves the session in the clear.
-#
-# RSA-AES with the system login: the client sends the username and password of
-# the account wlshare runs as -- no other account is accepted -- and PAM checks
-# them under the service below (/etc/pam.d/wlshare, installed with the package).
-# Every byte after the key exchange is encrypted. The server's RSA key is
-# generated on first start and kept in rsa_key_file; its fingerprint is logged
-# at startup, and a zDesk gateway logs the one it saw, for comparing.
-# [pam]
-# service = "wlshare"
-# rsa_key_file = "/home/me/.config/wlshare/rsa_key.pem"   # default: beside this file
-
-# RSA-AES with one password of your own and no account at all: the client is
-# asked for a password alone, and it is checked against the Argon2 hash below.
-# For a host where no system account's password should be the way in. Print the
-# hash with `wlshare hash-password`, which asks for the password and never
-# writes it anywhere; the same rsa_key_file applies.
-# [password]
-# hash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$..."
-# rsa_key_file = "/home/me/.config/wlshare/rsa_key.pem"   # default: beside this file
+# Who may connect is one of two tables, [pam] or [password], or -- with both
+# left out -- anyone who reaches the port. They are at the end of this file,
+# where every table is: in TOML each key after a table's header is that
+# table's, so a table uncommented above the keys below would take them.
 
 # The output to share, by its Wayland `wl_output` name. Absent means the first
 # output the compositor lists. Only a HEADLESS-* output is ever resized or
@@ -102,7 +83,9 @@ handshake_timeout_secs = 120
 # both are H.264 by libx264 on the CPU, at its fastest preset. With neither
 # working wlshare does not start, and a session whose H.264 coder cannot be
 # opened, or fails a frame, ends, which the log says. The hardware needs a
-# VA-API driver for the GPU (intel-media-va-driver, mesa-va-drivers).
+# VA-API driver for the GPU (intel-media-va-driver, mesa-va-drivers). A host
+# with no GPU can borrow another machine's: the [enc_agent] table at the end
+# of this file, experimental, which this key has to be on for.
 hardware_h264 = true
 
 # Have zDesk outline what the tiles picture streams as video, for seeing what
@@ -163,6 +146,63 @@ name = "wlshare"
 #       --held "swaymsg 'output HEADLESS-1 enable, output DP-1 disable'" \
 #       --free "swaymsg 'output DP-1 enable, output HEADLESS-1 disable'"
 # state_socket = "wlshare/state.sock"
+
+# The tables, last, so that one uncommented where it stands takes no key that
+# is not its own.
+
+# Who may connect: a login over RSA-AES from one of the two tables below, or --
+# with both left out -- anyone who reaches the port. Set one table or the other,
+# never both. Classic VncAuth is not offered: it names nobody, cuts the password
+# to eight characters, and leaves the session in the clear.
+#
+# RSA-AES with the system login: the client sends the username and password of
+# the account wlshare runs as -- no other account is accepted -- and PAM checks
+# them under the service below (/etc/pam.d/wlshare, installed with the package).
+# Every byte after the key exchange is encrypted. The server's RSA key is
+# generated on first start and kept in rsa_key_file; its fingerprint is logged
+# at startup, and a zDesk gateway logs the one it saw, for comparing.
+# [pam]
+# service = "wlshare"
+# rsa_key_file = "/home/me/.config/wlshare/rsa_key.pem"   # default: beside this file
+
+# RSA-AES with one password of your own and no account at all: the client is
+# asked for a password alone, and it is checked against the Argon2 hash below.
+# For a host where no system account's password should be the way in. Print the
+# hash with `wlshare hash-password`, which asks for the password and never
+# writes it anywhere; the same rsa_key_file applies.
+# [password]
+# hash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$..."
+# rsa_key_file = "/home/me/.config/wlshare/rsa_key.pem"   # default: beside this file
+
+# Experimental: the hardware H.264 encoder of another machine, for a host with
+# no GPU of its own, whose video and moving regions are otherwise libx264's,
+# on its CPU. That machine runs the encoding agent, a program of its own that
+# needs libva and a VA-API driver and nothing else of wlshare's:
+#
+#   wlshare-enc-agent --listen 192.168.1.20:5990 [--key-file FILE]
+#
+# and this table names where it listens. With it, and hardware_h264 on, every
+# H.264 stream is coded there: wlshare sends the agent what changed of each
+# picture, uncompressed, and is sent the frame back, over TCP. A video that
+# fills a 1920x1080 screen is 3 MB a frame, about 750 Mbit/s at 30 frames a
+# second, so the two machines want a link faster than gigabit between them, or
+# to be on one host.
+#
+# The agent is then the only H.264 encoder: there is no fallback. wlshare
+# starts without it and says so, and a session that needs H.264 while the
+# agent is away, or whose agent fails mid-stream, ends, which the log says;
+# the next session tries the agent again. With hardware_h264 off the table is
+# not used.
+#
+# The two share a key, a file. The agent generates one on first start
+# ($XDG_CONFIG_HOME/wlshare/enc_agent.key, or its --key-file); copy it here,
+# readable by this account alone. Each end proves the key to the other before
+# a picture is sent, and that is all the key does: the pictures cross the
+# network in the clear, unauthenticated, so the link is a trusted LAN or a
+# tunnel (WireGuard, SSH), never the internet.
+# [enc_agent]
+# address = "192.168.1.20:5990"
+# key_file = "/home/me/.config/wlshare/enc_agent.key"   # default: beside this file
 
 # The keymap the virtual keyboard uploads and keysyms are resolved through, as
 # XKB rules/model/layout/variant/options names. Empty means the library default.

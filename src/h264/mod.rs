@@ -1,6 +1,10 @@
 //! H.264 for the video stream and for the tiles picture's moving regions: the
 //! host's hardware encoder through libva itself ([`vaapi`]), where the host
-//! has one, and libx264 through its own API ([`x264`]) where it has none.
+//! has one, and libx264 through its own API ([`x264`]) where it has none; or,
+//! experimentally, another machine's hardware encoder, through the agent that
+//! machine runs ([`remote`]). The hardware encoder and the agent's link are
+//! `wlshare-core`'s, which the agent is built on too; libx264, the choice
+//! between them and the picture's conversion are here.
 //!
 //! The video stream is one stream over the whole desktop
 //! ([`crate::rfb::video`]), and a region of the tiles picture one over its
@@ -45,23 +49,27 @@
 //! same way. What works is what every session uses; with nothing working the
 //! daemon does not start, since neither the video stream nor a region has
 //! another codec. The low-power block codes a constant quantizer without the
-//! HuC firmware, which only bitrate control needs.
+//! HuC firmware, which only bitrate control needs. A daemon configured with an agent, and
+//! `hardware_h264` on, looks for nothing here: the agent's encoder is its
+//! one, tried the same way, and a daemon whose agent is away starts all the
+//! same and says so, since the agent may be back before a session needs it.
 //!
 //! **Failure ends the session.** A coder that cannot be opened, refuses a
 //! stream or fails one midway fails the encode of the picture it codes
 //! ([`crate::rfb::video::VideoEncoder`], [`crate::rfb::tiles::TilesEncoder`]),
 //! and with it the session that asked for the picture. Each session opens
 //! the device itself ([`Encoder::coder`]), so a VA display is one session's and
-//! the sessions share nothing of it.
+//! the sessions share nothing of it. An agent is no exception and has no
+//! stand-in: away, or failing a frame, it fails the stream, and the next
+//! session asks it again.
 //!
 //! Tested against libavcodec's own H.264 decoder ([`crate::decode`]), which
 //! shares nothing with either encoder: libx264's on every machine, the
 //! hardware's where there is one, its test saying so and passing where there
-//! is not, since the machines that build this seldom have one.
+//! is not, since the machines that build this seldom have one. An agent's
+//! stream with libx264 behind the agent, on loopback, on every machine: held
+//! byte for byte to libx264's own, so the link adds and loses nothing.
 
-mod libva;
-mod syntax;
-mod vaapi;
 mod x264;
 
 use std::path::PathBuf;
@@ -69,7 +77,10 @@ use std::sync::Arc;
 
 use crate::rfb::{H264Coder, H264Error, H264Stream, Rect};
 use anyhow::Context as _;
-use log::info;
+use log::{info, warn};
+use wlshare_core::agent::client as remote;
+pub use wlshare_core::h264::nal_types;
+use wlshare_core::h264::{Backend, FPS, Planes, vaapi};
 
 /// The H.264 encoder the startup found, which every session's coder opens.
 #[derive(Debug)]
@@ -83,6 +94,8 @@ pub enum Encoder {
     },
     /// libx264, on the processor.
     X264,
+    /// Another machine's GPU, through the agent it runs.
+    Remote(remote::Agent),
 }
 
 /// The picture the probe codes two frames of, small enough for any encoder.
@@ -93,13 +106,33 @@ impl Encoder {
     /// hardware's where `hardware` asks for it and [`vaapi::find`] finds one,
     /// libx264 otherwise, each tried on two frames first. An error with
     /// neither working.
-    pub fn find(hardware: bool) -> anyhow::Result<Self> {
+    ///
+    /// With `hardware` and an `agent`, the agent's and no other, whether or
+    /// not it answers now: it is tried, and one that fails is said to, but a
+    /// session is what finds out whether it is there when needed.
+    pub fn find(hardware: bool, agent: Option<remote::Agent>) -> anyhow::Result<Self> {
         if hardware {
-            if let Some(encoder) = vaapi::find() {
+            if let Some(agent) = agent {
+                let encoder = Self::Remote(agent.clone());
+                match encoder.try_frames() {
+                    Ok(()) => info!(
+                        "hardware H.264: the agent at {}, experimental",
+                        agent.address()
+                    ),
+                    Err(e) => warn!(
+                        "{e:#}: a session that needs H.264 fails until it answers, since a daemon set to an agent has no other encoder"
+                    ),
+                }
+                return Ok(encoder);
+            }
+            if let Some(encoder) = Self::hardware() {
                 return Ok(encoder);
             }
         } else {
             info!("hardware_h264 is off: the hardware H.264 encoder is not looked for");
+            if let Some(agent) = agent {
+                info!("and the encoding agent at {} is not asked", agent.address());
+            }
         }
         Self::X264
             .try_frames()
@@ -108,11 +141,23 @@ impl Encoder {
         Ok(Self::X264)
     }
 
+    /// This host's hardware encoder, where VA-API has one that works: each
+    /// render node's in turn, tried on two frames ([`vaapi::find`]).
+    fn hardware() -> Option<Self> {
+        let vaapi = |device: &std::path::Path, low_power| Self::Vaapi {
+            device: device.to_owned(),
+            low_power,
+        };
+        vaapi::find(|device, low_power| vaapi(device, low_power).try_frames())
+            .map(|(device, low_power)| vaapi(&device, low_power))
+    }
+
     /// What codes the streams, for the log: `H.264 by …`.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Vaapi { .. } => "the hardware",
             Self::X264 => "libx264",
+            Self::Remote(_) => "the agent's hardware",
         }
     }
 
@@ -166,15 +211,31 @@ impl Encoder {
                 Coder::Vaapi(Arc::new(vaapi::Display::open(device)?), *low_power)
             }
             Self::X264 => Coder::X264,
+            Self::Remote(agent) => Coder::Remote(agent.clone()),
         })
     }
 }
 
 /// One session's H.264 coder: for the hardware, a VA display, which each of
-/// its streams takes an encoder on; for libx264, nothing until a stream.
+/// its streams takes an encoder on; for libx264, nothing until a stream; for
+/// an agent, where it is, each stream a connection to it.
 pub enum Coder {
     Vaapi(Arc<vaapi::Display>, bool),
     X264,
+    Remote(remote::Agent),
+}
+
+impl Coder {
+    /// An encoder over a `coded` picture, both sides even.
+    fn backend(&mut self, coded: (usize, usize)) -> anyhow::Result<Box<dyn Backend>> {
+        Ok(match self {
+            Self::Vaapi(display, low_power) => {
+                Box::new(vaapi::Stream::open(display.clone(), *low_power, coded)?)
+            }
+            Self::X264 => Box::new(x264::Stream::open(coded)?),
+            Self::Remote(agent) => Box::new(remote::Stream::open(agent, coded)?),
+        })
+    }
 }
 
 impl H264Coder for Coder {
@@ -184,57 +245,38 @@ impl H264Coder for Coder {
                 width > 0 && height > 0,
                 "a {width}x{height} picture has no pixels"
             );
-            let planes = Planes::new(width, height);
-            let stream: Box<dyn H264Stream> = match self {
-                Self::Vaapi(display, low_power) => Box::new(Stream {
-                    backend: vaapi::Stream::open(display.clone(), *low_power, planes.coded)?,
-                    planes,
-                }),
-                Self::X264 => Box::new(Stream {
-                    backend: x264::Stream::open(planes.coded)?,
-                    planes,
-                }),
-            };
+            let picture = Picture::new(width, height);
+            let stream: Box<dyn H264Stream> = Box::new(Stream {
+                backend: self.backend(picture.planes.coded)?,
+                picture,
+            });
             Ok(stream)
         })();
         opened.map_err(|e| format!("{e:#}").into())
     }
 }
 
-/// What a backend does with a picture the stream has read: code it, at
-/// `qp`, as an IDR where `keyframe` says so, and append the access unit to
-/// `out`. Whether it made a frame.
-trait Backend: Send {
-    fn frame(
-        &mut self,
-        planes: &Planes,
-        keyframe: bool,
-        qp: u8,
-        out: &mut Vec<u8>,
-    ) -> anyhow::Result<bool>;
-}
-
 /// One stream, the desktop's or a region's: the NV12 picture in front of an
 /// encoder, and the encoder.
-struct Stream<B> {
-    planes: Planes,
-    backend: B,
+struct Stream {
+    picture: Picture,
+    backend: Box<dyn Backend>,
 }
 
-impl<B: Backend> H264Stream for Stream<B> {
+impl H264Stream for Stream {
     fn read_bgrx(
         &mut self,
         pixels: &[u8],
         stride: usize,
         changed: Option<&[Rect]>,
     ) -> Result<(), H264Error> {
-        self.planes
+        self.picture
             .read_bgrx(pixels, stride, changed)
             .map_err(|e| format!("{e:#}").into())
     }
 
     fn refine(&mut self) {
-        self.planes.refine = true;
+        self.picture.planes.refine = true;
     }
 
     fn encode(
@@ -245,18 +287,14 @@ impl<B: Backend> H264Stream for Stream<B> {
     ) -> Result<bool, H264Error> {
         let coded: anyhow::Result<bool> = (|| {
             anyhow::ensure!(
-                self.planes.filled,
+                self.picture.filled,
                 "a stream was asked for a frame before any picture was read into it"
             );
             let made = self
                 .backend
-                .frame(&self.planes, keyframe, qp(quality), out)?;
-            // One more frame has coded every macroblock as it stands.
+                .frame(&self.picture.planes, keyframe, qp(quality), out)?;
             if made {
-                for frames in &mut self.planes.still {
-                    *frames = frames.saturating_add(1);
-                }
-                self.planes.refine = false;
+                self.picture.planes.coded_frame();
             }
             Ok(made)
         })();
@@ -286,65 +324,24 @@ pub fn encoder_threads() -> usize {
 /// megapixel, eight for 4K's 8.3, the largest desktop this is tuned for.
 const MAX_ENCODER_THREADS: usize = 8;
 
-/// The frame rate the level is figured at: twice wlshare's default
-/// `max_fps`, so a daemon set up to 60 still keeps to the level it names.
-const FPS: u32 = 60;
-
-/// A stream's picture as its encoder takes it: NV12, BT.601 at studio swing,
-/// converted from the framebuffer where it changed.
-struct Planes {
+/// A stream's picture: the planes its encoder takes ([`Planes`]), NV12, BT.601
+/// at studio swing, converted from the framebuffer where it changed.
+struct Picture {
     size: (u16, u16),
-    /// The size coded: `size` rounded up to even sides.
-    coded: (usize, usize),
-    /// Of both planes: a multiple of 64, which leaves an odd picture's coded
-    /// one its extra column.
-    stride: usize,
+    planes: Planes,
     /// The bottom row pair of a conversion, copied: `B, G, R, X`.
     pair: Vec<u8>,
-    /// The coded picture's rows and one to spare, so the bottom row pair's
-    /// planes are a whole stride past its left edge.
-    y: Vec<u8>,
-    uv: Vec<u8>,
     /// The planes hold a picture: one was read whole.
     filled: bool,
-    /// How many macroblocks the coded picture is across.
-    across: usize,
-    /// For each macroblock of the coded picture, row by row, how many frames
-    /// have been coded since a read last wrote into it: none for one that
-    /// changed since the last frame. Any other is in the planes sample for
-    /// sample as that frame had it, which an encoder told so need not find
-    /// out ([`x264`]).
-    still: Vec<u8>,
-    /// The next frame is to look at every macroblock again, however long it
-    /// has stood ([`H264Stream::refine`]).
-    refine: bool,
 }
 
-impl Planes {
+impl Picture {
     fn new(width: u16, height: u16) -> Self {
-        let (w, h) = (usize::from(width), usize::from(height));
-        let stride = w.next_multiple_of(64);
-        let across = w.next_multiple_of(2).div_ceil(16);
         Self {
             size: (width, height),
-            coded: (w.next_multiple_of(2), h.next_multiple_of(2)),
-            stride,
+            planes: Planes::new(width, height),
             pair: Vec::new(),
-            y: vec![16; stride * (h.next_multiple_of(2) + 1)],
-            uv: vec![128; stride * (h.div_ceil(2) + 1)],
             filled: false,
-            across,
-            still: vec![0; across * h.next_multiple_of(2).div_ceil(16)],
-            refine: false,
-        }
-    }
-
-    /// The samples from `(left, top)` to short of `(right, bottom)` of the
-    /// coded picture were written: their macroblocks have changed.
-    fn touch(&mut self, (left, top): (usize, usize), (right, bottom): (usize, usize)) {
-        for row in top / 16..=(bottom - 1) / 16 {
-            self.still[row * self.across + left / 16..=row * self.across + (right - 1) / 16]
-                .fill(0);
         }
     }
 
@@ -408,14 +405,14 @@ impl Planes {
             "a {w}x{h} picture at a stride of {stride} does not fit in {} bytes",
             pixels.len()
         );
-        self.touch((left, top), (right, bottom));
-        let ps = self.stride;
+        self.planes.touch((left, top), (right, bottom));
+        let ps = self.planes.stride;
         let last = bottom - 2;
         if last > top {
             let rgba = &pixels[top * stride + left * 4..last * stride + left * 4];
             nv12(
-                &mut self.y[top * ps + left..last * ps + left],
-                &mut self.uv[top / 2 * ps + left..last / 2 * ps + left],
+                &mut self.planes.y[top * ps + left..last * ps + left],
+                &mut self.planes.uv[top / 2 * ps + left..last / 2 * ps + left],
                 ps,
                 rgba,
                 stride,
@@ -429,8 +426,8 @@ impl Planes {
             pair.extend_from_slice(&pixels[row * stride + left * 4..row * stride + right * 4]);
         }
         let converted = nv12(
-            &mut self.y[last * ps + left..bottom * ps + left],
-            &mut self.uv[last / 2 * ps + left..bottom / 2 * ps + left],
+            &mut self.planes.y[last * ps + left..bottom * ps + left],
+            &mut self.planes.uv[last / 2 * ps + left..bottom / 2 * ps + left],
             ps,
             &pair,
             rw * 4,
@@ -476,23 +473,6 @@ fn nv12(
     .map_err(|e| anyhow::anyhow!("converting a {width}x{height} rectangle to NV12: {e}"))
 }
 
-/// The NAL unit types of an Annex B access unit, in order.
-pub fn nal_types(unit: &[u8]) -> Vec<u8> {
-    let mut types = Vec::new();
-    let mut at = 0;
-    while at + 3 <= unit.len() {
-        if unit[at] == 0 && unit[at + 1] == 0 && unit[at + 2] == 1 {
-            if let Some(&header) = unit.get(at + 3) {
-                types.push(header & 0x1f);
-            }
-            at += 3;
-        } else {
-            at += 1;
-        }
-    }
-    types
-}
-
 /// A picture of noise as `B, G, R, X`, which no prediction codes for free.
 fn noise(w: usize, h: usize, seed: u32) -> Vec<u8> {
     let mut state = seed;
@@ -515,17 +495,6 @@ mod tests {
     fn the_dial_maps_onto_qp_40_down_to_16() {
         assert_eq!((qp(1), qp(50), qp(100)), (40, 28, 16));
         assert!((1..100).all(|q| qp(q) >= qp(q + 1)), "finer dial, lower QP");
-    }
-
-    #[test]
-    fn nal_types_are_read_off_annex_b_start_codes() {
-        assert_eq!(
-            nal_types(&[
-                0, 0, 0, 1, 0x67, 0xAA, 0, 0, 1, 0x68, 0, 0, 0, 1, 0x65, 0x88
-            ]),
-            [7, 8, 5]
-        );
-        assert!(nal_types(&[1, 2, 3]).is_empty());
     }
 
     /// The luma of the test picture: a ramp across and down, which a
@@ -744,7 +713,7 @@ mod tests {
     /// this machine has no encoder.
     #[test]
     fn hardware_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
-        let Some(encoder) = vaapi::find() else {
+        let Some(encoder) = Encoder::hardware() else {
             eprintln!(
                 "no VA-API H.264 encoder on this machine; the hardware coder is not exercised"
             );
@@ -1017,8 +986,19 @@ mod tests {
     /// its damage in one corner, leaves the rest as fine as it stood.
     #[test]
     fn libx264_is_told_what_did_not_change() {
+        told_what_did_not_change(&Encoder::X264);
+    }
+
+    /// As much through an agent: its copy of the picture is told what the
+    /// daemon's was, rectangle by rectangle, and its libx264 the same.
+    #[test]
+    fn libx264_behind_an_agent_is_told_what_did_not_change() {
+        told_what_did_not_change(&agent(Encoder::X264));
+    }
+
+    fn told_what_did_not_change(encoder: &Encoder) {
         let (w, h) = (160usize, 96usize);
-        let mut coder = Encoder::X264.coder().unwrap();
+        let mut coder = encoder.coder().unwrap();
         let mut stream = coder.open(w as u16, h as u16).unwrap();
         let mut decoder = crate::decode::Decoder::new().unwrap();
         let mut pixels = textured(w, h);
@@ -1089,5 +1069,116 @@ mod tests {
             after < fine + 1.0,
             "what did not change kept its picture at a coarser dial: {after:.2}, from {fine:.2}"
         );
+    }
+
+    use wlshare_core::agent::{link::MIN_KEY, serve};
+
+    /// The key the tests' agents and their daemons share.
+    const KEY: [u8; MIN_KEY] = [0x5a; MIN_KEY];
+
+    /// An agent on loopback that codes by `encoder`, a coder a stream as a
+    /// session would have, for as long as the tests run; where it listens.
+    fn agent_at(encoder: Encoder) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            serve::serve(
+                listener,
+                KEY.into(),
+                Arc::new(move |coded| encoder.coder()?.backend(coded)),
+            )
+        });
+        address
+    }
+
+    /// The encoder of a daemon set to an agent that codes by `encoder`.
+    fn agent(encoder: Encoder) -> Encoder {
+        Encoder::Remote(remote::Agent::new(agent_at(encoder), KEY.to_vec()))
+    }
+
+    /// A stream through an agent is a stream: its frames decode to the
+    /// picture with libavcodec's software decoder, at even sides and odd,
+    /// and its quantizer follows the dial frame by frame. libx264 behind the
+    /// agent, so that the link is held to this on every machine.
+    #[test]
+    fn an_agents_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
+        let encoder = agent(Encoder::X264);
+        encoder.try_frames().expect("libx264 behind an agent");
+        frames_decode_to_the_picture(&encoder, (96, 70), 0);
+        frames_decode_to_the_picture(&encoder, (95, 69), 0);
+        the_quantizer_moves_frame_by_frame(&encoder, true);
+    }
+
+    /// The hardware's frames through an agent, as a daemon with no GPU is
+    /// sent them. Passes with a word where this machine has no encoder.
+    #[test]
+    fn hardware_frames_through_an_agent_decode_to_the_picture() {
+        let Some(hardware) = Encoder::hardware() else {
+            eprintln!(
+                "no VA-API H.264 encoder on this machine; the hardware behind an agent is not exercised"
+            );
+            return;
+        };
+        let encoder = agent(hardware);
+        encoder.try_frames().expect("the hardware behind an agent");
+        frames_decode_to_the_picture(&encoder, (96, 70), 18);
+        frames_decode_to_the_picture(&encoder, (95, 69), 18);
+        the_quantizer_moves_frame_by_frame(&encoder, false);
+    }
+
+    /// What an agent codes is what its encoder codes of the same pictures on
+    /// the daemon's own machine, byte for byte: the agent's copy of the
+    /// picture is the daemon's, and its encoder is told the same of it. A
+    /// picture, damage in two places, a frame of none at a finer dial, one
+    /// that refines, a keyframe, and a walk down the dial under more damage.
+    #[test]
+    fn an_agent_codes_what_its_encoder_codes_at_home() {
+        let (w, h) = (163usize, 101usize);
+        let mut home = Encoder::X264.coder().unwrap();
+        let mut away = agent(Encoder::X264).coder().unwrap();
+        let mut streams = [
+            home.open(w as u16, h as u16).unwrap(),
+            away.open(w as u16, h as u16).unwrap(),
+        ];
+        let mut pixels = textured(w, h);
+        let mut frame = |pixels: &[u8], changed: Option<&[Rect]>, refine, keyframe, quality| {
+            let [home, away] = streams.each_mut().map(|stream| {
+                stream.read_bgrx(pixels, w * 4, changed).unwrap();
+                if refine {
+                    stream.refine();
+                }
+                let mut unit = Vec::new();
+                assert!(stream.encode(keyframe, quality, &mut unit).unwrap());
+                unit
+            });
+            assert!(home == away, "the agent's frame is not the encoder's own");
+            home.len()
+        };
+        frame(&pixels, None, false, false, 50);
+        let mut state = 0x1234_5678u32;
+        for n in 0..12 {
+            let mut rects = Vec::new();
+            for _ in 0..2 {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let rect = Rect {
+                    x: (state % 120) as u16,
+                    y: (state >> 8) as u16 % 70,
+                    width: 1 + (state >> 16) as u16 % 40,
+                    height: 1 + (state >> 24) as u16 % 30,
+                };
+                for y in usize::from(rect.y)..usize::from(rect.y + rect.height) {
+                    for x in usize::from(rect.x)..usize::from(rect.x + rect.width) {
+                        pixels[(y * w + x) * 4..][..3].copy_from_slice(&[(state >> 4) as u8; 3]);
+                    }
+                }
+                rects.push(rect);
+            }
+            frame(&pixels, Some(&rects), false, false, 90 - n * 7);
+            // What stands still: a frame of no damage, and one that refines.
+            frame(&pixels, Some(&[]), false, false, 100);
+            frame(&pixels, Some(&[]), n % 3 == 0, n == 7, 100);
+        }
     }
 }

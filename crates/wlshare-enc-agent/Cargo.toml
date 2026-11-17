@@ -1,0 +1,21 @@
+[package]
+name = "wlshare-enc-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lends a machine's hardware H.264 encoder to the wlshare daemon on another (experimental)"
+
+# Experimental. The agent: the end of the H.264 link that has the GPU, a
+# process of its own on the machine that has it. The encoder and the link are
+# `wlshare-core`'s; this is the command line, the key file and the listener.
+[[bin]]
+name = "wlshare-enc-agent"
+path = "src/main.rs"
+
+[dependencies]
+wlshare-core = { path = "../wlshare-core" }
+anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }

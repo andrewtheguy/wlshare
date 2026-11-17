@@ -224,10 +224,15 @@ the server resolves the client's keysyms through the same keymap it uploads.
 
 ## Building
 
-The workspace has two crates: `wlshare`, the daemon, with the RFB protocol
-it speaks inside it, and `wlshare-proto`, the bytes of wlshare's private
+The workspace has four crates: `wlshare`, the daemon, with the RFB protocol
+it speaks inside it; `wlshare-proto`, the bytes of wlshare's private
 extensions, which the zDesk gateway depends on too, pinned by its
-`proto-v<N>` tag, the protocol version the release that brought it tagged.
+`proto-v<N>` tag, the protocol version the release that brought it tagged;
+`wlshare-core`, the hardware H.264 encoder through libva, which the daemon
+shares with the last; and `wlshare-enc-agent`, the experimental encoding
+agent, a binary of its own that lends its machine's hardware encoder to a
+daemon on a machine with no GPU (the `[enc_agent]` table in
+`wlshare.example.toml`) and needs libva alone.
 The second has no OS APIs and builds and tests anywhere. The daemon needs libxkbcommon, libpam, libpipewire,
 libavcodec, libx264 and libva — the Wayland protocol is spoken in Rust, with
 no libwayland — and
@@ -238,8 +243,8 @@ packets back. The FLAC coding is
 [sound-opus](https://github.com/andrewtheguy/sound-opus), both shared with
 the zDesk gateway, each pinned by its release tag. Nothing asks of the
 processor more than its target's baseline. The daemon is the package at
-the repository's root, the protocol crate under `crates/`. A bare `cargo
-test` covers both; elsewhere `cargo test -p wlshare-proto` covers the
+the repository's root, the others under `crates/`. A bare `cargo
+test` covers them all; elsewhere `cargo test -p wlshare-proto` covers the
 second. Its H.264 tests decode with libavcodec, libx264's frames on every
 machine and the hardware's where there is a VA-API encoder. Build the daemon with `cargo build --release` on a
 Linux host with
@@ -247,7 +252,7 @@ Linux host with
 `libavcodec-dev`, `libx264-dev`, `libva-dev`, `libclang-dev` and
 `pkg-config`. libclang links nothing: PipeWire's, FFmpeg's and x264's `-sys`
 crates generate their bindings with bindgen, which loads it at build time;
-libva's are the daemon's own, written out by hand.
+libva's are `wlshare-core`'s own, written out by hand.
 
 `scripts/capture-frames.sh` builds and runs the capture container
 (`docker/capture/`), with docker or with podman: a headless sway and the daemon started with

@@ -215,7 +215,7 @@ fn main() -> Result<(), Error> {
     }
     let name = sim::run_name(&paths);
     let link_json = sim::rates_json(&rates);
-    let h264 = h264::Encoder::find(!libx264).map_err(|e| format!("{e:#}"))?;
+    let h264 = h264::Encoder::find(!libx264, None).map_err(|e| format!("{e:#}"))?;
     let mut source = Source::new(paths);
     let mut gateway = Gateway::new(
         rates,

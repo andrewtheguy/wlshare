@@ -1,6 +1,6 @@
 //! The host's GPU through libva itself: the encoder a VA-API driver offers
 //! for H.264, handed every picture's parameters, its quantizer among them, and
-//! the stream's headers as the daemon writes them ([`super::syntax`]).
+//! the stream's headers as this crate writes them ([`super::syntax`]).
 //!
 //! The quantizer is each slice's `slice_qp_delta` from the picture set's,
 //! which a constant-quantizer encoder codes the slice at; libavcodec's
@@ -12,7 +12,7 @@
 //! keyframe but the first.
 //!
 //! **Which encoder, and how hard it looks**
-//! ([measured](../../docs/video-performance.md#the-hardware-beside-libx264)).
+//! ([measured](../../../../docs/video-performance.md#the-hardware-beside-libx264)).
 //! Where a driver has both of Intel's, the shader encoder is tried ahead of
 //! the low-power, fixed-function one, and either is asked for the highest of
 //! its quality levels where it has several: left at the driver's own level,
@@ -44,7 +44,7 @@ use log::{debug, info, warn};
 
 use super::libva as va;
 use super::syntax::{self, Sequence, Slice};
-use super::{Backend, Encoder, Planes};
+use super::{Backend, Planes};
 
 /// Where render nodes are.
 const DRI: &str = "/dev/dri";
@@ -59,9 +59,10 @@ const QUALITY_LEVEL: u32 = 1;
 const MAX_SINCE_IDR: u32 = 1 << 30;
 
 /// Look for a working VA-API H.264 encoder: each render node in turn, the
-/// shader encoder ahead of the low-power one, each tried on two frames.
-/// `None` with nothing working, the reasons logged.
-pub fn find() -> Option<Encoder> {
+/// shader encoder ahead of the low-power one, each tried by `works`, which is
+/// handed the node and whether the low-power encoder is the one to try. The
+/// first that works, or `None` with nothing working, the reasons logged.
+pub fn find(works: impl Fn(&Path, bool) -> anyhow::Result<()>) -> Option<(PathBuf, bool)> {
     let mut nodes: Vec<PathBuf> = match std::fs::read_dir(DRI) {
         Ok(entries) => entries
             .filter_map(Result::ok)
@@ -84,18 +85,14 @@ pub fn find() -> Option<Encoder> {
     }
     for node in nodes {
         for low_power in [false, true] {
-            let encoder = Encoder::Vaapi {
-                device: node.clone(),
-                low_power,
-            };
-            match encoder.try_frames() {
+            match works(&node, low_power) {
                 Ok(()) => {
                     info!(
                         "hardware H.264: {} through VA-API, its {} encoder",
                         node.display(),
                         kind(low_power)
                     );
-                    return Some(encoder);
+                    return Some((node, low_power));
                 }
                 Err(e) => debug!(
                     "the {} encoder on {}: {e:#}",
@@ -111,6 +108,51 @@ pub fn find() -> Option<Encoder> {
     }
     info!("no hardware H.264 encoder");
     None
+}
+
+/// Whether the encoder on `node` codes a stream whose quantizer moves frame
+/// by frame, by what its frames weigh: three frames of noise on a small
+/// picture, an IDR and two P frames, the first of those at a fine quantizer
+/// and the second at a coarse one, which is to be under half the first's
+/// bytes. What an agent tries its encoder by, having no decoder to read each
+/// macroblock's quantizer back with as a daemon has; the daemon it serves
+/// reads them back from the frames it is sent.
+pub fn moves_its_quantizer(node: &Path, low_power: bool) -> anyhow::Result<()> {
+    const SIDE: u16 = 96;
+    let mut stream = Stream::open(
+        Arc::new(Display::open(node)?),
+        low_power,
+        (SIDE.into(), SIDE.into()),
+    )?;
+    let mut planes = Planes::new(SIDE, SIDE);
+    let mut state = 0x9E37_79B9u32;
+    let mut sizes = Vec::new();
+    for (n, (qp, nal)) in [(28, 5), (16, 1), (40, 1)].into_iter().enumerate() {
+        // New noise each frame, so no frame is free.
+        for sample in planes.y.iter_mut().chain(&mut planes.uv) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *sample = state as u8;
+        }
+        let mut unit = Vec::new();
+        anyhow::ensure!(
+            stream.frame(&planes, false, qp, &mut unit)?,
+            "the encoder made no frame {n}"
+        );
+        anyhow::ensure!(
+            super::nal_types(&unit).contains(&nal),
+            "frame {n} is not the kind asked"
+        );
+        sizes.push(unit.len());
+    }
+    anyhow::ensure!(
+        sizes[2] * 2 < sizes[1],
+        "a P frame at QP 40 weighs {} bytes and one at QP 16 {}: the quantizer does not move",
+        sizes[2],
+        sizes[1]
+    );
+    Ok(())
 }
 
 /// Which VA-API encoder: the fixed-function block or the shader one.

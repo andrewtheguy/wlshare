@@ -143,7 +143,16 @@ fn main() -> anyhow::Result<()> {
     // operator acts on.
     // SAFETY: a store of the level, before any thread uses libavcodec.
     unsafe { ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_WARNING) };
-    let h264 = Arc::new(h264::Encoder::find(config.hardware_h264)?);
+    let agent = config
+        .enc_agent
+        .as_ref()
+        .map(|agent| {
+            use wlshare_core::agent::{client::Agent, link::read_key};
+            let key = read_key(&agent.key_file(&path)).context("the [enc_agent] table's key")?;
+            anyhow::Ok(Agent::new(agent.address.clone(), key))
+        })
+        .transpose()?;
+    let h264 = Arc::new(h264::Encoder::find(config.hardware_h264, agent)?);
 
     // The compositor thread comes up first and hands back what it learned about
     // the output, so ServerInit can name a size before the first frame.

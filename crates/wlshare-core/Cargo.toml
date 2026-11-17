@@ -1,0 +1,23 @@
+[package]
+name = "wlshare-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "What wlshare's binaries share: the hardware H.264 encoder, and the link that lends it to a daemon on another machine"
+
+# The library the daemon and the encoding agent are both built on, and nothing
+# outside this workspace depends on. It links the system's libva and
+# libva-drm, the bindings its own (src/h264/libva.rs), and nothing else
+# outside Rust, so the agent's machine needs those two and a VA-API driver.
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+# The agent link's handshake (src/h264/agent/link.rs): each end's random, and
+# HMAC-SHA256 for its proof of the pre-shared key.
+rand = "0.10"
+sha2 = "0.11"
+hmac = "0.13"
+# The keepalive that tells an agent its daemon is gone
+# (src/h264/agent/serve.rs).
+socket2 = { version = "0.6", features = ["all"] }
