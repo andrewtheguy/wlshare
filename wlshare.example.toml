@@ -176,18 +176,23 @@ name = "wlshare"
 
 # Experimental: the hardware H.264 encoder of another machine, for a host with
 # no GPU of its own, whose video and moving regions are otherwise libx264's,
-# on its CPU. docs/enc-agent.md is how to set both machines up. That machine runs the encoding agent, a program of its own that
-# needs libva and a VA-API driver and nothing else of wlshare's:
+# on its CPU. It is for a wired link that is very fast, and above all for a
+# virtual machine borrowing the encoder of the host it runs on.
+# docs/enc-agent.md is how to set both machines up, with a virtual machine
+# and its host from start to finish. That machine runs the encoding agent, a
+# program of its own that needs libva and a VA-API driver and nothing else of
+# wlshare's:
 #
 #   wlshare-enc-agent --listen 192.168.1.20:5990 --allow 192.168.1.10/32 [--key-file FILE]
 #
 # and this table names where it listens: the address and the port are yours
 # to choose, 5990 being no default, and the agent has none. A host name does
 # for the address, looked up once and taken at the first address it has, so
-# one with several, IPv6 beside IPv4, is better written as the address. It is for two
-# machines with a fast link of their own: a virtual machine or container, as
-# this host would be, and the host it runs on, or a sibling there, that has
-# the host's GPU; or two wired machines on a LAN faster than gigabit.
+# one with several, IPv6 beside IPv4, is better written as the address. The
+# two machines are a virtual machine or container, as this host would be, and
+# the host it runs on, or a sibling there, that has the host's GPU, the
+# pictures crossing a bridge inside the one machine; or two wired machines on
+# a LAN faster than gigabit. It is not for Wi-Fi or a link between sites.
 #
 # --allow is where this host connects from, as an IPv4 or IPv6 CIDR block,
 # and the agent does not start without one: a single address is a /32 (a
