@@ -230,6 +230,7 @@ assets = [
     ["wlshare.example.toml", "usr/share/doc/wlshare/", "644"],
     ["README.md", "usr/share/doc/wlshare/", "644"],
     ["docs/architecture.md", "usr/share/doc/wlshare/", "644"],
+    ["docs/enc-agent.md", "usr/share/doc/wlshare/", "644"],
 ]
 
 [profile.release]

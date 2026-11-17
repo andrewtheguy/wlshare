@@ -222,6 +222,12 @@ to carry — goes under `[xkb]`, with `XKB_CONFIG_EXTRA_PATH` in the unit's
 environment naming the directory that holds it. Each key must keep its keysym:
 the server resolves the client's keysyms through the same keymap it uploads.
 
+A host with no GPU codes its H.264 on its processor. Experimentally, it can
+borrow the hardware encoder of another machine it has a fast link to — the
+host a virtual machine runs on, or a wired machine on a LAN faster than
+gigabit — which runs the encoding agent, `wlshare-enc-agent`, a package of
+its own. [`docs/enc-agent.md`](docs/enc-agent.md) is how to set the two up.
+
 ## Building
 
 The workspace has four crates: `wlshare`, the daemon, with the RFB protocol
@@ -231,8 +237,8 @@ extensions, which the zDesk gateway depends on too, pinned by its
 `wlshare-core`, the hardware H.264 encoder through libva, which the daemon
 shares with the last; and `wlshare-enc-agent`, the experimental encoding
 agent, a binary of its own that lends its machine's hardware encoder to a
-daemon on a machine with no GPU (the `[enc_agent]` table in
-`wlshare.example.toml`) and needs libva alone.
+daemon on a machine with no GPU ([`docs/enc-agent.md`](docs/enc-agent.md))
+and needs libva alone.
 The second has no OS APIs and builds and tests anywhere. The daemon needs libxkbcommon, libpam, libpipewire,
 libavcodec, libx264 and libva — the Wayland protocol is spoken in Rust, with
 no libwayland — and
@@ -269,7 +275,9 @@ encoder is handed").
 
 Packages for Debian trixie and Ubuntu 26.04 (resolute), each on amd64 and
 arm64, are built in Docker by `scripts/build-debs.sh`, into
-`dist/<suite>/<arch>/wlshare-<suite>-<arch>.deb`. The
+`dist/<suite>/<arch>/wlshare-<suite>-<arch>.deb`, with the encoding agent's
+beside it, `wlshare-enc-agent-<suite>-<arch>.deb`, a package of its own that
+depends on libva alone. The
 **Release wlshare** workflow builds the same and publishes them as the GitHub
 release `v<version>`, the version being the workspace's in `Cargo.toml`; bump it
 before running the workflow. The package version is the crate's, and the

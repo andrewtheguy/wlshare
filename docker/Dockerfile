@@ -45,18 +45,33 @@ COPY . /build
 # package installs only on the suite it was built on. It also names libva2 and
 # libva-drm2 at a floor of its own beside Cargo.toml's, and merge-depends.sh
 # keeps the higher of the two (it needs xz-utils, to rewrite control.tar.xz).
+#
+# The encoding agent is a package of its own beside the daemon's,
+# wlshare-enc-agent-<suite>-<arch>.deb, built and named the same way. It is for
+# a machine that has a GPU and nothing of wlshare's, so its Depends is held to
+# the C library and libva: anything else there stops the build.
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
     protocol="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare-proto","version":"\([0-9]*\)\.0\.0".*/\1/p' | head -n 1)"; \
     arch="$(dpkg --print-architecture)"; \
     suite="$(. /etc/os-release && echo "${VERSION_CODENAME}")"; \
     if [ "${arch}" = arm64 ]; then export JEMALLOC_SYS_WITH_LG_PAGE=16; fi; \
-    cargo build --release -p wlshare; \
+    cargo build --release -p wlshare -p wlshare-enc-agent; \
     [ "$(target/release/wlshare --version)" = "wlshare ${version} (wlshare protocol ${protocol})" ]; \
+    [[ "$(target/release/wlshare-enc-agent --version)" == "wlshare-enc-agent ${version} (link "*")" ]]; \
     mkdir -p /out; \
-    cargo deb -p wlshare --no-build -o "/out/wlshare-${suite}-${arch}.deb"; \
-    docker/merge-depends.sh "/out/wlshare-${suite}-${arch}.deb"; \
-    [ "$(dpkg-deb --field "/out/wlshare-${suite}-${arch}.deb" Version)" = "${version/-/\~}-1" ]; \
+    for package in wlshare wlshare-enc-agent; do \
+        deb="/out/${package}-${suite}-${arch}.deb"; \
+        cargo deb -p "${package}" --no-build -o "${deb}"; \
+        docker/merge-depends.sh "${deb}"; \
+        [ "$(dpkg-deb --field "${deb}" Version)" = "${version/-/\~}-1" ]; \
+    done; \
+    dpkg-deb --field "/out/wlshare-enc-agent-${suite}-${arch}.deb" Depends | sed 's/ ([^)]*)//g; s/, */\n/g' | while read -r needed; do \
+        case "${needed}" in \
+            libc6|libgcc-s1|libva2|libva-drm2) ;; \
+            *) echo "the agent's package depends on ${needed}, which is none of libc and libva" >&2; exit 1 ;; \
+        esac; \
+    done; \
     cd /out && sha256sum ./*.deb | sed 's#  \./#  #' > SHA256SUMS && cat SHA256SUMS
 
 FROM scratch

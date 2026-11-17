@@ -176,7 +176,7 @@ name = "wlshare"
 
 # Experimental: the hardware H.264 encoder of another machine, for a host with
 # no GPU of its own, whose video and moving regions are otherwise libx264's,
-# on its CPU. That machine runs the encoding agent, a program of its own that
+# on its CPU. docs/enc-agent.md is how to set both machines up. That machine runs the encoding agent, a program of its own that
 # needs libva and a VA-API driver and nothing else of wlshare's:
 #
 #   wlshare-enc-agent --listen 192.168.1.20:5990 --allow 192.168.1.10/32 [--key-file FILE]

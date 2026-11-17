@@ -1,0 +1,15 @@
+# What wlshare-enc-agent.service starts the encoding agent with. Set both, then
+#
+#   systemctl enable --now wlshare-enc-agent
+#
+# docs/enc-agent.md, in /usr/share/doc/wlshare-enc-agent, has the rest.
+
+# Where the agent listens: an address of this machine and a port of your
+# choosing, which the daemon's [enc_agent] table names.
+#LISTEN=192.168.1.20:5990
+
+# Where the wlshare daemon connects from, as IPv4 or IPv6 CIDR blocks with
+# commas between them. One address is a /32, or a /128 for IPv6. Name the
+# daemon's own address and not its network: every address allowed may try the
+# key.
+#ALLOW=192.168.1.10/32

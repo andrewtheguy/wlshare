@@ -31,7 +31,10 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
 - `crates/wlshare-enc-agent` is the encoding agent, experimental: a binary
   of its own, `wlshare-enc-agent`, built on `wlshare-core` alone, so that the
   machine it lends the GPU of needs libva and a VA-API driver and nothing
-  else of the daemon's.
+  else of the daemon's. It is a package of its own too, whose build is
+  stopped by a dependency past the C library and libva, with a systemd unit
+  that runs it as an account of its own; [`enc-agent.md`](enc-agent.md) is
+  how it is set up.
 - The package at the root, `wlshare`, is the daemon. `rfb/` decides every byte on the wire that
   is not a private extension's: handshake, message parsing and building,
   RSA-AES and its frames, the ZRLE encoder, the video encoder, the tiles
