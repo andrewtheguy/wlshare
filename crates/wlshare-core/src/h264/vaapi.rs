@@ -1,6 +1,6 @@
 //! The host's GPU through libva itself: the encoder a VA-API driver offers
 //! for H.264, handed every picture's parameters, its quantizer among them, and
-//! the stream's headers as this crate writes them ([`super::syntax`]).
+//! the stream's headers as this crate writes them (`syntax`, beside this).
 //!
 //! The quantizer is each slice's `slice_qp_delta` from the picture set's,
 //! which a constant-quantizer encoder codes the slice at; libavcodec's

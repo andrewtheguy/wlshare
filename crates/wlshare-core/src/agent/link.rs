@@ -101,7 +101,7 @@ pub const FRAME: u8 = 1;
 /// A frame's flag: an IDR is asked for.
 pub const KEYFRAME: u8 = 1;
 /// A frame's flag: the encoder is to look at every macroblock again
-/// ([`crate::rfb::H264Stream::refine`]).
+/// ([`crate::h264::Planes::refine`]).
 pub const REFINE: u8 = 2;
 
 /// The agent's status: done, and for a frame, the access unit follows.

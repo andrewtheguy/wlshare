@@ -24,15 +24,20 @@ use crate::h264::{Backend, Planes};
 
 /// How long a daemon that has gone without a word is waited on before its
 /// stream is closed: the connection is idle for as long as the desktop is
-/// still, so only the keepalive tells.
+/// still, so only the keepalive tells. Half of it before the first probe,
+/// and the rest [`PROBES`] probes unanswered, the count said and not left
+/// to the system's, which on Linux is nine.
 const KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// The keepalive probes that go unanswered before a daemon is taken for gone.
+const PROBES: u32 = 3;
 
 /// The most connections an agent has at once, each a thread, a socket and,
 /// past its handshake, an encoder on the GPU: a session's video is one stream
 /// and its tiles' regions a few, so this is several sessions' of several
 /// daemons, and a bound on what whoever reaches the port can make it hold
 /// without the key.
-const STREAMS: usize = 32;
+pub const STREAMS: usize = 32;
 
 /// How much of a picture is read from the connection at a time.
 const READ_AHEAD: usize = 256 * 1024;
@@ -114,17 +119,23 @@ impl std::fmt::Display for Served {
     }
 }
 
+/// Have a daemon that is no longer there found out within [`KEEPALIVE`].
+fn keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    socket2::SockRef::from(stream).set_tcp_keepalive(
+        &socket2::TcpKeepalive::new()
+            .with_time(KEEPALIVE / 2)
+            .with_interval(KEEPALIVE / 2 / PROBES)
+            .with_retries(PROBES),
+    )
+}
+
 /// One connection: the handshake, the stream it asks for, and its frames
 /// until the daemon closes it. What the stream came to.
 fn connection(stream: &TcpStream, open: &Open, key: &[u8], peer: &str) -> anyhow::Result<Served> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(IO))?;
     stream.set_write_timeout(Some(IO))?;
-    socket2::SockRef::from(stream).set_tcp_keepalive(
-        &socket2::TcpKeepalive::new()
-            .with_time(KEEPALIVE)
-            .with_interval(KEEPALIVE / 3),
-    )?;
+    keepalive(stream)?;
     let mut from = BufReader::with_capacity(READ_AHEAD, stream);
     let mut to = stream;
 
@@ -392,6 +403,24 @@ mod tests {
             "{why:#}"
         );
         assert_eq!(out, [1, 2, 3], "nothing of a failed frame is kept");
+    }
+
+    /// A daemon gone without a word is found out within [`KEEPALIVE`], as
+    /// the socket itself says it is set: the wait before the first probe and
+    /// every probe after it.
+    #[test]
+    fn a_daemon_gone_is_found_out_within_the_keepalive() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        keepalive(&stream).unwrap();
+        let socket = socket2::SockRef::from(&stream);
+        assert!(socket.keepalive().unwrap());
+        assert_eq!(
+            socket.tcp_keepalive_time().unwrap()
+                + socket.tcp_keepalive_interval().unwrap()
+                    * socket.tcp_keepalive_retries().unwrap(),
+            KEEPALIVE
+        );
     }
 
     /// An agent has so many connections at once and closes the next

@@ -3,8 +3,8 @@
 //! the network by an agent (`wlshare-enc-agent`).
 //!
 //! **The encoder** ([`vaapi`]) is the GPU's through libva itself, its
-//! bindings written out by hand ([`libva`]) and the stream's headers this
-//! module's own ([`syntax`]): every frame at the quantizer it is handed, one
+//! bindings written out by hand (`libva`) and the stream's headers this
+//! module's own (`syntax`): every frame at the quantizer it is handed, one
 //! frame in and one out. It takes a picture as [`Planes`], NV12, and is one
 //! [`Backend`] of the daemon's streams, libx264 being the daemon's other.
 //!
