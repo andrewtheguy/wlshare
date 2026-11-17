@@ -33,8 +33,8 @@ use wlshare_core::h264::{Backend, vaapi};
     long_about = "Lends this machine's hardware H.264 encoder, through VA-API, to a wlshare daemon on a machine that has none. The daemon names this one in its [enc_agent] table and holds a copy of the key file. For two machines with a fast link of their own: a virtual machine or container and its host, or a sibling there, that has the host's GPU, or two wired machines on a LAN faster than gigabit. --allow says where the daemon is, and a connection from anywhere else is closed unanswered, as is one with another key: name the daemon's own address, since an agent that allows a whole network lets every machine on it try the key. One daemon at a time: while one has a stream open, nobody is let in from any other address. Experimental: the pictures cross the network in the clear, so this is for a trusted LAN, or inside a tunnel."
 )]
 struct Args {
-    /// The address to listen on for daemons.
-    #[arg(long)]
+    /// The address and port to listen on for daemons.
+    #[arg(long, value_name = "ADDRESS:PORT", value_parser = listen)]
     listen: SocketAddr,
     /// Where the daemon connects from, as an IPv4 or IPv6 CIDR block: one
     /// address is a /32 or a /128. At least one, and more by repeating the
@@ -91,6 +91,18 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Where the agent listens: an address and a port a daemon can be told, so
+/// not port 0, which is whichever port is free.
+fn listen(written: &str) -> Result<SocketAddr, String> {
+    let address: SocketAddr = written
+        .parse()
+        .map_err(|_| "it is no address:port, an IPv6 address in brackets".to_owned())?;
+    if address.port() == 0 {
+        return Err("port 0 is no port a daemon can be told: name the one to listen on".to_owned());
+    }
+    Ok(address)
+}
+
 /// The key file where none is named: beside where the daemon's configuration
 /// is, were this machine to have one.
 fn default_key_file() -> PathBuf {
@@ -128,4 +140,27 @@ fn key(path: &Path) -> anyhow::Result<Vec<u8>> {
         );
     }
     link::read_key(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An agent listens where a daemon can be told it does: at an address
+    /// and a port, and not at port 0.
+    #[test]
+    fn an_agent_listens_at_a_port_it_names() {
+        for good in ["192.168.1.20:5990", "0.0.0.0:1", "[::]:5990"] {
+            assert_eq!(listen(good), Ok(good.parse().unwrap()));
+        }
+        for bad in [
+            "192.168.1.20:0",
+            "[::]:0",
+            "192.168.1.20",
+            "gpu.lan:5990",
+            "",
+        ] {
+            assert!(listen(bad).is_err(), "{bad:?}");
+        }
+    }
 }

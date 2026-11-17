@@ -12,7 +12,9 @@
 //! [`HANDSHAKE_WITHIN`] and a frame within [`FRAME_WITHIN`], each as a whole,
 //! and an agent gone while its stream stood idle has failed the connection
 //! by the keepalive before the next frame is sent. The agent's name is
-//! looked up once and not for every stream.
+//! looked up once and not for every stream, and is the first address it
+//! has, as a WireGuard endpoint's is: on the link this is for a name has
+//! one, and where it has more the agent is better named by its address.
 
 use std::io::{IoSlice, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -82,9 +84,9 @@ fn changed(planes: &Planes) -> Vec<Span> {
 pub struct Agent {
     address: String,
     key: Arc<[u8]>,
-    /// The addresses the name was last found at, every clone's: none until
-    /// a stream looks, and none again once they have stopped answering.
-    found: Arc<Mutex<Vec<SocketAddr>>>,
+    /// The address the name was last found at, every clone's: none until a
+    /// stream looks, and none again once a stream could not be opened there.
+    found: Arc<Mutex<Option<SocketAddr>>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -135,44 +137,54 @@ impl Agent {
         &self.address
     }
 
-    /// A connection to the agent, nothing yet said on it.
+    /// The agent at `address`, its name last found at `found`, as an
+    /// earlier lookup might have left it.
+    #[cfg(test)]
+    pub(crate) fn last_found_at(address: String, found: SocketAddr, key: Vec<u8>) -> Self {
+        let agent = Self::new(address, key);
+        *agent.found() = Some(found);
+        agent
+    }
+
+    fn found(&self) -> std::sync::MutexGuard<'_, Option<SocketAddr>> {
+        self.found.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The address to look for the agent at: the first its name has.
     ///
     /// The name is looked up by the first stream and by none after it, a
     /// lookup being the resolver's to take its time over, on the session
-    /// that waits; until its addresses stop answering, when they are
-    /// forgotten and the next stream looks again, an agent's address being
-    /// free to change.
-    fn connect(&self) -> anyhow::Result<TcpStream> {
-        let found = |found: &Mutex<Vec<SocketAddr>>| {
-            found.lock().unwrap_or_else(PoisonError::into_inner).clone()
-        };
-        let mut addresses = found(&self.found);
-        if addresses.is_empty() {
-            addresses = self
-                .address
-                .to_socket_addrs()
-                .context("looking its address up")?
-                .collect();
-            anyhow::ensure!(!addresses.is_empty(), "its name has no address");
-            *self.found.lock().unwrap_or_else(PoisonError::into_inner) = addresses.clone();
+    /// that waits; until a stream cannot be opened there, when the address
+    /// is forgotten ([`Self::forget`]) and the next stream looks again, an
+    /// agent's address being free to change. Its other addresses are not
+    /// tried.
+    fn at(&self) -> anyhow::Result<SocketAddr> {
+        let mut found = self.found();
+        if let Some(found) = *found {
+            return Ok(found);
         }
-        let mut refused = None;
-        for address in &addresses {
-            match TcpStream::connect_timeout(address, CONNECT) {
-                Ok(link) => {
-                    link.set_nodelay(true)?;
-                    keepalive(&link)?;
-                    return Ok(link);
-                }
-                Err(e) => refused = Some(e),
-            }
-        }
-        self.found
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
-        Err(refused.expect("an address was tried")).context("connecting")
+        let first = self
+            .address
+            .to_socket_addrs()
+            .context("looking its address up")?
+            .next()
+            .context("its name has no address")?;
+        *found = Some(first);
+        Ok(first)
     }
+
+    /// No stream could be opened where the name was found.
+    fn forget(&self) {
+        *self.found() = None;
+    }
+}
+
+/// A connection to `address`, nothing yet said on it.
+fn connect(address: &SocketAddr) -> std::io::Result<TcpStream> {
+    let link = TcpStream::connect_timeout(address, CONNECT)?;
+    link.set_nodelay(true)?;
+    keepalive(&link)?;
+    Ok(link)
 }
 
 /// One stream on an agent: the connection it is coded over.
@@ -187,48 +199,60 @@ pub struct Stream {
 
 impl Stream {
     /// A stream over a `width`×`height` picture, both even, on `agent`.
-    pub fn open(agent: &Agent, (width, height): (usize, usize)) -> anyhow::Result<Self> {
-        let opened = (|| {
-            anyhow::ensure!(
-                width <= MAX_SIDE && height <= MAX_SIDE,
-                "a {width}x{height} picture is past the {MAX_SIDE} pixels a side an agent takes"
-            );
-            let link = agent.connect()?;
-            // The handshake as a whole, the agent's opening of its encoder
-            // included, in the one time.
-            let mut timed = Timed::new(&link);
-            timed.within(HANDSHAKE_WITHIN);
-            let ours = nonce();
-            timed
-                .write_all(&hello(&ours))
-                .context("sending the hello")?;
-            let theirs = read_hello(&mut timed)?;
-            let mut proved = [0; PROOF];
-            timed
-                .read_exact(&mut proved)
-                .context("reading its proof of the key")?;
-            proof(&agent.key, Role::Agent, &ours, &theirs)?
-                .verify_slice(&proved)
-                .map_err(|_| anyhow::anyhow!("its key is not this daemon's"))?;
-            let mut open = [0; PROOF + 4];
-            open[..PROOF].copy_from_slice(
-                &proof(&agent.key, Role::Daemon, &ours, &theirs)?
-                    .finalize()
-                    .into_bytes(),
-            );
-            open[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
-            open[PROOF + 2..].copy_from_slice(&(height as u16).to_be_bytes());
-            timed.write_all(&open).context("asking for a stream")?;
-            status(&mut timed).context("opening a stream")?;
-            Ok(Self {
-                link,
-                head: Vec::new(),
-                // Raw 4:2:0 is 384 bytes a macroblock, and the agent's own
-                // buffer is that and headroom ([`crate::h264::vaapi::Stream::open`]).
-                most: width.div_ceil(16) * height.div_ceil(16) * 400 + 64 * 1024,
-            })
-        })();
+    pub fn open(agent: &Agent, size: (usize, usize)) -> anyhow::Result<Self> {
+        let opened = agent
+            .at()
+            .and_then(|address| Self::open_at(agent, &address, size));
+        if opened.is_err() {
+            agent.forget();
+        }
         opened.with_context(|| format!("the encoding agent at {}", agent.address))
+    }
+
+    /// [`Self::open`], at the address the agent's name was found at.
+    fn open_at(
+        agent: &Agent,
+        address: &SocketAddr,
+        (width, height): (usize, usize),
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            width <= MAX_SIDE && height <= MAX_SIDE,
+            "a {width}x{height} picture is past the {MAX_SIDE} pixels a side an agent takes"
+        );
+        let link = connect(address).context("connecting")?;
+        // The handshake as a whole, the agent's opening of its encoder
+        // included, in the one time.
+        let mut timed = Timed::new(&link);
+        timed.within(HANDSHAKE_WITHIN);
+        let ours = nonce();
+        timed
+            .write_all(&hello(&ours))
+            .context("sending the hello")?;
+        let theirs = read_hello(&mut timed)?;
+        let mut its = [0; PROOF];
+        timed
+            .read_exact(&mut its)
+            .context("reading its proof of the key")?;
+        proof(&agent.key, Role::Agent, &ours, &theirs)?
+            .verify_slice(&its)
+            .map_err(|_| anyhow::anyhow!("its key is not this daemon's"))?;
+        let mut open = [0; PROOF + 4];
+        open[..PROOF].copy_from_slice(
+            &proof(&agent.key, Role::Daemon, &ours, &theirs)?
+                .finalize()
+                .into_bytes(),
+        );
+        open[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
+        open[PROOF + 2..].copy_from_slice(&(height as u16).to_be_bytes());
+        timed.write_all(&open).context("asking for a stream")?;
+        status(&mut timed).context("opening a stream")?;
+        Ok(Self {
+            link,
+            head: Vec::new(),
+            // Raw 4:2:0 is 384 bytes a macroblock, and the agent's own
+            // buffer is that and headroom ([`crate::h264::vaapi::Stream::open`]).
+            most: width.div_ceil(16) * height.div_ceil(16) * 400 + 64 * 1024,
+        })
     }
 }
 

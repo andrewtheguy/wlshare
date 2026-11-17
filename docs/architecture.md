@@ -785,8 +785,12 @@ quantizer each was asked at.
   a word is found out within 30 seconds, by TCP's keepalive where the stream
   stands idle and by its user timeout where bytes were never acknowledged.
   The daemon looks the agent's name up for its first stream and not again
-  until its addresses stop answering, and sends a picture's rows from where
-  they lie, with no copy of the picture gathered first.
+  until a stream cannot be opened there, and the name is the first address
+  it has, as a WireGuard endpoint's is, with no other tried: on the link
+  this is for a name has one address, and an agent whose name has more —
+  an IPv6 one, say, beside the IPv4 its allowlist was written for — is
+  named by its address. The daemon sends a picture's rows from where they
+  lie, with no copy of the picture gathered first.
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the

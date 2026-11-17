@@ -627,6 +627,25 @@ mod tests {
         assert!(why.contains(&gone), "{why}");
     }
 
+    /// A daemon looks its agent's name up again after a stream that could
+    /// not be opened where the name was last found, and not before: an
+    /// agent that has moved fails one stream and has the next.
+    #[test]
+    fn an_agent_that_moved_is_looked_up_again() {
+        use std::net::SocketAddr;
+        // Where the agent was: nobody listening, for as long as the test
+        // looks.
+        let held =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        held.bind(&SocketAddr::from(([127, 0, 0, 1], 0)).into())
+            .unwrap();
+        let was = held.local_addr().unwrap().as_socket().unwrap();
+        let moved = Agent::last_found_at(agent(), was, KEY.to_vec());
+        let why = format!("{:#}", Stream::open(&moved, (64, 64)).err().unwrap());
+        assert!(why.contains("connecting"), "{why}");
+        Stream::open(&moved, (64, 64)).unwrap();
+    }
+
     /// An encoder that will not open, or fails a frame, fails the daemon's
     /// stream in the encoder's own words.
     #[test]
