@@ -808,9 +808,12 @@ quantizer each was asked at.
   width) goes by `MSG_ZEROCOPY` (`agent/zerocopy.rs`): the kernel sends the
   planes' own pages, pinned, rather than copying them into the socket, and
   the frame waits, within its time, for the kernel to say it is done with
-  them before the planes are written again. On the link this is for, a
-  whole 1920×1080 picture costs the sending processor about a quarter of the
-  system's time a copy did. A call sends at most a megabyte, since the
+  them before the planes are written again, a frame that fails no less
+  ([measured](video-performance.md#the-encoding-agents-link)). A frame
+  that fails resets its connection, which frees what TCP holds, and waits
+  for the kernel to let go of what a network device still has, so that
+  nothing of the daemon's memory is sent once the planes are the caller's
+  again. A call sends at most a megabyte, since the
   kernel charges a call's whole length against the account's
   `RLIMIT_MEMLOCK` (8 MiB by default) before it sends any, and a call
   refused for it is copied, with the rest of its frame; where the kernel

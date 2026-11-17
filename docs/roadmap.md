@@ -26,11 +26,11 @@ text's colour, which 4:2:0 halves.
 
 The agent was made for a virtual machine and its host's container, and there
 every picture still crosses a network: virtio-net, the bridge, a veth
-([The encoding agent](architecture.md#the-encoding-agent)). Measured on that
-link on 2026-11-17, a whole 1920×1080 picture, 3.11 MB, crosses in 1.2–1.3
-ms; the daemon's send costs 0.16–0.22 ms of the system's time since it went
-zero-copy, and the agent's read about 0.77 ms. That grows with the picture
-and the frame rate: a 3840×2160 picture is four times it.
+([The encoding agent](architecture.md#the-encoding-agent)). The daemon's
+send is zero-copy, and what is left is the agent's read and the time on the
+link ([measured](video-performance.md#the-encoding-agents-link)), which grow
+with the picture and the frame rate: a 3840×2160 picture is four times a
+1920×1080 one.
 
 - **The pictures in a region both machines map.** QEMU's `ivshmem-plain`
   device gives the guest a PCI device whose memory is a file in the host's

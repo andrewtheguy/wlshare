@@ -4,10 +4,10 @@
 //! done with them. Nothing on the link changes: it is the daemon's way of
 //! handing its bytes to the kernel, and the agent reads them as it reads any.
 //!
-//! Measured on the link it is for, a virtual machine to its host's container
-//! (virtio-net, the bridge, a veth), a whole 1920×1080 picture costs the
-//! sending processor 0.16–0.22 ms of the system's time where a copying
-//! `writev` costs 0.76–0.87, and a frame takes as long as it did.
+//! On the link it is for, a virtual machine to its host's container, it
+//! takes most of the sending processor's time off a picture, and a frame
+//! takes as long as it did: measured in `docs/video-performance.md`, *The
+//! encoding agent's link*.
 //!
 //! What it holds to:
 //!
@@ -16,6 +16,15 @@
 //!   access unit is back, so a frame waits for the kernel's word on every
 //!   call that sent zero-copy ([`ZeroCopy::settle`]) before it returns and
 //!   the planes are read into again, within the frame's time.
+//! - **A frame that fails returns once the kernel is done too.** A frame
+//!   that fails mid-send, or whose access unit is not back in its time, has
+//!   pages the kernel may still send, and the caller is then free to write
+//!   the planes or let them go, their memory the allocator's to give to
+//!   anything. So the stream resets its connection, which frees every packet
+//!   TCP holds, and waits for the kernel's word on what the network device
+//!   has yet to send or drop ([`ZeroCopy::abandon`]), with no limit but the
+//!   device's: nothing of the daemon's memory is sent after the frame has
+//!   returned.
 //! - **Small writes are copied.** Pinning pages and the kernel's word cost
 //!   more than copying a few kilobytes, so a frame goes zero-copy only where
 //!   its slices are [`LEAST`] long on average: the whole picture, or rows
@@ -31,8 +40,7 @@
 //!   picture larger than the limit would be refused outright. So a call
 //!   sends at most [`CALL`], and a call's pages are released once they are
 //!   acknowledged, so that on the same link a 3840×2160 picture goes
-//!   zero-copy whole under the default limit, for 0.3–0.5 ms of the system's
-//!   time where copying it costs 2.7–3.0. Where less may be pinned (a lower
+//!   zero-copy whole under the default limit. Where less may be pinned (a lower
 //!   limit, the account's other streams), the first call refused (`ENOBUFS`)
 //!   is made again by copying, and so is the rest of the frame, since every
 //!   call after it would be refused too.
@@ -52,6 +60,11 @@ pub const LEAST: usize = 16 * 1024;
 /// account may pin by default, so that the rest of what may be pinned is
 /// used before a call is refused.
 pub const CALL: usize = 1 << 20;
+
+/// How long [`ZeroCopy::abandon`] waits before it says it is waiting: the
+/// kernel lets go of what a reset frees at once, and a device of what it
+/// holds in milliseconds.
+const LATE: Duration = Duration::from_secs(1);
 
 /// `SO_ZEROCOPY`, which the `libc` crate does not have for every target:
 /// 60 on every architecture but MIPS, SPARC and PA-RISC, none of which the
@@ -171,6 +184,57 @@ impl ZeroCopy {
             }
         }
         Ok(())
+    }
+
+    /// After a frame has failed: reset the connection, so that TCP lets go
+    /// of every packet it holds, and wait until the kernel is done with every
+    /// page sent zero-copy, those a network device has yet to send or drop
+    /// among them, for as long as that takes. The connection is no use after
+    /// it.
+    pub fn abandon(&mut self, stream: &std::net::TcpStream) {
+        if self.done == self.sent {
+            return;
+        }
+        // A connect to no address disconnects a TCP socket: its queues are
+        // purged and the other end is sent a reset, and the socket, still
+        // open, is told of the pages as they are let go.
+        // SAFETY: a `sockaddr` of no family, as long as it is said to be.
+        let reset = unsafe {
+            let mut none: libc::sockaddr = std::mem::zeroed();
+            none.sa_family = libc::AF_UNSPEC as libc::sa_family_t;
+            libc::connect(
+                stream.as_raw_fd(),
+                &raw const none,
+                size_of::<libc::sockaddr>() as libc::socklen_t,
+            )
+        };
+        if reset != 0 {
+            log::warn!(
+                "the encoding agent's connection: resetting it: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+        let began = std::time::Instant::now();
+        let mut said = false;
+        // A closed socket is always ready, so its error queue is looked at
+        // every millisecond rather than polled for.
+        while self.done != self.sent {
+            if let Err(e) = self.drain(stream) {
+                log::error!(
+                    "the encoding agent's connection: no word from the kernel on what it still \
+                     holds of a picture: {e}"
+                );
+                return;
+            }
+            if !said && began.elapsed() > LATE {
+                said = true;
+                log::warn!(
+                    "the encoding agent's connection: the kernel still holds pages of a picture \
+                     after {LATE:?}: waiting for the network device to let them go"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Read every word the kernel has on `stream`'s error queue.
@@ -378,6 +442,42 @@ mod tests {
             sent == 0,
             "loopback copied what went zero-copy, and only that says so"
         );
+    }
+
+    /// A frame cut short by its time, its pages in the kernel's queues for
+    /// an agent that reads nothing, is let go of whole once abandoned.
+    #[test]
+    fn a_frame_abandoned_is_let_go_of() {
+        let listener =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        // A small window, so that most of the picture waits in the
+        // sender's queues.
+        listener.set_recv_buffer_size(64 << 10).unwrap();
+        listener
+            .bind(
+                &"127.0.0.1:0"
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+        listener.listen(1).unwrap();
+        let listener: TcpListener = listener.into();
+        let sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_reads_nothing, _) = listener.accept().unwrap();
+        let picture = vec![7u8; 16 << 20];
+        let mut sends = ZeroCopy::new(&sender).unwrap();
+        let mut link = Timed::new(&sender);
+        link.within(Duration::from_millis(300));
+        let late = sends.send(&mut link, &mut [IoSlice::new(&picture)]);
+        assert!(late.is_err(), "sixteen megabytes in a window of 64 KiB");
+        if roomy() {
+            assert!(sends.sent > 0, "nothing went zero-copy");
+        }
+        let began = std::time::Instant::now();
+        sends.abandon(&sender);
+        assert_eq!(sends.done, sends.sent);
+        assert!(began.elapsed() < LATE, "{:?}", began.elapsed());
     }
 
     /// A stream that copies, as one does once the kernel has copied, sends

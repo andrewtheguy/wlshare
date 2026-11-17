@@ -331,13 +331,12 @@ impl Backend for Stream {
             Ok(true)
         })();
         if coded.is_err() {
-            // The kernel may still hold pages of the planes, sent zero-copy
-            // and not settled, which are the caller's to write again: the
-            // connection is reset as it closes, so that what the kernel has
-            // of them is dropped and not sent on, and nothing more is sent
-            // on it before then.
+            // The kernel may still hold pages of the planes, and of the
+            // headers, sent zero-copy and not settled, which are the
+            // caller's to write again or let go once this returns: not
+            // before the kernel is done with them. No frame is sent after.
             self.failed = true;
-            let _ = socket2::SockRef::from(&self.link).set_linger(Some(Duration::ZERO));
+            self.sends.abandon(&self.link);
         }
         coded.context("the encoding agent")
     }
