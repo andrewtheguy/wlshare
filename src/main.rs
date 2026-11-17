@@ -143,15 +143,7 @@ fn main() -> anyhow::Result<()> {
     // operator acts on.
     // SAFETY: a store of the level, before any thread uses libavcodec.
     unsafe { ffmpeg_sys_next::av_log_set_level(ffmpeg_sys_next::AV_LOG_WARNING) };
-    let agent = config
-        .enc_agent
-        .as_ref()
-        .map(|agent| {
-            use wlshare_core::agent::{client::Agent, link::read_key};
-            let key = read_key(&agent.key_file(&path)).context("the [enc_agent] table's key")?;
-            anyhow::Ok(Agent::new(agent.address.clone(), key))
-        })
-        .transpose()?;
+    let agent = enc_agent(&config, &path)?;
     let h264 = Arc::new(h264::Encoder::find(config.hardware_h264, agent)?);
 
     // The compositor thread comes up first and hands back what it learned about
@@ -173,6 +165,29 @@ fn main() -> anyhow::Result<()> {
         error!("{e:#}");
     }
     result
+}
+
+/// The encoding agent the configuration names, with its key read: only where
+/// `hardware_h264` is on, which is where the agent is asked for anything. Off,
+/// the `[enc_agent]` table is not used and its key not read, so one that is
+/// missing or short stops no daemon that would never have used it.
+fn enc_agent(
+    config: &config::Config,
+    config_path: &std::path::Path,
+) -> anyhow::Result<Option<wlshare_core::agent::client::Agent>> {
+    use wlshare_core::agent::{client::Agent, link::read_key};
+    let Some(agent) = &config.enc_agent else {
+        return Ok(None);
+    };
+    if !config.hardware_h264 {
+        info!(
+            "hardware_h264 is off: the [enc_agent] table is not used, and the agent at {} not asked",
+            agent.address
+        );
+        return Ok(None);
+    }
+    let key = read_key(&agent.key_file(config_path)).context("the [enc_agent] table's key")?;
+    Ok(Some(Agent::new(agent.address.clone(), key)))
 }
 
 /// A capture is a run somebody started by hand and will stop: it writes every
@@ -490,5 +505,30 @@ mod tests {
         assert!(!is_this_process("4242", 4243));
         assert!(!is_this_process("", 4242));
         assert!(!is_this_process("systemd", 4242));
+    }
+
+    /// An agent's key is read where the agent is used, and a key that is not
+    /// there stops that daemon; with `hardware_h264` off it is not read, and
+    /// the daemon has no agent.
+    #[test]
+    fn an_agents_key_is_read_only_with_hardware_h264_on() {
+        let dir = std::env::temp_dir().join(format!("wlshare-enc-agent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let config = |hardware: bool| -> config::Config {
+            toml::from_str(&format!(
+                "hardware_h264 = {hardware}\n[enc_agent]\naddress = \"192.0.2.1:5990\"\n"
+            ))
+            .unwrap()
+        };
+        assert!(enc_agent(&config(false), &path).unwrap().is_none());
+        let why = format!("{:#}", enc_agent(&config(true), &path).unwrap_err());
+        assert!(why.contains("[enc_agent]"), "{why}");
+
+        std::fs::write(dir.join("enc_agent.key"), format!("{}\n", "5a".repeat(32))).unwrap();
+        assert!(enc_agent(&config(false), &path).unwrap().is_none());
+        let agent = enc_agent(&config(true), &path).unwrap().expect("an agent");
+        assert_eq!(agent.address(), "192.0.2.1:5990");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

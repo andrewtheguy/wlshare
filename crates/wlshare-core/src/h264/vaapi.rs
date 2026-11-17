@@ -31,7 +31,8 @@
 //! sequence parameter set packed, or is no encoder, since VA's parameters
 //! carry no colour description; of the picture and slice headers, it writes
 //! from the same parameters any it does not take packed. A frame the driver
-//! flags, overflowed or a bad bitstream, is an error and not the reference.
+//! flags, overflowed or a bad bitstream, is an error and not the reference;
+//! and the frame after one that failed, however it did, is an IDR.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::fs::{File, OpenOptions};
@@ -294,6 +295,10 @@ impl Stream {
         low_power: bool,
         (width, height): (usize, usize),
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0,
+            "a {width}x{height} picture is not one of even sides"
+        );
         let mbs = (width.div_ceil(16) as u32, height.div_ceil(16) as u32);
         let mut stream = Self {
             display,
@@ -482,13 +487,34 @@ impl Stream {
         }
     }
 
-    /// Copy the planes onto the input surface.
+    /// Copy the planes onto the input surface: planes that are the stream's
+    /// picture and hold its rows, or an error and nothing copied.
     fn copy_in(&mut self, planes: &Planes) -> anyhow::Result<()> {
         let dpy = self.display.display;
         let (w, h) = planes.coded;
-        // SAFETY: the image is mapped for the copy alone, which stays inside
-        // its planes' pitches and the coded picture's rows; a derived image is
-        // destroyed once copied into.
+        // The planes are whoever calls's, their every field open to it: held
+        // to the stream's picture, and to holding the rows it has, before a
+        // sample of them is read.
+        let size = (self.sequence.size.0 as usize, self.sequence.size.1 as usize);
+        anyhow::ensure!(
+            planes.coded == size,
+            "planes of a {w}x{h} picture were handed to a stream of {}x{}",
+            size.0,
+            size.1
+        );
+        let stride = planes.stride;
+        anyhow::ensure!(
+            stride >= w
+                && planes.y.len() >= (h - 1) * stride + w
+                && planes.uv.len() >= (h / 2 - 1) * stride + w,
+            "planes of {} and {} bytes, their rows {stride} apart, do not hold a {w}x{h} picture",
+            planes.y.len(),
+            planes.uv.len()
+        );
+        // SAFETY: the image is mapped for the copy alone, which reads rows
+        // the planes were just held to and writes within the bytes the image
+        // says it has, each row held to them before the copy; a derived
+        // image is destroyed once copied into.
         unsafe {
             let mut derived: va::VAImage = std::mem::zeroed();
             let image = match self.upload.as_ref().expect("made with the stream") {
@@ -501,26 +527,42 @@ impl Stream {
                 }
                 Upload::Put(image) => *image,
             };
-            let mut mapped: *mut c_void = ptr::null_mut();
-            let copied = status(
-                va::vaMapBuffer(dpy, image.buf, &mut mapped),
-                "mapping the input picture",
-            )
-            .map(|()| {
-                let base = mapped.cast::<u8>();
-                for (plane, rows, source) in [(0, h, &planes.y), (1, h / 2, &planes.uv)] {
+            // Where each plane's rows go in the image, and that they end
+            // inside it.
+            let layout =
+                [(0, h, &planes.y), (1, h / 2, &planes.uv)].map(|(plane, rows, source)| {
                     let (offset, pitch) =
                         (image.offsets[plane] as usize, image.pitches[plane] as usize);
+                    let within = image.num_planes as usize > plane
+                        && pitch >= w
+                        && offset + (rows - 1) * pitch + w <= image.data_size as usize;
+                    (within, offset, pitch, rows, source)
+                });
+            let copied = (|| {
+                anyhow::ensure!(
+                    layout.iter().all(|(within, ..)| *within),
+                    "the input surface's image, {} planes in {} bytes, does not hold a {w}x{h} picture",
+                    image.num_planes,
+                    image.data_size
+                );
+                let mut mapped: *mut c_void = ptr::null_mut();
+                status(
+                    va::vaMapBuffer(dpy, image.buf, &mut mapped),
+                    "mapping the input picture",
+                )?;
+                let base = mapped.cast::<u8>();
+                for (_, offset, pitch, rows, source) in layout {
                     for row in 0..rows {
                         ptr::copy_nonoverlapping(
-                            source.as_ptr().add(row * planes.stride),
+                            source.as_ptr().add(row * stride),
                             base.add(offset + row * pitch),
                             w,
                         );
                     }
                 }
                 va::vaUnmapBuffer(dpy, image.buf);
-            });
+                Ok(())
+            })();
             let put = match self.upload.as_ref().expect("made with the stream") {
                 Upload::Derive => {
                     va::vaDestroyImage(dpy, derived.image_id);
@@ -648,15 +690,21 @@ impl Backend for Stream {
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
-        let idr = keyframe || self.reference.is_none() || self.since_idr >= MAX_SINCE_IDR;
+        // The reference is the stream's again once this frame is coded: a
+        // frame that fails, at any step, leaves the stream none, so the
+        // frame after it is an IDR whatever it is asked as. A keyframe that
+        // failed is owed until one is coded, and no P frame is ever coded
+        // from counters a failed one had started again.
+        let held = self.reference.take();
+        let idr = keyframe || held.is_none() || self.since_idr >= MAX_SINCE_IDR;
         if idr {
             (self.frame_num, self.since_idr) = (0, 0);
         }
         self.copy_in(planes)?;
         let dpy = self.display.display;
-        let current = self.reference.map_or(0, |r| 1 - r.surface);
+        let current = held.map_or(0, |r| 1 - r.surface);
         let poc = (2 * self.since_idr) as i32;
-        let reference = self.reference.filter(|_| !idr);
+        let reference = held.filter(|_| !idr);
         let slice = Slice {
             idr,
             frame_num: self.frame_num,
@@ -821,8 +869,8 @@ impl Backend for Stream {
                 segment = s.next.cast::<va::VACodedBufferSegment>().cast_const();
             }
             va::vaUnmapBuffer(dpy, self.coded);
-            // A flagged frame is neither sent nor made the reference: the
-            // stream stands on the frame before it.
+            // A flagged frame is neither sent nor made the reference, and
+            // the frame after it is an IDR.
             if flags != 0 {
                 out.truncate(start);
             }
@@ -875,6 +923,57 @@ impl Drop for Stream {
             if self.config != va::VA_INVALID_ID {
                 va::vaDestroyConfig(dpy, self.config);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Planes that are not the stream's picture, or do not hold the rows
+    /// they say, fail the frame with nothing copied or coded; and the frame
+    /// after a failed one is an IDR whatever it is asked as, so a keyframe
+    /// that failed is still had. Passes with a word where this machine has
+    /// no encoder.
+    #[test]
+    fn planes_of_another_picture_fail_the_frame_and_the_next_is_an_idr() {
+        let Some((node, low_power)) = find(moves_its_quantizer) else {
+            eprintln!("no VA-API H.264 encoder on this machine; its stream is not exercised");
+            return;
+        };
+        let display = Arc::new(Display::open(&node).unwrap());
+        assert!(Stream::open(display.clone(), low_power, (96, 0)).is_err());
+        assert!(Stream::open(display.clone(), low_power, (95, 64)).is_err());
+        let mut stream = Stream::open(display, low_power, (96, 64)).unwrap();
+        let planes = Planes::new(96, 64);
+        let mut frame = |planes: &Planes, keyframe| {
+            let mut unit = vec![0xAA];
+            let made = stream.frame(planes, keyframe, 28, &mut unit);
+            if made.is_err() {
+                assert_eq!(unit, [0xAA], "nothing of a failed frame is kept");
+            }
+            made.map(|_| crate::h264::nal_types(&unit).contains(&5))
+        };
+        assert!(frame(&planes, false).unwrap(), "the first frame is an IDR");
+        assert!(!frame(&planes, false).unwrap(), "and the next a P frame");
+
+        let mut narrow = Planes::new(96, 64);
+        narrow.stride = 32;
+        let mut short = Planes::new(96, 64);
+        short.uv.truncate(short.stride * 8);
+        for (wrong, keyframe) in [
+            (Planes::new(64, 64), true),
+            (Planes::new(96, 128), false),
+            (narrow, false),
+            (short, false),
+        ] {
+            assert!(frame(&wrong, keyframe).is_err());
+            assert!(
+                frame(&planes, false).unwrap(),
+                "the frame after a failed one is an IDR"
+            );
+            assert!(!frame(&planes, false).unwrap(), "and the next a P frame");
         }
     }
 }

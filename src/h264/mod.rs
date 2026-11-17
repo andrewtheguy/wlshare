@@ -109,7 +109,10 @@ impl Encoder {
     ///
     /// With `hardware` and an `agent`, the agent's and no other, whether or
     /// not it answers now: it is tried, and one that fails is said to, but a
-    /// session is what finds out whether it is there when needed.
+    /// session is what finds out whether it is there when needed. The trial
+    /// waits no longer on an agent that says nothing than the link's own
+    /// limits on a connection and on each read. Without `hardware` an agent
+    /// is not asked.
     pub fn find(hardware: bool, agent: Option<remote::Agent>) -> anyhow::Result<Self> {
         if hardware {
             if let Some(agent) = agent {
@@ -130,9 +133,6 @@ impl Encoder {
             }
         } else {
             info!("hardware_h264 is off: the hardware H.264 encoder is not looked for");
-            if let Some(agent) = agent {
-                info!("and the encoding agent at {} is not asked", agent.address());
-            }
         }
         Self::X264
             .try_frames()

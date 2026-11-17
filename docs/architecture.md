@@ -732,7 +732,12 @@ quantizer each was asked at.
   be opened — the agent away, a key that is not its own — or that fails a
   frame fails its encode as any coder's failure does, and the session with
   it, the log saying why; the next session tries the agent again. With
-  `hardware_h264` off the table is not used.
+  `hardware_h264` off the table is not used, and its key not read.
+- **So many connections.** The agent has at most 32 connections at once,
+  each a thread, a socket and, past its handshake, an encoder on the GPU, and
+  closes one past that unanswered, which fails that stream as an agent away
+  does: a bound on what whoever reaches the port can make it hold without
+  the key. A connection's place is given back when it ends, however it ends.
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the

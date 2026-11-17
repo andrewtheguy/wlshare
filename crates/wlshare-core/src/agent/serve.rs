@@ -27,6 +27,13 @@ use crate::h264::{Backend, Planes};
 /// still, so only the keepalive tells.
 const KEEPALIVE: Duration = Duration::from_secs(30);
 
+/// The most connections an agent has at once, each a thread, a socket and,
+/// past its handshake, an encoder on the GPU: a session's video is one stream
+/// and its tiles' regions a few, so this is several sessions' of several
+/// daemons, and a bound on what whoever reaches the port can make it hold
+/// without the key.
+const STREAMS: usize = 32;
+
 /// How much of a picture is read from the connection at a time.
 const READ_AHEAD: usize = 256 * 1024;
 
@@ -35,8 +42,19 @@ pub type Open = dyn Fn((usize, usize)) -> anyhow::Result<Box<dyn Backend>> + Sen
 
 /// Accept connections on `listener` for as long as it stands, each a stream
 /// for whoever holds `key`, coded on a thread of its own by the encoder
-/// `open` makes it.
+/// `open` makes it: [`STREAMS`] of them at once, and a connection past that
+/// closed unanswered.
 pub fn serve(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>) {
+    accept(listener, key, open, STREAMS);
+}
+
+/// [`serve`], with at most `most` connections at once.
+fn accept(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>, most: usize) {
+    // A connection's place among the `most` is a clone of this, held by its
+    // thread and so given back however the thread ends, a handshake that
+    // fails and a thread that never started included: the places taken are
+    // the clones there are.
+    let places = Arc::new(());
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(stream) => stream,
@@ -45,13 +63,21 @@ pub fn serve(listener: TcpListener, key: Arc<[u8]>, open: Arc<Open>) {
                 continue;
             }
         };
-        let (open, key) = (open.clone(), key.clone());
+        let peer = stream
+            .peer_addr()
+            .map_or_else(|_| "a daemon".to_owned(), |a| a.to_string());
+        // Counted before there is a thread or a buffer for it. Only this
+        // loop takes a place, so none is taken between the count and the
+        // clone.
+        if Arc::strong_count(&places) > most {
+            warn!("{peer}: closed unanswered, with {most} connections open already");
+            continue;
+        }
+        let (open, key, place) = (open.clone(), key.clone(), places.clone());
         let spawned = std::thread::Builder::new()
             .name("enc-agent".to_owned())
             .spawn(move || {
-                let peer = stream
-                    .peer_addr()
-                    .map_or_else(|_| "a daemon".to_owned(), |a| a.to_string());
+                let _place = place;
                 match connection(&stream, &*open, &key, &peer) {
                     Ok(served) => info!("{peer}: its stream ended after {served}"),
                     Err(e) => warn!("{peer}: {e:#}"),
@@ -366,6 +392,49 @@ mod tests {
             "{why:#}"
         );
         assert_eq!(out, [1, 2, 3], "nothing of a failed frame is kept");
+    }
+
+    /// An agent has so many connections at once and closes the next
+    /// unanswered, which fails that stream; and a place is given back when
+    /// its connection ends, a stream closed and a handshake failed alike.
+    #[test]
+    fn an_agent_has_so_many_connections_at_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            accept(
+                listener,
+                KEY.into(),
+                Arc::new(|_| Ok(Box::new(Echo) as Box<dyn Backend>)),
+                2,
+            )
+        });
+        let agent = Agent::new(address.clone(), KEY.to_vec());
+        // A stream, once the agent has taken back the place of whatever
+        // closed before it: its thread ends when it reads the close.
+        let open = || {
+            let began = std::time::Instant::now();
+            loop {
+                match Stream::open(&agent, (64, 64)) {
+                    Ok(stream) => return stream,
+                    Err(e) => assert!(began.elapsed() < Duration::from_secs(10), "{e:#}"),
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        // Connections that fail their handshake, more of them than there
+        // are places, leave every place there was.
+        let stranger = Agent::new(address, vec![0x3c; MIN_KEY]);
+        for _ in 0..4 {
+            assert!(Stream::open(&stranger, (64, 64)).is_err());
+        }
+        let (first, _second) = (open(), open());
+        assert!(
+            Stream::open(&agent, (64, 64)).is_err(),
+            "a third connection is closed unanswered"
+        );
+        drop(first);
+        let _third = open();
     }
 
     /// What a daemon with the key may ask is still held to the picture: a
