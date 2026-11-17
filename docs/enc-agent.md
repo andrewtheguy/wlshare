@@ -222,11 +222,15 @@ is its `ALLOW`. Here the host is `192.168.1.20` on the bridge and the guest
    # hardware H.264: the agent at 192.168.1.20:5990, experimental
    ```
 
-Both run the same release of wlshare, so upgrade the two together. A bridge
-that comes up after the agent has the agent fail to listen and be started
-again every five seconds until the address is there. A guest that reaches the host through another address
-than the one in `ALLOW` is closed unanswered, and the agent's log names the
-address it saw: see below.
+Both run the same release of wlshare, so upgrade the two together.
+
+If the bridge comes up after the agent starts, the agent cannot listen on
+its address yet and exits. systemd starts it again every five seconds, so
+it is listening shortly after the bridge is up, with nothing to do by hand.
+
+A guest that reaches the host through another address than the one in
+`ALLOW` is closed unanswered, and the agent's log names the address it saw:
+see below.
 
 ## When it does not work
 
