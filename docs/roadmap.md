@@ -84,7 +84,7 @@ flags as tight on memory, none of which they accommodate, so a client decoder
 that takes more memory or more of the processor than RDP's planar codec is no
 cost against them. Where the desktop is still they are already about a ninth of the
 held picture's bytes or less; where it moves the planar runs it had were 6
-to 12 times them, nearly all of their 15 GB over the samples, and the median
+to 12 times them, nearly all of their 17 GB over the samples, and the median
 predictor's that replaced them two thirds of that
 ([measured](tiles-performance.md#lossless-tiles), with what the encoder's time
 went to, and [the predictor's](tiles-performance.md#the-median-predictor)). An
@@ -105,7 +105,7 @@ that came no nearer). The page's decoding is not measured.
 Its cost is what holds it back: against the planar moving runs the lossless
 picture then had, 0.56 of their bytes where the median predictor, its moving
 runs since, took 0.66, for six times the predictor's processor on the host, a
-video at 1920x1080 65 ms a frame. The predictor is JPEG-LS's alone, its
+video at 1920x1080 87 ms a frame. The predictor is JPEG-LS's alone, its
 entropy coding left to zstd with no context. JPEG-LS is a codec built for
 lossless pictures, as FLAC is for sound: that predictor, a reversible colour
 transform, and Golomb-Rice coding by context, which is the most there is to

@@ -452,11 +452,11 @@ word and its ceiling. What a frame holds is fixed:
   not CABAC, the search to a fraction of a pixel or the deblocking filter,
   CAVLC and whole-pixel motion in their place, and with no sub-pixel search
   x264 makes no half-pel planes of each picture. That is about seven tenths
-  of the processor time a frame for a ninth more bytes over the samples
+  of the processor time a frame for an eighth more bytes over the samples
   and a quarter more over the longer captures; a video is half a decibel
   coarser at the ceiling and up to one down the walk, most of that the
   filter's, and the rest of a desktop as it was. Against `ultrafast` as it
-  comes, about two fifths of the bytes for about a quarter more of the
+  comes, about two fifths of the bytes for about a fifth more of the
   processor time.
   What the rate control, the preset, the search and these settings each
   cost and save is in [The video's encoder](video-performance.md).
@@ -1270,7 +1270,7 @@ the picture.
   cut and the medians taken with AVX2 where the processor has it. Over the
   samples it is two thirds of the bytes of each moving run planar in a
   frame of its own, the lossless list's moving runs before it, for about the
-  same of the host's processor, a video at 1920×1080 96 MB against 149, and
+  same of the host's processor, a video at 1920×1080 153 MB against 232, and
   the page's decoding of an update in WebAssembly a tenth to a third more,
   well inside a frame at 1920×1080
   ([measured](tiles-performance.md#the-median-predictor)). Its tests read
@@ -1366,13 +1366,13 @@ the picture.
   taken to cost what its pixels that differ from the one to their left
   cost in the piece before, and one the cache keeps its draw, so a row of
   a photograph, which is more than a look's bytes, is not sent whole. So a
-  desktop that stops settles at no more than the rate its motion had of
-  the link, with no step up to it, where a settle at whatever the link
-  would take was a burst of 256 KiB a round trip until it was done, and
-  one at the pace from its first look, a row at a time, was 33 Mbit/s for
-  a quarter of a second after a 1080p video's 20 and is now 17 at its
-  most, its first look 8 kB where it was 191; what the picture pays for
-  that is the time to lossless, half a second more
+  desktop that stops settles at about the rate its motion had of the
+  link, with no step up to it, where a settle at whatever the link would
+  take was a burst of 256 KiB a round trip until it was done, and one at
+  the pace from its first look, a row at a time, was 28 Mbit/s for a
+  quarter of a second after a 1080p video's 17 and is now 18 at its most,
+  its first look 7 kB where it was 217; what the picture pays for that is
+  the time to lossless, half a second more
   ([measured](tiles-performance.md#webp-stills-and-the-eased-settle)). On a
   walked list the look's bytes follow the walk: while
   the walk is at the ceiling those are 256 KiB. Below it, where the link is
@@ -1386,7 +1386,7 @@ the picture.
   a look its bytes cut short is owed again at once, after its update's
   fence, so the settle goes as fast as the link carries it rather than a
   look a quarter of a second, 40 tiles of a 4K desktop at a time: one that
-  stopped on a 10 Mbit/s link took 21 s where it now takes about one
+  stopped on a 10 Mbit/s link took 26 s where it now takes about one
   ([measured](tiles-performance.md#adapting-to-the-link)). None is sent
   while the walk is slowed until the desktop has been still for two
   seconds. So a desktop that stops is lossless on the page on a held list and
