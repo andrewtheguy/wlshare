@@ -22,6 +22,43 @@ text's colour, which 4:2:0 halves.
   does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
   rest.
 
+## The encoding agent's pictures through shared memory
+
+The agent was made for a virtual machine and its host's container, and there
+every picture still crosses a network: virtio-net, the bridge, a veth
+([The encoding agent](architecture.md#the-encoding-agent)). Measured on that
+link on 2026-11-17, a whole 1920×1080 picture, 3.11 MB, crosses in 1.2–1.3
+ms; the daemon's send costs 0.16–0.22 ms of the system's time since it went
+zero-copy, and the agent's read about 0.77 ms. That grows with the picture
+and the frame rate: a 3840×2160 picture is four times it.
+
+- **The pictures in a region both machines map.** QEMU's `ivshmem-plain`
+  device gives the guest a PCI device whose memory is a file in the host's
+  `/dev/shm`; Proxmox makes one from the VM's configuration (`ivshmem:
+  size=64,name=wlshare`, `/dev/shm/pve-shm-wlshare`), and the agent's
+  container is given the file by a bind mount. The daemon maps the device's
+  memory (BAR2, through sysfs's `resource2_wc`: write-combined, since the
+  daemon only writes it; uncached `resource2` is slow), and writes what
+  changed of the picture into a slot of it; the socket carries the rest, the
+  frame's header and its rectangles with the slot they are in, and the
+  access unit back. The agent's copy of the picture, which it keeps now,
+  can be that region itself, uploaded to the VA surface from where it lies,
+  so its read is gone; the link is request and reply already, so the access
+  unit back is the word that the slot is free again, and a store fence
+  (`sfence`) after the writes puts them ahead of the header that names
+  them. Further on, the daemon's
+  conversion to NV12 could write into the region and leave its send no copy
+  at all. Looking Glass's `kvmfr` module binds the same device in a Linux
+  guest as a device node with permissions of its own, in place of sysfs.
+- **What it costs.** It is a second transport beside TCP, not one in its
+  place: an agent across a LAN, or anywhere but the guest's own hypervisor,
+  is still TCP. It is new messages on the link, and its `VERSION` with them.
+  And the pictures are past the key: whoever can open the file in the
+  container, or the PCI resource in the guest, reads the desktop and can
+  write into it, so the file's permissions are its access control, and the
+  key holds the socket alone. What it would save is estimated, not
+  measured.
+
 ## A drag from one display onto the other
 
 On *All Displays* each display is a connection of its own, with a pointer of

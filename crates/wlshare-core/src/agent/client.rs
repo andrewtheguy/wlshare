@@ -26,8 +26,9 @@ use anyhow::Context as _;
 use crate::agent::link::{
     FRAME_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, PROOF, Role, SPAN_HEAD,
     Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_opened,
-    read_proof, write_all_vectored,
+    read_proof,
 };
+use crate::agent::zerocopy::ZeroCopy;
 use crate::h264::{Backend, Planes, most_coded};
 
 /// How long a connection to the agent may take to open.
@@ -196,6 +197,8 @@ pub struct Stream {
     head: Vec<u8>,
     /// The most bytes an access unit of this picture is taken to be.
     most: usize,
+    /// The pictures' pages handed to the kernel to send.
+    sends: ZeroCopy,
 }
 
 impl Stream {
@@ -242,12 +245,23 @@ impl Stream {
             .write_all(&open_request(&proved, (width, height)))
             .context("asking for a stream")?;
         read_opened(&mut timed).context("opening a stream")?;
+        let sends = ZeroCopy::new(&link).context("sending zero-copy")?;
         Ok(Self {
             link,
             head: Vec::new(),
             // The agent's own buffer for one.
             most: most_coded((width, height)),
+            sends,
         })
+    }
+}
+
+impl Stream {
+    /// Whether the stream still sends its pictures zero-copy: not once the
+    /// kernel has copied one anyway.
+    #[cfg(test)]
+    pub(crate) fn zero_copy(&self) -> bool {
+        self.sends.on()
     }
 }
 
@@ -274,7 +288,8 @@ impl Backend for Stream {
         }
         // The request as it is sent: the headers, and between them the rows
         // where they lie in the planes, so that a picture is not copied
-        // into a buffer of its own on its way to the connection.
+        // into a buffer of its own on its way to the connection, nor, where
+        // it is large, into the kernel's ([`crate::agent::zerocopy`]).
         let mut request = vec![IoSlice::new(&head[..FRAME_HEAD])];
         for (span, header) in spans.iter().zip(head[FRAME_HEAD..].chunks(SPAN_HEAD)) {
             request.push(IoSlice::new(header));
@@ -284,8 +299,16 @@ impl Backend for Stream {
         let mut link = Timed::new(&self.link);
         link.within(FRAME_WITHIN);
         let coded = (|| {
-            write_all_vectored(&mut link, &mut request).context("sending it a picture")?;
-            let Some(length) = read_coded(&mut link)? else {
+            self.sends
+                .send(&mut link, &mut request)
+                .context("sending it a picture")?;
+            let coded = read_coded(&mut link)?;
+            // The planes are read into again once this returns: not before
+            // the kernel is done sending them.
+            self.sends
+                .settle(&link)
+                .context("waiting for the kernel to be done with the picture")?;
+            let Some(length) = coded else {
                 return Ok(false);
             };
             anyhow::ensure!(

@@ -547,14 +547,17 @@ mod tests {
     /// through frames that change it here and there, frames that change
     /// nothing, and what each is asked: a keyframe, a refinement, a
     /// quantizer. A picture of odd sides, coded a pixel larger, its rows
-    /// sent one by one; and one as wide as its planes' stride, whose whole
-    /// rows are sent as one run of each plane.
+    /// sent one by one; one as wide as its planes' stride, whose whole
+    /// rows are sent as one run of each plane; and a screen's, whose first
+    /// picture is sent zero-copy, and copied from then on, loopback having
+    /// copied it ([`crate::agent::zerocopy`]).
     #[test]
     fn the_agents_picture_is_the_daemons() {
         the_agents_picture_is_the_daemons_at(149, 89);
         let across = Planes::new(128, 70);
         assert_eq!(across.stride, across.coded.0);
         the_agents_picture_is_the_daemons_at(128, 70);
+        the_agents_picture_is_the_daemons_at(1920, 1080);
     }
 
     fn the_agents_picture_is_the_daemons_at(width: u16, height: u16) {
@@ -598,6 +601,9 @@ mod tests {
             assert!(stream.frame(&planes, keyframe, qp, &mut got).unwrap());
             echo(&planes, keyframe, qp, &mut expected);
             assert!(got == expected, "frame {n}: the agent's picture is another");
+            // Only a picture large enough goes zero-copy, and only it is
+            // copied by loopback all the same.
+            assert_eq!(stream.zero_copy(), w * h < 1 << 20, "frame {n}");
             planes.coded_frame();
         }
     }

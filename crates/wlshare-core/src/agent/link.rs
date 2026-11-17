@@ -194,8 +194,22 @@ impl<'a> Timed<'a> {
         self.until = None;
     }
 
+    /// The connection itself.
+    pub fn stream(&self) -> &'a TcpStream {
+        self.stream
+    }
+
+    /// [`Write::write_vectored`] by `sendmsg` with `flags`, of as many of
+    /// `bufs` as one call takes.
+    pub fn send_vectored(&mut self, bufs: &[IoSlice<'_>], flags: i32) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(self.left()?)?;
+        socket2::SockRef::from(self.stream)
+            .send_vectored_with_flags(&bufs[..bufs.len().min(MAX_IOV)], flags)
+            .map_err(|e| self.said(e))
+    }
+
     /// The time left, `None` where there is no limit; an error with none.
-    fn left(&self) -> std::io::Result<Option<Duration>> {
+    pub fn left(&self) -> std::io::Result<Option<Duration>> {
         let Some((until, limit)) = self.until else {
             return Ok(None);
         };
@@ -217,6 +231,9 @@ impl<'a> Timed<'a> {
         }
     }
 }
+
+/// The most slices one `sendmsg` takes, the system's `UIO_MAXIOV`.
+const MAX_IOV: usize = 1024;
 
 /// The error of what was not done within `limit`.
 fn late(limit: Duration) -> std::io::Error {
