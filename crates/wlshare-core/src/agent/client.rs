@@ -109,7 +109,11 @@ impl Agent {
     /// Whether `address` is one an agent can be at, a host and a port: an
     /// error says what it is short of, before anything is looked up.
     pub fn check(address: &str) -> anyhow::Result<()> {
-        if address.parse::<SocketAddr>().is_ok() {
+        if let Ok(numeric) = address.parse::<SocketAddr>() {
+            anyhow::ensure!(
+                numeric.port() != 0,
+                "{address:?} names no port: 0 is not one"
+            );
             return Ok(());
         }
         let (host, port) = address
@@ -433,6 +437,8 @@ mod tests {
             "gpu.lan:",
             ":5990",
             "gpu.lan:0",
+            "192.168.1.20:0",
+            "[fe80::1]:0",
             "gpu.lan:port",
             "gpu.lan:70000",
             "fe80::1:5990",

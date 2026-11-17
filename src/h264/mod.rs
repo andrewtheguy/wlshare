@@ -110,9 +110,10 @@ impl Encoder {
     /// neither working.
     ///
     /// With `hardware` and an `agent`, the agent's and no other, whether or
-    /// not it answers now: an agent that opens no stream — away, or of
-    /// another key — is said to, and is the encoder all the same, since a
-    /// session is what finds out whether it is there when needed. One that
+    /// not it answers now: an agent that opens no stream — away, of another
+    /// key, or with no encoder it can open, which it says before a stream is
+    /// one — is said to, and is the encoder all the same, since a session is
+    /// what finds out whether it is there when needed. One that
     /// opens a stream is there, and its encoder is tried as any is: failing
     /// the trial it is no encoder, and with no other the daemon does not
     /// start, as it does not on a host where nothing works. The trial waits
@@ -1101,9 +1102,9 @@ mod tests {
     /// The key the tests' agents and their daemons share.
     const KEY: [u8; MIN_KEY] = [0x5a; MIN_KEY];
 
-    /// An agent on loopback that codes by `encoder`, a coder a stream as a
-    /// session would have, for as long as the tests run; where it listens.
-    fn agent_at(encoder: Encoder) -> String {
+    /// An agent on loopback whose streams are what `open` makes its daemon,
+    /// for as long as the tests run; where it listens.
+    fn agent_of(open: Arc<serve::Open>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
@@ -1111,15 +1112,20 @@ mod tests {
                 listener,
                 KEY.into(),
                 vec!["127.0.0.0/8".parse().unwrap()],
-                // A coder for the daemon it codes for, as a session has one.
-                Arc::new(move || {
-                    let coder = std::sync::Mutex::new(encoder.coder()?);
-                    Ok(Arc::new(move |coded| coder.lock().unwrap().backend(coded))
-                        as Arc<serve::Streams>)
-                }),
+                open,
             )
         });
         address
+    }
+
+    /// An agent on loopback that codes by `encoder`, a coder a stream as a
+    /// session would have; where it listens.
+    fn agent_at(encoder: Encoder) -> String {
+        // A coder for the daemon it codes for, as a session has one.
+        agent_of(Arc::new(move || {
+            let coder = std::sync::Mutex::new(encoder.coder()?);
+            Ok(Arc::new(move |coded| coder.lock().unwrap().backend(coded)) as Arc<serve::Streams>)
+        }))
     }
 
     /// The encoder of a daemon set to an agent that codes by `encoder`.
@@ -1128,9 +1134,11 @@ mod tests {
     }
 
     /// A daemon set to an agent starts with the agent away, since it may be
-    /// back; and does not start with an agent that is there and whose
-    /// encoder fails the trial, here one deaf to the quantizer, since that
-    /// encoder is the only one it would have.
+    /// back, and with one that is there and opens it no encoder, which the
+    /// agent says in place of a stream, since it may open one for a session;
+    /// and does not start with an agent whose encoder opens and fails the
+    /// trial, here one deaf to the quantizer, since that encoder is the only
+    /// one it would have.
     #[test]
     fn a_daemon_starts_with_its_agent_away_and_not_with_its_encoder_failing() {
         // Nothing listens on the port for TCP's multiplexer, 1.
@@ -1159,21 +1167,30 @@ mod tests {
                 self.0.frame(planes, keyframe, 28, out)
             }
         }
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        std::thread::spawn(move || {
-            serve::serve(
-                listener,
-                KEY.into(),
-                vec!["127.0.0.0/8".parse().unwrap()],
-                Arc::new(|| {
-                    Ok(Arc::new(|coded| {
-                        let deaf = Deaf(Encoder::X264.coder()?.backend(coded)?);
-                        Ok(Box::new(deaf) as Box<dyn Backend>)
-                    }) as Arc<serve::Streams>)
-                }),
-            )
-        });
+        // No encoder for a stream, and nothing for a daemon's streams at all.
+        let no_stream: Arc<serve::Open> =
+            Arc::new(|| Ok(Arc::new(|_| anyhow::bail!("the GPU is busy")) as Arc<serve::Streams>));
+        let no_daemon: Arc<serve::Open> = Arc::new(|| anyhow::bail!("the GPU is gone"));
+        for (open, said) in [
+            (no_stream, "the GPU is busy"),
+            (no_daemon, "the GPU is gone"),
+        ] {
+            let unable = remote::Agent::new(agent_of(open), KEY.to_vec());
+            let why = Encoder::Remote(unable.clone()).trial_stream().err();
+            let why = format!("{:#}", why.expect("no stream"));
+            assert!(why.contains(said), "{why}");
+            assert!(matches!(
+                Encoder::find(true, Some(unable)),
+                Ok(Encoder::Remote(_))
+            ));
+        }
+
+        let address = agent_of(Arc::new(|| {
+            Ok(Arc::new(|coded| {
+                let deaf = Deaf(Encoder::X264.coder()?.backend(coded)?);
+                Ok(Box::new(deaf) as Box<dyn Backend>)
+            }) as Arc<serve::Streams>)
+        }));
         let deaf = remote::Agent::new(address.clone(), KEY.to_vec());
         let why = format!("{:#}", Encoder::find(true, Some(deaf)).unwrap_err());
         assert!(why.contains(&address) && why.contains("QP 16"), "{why}");
