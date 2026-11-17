@@ -549,8 +549,8 @@ mod tests {
     /// quantizer. A picture of odd sides, coded a pixel larger, its rows
     /// sent one by one; one as wide as its planes' stride, whose whole
     /// rows are sent as one run of each plane; and a screen's, whose first
-    /// picture is sent zero-copy, and copied from then on, loopback having
-    /// copied it ([`crate::agent::zerocopy`]).
+    /// picture is sent zero-copy where the account may pin it, and copied
+    /// from then on, loopback having copied it ([`crate::agent::zerocopy`]).
     #[test]
     fn the_agents_picture_is_the_daemons() {
         the_agents_picture_is_the_daemons_at(149, 89);
@@ -602,8 +602,13 @@ mod tests {
             echo(&planes, keyframe, qp, &mut expected);
             assert!(got == expected, "frame {n}: the agent's picture is another");
             // Only a picture large enough goes zero-copy, and only it is
-            // copied by loopback all the same.
-            assert_eq!(stream.zero_copy(), w * h < 1 << 20, "frame {n}");
+            // copied by loopback all the same; where the account may pin
+            // too little, its calls are refused and copied from the first.
+            if w * h < 1 << 20 {
+                assert!(stream.zero_copy(), "frame {n}");
+            } else if crate::agent::zerocopy::roomy() {
+                assert!(!stream.zero_copy(), "frame {n}");
+            }
             planes.coded_frame();
         }
     }
@@ -671,6 +676,14 @@ mod tests {
             "{why:#}"
         );
         assert_eq!(out, [1, 2, 3], "nothing of a failed frame is kept");
+        // And no frame is sent on the stream after it.
+        let why = stream
+            .frame(&Planes::new(32, 32), false, 28, &mut out)
+            .unwrap_err();
+        assert!(
+            format!("{why:#}").contains("failed a frame before"),
+            "{why:#}"
+        );
     }
 
     /// What makes a daemon its streams in these tests, coding by [`Echo`],

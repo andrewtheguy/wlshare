@@ -199,6 +199,8 @@ pub struct Stream {
     most: usize,
     /// The pictures' pages handed to the kernel to send.
     sends: ZeroCopy,
+    /// Whether a frame has failed, after which none is sent.
+    failed: bool,
 }
 
 impl Stream {
@@ -252,6 +254,7 @@ impl Stream {
             // The agent's own buffer for one.
             most: most_coded((width, height)),
             sends,
+            failed: false,
         })
     }
 }
@@ -273,6 +276,10 @@ impl Backend for Stream {
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            !self.failed,
+            "the encoding agent's stream failed a frame before"
+        );
         let spans = changed(planes);
         let head = &mut self.head;
         head.clear();
@@ -323,6 +330,15 @@ impl Backend for Stream {
             }
             Ok(true)
         })();
+        if coded.is_err() {
+            // The kernel may still hold pages of the planes, sent zero-copy
+            // and not settled, which are the caller's to write again: the
+            // connection is reset as it closes, so that what the kernel has
+            // of them is dropped and not sent on, and nothing more is sent
+            // on it before then.
+            self.failed = true;
+            let _ = socket2::SockRef::from(&self.link).set_linger(Some(Duration::ZERO));
+        }
         coded.context("the encoding agent")
     }
 }

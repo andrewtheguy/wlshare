@@ -290,6 +290,20 @@ impl Write for Pinned<'_, '_, '_> {
     }
 }
 
+/// Whether the account may pin enough for the tests' pictures to go
+/// zero-copy: 8 MiB, the default, or no limit. Below it, a call may be
+/// refused and copied, which is no failure.
+#[cfg(test)]
+pub(crate) fn roomy() -> bool {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: one `rlimit`, written by the call.
+    let got = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &raw mut limit) };
+    got == 0 && (limit.rlim_cur == libc::RLIM_INFINITY || limit.rlim_cur >= 8 << 20)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,46 +311,89 @@ mod tests {
     use std::io::Read as _;
     use std::net::{TcpListener, TcpStream};
 
-    /// Bytes sent zero-copy arrive as sent, in order with the copied ones
-    /// around them, and the kernel's word on every call is waited for.
-    /// Loopback copies what it is handed zero-copy, and says so, so the
-    /// stream copies from then on.
-    #[test]
-    fn what_is_sent_zero_copy_arrives_and_is_settled() {
+    /// A connection on loopback, its sender's sends, and the receiving end
+    /// held to the bytes of a large picture between two small slices and a
+    /// small frame after them, which is what the tests send.
+    fn sent_and_read(
+        sends: impl FnOnce(&TcpStream) -> ZeroCopy,
+    ) -> (TcpStream, ZeroCopy, Vec<u8>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (mut receiver, _) = listener.accept().unwrap();
         let picture: Vec<u8> = (0..3 << 20)
             .map(|n: u32| (n * 7 + n / 4093) as u8)
             .collect();
-        let head = b"head";
-        let mut expected = head.to_vec();
+        let mut expected = HEAD.to_vec();
         expected.extend_from_slice(&picture);
         expected.extend_from_slice(&picture[..1000]);
-        expected.extend_from_slice(head);
+        expected.extend_from_slice(HEAD);
         let reader = std::thread::spawn(move || {
             let mut got = vec![0; expected.len()];
             receiver.read_exact(&mut got).unwrap();
             assert!(got == expected, "the bytes are not the ones sent");
         });
-        let mut sends = ZeroCopy::new(&sender).unwrap();
-        let mut link = Timed::new(&sender);
-        link.within(FRAME_WITHIN);
+        let sends = sends(&sender);
+        (sender, sends, picture, reader)
+    }
+
+    const HEAD: &[u8] = b"head";
+
+    /// The large frame and the small one, sent; how many calls went
+    /// zero-copy for the large one.
+    fn send_both(sends: &mut ZeroCopy, link: &mut Timed<'_>, picture: &[u8]) -> u32 {
         let mut slices = [
-            IoSlice::new(head),
-            IoSlice::new(&picture),
+            IoSlice::new(HEAD),
+            IoSlice::new(picture),
             IoSlice::new(&picture[..1000]),
         ];
-        sends.send(&mut link, &mut slices).unwrap();
-        // Three megabytes in calls of a megabyte at most.
+        sends.send(link, &mut slices).unwrap();
         let sent = sends.sent;
-        assert!(sent > 3, "{sent} zero-copy calls");
         // A frame of small slices is copied, zero-copy on or not.
-        sends.send(&mut link, &mut [IoSlice::new(head)]).unwrap();
+        sends.send(link, &mut [IoSlice::new(HEAD)]).unwrap();
         assert_eq!(sends.sent, sent);
+        sent
+    }
+
+    /// Bytes sent zero-copy arrive as sent, in order with the copied ones
+    /// around them, and the kernel's word on every call is waited for.
+    /// Loopback copies what it is handed zero-copy, and says so, so the
+    /// stream copies from then on; an account that may pin too little has
+    /// its calls refused and copied, and nothing to wait for.
+    #[test]
+    fn what_is_sent_zero_copy_arrives_and_is_settled() {
+        let (sender, mut sends, picture, reader) =
+            sent_and_read(|sender| ZeroCopy::new(sender).unwrap());
+        let mut link = Timed::new(&sender);
+        link.within(FRAME_WITHIN);
+        let sent = send_both(&mut sends, &mut link, &picture);
+        if roomy() {
+            // Three megabytes in calls of a megabyte at most.
+            assert!(sent > 3, "{sent} zero-copy calls");
+        }
         reader.join().unwrap();
         sends.settle(&link).unwrap();
         assert_eq!(sends.done, sends.sent);
-        assert!(!sends.on(), "loopback copied, and the stream does not");
+        assert_eq!(
+            sends.on(),
+            sent == 0,
+            "loopback copied what went zero-copy, and only that says so"
+        );
+    }
+
+    /// A stream that copies, as one does once the kernel has copied, sends
+    /// the same bytes, none of them zero-copy, and waits for nothing.
+    #[test]
+    fn what_is_copied_arrives_and_waits_for_nothing() {
+        let (sender, mut sends, picture, reader) = sent_and_read(|sender| {
+            let mut sends = ZeroCopy::new(sender).unwrap();
+            sends.on = false;
+            sends
+        });
+        let mut link = Timed::new(&sender);
+        link.within(FRAME_WITHIN);
+        assert_eq!(send_both(&mut sends, &mut link, &picture), 0);
+        reader.join().unwrap();
+        sends.settle(&link).unwrap();
+        assert!(!sends.on());
     }
 }
