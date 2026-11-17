@@ -24,8 +24,9 @@ use std::time::Duration;
 use anyhow::Context as _;
 
 use crate::agent::link::{
-    FAILED, FRAME, FRAME_WITHIN, HANDSHAKE_WITHIN, KEYFRAME, MAX_SIDE, Mac as _, NONE, OK, PROOF,
-    REFINE, Role, Span, Timed, hello, keepalive, nonce, proof, read_hello, write_all_vectored,
+    FRAME_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, PROOF, Role, SPAN_HEAD,
+    Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_proof,
+    read_status, write_all_vectored,
 };
 use crate::h264::{Backend, Planes};
 
@@ -229,23 +230,18 @@ impl Stream {
             .write_all(&hello(&ours))
             .context("sending the hello")?;
         let theirs = read_hello(&mut timed)?;
-        let mut its = [0; PROOF];
-        timed
-            .read_exact(&mut its)
-            .context("reading its proof of the key")?;
+        let its = read_proof(&mut timed)?;
         proof(&agent.key, Role::Agent, &ours, &theirs)?
             .verify_slice(&its)
             .map_err(|_| anyhow::anyhow!("its key is not this daemon's"))?;
-        let mut open = [0; PROOF + 4];
-        open[..PROOF].copy_from_slice(
-            &proof(&agent.key, Role::Daemon, &ours, &theirs)?
-                .finalize()
-                .into_bytes(),
-        );
-        open[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
-        open[PROOF + 2..].copy_from_slice(&(height as u16).to_be_bytes());
-        timed.write_all(&open).context("asking for a stream")?;
-        status(&mut timed).context("opening a stream")?;
+        let proved: [u8; PROOF] = proof(&agent.key, Role::Daemon, &ours, &theirs)?
+            .finalize()
+            .into_bytes()
+            .into();
+        timed
+            .write_all(&open_request(&proved, (width, height)))
+            .context("asking for a stream")?;
+        read_status(&mut timed).context("opening a stream")?;
         Ok(Self {
             link,
             head: Vec::new(),
@@ -253,26 +249,6 @@ impl Stream {
             // buffer is that and headroom ([`crate::h264::vaapi::Stream::open`]).
             most: width.div_ceil(16) * height.div_ceil(16) * 400 + 64 * 1024,
         })
-    }
-}
-
-/// Read the agent's status byte: `true` for [`OK`], `false` for [`NONE`], and
-/// for [`FAILED`] the reason it gives, as the error.
-fn status(link: &mut impl Read) -> anyhow::Result<bool> {
-    let mut status = [0];
-    link.read_exact(&mut status)
-        .context("waiting for its answer")?;
-    match status[0] {
-        OK => Ok(true),
-        NONE => Ok(false),
-        FAILED => {
-            let mut length = [0; 2];
-            link.read_exact(&mut length)?;
-            let mut why = vec![0; usize::from(u16::from_be_bytes(length))];
-            link.read_exact(&mut why)?;
-            anyhow::bail!("{}", String::from_utf8_lossy(&why))
-        }
-        other => anyhow::bail!("it answered {other}, which is no status"),
     }
 }
 
@@ -284,19 +260,16 @@ impl Backend for Stream {
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
-        /// The frame's own header: its tag, flags, quantizer and count.
-        const FRAME_HEAD: usize = 7;
-        /// A rectangle's: its four numbers.
-        const SPAN_HEAD: usize = 8;
         let spans = changed(planes);
         let head = &mut self.head;
         head.clear();
-        head.extend_from_slice(&[
-            FRAME,
-            if keyframe { KEYFRAME } else { 0 } | if planes.refine { REFINE } else { 0 },
+        let frame = Frame {
+            keyframe,
+            refine: planes.refine,
             qp,
-        ]);
-        head.extend_from_slice(&(spans.len() as u32).to_be_bytes());
+            spans: spans.len() as u32,
+        };
+        head.extend_from_slice(&frame.header());
         for span in &spans {
             head.extend_from_slice(&span.header());
         }
@@ -326,12 +299,9 @@ impl Backend for Stream {
         link.within(FRAME_WITHIN);
         let coded = (|| {
             write_all_vectored(&mut link, &mut request).context("sending it a picture")?;
-            if !status(&mut link)? {
+            let Some(length) = read_coded(&mut link)? else {
                 return Ok(false);
-            }
-            let mut length = [0; 4];
-            link.read_exact(&mut length)?;
-            let length = u32::from_be_bytes(length) as usize;
+            };
             anyhow::ensure!(
                 length <= self.most,
                 "its frame of {length} bytes is more than the picture's own"

@@ -37,8 +37,8 @@ use log::{info, warn};
 
 use crate::agent::allow::Net;
 use crate::agent::link::{
-    FRAME, FRAME_WITHIN, HANDSHAKE_WITHIN, KEYFRAME, MAX_SIDE, Mac as _, NONE, OK, PROOF, REFINE,
-    Role, Span, Timed, failed, hello, keepalive, nonce, proof, read_hello,
+    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, NONE, OK, Role, Span,
+    Timed, coded_head, failed, hello, keepalive, nonce, proof, read_hello, read_open_request,
 };
 use crate::h264::{Backend, Planes};
 
@@ -366,14 +366,10 @@ fn connection(
             .into_bytes(),
     )
     .context("sending the proof of the key")?;
-    let mut asked = [0; PROOF + 4];
-    from.read_exact(&mut asked)
-        .context("reading its proof of the key")?;
+    let (its, (width, height)) = read_open_request(&mut from)?;
     proof(key, Role::Daemon, &theirs, &ours)?
-        .verify_slice(&asked[..PROOF])
+        .verify_slice(&its)
         .map_err(|_| anyhow::anyhow!("its key is not this agent's"))?;
-    let [width, height] =
-        [PROOF, PROOF + 2].map(|at| usize::from(u16::from_be_bytes([asked[at], asked[at + 1]])));
 
     // A daemon's: its place among the unproved is another's to take, and it
     // is the agent's user, or one more stream of the user's, or told why
@@ -421,15 +417,13 @@ fn connection(
         }
         from.get_mut().within(FRAME_WITHIN);
         reply.clear();
-        reply.extend_from_slice(&[OK, 0, 0, 0, 0]);
-        let coded = (|| {
-            anyhow::ensure!(tag[0] == FRAME, "message {} is not a frame", tag[0]);
-            let mut header = [0; 6];
-            from.read_exact(&mut header).context("reading a frame")?;
-            let [flags, qp, count @ ..] = header;
-            anyhow::ensure!(qp <= 51, "{qp} is no H.264 quantizer");
+        // The answer's head, its length to come once the frame is coded
+        // after it.
+        reply.extend_from_slice(&coded_head(0));
+        let coded: anyhow::Result<bool> = (|| {
+            let frame = Frame::read(tag[0], &mut from)?;
             let stride = planes.stride;
-            for _ in 0..u32::from_be_bytes(count) {
+            for _ in 0..frame.spans {
                 let span = Span::read(&mut from, (width, height))?;
                 for (plane, rows) in [
                     (&mut planes.y, span.y..span.y + span.h),
@@ -443,9 +437,9 @@ fn connection(
                 planes.touch((span.x, span.y), (span.x + span.w, span.y + span.h));
                 served.pictures += (span.w * span.h * 3 / 2) as u64;
             }
-            planes.refine = flags & REFINE != 0;
+            planes.refine = frame.refine;
             let began = std::time::Instant::now();
-            let made = backend.frame(&planes, flags & KEYFRAME != 0, qp, &mut reply)?;
+            let made = backend.frame(&planes, frame.keyframe, frame.qp, &mut reply)?;
             served.coding += began.elapsed();
             if made {
                 planes.coded_frame();
@@ -454,8 +448,8 @@ fn connection(
         })();
         match coded {
             Ok(true) => {
-                let length = (reply.len() - 5) as u32;
-                reply[1..5].copy_from_slice(&length.to_be_bytes());
+                let length = (reply.len() - CODED_HEAD) as u32;
+                reply[..CODED_HEAD].copy_from_slice(&coded_head(length));
                 to.write_all(&reply).context("sending a frame")?;
                 served.frames += 1;
                 served.stream += u64::from(length);
@@ -477,7 +471,7 @@ fn connection(
 mod tests {
     use super::*;
     use crate::agent::client::{Agent, Stream};
-    use crate::agent::link::{FAILED, MIN_KEY};
+    use crate::agent::link::{FAILED, FRAME, MIN_KEY, PROOF};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// The key the tests' agents and their daemons share.

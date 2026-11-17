@@ -5,8 +5,8 @@ libx264, on its processor. The encoding agent, `wlshare-enc-agent`, runs on
 another machine that has a hardware H.264 encoder and lends it to that
 daemon: the daemon sends it what changed of each picture, uncompressed, and
 is sent the coded frame back.
-[`architecture.md`](architecture.md#the-encoding-agent) says how it works and
-why; this is how to set it up.
+[`architecture.md`](https://github.com/andrewtheguy/wlshare/blob/main/docs/architecture.md#the-encoding-agent)
+says how it works and why; this is how to set it up.
 
 ## What it is for
 
@@ -134,9 +134,16 @@ address = "192.168.1.20:5990"
 ```
 
 `hardware_h264` has to be on, which it is by default: with it off the table
-is not used. The address is the agent's `LISTEN`. A host name works too, and
-is taken at the first address it has, so one with both an IPv6 and an IPv4
-address is better written as the address `ALLOW` was written for.
+is not used.
+
+`address` is the agent's own address and the port it listens on, what its
+`LISTEN` says: with `LISTEN=0.0.0.0:5990`, an address of the agent's machine
+and port 5990. It is not the address in `ALLOW`, which is this machine's, the
+one the daemon connects from. A host name of the agent's works too, and is
+taken at the first address it has. Where that name has both an IPv6 and an
+IPv4 address, write the agent's address itself, of the family `LISTEN` is:
+the daemon then connects from its own address of that family, which is the
+one `ALLOW` has to hold.
 
 Restart the daemon (`systemctl --user restart wlshare`). Its log says which
 it found:

@@ -65,7 +65,8 @@
   H.264 encoder (`h264/`) is tested against libavcodec's software decoder:
   libx264 on every machine, and the hardware, through libva, where
   the machine has a VA-API encoder, its test passing with a word where it has
-  none; the agent's link with libx264 behind it on every machine, held byte
+  none, or failing there with `WLSHARE_REQUIRE_VAAPI` set, as a run on a
+  machine that is to have one sets it; the agent's link with libx264 behind it on every machine, held byte
   for byte to libx264 without it; testdesktop2
   (`../andrewserver`, the Proxmox host's Intel iGPU passed into it) is where
   the hardware's is run for real.

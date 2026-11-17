@@ -68,7 +68,8 @@
 //! Tested against libavcodec's own H.264 decoder ([`crate::decode`]), which
 //! shares nothing with either encoder: libx264's on every machine, the
 //! hardware's where there is one, its test saying so and passing where there
-//! is not, since the machines that build this seldom have one. An agent's
+//! is not, since the machines that build this seldom have one, or failing
+//! there where the machine is said to have one ([`vaapi::required`]). An agent's
 //! stream with libx264 behind the agent, on loopback, on every machine: held
 //! byte for byte to libx264's own, so the link adds and loses nothing.
 
@@ -271,10 +272,13 @@ impl H264Coder for Coder {
                 width > 0 && height > 0,
                 "a {width}x{height} picture has no pixels"
             );
-            let picture = Picture::new(width, height);
+            // The encoder before the planes, so that a picture no encoder
+            // takes, as one past an agent's longest side is, is refused
+            // before it is made room for.
+            let backend = self.backend(Planes::coded_size(width, height))?;
             let stream: Box<dyn H264Stream> = Box::new(Stream {
-                backend: self.backend(picture.planes.coded)?,
-                picture,
+                backend,
+                picture: Picture::new(width, height),
             });
             Ok(stream)
         })();
@@ -734,15 +738,42 @@ mod tests {
     /// How far a hardware encoder's macroblock may stand from its slice's QP.
     const MACROBLOCK_SLACK: u32 = 3;
 
+    /// The hardware encoder these tests run on: `None`, with a word, on a
+    /// machine with none that works, which `unexercised` says the cost of;
+    /// and a failure there instead where the machine is said to have one
+    /// ([`vaapi::required`]), with what each encoder tried came to.
+    fn hardware(unexercised: &str) -> Option<Encoder> {
+        let tried = std::cell::RefCell::new(Vec::new());
+        let vaapi = |device: &std::path::Path, low_power| Encoder::Vaapi {
+            device: device.to_owned(),
+            low_power,
+        };
+        let found = vaapi::find(|device, low_power| {
+            vaapi(device, low_power).try_frames().inspect_err(|e| {
+                tried.borrow_mut().push(format!(
+                    "{} (low power: {low_power}): {e:#}",
+                    device.display()
+                ));
+            })
+        })
+        .map(|(device, low_power)| vaapi(&device, low_power));
+        if found.is_none() {
+            assert!(
+                !vaapi::required(),
+                "WLSHARE_REQUIRE_VAAPI is set, and no VA-API H.264 encoder works on this machine: {:?}",
+                tried.borrow()
+            );
+            eprintln!("no VA-API H.264 encoder on this machine; {unexercised}");
+        }
+        found
+    }
+
     /// The hardware's frames decode to the picture, near enough, and its
     /// quantizer follows the dial frame by frame. Passes with a word where
     /// this machine has no encoder.
     #[test]
     fn hardware_frames_decode_to_the_picture_with_libavcodecs_software_decoder() {
-        let Some(encoder) = Encoder::hardware() else {
-            eprintln!(
-                "no VA-API H.264 encoder on this machine; the hardware coder is not exercised"
-            );
+        let Some(encoder) = hardware("the hardware coder is not exercised") else {
             return;
         };
         frames_decode_to_the_picture(&encoder, (96, 70), 18);
@@ -1213,10 +1244,7 @@ mod tests {
     /// sent them. Passes with a word where this machine has no encoder.
     #[test]
     fn hardware_frames_through_an_agent_decode_to_the_picture() {
-        let Some(hardware) = Encoder::hardware() else {
-            eprintln!(
-                "no VA-API H.264 encoder on this machine; the hardware behind an agent is not exercised"
-            );
+        let Some(hardware) = hardware("the hardware behind an agent is not exercised") else {
             return;
         };
         let encoder = agent(hardware);

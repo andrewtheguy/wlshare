@@ -61,13 +61,23 @@ pub struct Planes {
 }
 
 impl Planes {
+    /// The size a `width`×`height` picture is coded at, its sides rounded
+    /// up to even: what an encoder is opened over, which can be before the
+    /// planes are made room for.
+    pub fn coded_size(width: u16, height: u16) -> (usize, usize) {
+        (
+            usize::from(width).next_multiple_of(2),
+            usize::from(height).next_multiple_of(2),
+        )
+    }
+
     /// Planes for a `width`×`height` picture, black, every macroblock new.
     pub fn new(width: u16, height: u16) -> Self {
         let (w, h) = (usize::from(width), usize::from(height));
         let stride = w.next_multiple_of(64);
         let across = w.next_multiple_of(2).div_ceil(16);
         Self {
-            coded: (w.next_multiple_of(2), h.next_multiple_of(2)),
+            coded: Self::coded_size(width, height),
             stride,
             y: vec![16; stride * (h.next_multiple_of(2) + 1)],
             uv: vec![128; stride * (h.div_ceil(2) + 1)],

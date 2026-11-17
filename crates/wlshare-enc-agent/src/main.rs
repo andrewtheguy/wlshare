@@ -119,7 +119,6 @@ fn default_key_file() -> PathBuf {
 fn key(path: &Path) -> anyhow::Result<Vec<u8>> {
     if !path.exists() {
         use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
         let key: String = link::nonce()
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -127,12 +126,7 @@ fn key(path: &Path) -> anyhow::Result<Vec<u8>> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-            .and_then(|mut file| writeln!(file, "{key}"))
+        new_file(path, |file| writeln!(file, "{key}"))
             .with_context(|| format!("writing {}", path.display()))?;
         info!(
             "generated a key into {}: the daemon's [enc_agent] table needs a copy of the file",
@@ -142,9 +136,58 @@ fn key(path: &Path) -> anyhow::Result<Vec<u8>> {
     link::read_key(path)
 }
 
+/// A file made at `path`, this account's alone to read, and filled by
+/// `fill`. A file already there is an error and is left as it is; and one
+/// that cannot be filled is removed again, being this call's own, so that no
+/// later start reads half a key out of it.
+fn new_file(
+    path: &Path,
+    fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    fill(&mut file).inspect_err(|_| {
+        let _ = std::fs::remove_file(path);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A key file that could not be written whole is not left for the next
+    /// start to read; one written is this account's alone; and one already
+    /// there is neither written over nor removed.
+    #[test]
+    fn a_key_file_is_written_whole_or_not_at_all() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("wlshare-enc-agent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("enc_agent.key");
+
+        let failed = new_file(&path, |file| {
+            file.write_all(b"half a k")?;
+            Err(std::io::ErrorKind::StorageFull.into())
+        });
+        assert_eq!(failed.unwrap_err().kind(), std::io::ErrorKind::StorageFull);
+        assert!(!path.exists(), "half a key is no key file");
+
+        new_file(&path, |file| writeln!(file, "{}", "5a".repeat(32))).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let first = key(&path).unwrap();
+        assert_eq!(first, "5a".repeat(32).into_bytes());
+
+        let again = new_file(&path, |_| Err(std::io::ErrorKind::StorageFull.into()));
+        assert_eq!(again.unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(key(&path).unwrap(), first, "the key there is kept");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// An agent listens where a daemon can be told it does: at an address
     /// and a port, and not at port 0.

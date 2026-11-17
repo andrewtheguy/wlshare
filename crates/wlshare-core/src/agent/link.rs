@@ -332,6 +332,39 @@ pub fn read_key(path: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(key.to_vec())
 }
 
+/// Read a proof of the key, the other end's.
+pub fn read_proof(from: &mut impl Read) -> anyhow::Result<[u8; PROOF]> {
+    let mut proof = [0; PROOF];
+    from.read_exact(&mut proof)
+        .context("reading its proof of the key")?;
+    Ok(proof)
+}
+
+/// The daemon's request for a stream, which ends its handshake: its proof
+/// of the key, and the coded picture's width and height.
+pub const OPEN_REQUEST: usize = PROOF + 4;
+
+/// The daemon's request for a stream over a `width`×`height` picture.
+pub fn open_request(proof: &[u8; PROOF], (width, height): (usize, usize)) -> [u8; OPEN_REQUEST] {
+    let mut request = [0; OPEN_REQUEST];
+    request[..PROOF].copy_from_slice(proof);
+    request[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
+    request[PROOF + 2..].copy_from_slice(&(height as u16).to_be_bytes());
+    request
+}
+
+/// Read the daemon's request for a stream: its proof, for the agent to
+/// check, and the size of the picture it asks an encoder over.
+pub fn read_open_request(from: &mut impl Read) -> anyhow::Result<([u8; PROOF], (usize, usize))> {
+    let proof = read_proof(from)?;
+    let mut size = [0; 4];
+    from.read_exact(&mut size)
+        .context("reading its picture's size")?;
+    let [width, height] =
+        [0, 2].map(|at| usize::from(u16::from_be_bytes([size[at], size[at + 1]])));
+    Ok((proof, (width, height)))
+}
+
 /// A status byte's failure, as the agent writes it: [`FAILED`] and why.
 pub fn failed(why: &str) -> Vec<u8> {
     let why = &why.as_bytes()[..why.len().min(usize::from(u16::MAX))];
@@ -340,6 +373,95 @@ pub fn failed(why: &str) -> Vec<u8> {
     message.extend_from_slice(why);
     message
 }
+
+/// Read the agent's status byte: `true` for [`OK`], `false` for [`NONE`], and
+/// for [`FAILED`] the reason it gives, as the error.
+pub fn read_status(from: &mut impl Read) -> anyhow::Result<bool> {
+    let mut status = [0];
+    from.read_exact(&mut status)
+        .context("waiting for its answer")?;
+    match status[0] {
+        OK => Ok(true),
+        NONE => Ok(false),
+        FAILED => {
+            let mut length = [0; 2];
+            from.read_exact(&mut length)?;
+            let mut why = vec![0; usize::from(u16::from_be_bytes(length))];
+            from.read_exact(&mut why)?;
+            anyhow::bail!("{}", String::from_utf8_lossy(&why))
+        }
+        other => anyhow::bail!("it answered {other}, which is no status"),
+    }
+}
+
+/// The head of a frame as the daemon sends it: its tag, flags, quantizer
+/// and count of rectangles.
+pub const FRAME_HEAD: usize = 7;
+
+/// What the daemon asks of a frame, ahead of the frame's rectangles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame {
+    /// An IDR is asked for.
+    pub keyframe: bool,
+    /// The encoder is to look at every macroblock again.
+    pub refine: bool,
+    /// The quantizer, H.264's 0 to 51.
+    pub qp: u8,
+    /// How many rectangles follow.
+    pub spans: u32,
+}
+
+impl Frame {
+    /// The frame's head.
+    pub fn header(&self) -> [u8; FRAME_HEAD] {
+        let flags = if self.keyframe { KEYFRAME } else { 0 } | if self.refine { REFINE } else { 0 };
+        let [a, b, c, d] = self.spans.to_be_bytes();
+        [FRAME, flags, self.qp, a, b, c, d]
+    }
+
+    /// A frame's head read, its `tag` having been already: an error for a
+    /// message that is no frame, or a quantizer that is none of H.264's.
+    pub fn read(tag: u8, from: &mut impl Read) -> anyhow::Result<Self> {
+        anyhow::ensure!(tag == FRAME, "message {tag} is not a frame");
+        let mut header = [0; FRAME_HEAD - 1];
+        from.read_exact(&mut header).context("reading a frame")?;
+        let [flags, qp, spans @ ..] = header;
+        anyhow::ensure!(qp <= 51, "{qp} is no H.264 quantizer");
+        Ok(Self {
+            keyframe: flags & KEYFRAME != 0,
+            refine: flags & REFINE != 0,
+            qp,
+            spans: u32::from_be_bytes(spans),
+        })
+    }
+}
+
+/// The head of the agent's answer to a frame it coded: [`OK`] and the access
+/// unit's length.
+pub const CODED_HEAD: usize = 5;
+
+/// The head of the agent's answer to a frame it coded into `length` bytes,
+/// which follow it.
+pub fn coded_head(length: u32) -> [u8; CODED_HEAD] {
+    let [a, b, c, d] = length.to_be_bytes();
+    [OK, a, b, c, d]
+}
+
+/// Read the head of the agent's answer to a frame: the length of the access
+/// unit that follows, `None` where its encoder made no frame, and its reason
+/// as the error where it failed.
+pub fn read_coded(from: &mut impl Read) -> anyhow::Result<Option<usize>> {
+    if !read_status(from)? {
+        return Ok(None);
+    }
+    let mut length = [0; 4];
+    from.read_exact(&mut length)
+        .context("reading its frame's length")?;
+    Ok(Some(u32::from_be_bytes(length) as usize))
+}
+
+/// A rectangle's header: its four numbers.
+pub const SPAN_HEAD: usize = 8;
 
 /// A rectangle of the coded picture, in luma samples, every number even.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,8 +473,8 @@ pub struct Span {
 }
 
 impl Span {
-    /// The rectangle's header: its four numbers.
-    pub fn header(&self) -> [u8; 8] {
+    /// The rectangle's header.
+    pub fn header(&self) -> [u8; SPAN_HEAD] {
         let [x, y, w, h] = [self.x, self.y, self.w, self.h].map(|n| (n as u16).to_be_bytes());
         [x[0], x[1], y[0], y[1], w[0], w[1], h[0], h[1]]
     }
@@ -360,7 +482,7 @@ impl Span {
     /// A rectangle read from its header, held to a `width`×`height` picture:
     /// even, with pixels, and inside it.
     pub fn read(from: &mut impl Read, (width, height): (usize, usize)) -> anyhow::Result<Self> {
-        let mut header = [0; 8];
+        let mut header = [0; SPAN_HEAD];
         from.read_exact(&mut header)
             .context("reading a rectangle")?;
         let [x, y, w, h] =
@@ -400,6 +522,55 @@ mod tests {
         ] {
             assert!(read(outside).is_err(), "{outside:?}");
         }
+    }
+
+    /// Each message is read back as what it was written from, and is the
+    /// bytes the link's first version put on the wire.
+    #[test]
+    fn a_message_is_read_as_it_was_written() {
+        let proof = [0xA5; PROOF];
+        let request = open_request(&proof, (1920, 1080));
+        assert_eq!(request[..PROOF], proof);
+        assert_eq!(request[PROOF..], [0x07, 0x80, 0x04, 0x38]);
+        assert_eq!(
+            read_open_request(&mut &request[..]).unwrap(),
+            (proof, (1920, 1080))
+        );
+        assert!(read_open_request(&mut &request[..OPEN_REQUEST - 1]).is_err());
+
+        let frame = Frame {
+            keyframe: true,
+            refine: false,
+            qp: 28,
+            spans: 0x0102_0304,
+        };
+        assert_eq!(frame.header(), [FRAME, KEYFRAME, 28, 1, 2, 3, 4]);
+        let refining = Frame {
+            keyframe: false,
+            refine: true,
+            qp: 51,
+            spans: 0,
+        };
+        assert_eq!(refining.header(), [FRAME, REFINE, 51, 0, 0, 0, 0]);
+        for frame in [frame, refining] {
+            let header = frame.header();
+            assert_eq!(Frame::read(header[0], &mut &header[1..]).unwrap(), frame);
+        }
+        let why = |tag, rest: &[u8]| Frame::read(tag, &mut &rest[..]).unwrap_err().to_string();
+        assert!(why(9, &[0, 28, 0, 0, 0, 0]).contains("not a frame"));
+        assert!(why(FRAME, &[0, 52, 0, 0, 0, 0]).contains("quantizer"));
+        assert!(Frame::read(FRAME, &mut &[0, 28, 0][..]).is_err());
+
+        assert_eq!(coded_head(0x0A0B_0C0D), [OK, 0x0A, 0x0B, 0x0C, 0x0D]);
+        let coded = |answer: &[u8]| read_coded(&mut &answer[..]);
+        assert_eq!(coded(&coded_head(70_000)).unwrap(), Some(70_000));
+        assert_eq!(coded(&[NONE]).unwrap(), None);
+        assert_eq!(failed("the GPU is busy")[..3], [FAILED, 0, 15]);
+        let why = coded(&failed("the GPU is busy")).unwrap_err().to_string();
+        assert_eq!(why, "the GPU is busy");
+        assert!(coded(&[7]).unwrap_err().to_string().contains("no status"));
+        assert!(coded(&[OK, 0, 0]).is_err());
+        assert!(read_status(&mut &[OK][..]).unwrap());
     }
 
     /// A proof is its key's, its role's and its connection's: none passes
