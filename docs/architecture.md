@@ -621,7 +621,11 @@ ffmpeg's libx264, so nothing passes through the daemon's encoder.
 The captures are the source an encoder is measured on, and for a quick run
 parts of them: `scripts/capture-samples.sh` cuts each capture to 120 frames
 under its own name with `wlcap trim --frames`, a quiet scenario's first and
-a busy one's busiest, the cut's first frame the picture as it stood, whole,
+a busy one's busiest, but the terminal's, the video's and the window's
+where they are chosen, the video's and the window's at the clip's first
+explosion's peak, since every frame of a video ties as the busiest and the
+earliest is still mostly black; the cut's first frame the picture as it
+stood, whole,
 with a keyframe asked; `walk` it copies whole, since its frames slow and
 come back over all of it, `mixed`, minutes at the desk of which a cut
 would keep only the busiest, the video full screen, and `small`, the small
