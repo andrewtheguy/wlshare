@@ -46,6 +46,14 @@ recommends = "va-driver-all"
 # Where the unit reads its listening address and its allowlist from; a conffile,
 # so an operator's values survive an upgrade.
 conf-files = ["/etc/default/wlshare-enc-agent"]
+# The unit among the assets is neither enabled nor started by installing the
+# package, since it has no LISTEN or ALLOW until an operator writes them; a
+# running agent is restarted once an upgrade is unpacked, so that it is the
+# release the daemon's is, and stopped when the package is removed. cargo-deb
+# writes the maintainer scripts that do it, into the postrm beside the unit,
+# which removes the key on a purge.
+maintainer-scripts = "../../packaging/wlshare-enc-agent/"
+systemd-units = { enable = false, start = false, restart-after-upgrade = true }
 assets = [
     ["target/release/wlshare-enc-agent", "usr/bin/", "755"],
     ["../../packaging/wlshare-enc-agent.service", "usr/lib/systemd/system/", "644"],

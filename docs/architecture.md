@@ -780,11 +780,16 @@ quantizer each was asked at.
   for one more that there is none. A connection that has not yet proved the
   key is no stream and takes no stream's place: the agent keeps 32 of those,
   each a thread and a socket, and one more closes the oldest, so an allowed
-  address without the key can neither fill the agent nor keep a
-  daemon out, whose handshake is over in milliseconds. Every wait has an
-  end, as a whole and not a byte at a time: 5 seconds for a handshake and 5
-  for a frame, sent and answered, which is the longest a session stands
-  still on an agent that has stopped answering; and either end gone without
+  address without the key cannot fill the agent, and connections it holds
+  open keep no daemon out, whose handshake is over in milliseconds. One that
+  opens 32 more inside those milliseconds closes the daemon's handshake with
+  the rest, which fails that stream, and for as long as it keeps at it: the
+  agent does not tell a stranger at an address it allows from its daemon
+  until the key is proved, and that address is the allowlist's to leave out.
+  Every wait has an end, as a whole and not a byte at a time: 5 seconds for
+  a handshake and 5 for a frame, sent and answered, which is the longest a
+  session stands still on an agent that has stopped answering; and either
+  end gone without
   a word is found out within 30 seconds, by TCP's keepalive where the stream
   stands idle and by its user timeout where bytes were never acknowledged.
   The daemon looks the agent's name up for its first stream and not again

@@ -59,7 +59,10 @@ sudo apt install ./wlshare-enc-agent-trixie-amd64.deb
 ```
 
 Both machines run the same release of wlshare: an agent and a daemon of
-different versions of the link refuse each other.
+different versions of the link refuse each other. Installing the package
+starts nothing. Upgrading it restarts an agent that is running, which ends
+the streams it was coding and the sessions they were for; removing it stops
+the agent, and purging it (`apt purge`) removes the key as well.
 
 ### Configure and start
 

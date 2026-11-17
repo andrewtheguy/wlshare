@@ -53,7 +53,9 @@ pub const STREAMS: usize = 32;
 /// without the key. They are no streams and take no stream's place, and one
 /// more closes the oldest of them: a daemon's handshake is over in
 /// milliseconds, so whatever has waited longest is the likeliest to be
-/// nothing, and a port held open by a stranger still lets a daemon in.
+/// nothing, and a port held open by a stranger still lets a daemon in. A
+/// stranger that opens this many more inside a daemon's handshake closes
+/// that too, and is at an address the allowlist was not to hold.
 const UNPROVED: usize = 32;
 
 /// How much of a picture is read from the connection at a time.

@@ -49,7 +49,9 @@ COPY . /build
 # The encoding agent is a package of its own beside the daemon's,
 # wlshare-enc-agent-<suite>-<arch>.deb, built and named the same way. It is for
 # a machine that has a GPU and nothing of wlshare's, so its Depends is held to
-# the C library and libva: anything else there stops the build.
+# the C library and libva: anything else there stops the build, as does a
+# package whose scripts do not restart a running agent on an upgrade and stop
+# it on removal.
 RUN set -eux; \
     version="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare","version":"\([^"]*\)".*/\1/p' | head -n 1)"; \
     protocol="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"name":"wlshare-proto","version":"\([0-9]*\)\.0\.0".*/\1/p' | head -n 1)"; \
@@ -72,6 +74,9 @@ RUN set -eux; \
             *) echo "the agent's package depends on ${needed}, which is none of libc and libva" >&2; exit 1 ;; \
         esac; \
     done; \
+    dpkg-deb --info "/out/wlshare-enc-agent-${suite}-${arch}.deb" postinst | grep -F 'deb-systemd-invoke try-restart wlshare-enc-agent.service'; \
+    dpkg-deb --info "/out/wlshare-enc-agent-${suite}-${arch}.deb" prerm | grep -F 'deb-systemd-invoke stop wlshare-enc-agent.service'; \
+    dpkg-deb --info "/out/wlshare-enc-agent-${suite}-${arch}.deb" postrm | grep -F 'rm -rf /var/lib/private/wlshare-enc-agent'; \
     cd /out && sha256sum ./*.deb | sed 's#  \./#  #' > SHA256SUMS && cat SHA256SUMS
 
 FROM scratch

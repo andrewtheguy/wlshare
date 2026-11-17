@@ -589,8 +589,10 @@ impl Stream {
                         );
                     }
                 }
-                va::vaUnmapBuffer(dpy, image.buf);
-                Ok(())
+                status(
+                    va::vaUnmapBuffer(dpy, image.buf),
+                    "unmapping the input picture",
+                )
             })();
             let put = match self.upload.as_ref().expect("made with the stream") {
                 Upload::Derive => {
@@ -899,12 +901,17 @@ impl Backend for Stream {
                 ));
                 segment = s.next.cast::<va::VACodedBufferSegment>().cast_const();
             }
-            va::vaUnmapBuffer(dpy, self.coded);
-            // A flagged frame is neither sent nor made the reference, and
-            // the frame after it is an IDR.
-            if flags != 0 {
+            let unmapped = status(
+                va::vaUnmapBuffer(dpy, self.coded),
+                "unmapping the coded frame",
+            );
+            // A flagged frame, or one whose buffer the driver did not take
+            // back, is neither sent nor made the reference, and the frame
+            // after it is an IDR.
+            if flags != 0 || unmapped.is_err() {
                 out.truncate(start);
             }
+            unmapped?;
             anyhow::ensure!(
                 flags & va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK == 0,
                 "the coded frame overflowed its buffer"
