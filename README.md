@@ -223,10 +223,13 @@ environment naming the directory that holds it. Each key must keep its keysym:
 the server resolves the client's keysyms through the same keymap it uploads.
 
 A host with no GPU codes its H.264 on its processor. Experimentally, it can
-borrow the hardware encoder of another machine it has a fast link to — the
-host a virtual machine runs on, or a wired machine on a LAN faster than
-gigabit — which runs the encoding agent, `wlshare-enc-agent`, a package of
-its own. [`docs/enc-agent.md`](docs/enc-agent.md) is how to set the two up.
+borrow the hardware encoder of another machine over a wired link that is very
+fast: above all a virtual machine borrowing its host's, the pictures crossing
+a bridge inside the one machine, or else a wired machine on a LAN faster than
+gigabit. That machine runs the encoding agent, `wlshare-enc-agent`, a package
+of its own. It is not for Wi-Fi or a link between sites: the pictures cross
+uncompressed. [`docs/enc-agent.md`](docs/enc-agent.md) is how to set the two
+up, with a virtual machine and its host from start to finish.
 
 ## Building
 
