@@ -247,6 +247,16 @@ fn status(code: va::VAStatus, what: &str) -> anyhow::Result<()> {
     anyhow::bail!("{what}: {message} ({code:#x})")
 }
 
+/// How many bytes `rows` rows of `width` samples reach to, `apart` bytes
+/// apart and the first `offset` in; `None` where that is past any count, as
+/// numbers that are not a picture's can be.
+fn reach(offset: usize, rows: usize, apart: usize, width: usize) -> Option<usize> {
+    rows.checked_sub(1)?
+        .checked_mul(apart)?
+        .checked_add(offset)?
+        .checked_add(width)
+}
+
 /// How a picture reaches the input surface: the surface mapped itself, or,
 /// where the driver will not map it, an image of it put onto it.
 enum Upload {
@@ -503,10 +513,10 @@ impl Stream {
             size.1
         );
         let stride = planes.stride;
+        let holds =
+            |plane: &[u8], rows| reach(0, rows, stride, w).is_some_and(|end| end <= plane.len());
         anyhow::ensure!(
-            stride >= w
-                && planes.y.len() >= (h - 1) * stride + w
-                && planes.uv.len() >= (h / 2 - 1) * stride + w,
+            stride >= w && holds(&planes.y, h) && holds(&planes.uv, h / 2),
             "planes of {} and {} bytes, their rows {stride} apart, do not hold a {w}x{h} picture",
             planes.y.len(),
             planes.uv.len()
@@ -535,7 +545,8 @@ impl Stream {
                         (image.offsets[plane] as usize, image.pitches[plane] as usize);
                     let within = image.num_planes as usize > plane
                         && pitch >= w
-                        && offset + (rows - 1) * pitch + w <= image.data_size as usize;
+                        && reach(offset, rows, pitch, w)
+                            .is_some_and(|end| end <= image.data_size as usize);
                     (within, offset, pitch, rows, source)
                 });
             let copied = (|| {
@@ -931,6 +942,18 @@ impl Drop for Stream {
 mod tests {
     use super::*;
 
+    /// Rows are held to a plane by where their last sample is, and rows whose
+    /// place is past any count are in no plane.
+    #[test]
+    fn rows_past_any_count_reach_nowhere() {
+        assert_eq!(reach(0, 64, 128, 96), Some(63 * 128 + 96));
+        assert_eq!(reach(4096, 1, 128, 96), Some(4096 + 96));
+        assert_eq!(reach(0, 0, 128, 96), None);
+        assert_eq!(reach(0, 64, usize::MAX / 32, 96), None);
+        assert_eq!(reach(usize::MAX - 100, 2, 64, 96), None);
+        assert_eq!(reach(0, 2, usize::MAX - 95, 96), None);
+    }
+
     /// Planes that are not the stream's picture, or do not hold the rows
     /// they say, fail the frame with nothing copied or coded; and the frame
     /// after a failed one is an IDR whatever it is asked as, so a keyframe
@@ -962,11 +985,16 @@ mod tests {
         narrow.stride = 32;
         let mut short = Planes::new(96, 64);
         short.uv.truncate(short.stride * 8);
+        // Rows so far apart that where the last is wraps round to a place
+        // the plane has.
+        let mut apart = Planes::new(96, 64);
+        apart.stride = usize::MAX / 63 + 2;
         for (wrong, keyframe) in [
             (Planes::new(64, 64), true),
             (Planes::new(96, 128), false),
             (narrow, false),
             (short, false),
+            (apart, false),
         ] {
             assert!(frame(&wrong, keyframe).is_err());
             assert!(

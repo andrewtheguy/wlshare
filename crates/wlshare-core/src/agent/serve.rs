@@ -26,7 +26,10 @@ use crate::h264::{Backend, Planes};
 /// stream is closed: the connection is idle for as long as the desktop is
 /// still, so only the keepalive tells. Half of it before the first probe,
 /// and the rest [`PROBES`] probes unanswered, the count said and not left
-/// to the system's, which on Linux is nine.
+/// to the system's, which on Linux is nine. And as long for what was sent
+/// to be acknowledged, since a connection with a frame in flight is not
+/// idle and is not probed: there it is the retransmissions that tell, which
+/// left to the system go on for a quarter of an hour.
 const KEEPALIVE: Duration = Duration::from_secs(30);
 
 /// The keepalive probes that go unanswered before a daemon is taken for gone.
@@ -119,14 +122,17 @@ impl std::fmt::Display for Served {
     }
 }
 
-/// Have a daemon that is no longer there found out within [`KEEPALIVE`].
+/// Have a daemon that is no longer there found out within [`KEEPALIVE`],
+/// whether the connection stands idle or holds a frame it never acknowledged.
 fn keepalive(stream: &TcpStream) -> std::io::Result<()> {
-    socket2::SockRef::from(stream).set_tcp_keepalive(
+    let socket = socket2::SockRef::from(stream);
+    socket.set_tcp_keepalive(
         &socket2::TcpKeepalive::new()
             .with_time(KEEPALIVE / 2)
             .with_interval(KEEPALIVE / 2 / PROBES)
             .with_retries(PROBES),
-    )
+    )?;
+    socket.set_tcp_user_timeout(Some(KEEPALIVE))
 }
 
 /// One connection: the handshake, the stream it asks for, and its frames
@@ -407,7 +413,8 @@ mod tests {
 
     /// A daemon gone without a word is found out within [`KEEPALIVE`], as
     /// the socket itself says it is set: the wait before the first probe and
-    /// every probe after it.
+    /// every probe after it, and the wait for what was sent to be
+    /// acknowledged.
     #[test]
     fn a_daemon_gone_is_found_out_within_the_keepalive() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -421,6 +428,7 @@ mod tests {
                     * socket.tcp_keepalive_retries().unwrap(),
             KEEPALIVE
         );
+        assert_eq!(socket.tcp_user_timeout().unwrap(), Some(KEEPALIVE));
     }
 
     /// An agent has so many connections at once and closes the next
