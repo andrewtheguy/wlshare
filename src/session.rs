@@ -2667,7 +2667,7 @@ mod pacing_tests {
             commands,
             0,
         ));
-        let h264 = Arc::new(crate::h264::Encoder::find(false).unwrap());
+        let h264 = Arc::new(crate::h264::Encoder::find(false, None).unwrap());
         let config = SessionConfig {
             security: Security::default(),
             name: "test".into(),

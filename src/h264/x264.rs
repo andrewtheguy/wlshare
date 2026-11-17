@@ -24,7 +24,7 @@
 //! of a desktop is as the frame before had it: a transform and a quantizer
 //! over each one's difference, for every plane, to find nothing. The planes
 //! know how many frames have been coded since a read last wrote into each
-//! macroblock (`Planes::still`), and one that [`REFINED`] frames have coded
+//! macroblock ([`Planes::still`]), and one that [`REFINED`] frames have coded
 //! as it stands is flagged constant (`X264_MBINFO_CONSTANT`): x264 skips it
 //! without looking, as long as the frame before coded it no coarser than
 //! this one is asked, so a frame at a finer quantizer than the last still

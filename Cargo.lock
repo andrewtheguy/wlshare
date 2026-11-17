@@ -713,6 +713,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
+name = "hmac"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1921,12 +1930,36 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
+ "wlshare-core",
  "wlshare-proto",
  "x264-sys",
  "xkbcommon",
  "xxhash-rust",
  "yuv",
  "zstd",
+]
+
+[[package]]
+name = "wlshare-core"
+version = "0.0.132"
+dependencies = [
+ "anyhow",
+ "hmac",
+ "log",
+ "rand",
+ "sha2",
+ "socket2",
+]
+
+[[package]]
+name = "wlshare-enc-agent"
+version = "0.0.132"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "log",
+ "wlshare-core",
 ]
 
 [[package]]

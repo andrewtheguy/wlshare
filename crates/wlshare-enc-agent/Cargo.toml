@@ -1,0 +1,62 @@
+[package]
+name = "wlshare-enc-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lends a machine's hardware H.264 encoder to the wlshare daemon on another (experimental)"
+
+# Experimental. The agent: the end of the H.264 link that has the GPU, a
+# process of its own on the machine that has it. The encoder and the link are
+# `wlshare-core`'s; this is the command line, the key file and the listener.
+[[bin]]
+name = "wlshare-enc-agent"
+path = "src/main.rs"
+
+[dependencies]
+wlshare-core = { path = "../wlshare-core" }
+anyhow.workspace = true
+log.workspace = true
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+
+# `cargo deb -p wlshare-enc-agent` (scripts/build-debs.sh runs it in Docker
+# beside the daemon's, per suite and architecture; the file is named
+# wlshare-enc-agent-<suite>-<arch>.deb). A package of its own, so that the
+# machine with the GPU installs the agent and nothing of the daemon's.
+[package.metadata.deb]
+name = "wlshare-enc-agent"
+maintainer = "Andrew Chen <hello@andrewtheguy.com>"
+extended-description = """The experimental encoding agent of wlshare: it lends this machine's hardware
+H.264 encoder, through VA-API, to a wlshare daemon on a machine that has none,
+over a fast link the two have between them."""
+section = "net"
+priority = "optional"
+# libva and libva-drm are all the agent links beside the C library, which
+# $auto names from the binary; the build stops if it names anything else
+# (docker/Dockerfile). libva's bindings are written out by hand
+# (wlshare-core's h264/libva.rs) and hold for libva 2.1.0 onward, a floor
+# stated here as in the daemon's package, with docker/merge-depends.sh
+# dropping $auto's lower one.
+depends = "$auto, libva2 (>= 2.1.0), libva-drm2 (>= 2.1.0)"
+# The VA-API drivers the encoder is reached through, Intel's and Mesa's.
+# Recommends, since a machine may have its driver from elsewhere; with none the
+# agent does not start.
+recommends = "va-driver-all"
+# Where the unit reads its listening address and its allowlist from; a conffile,
+# so an operator's values survive an upgrade.
+conf-files = ["/etc/default/wlshare-enc-agent"]
+# The unit among the assets is neither enabled nor started by installing the
+# package, since it has no LISTEN or ALLOW until an operator writes them; a
+# running agent is restarted once an upgrade is unpacked, so that it is the
+# release the daemon's is, and stopped when the package is removed. cargo-deb
+# writes the maintainer scripts that do it, into the postrm beside the unit,
+# which removes the key on a purge.
+maintainer-scripts = "../../packaging/wlshare-enc-agent/"
+systemd-units = { enable = false, start = false, restart-after-upgrade = true }
+assets = [
+    ["target/release/wlshare-enc-agent", "usr/bin/", "755"],
+    ["../../packaging/wlshare-enc-agent.service", "usr/lib/systemd/system/", "644"],
+    ["../../packaging/wlshare-enc-agent.default", "etc/default/wlshare-enc-agent", "644"],
+    ["../../docs/enc-agent.md", "usr/share/doc/wlshare-enc-agent/", "644"],
+]

@@ -22,6 +22,19 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   ([The protocol version](#the-protocol-version)). It depends on `thiserror` alone, has no OS
   APIs, and each builder is tested against a decoder written from the
   documented layout and read back by its parser.
+- `crates/wlshare-core` is what the daemon shares with the encoding agent:
+  the hardware H.264 encoder, the GPU's through libva itself (`h264/`), and
+  both ends of the link that lends one machine's to a daemon on another
+  (`agent/`, [The encoding agent](#the-encoding-agent)). It links the
+  system's libva and libva-drm and nothing else outside Rust, and nothing
+  outside this repository depends on it.
+- `crates/wlshare-enc-agent` is the encoding agent, experimental: a binary
+  of its own, `wlshare-enc-agent`, built on `wlshare-core` alone, so that the
+  machine it lends the GPU of needs libva and a VA-API driver and nothing
+  else of the daemon's. It is a package of its own too, whose build is
+  stopped by a dependency past the C library and libva, with a systemd unit
+  that runs it as an account of its own; [`enc-agent.md`](enc-agent.md) is
+  how it is set up.
 - The package at the root, `wlshare`, is the daemon. `rfb/` decides every byte on the wire that
   is not a private extension's: handshake, message parsing and building,
   RSA-AES and its frames, the ZRLE encoder, the video encoder, the tiles
@@ -36,9 +49,9 @@ wlroots compositor ── Wayland socket ──▶ compositor thread ──▶ F
   `clipboard.rs` are the protocols it speaks, and `sway.rs` is sway's IPC, which
   makes and unplugs headless outputs for a client's virtual displays; `audio.rs`, `camera.rs` and
   `microphone.rs` are PipeWire's side, `decode.rs` is the camera's libavcodec decoder
-  and `h264/` the H.264 encoder, the host's hardware through libva itself or
-  libx264 through its own API, for the video stream and the tiles picture's
-  moving regions; `walk.rs` is the walk of the quality and the frame rate a
+  and `h264/` the H.264 encoder for the video stream and the tiles picture's
+  moving regions: `wlshare-core`'s where the host has the hardware, libx264
+  through its own API where it has none, or an encoding agent's; `walk.rs` is the walk of the quality and the frame rate a
   link bears, and `wlcap.rs` the capture file of what a session's encoder was
   handed;
   `framebuffer.rs` is the shared pixels and damage;
@@ -417,7 +430,8 @@ word and its ceiling. What a frame holds is fixed:
   frames with no keyframe. libavcodec fixes the quantizer when it opens an
   encoder, its `h264_vaapi` and its libx264 alike, so neither encoder is
   reached through it. The hardware's is the daemon's own encoder over libva:
-  it writes the stream's sequence, picture and slice headers (`syntax.rs`)
+  it writes the stream's sequence, picture and slice headers (`syntax.rs`, in
+  `wlshare-core` with the encoder)
   and hands the driver them packed, with each picture's parameters, the
   walk's quantizer as the slice's `slice_qp_delta`; libavcodec's
   region-of-interest offset was no substitute, on testdesktop2's shader
@@ -653,6 +667,146 @@ walk reads, and, because the server sends nothing until the echo arrives, a
 frame the browser would only have overwritten unseen is never encoded at all.
 A browser that is not drawing must not be able to stop the desktop, so no echo
 is held past 500 ms — zDesk's `FENCE_HOLD_LIMIT`, its paint window's grace.
+
+### The encoding agent
+
+Experimental. A host with no GPU codes its H.264 by libx264, which is most of
+what a desktop in motion costs its processor. With an `[enc_agent]` table in
+the configuration, and `hardware_h264` on, every H.264 stream — the video,
+and each moving region of the tiles — is coded instead by the GPU of another
+machine, which runs the agent: `wlshare-enc-agent`, a binary of its own
+(`crates/wlshare-enc-agent`) built on `wlshare-core` alone, so that machine
+needs libva and a VA-API driver and neither a compositor nor anything else of
+the daemon's. The agent looks for its encoder at startup as a daemon does, the
+shader one first, and with none does not start: an agent is a GPU, not
+another processor to run libx264 on.
+
+It is for two machines with a fast link of their own between them, and no
+others: a virtual machine or container with no GPU and the host it runs on,
+or a sibling of it there, that has the host's encoder, the pictures crossing
+a bridge inside one machine; or a machine wired to a LAN faster than gigabit
+and another on it. Everything below is built for that link and is wrong for
+any other: raw pictures, in the clear, to an agent that is told its daemon's
+address and serves that one daemon.
+
+To the daemon the agent is one more H.264 coder (`Encoder::Remote` in
+`src/h264/`), and a stream on it one more backend beside VA-API's and
+libx264's, so the video encoder, the tiles encoder and the walk are as they
+were. The daemon converts the picture to NV12 as for any encoder, sends the
+agent what changed of it, and is sent the access unit back; the agent keeps a
+copy of the picture and, over it, the encoder a daemon on its own machine
+would have had. The stream is that encoder's, frame for frame at the
+quantizer each was asked at.
+
+- **TCP, a connection a stream.** A picture is megabytes and every byte of it
+  matters: a hole in a picture is coded as garbage, and a lost access unit
+  breaks every frame predicted from it. Over UDP that is fragmentation,
+  reassembly, retransmission and pacing to write, which is TCP written again;
+  what UDP would buy, a late packet not holding up the next, is nothing on
+  the one link this is for, a LAN that loses none. So each stream is one TCP
+  connection with Nagle's algorithm off, a frame one request and one reply,
+  and a link slow or lossy enough to want more is the wrong place for raw
+  pictures at all.
+- **A pre-shared key, and nothing after it.** Both ends hold one key, a
+  file's bytes, which the agent generates on first start. Each end sends 32
+  random bytes and proves the key by an HMAC-SHA256 over both randoms and its
+  own role, the agent first, so a proof can be neither replayed to a later
+  connection nor reflected at its sender, and the daemon sends no picture to
+  an agent that has not proved it. That is all the key does: nothing after
+  the handshake is encrypted or authenticated, so the pictures cross the link
+  in the clear, and whoever can alter the connection's packets can alter
+  them. It keeps a stranger on the LAN from using the encoder or posing as
+  it; a link that is not a trusted LAN goes inside a tunnel (WireGuard, SSH).
+  Encrypting the link itself, a megabyte or a hundred a second through an
+  AEAD at each end, is the step after this one.
+- **What changed, uncompressed.** The daemon's planes know which macroblocks
+  a read wrote into since the last frame, and those are what is sent, as
+  rectangles of whole macroblocks merged across and down: a stream's first
+  frame is the whole picture, a typed letter a few kilobytes, a frame that
+  only refines no pixels at all. A video filling a 1920×1080 screen is the
+  whole picture every frame, 3 MB, 93 MB a second at 30 frames: three
+  quarters of a gigabit link, so the two machines want a faster link between
+  them, or to be one host. Compressing the pictures would give the daemon's
+  processor back part of what the agent took off it.
+- **The link's bytes** are `wlshare-core`'s (`agent/link.rs`), both ends
+  built and parsed there, big-endian, and laid out in that module: each end's
+  hello (`WLEA`, the link's version, the random), the agent's proof, the
+  daemon's proof and the coded picture's size, the agent's status; then for
+  each frame the daemon's flags (a keyframe, a refinement), quantizer and
+  rectangles, each with its luma and chroma rows, and the agent's access
+  unit. The version is the link's own, not the protocol version: both ends
+  are wlshare, built from one release, and an end of another version is
+  refused in the hello.
+- **No fallback.** A daemon set to an agent has no other H.264 encoder and
+  looks for none. It starts whether or not the agent answers, saying which,
+  since the agent may be back before a session needs it; an agent that does
+  answer has its encoder tried as a local one is, and with an encoder that
+  fails the trial the daemon does not start, as it does not on a host where
+  nothing works. A stream that cannot be opened — the agent away, a key that
+  is not its own — or that fails a frame fails its encode as any coder's
+  failure does, and the session with it, the log saying why; the next
+  session tries the agent again. With `hardware_h264` off the table is not
+  used, and its key not read; its address is held to a host and a port
+  whenever the configuration is read.
+- **From where it allows.** The agent is told where its daemon connects
+  from, `--allow`, as IPv4 or IPv6 CIDR blocks (`agent/allow.rs`), one
+  address a `/32` or a `/128`. There is no default and it does not start
+  without one: on the link this is for the daemon's address is known, and
+  that address is the answer. A connection from anywhere else is closed as
+  it is accepted, before a thread, a byte or a look at who has the agent. A
+  block is written as its network, no bit set past its prefix, so that what
+  is allowed is what was written; an IPv4 daemon is matched as IPv4 on a
+  listener of both families.
+- **One daemon at a time.** The daemon with a stream open is the agent's
+  user, known by its address, until its last stream closes. While it is, a
+  connection from any other address is closed as it is accepted, before a
+  thread or a handshake, so nobody elsewhere on the network comes between
+  the user and its streams, with the key or without; and a second daemon set
+  to the same agent is kept out until the first has no stream, its sessions
+  failing meanwhile as with an agent away. An agent nobody is using lets any
+  address it allows try the key, and the first to prove it and ask for a
+  stream is the user: with the daemon's address allowed and no other, that
+  is the daemon. Other machines trying the key at an idle agent is then an
+  allowlist written wider than the daemon, a misconfiguration and not a case
+  the agent is built for; what it holds to even so is that a connection
+  with another key, or none, is closed without a word, having cost a thread
+  and a socket for at most the handshake's time and got nothing of the
+  encoder. The agent opens one VA display for its user, with the user's first
+  stream, and closes it with the last: the streams share it, each calling
+  libva under the display's lock, so a stream opened is an encoder made and
+  not the driver loaded again.
+- **So many, and so long.** The agent codes at most 32 streams at once, each
+  a thread, a socket and an encoder on the GPU, and tells a daemon that asks
+  for one more that there is none. A connection that has not yet proved the
+  key is no stream and takes no stream's place: the agent keeps 32 of those,
+  each a thread and a socket, and one more closes the oldest, so an allowed
+  address without the key cannot fill the agent, and connections it holds
+  open keep no daemon out, whose handshake is over in milliseconds. One that
+  opens 32 more inside those milliseconds closes the daemon's handshake with
+  the rest, which fails that stream, and for as long as it keeps at it: the
+  agent does not tell a stranger at an address it allows from its daemon
+  until the key is proved, and that address is the allowlist's to leave out.
+  Every wait has an end, as a whole and not a byte at a time: 5 seconds for
+  a handshake and 5 for a frame, sent and answered, which is the longest a
+  session stands still on an agent that has stopped answering; and either
+  end gone without
+  a word is found out within 30 seconds, by TCP's keepalive where the stream
+  stands idle and by its user timeout where bytes were never acknowledged.
+  The daemon looks the agent's name up for its first stream and not again
+  until a stream cannot be opened there, and the name is the first address
+  it has, as a WireGuard endpoint's is, with no other tried: on the link
+  this is for a name has one address, and an agent whose name has more —
+  an IPv6 one, say, beside the IPv4 its allowlist was written for — is
+  named by its address. The daemon sends a picture's rows from where they
+  lie, with no copy of the picture gathered first.
+
+The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
+picture to the daemon's sample for sample, through an encoder that hands the
+picture back, and the daemon's tests put libx264 behind an agent on loopback
+and hold its frames, byte for byte, to libx264's on the daemon's own side of
+the link, through damage, frames of none, refinements and keyframes, and
+decode them with libavcodec; the hardware behind an agent, where the machine
+has one.
 
 ## The tiles encoding
 
@@ -1135,7 +1289,8 @@ the picture.
   fewer bytes of all but a dragged window's). On a host with none, or with the key off, it is libx264 at its
   `superfast` preset, its motion searched over 128 pixels
   ([measured](video-performance.md#the-preset-and-the-search)).
-  `src/h264/` is that encoder, the GPU's through libva itself or libx264
+  `src/h264/` is that encoder, the GPU's through libva itself
+  (`wlshare-core`) or libx264
   through its own API ([above](#the-video-encoding)), linked from the
   system's libva and libx264, and the `H264Coder` of the daemon's tiles
   encoder, which opens a stream of it for each region, as the video encoder

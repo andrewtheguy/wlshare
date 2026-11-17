@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Build the wlshare .deb with Docker buildx for each suite it is released for,
-# Debian trixie and Ubuntu 26.04 (resolute), one architecture per call or amd64
-# and arm64 by default, into dist/<suite>/<arch>/wlshare-<suite>-<arch>.deb
-# beside its SHA256SUMS. SUITES picks the suites, both by default.
+# Build the wlshare .deb, and the encoding agent's beside it, with Docker buildx
+# for each suite they are released for, Debian trixie and Ubuntu 26.04
+# (resolute), one architecture per call or amd64 and arm64 by default, into
+# dist/<suite>/<arch>/ as wlshare-<suite>-<arch>.deb and
+# wlshare-enc-agent-<suite>-<arch>.deb beside their SHA256SUMS. SUITES picks
+# the suites, both by default.
 #
 #   [SUITES="trixie resolute"] ./scripts/build-debs.sh [arch ...]
 set -euo pipefail

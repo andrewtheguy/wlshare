@@ -1,6 +1,6 @@
 //! The host's GPU through libva itself: the encoder a VA-API driver offers
 //! for H.264, handed every picture's parameters, its quantizer among them, and
-//! the stream's headers as the daemon writes them ([`super::syntax`]).
+//! the stream's headers as this crate writes them (`syntax`, beside this).
 //!
 //! The quantizer is each slice's `slice_qp_delta` from the picture set's,
 //! which a constant-quantizer encoder codes the slice at; libavcodec's
@@ -12,7 +12,7 @@
 //! keyframe but the first.
 //!
 //! **Which encoder, and how hard it looks**
-//! ([measured](../../docs/video-performance.md#the-hardware-beside-libx264)).
+//! ([measured](../../../../docs/video-performance.md#the-hardware-beside-libx264)).
 //! Where a driver has both of Intel's, the shader encoder is tried ahead of
 //! the low-power, fixed-function one, and either is asked for the highest of
 //! its quality levels where it has several: left at the driver's own level,
@@ -31,20 +31,24 @@
 //! sequence parameter set packed, or is no encoder, since VA's parameters
 //! carry no colour description; of the picture and slice headers, it writes
 //! from the same parameters any it does not take packed. A frame the driver
-//! flags, overflowed or a bad bitstream, is an error and not the reference.
+//! flags, overflowed or a bad bitstream, is an error and not the reference;
+//! and the frame after one that failed, however it did, is an IDR. A picture
+//! the driver was begun on and did not code leaves in the driver whatever of
+//! it the driver took, which no call says or clears: the encoder's context is
+//! made again before the next picture, on the same surfaces.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use log::{debug, info, warn};
 
 use super::libva as va;
 use super::syntax::{self, Sequence, Slice};
-use super::{Backend, Encoder, Planes};
+use super::{Backend, Planes};
 
 /// Where render nodes are.
 const DRI: &str = "/dev/dri";
@@ -59,9 +63,10 @@ const QUALITY_LEVEL: u32 = 1;
 const MAX_SINCE_IDR: u32 = 1 << 30;
 
 /// Look for a working VA-API H.264 encoder: each render node in turn, the
-/// shader encoder ahead of the low-power one, each tried on two frames.
-/// `None` with nothing working, the reasons logged.
-pub fn find() -> Option<Encoder> {
+/// shader encoder ahead of the low-power one, each tried by `works`, which is
+/// handed the node and whether the low-power encoder is the one to try. The
+/// first that works, or `None` with nothing working, the reasons logged.
+pub fn find(works: impl Fn(&Path, bool) -> anyhow::Result<()>) -> Option<(PathBuf, bool)> {
     let mut nodes: Vec<PathBuf> = match std::fs::read_dir(DRI) {
         Ok(entries) => entries
             .filter_map(Result::ok)
@@ -84,18 +89,14 @@ pub fn find() -> Option<Encoder> {
     }
     for node in nodes {
         for low_power in [false, true] {
-            let encoder = Encoder::Vaapi {
-                device: node.clone(),
-                low_power,
-            };
-            match encoder.try_frames() {
+            match works(&node, low_power) {
                 Ok(()) => {
                     info!(
                         "hardware H.264: {} through VA-API, its {} encoder",
                         node.display(),
                         kind(low_power)
                     );
-                    return Some(encoder);
+                    return Some((node, low_power));
                 }
                 Err(e) => debug!(
                     "the {} encoder on {}: {e:#}",
@@ -113,20 +114,84 @@ pub fn find() -> Option<Encoder> {
     None
 }
 
+/// Whether the encoder on `node` codes a stream whose quantizer moves frame
+/// by frame, by what its frames weigh: three frames of noise on a small
+/// picture, an IDR and two P frames, the first of those at a fine quantizer
+/// and the second at a coarse one, which is to be under half the first's
+/// bytes. What an agent tries its encoder by, having no decoder to read each
+/// macroblock's quantizer back with as a daemon has; the daemon it serves
+/// reads them back from the frames it is sent.
+pub fn moves_its_quantizer(node: &Path, low_power: bool) -> anyhow::Result<()> {
+    const SIDE: u16 = 96;
+    let mut stream = Stream::open(
+        Arc::new(Display::open(node)?),
+        low_power,
+        (SIDE.into(), SIDE.into()),
+    )?;
+    let mut planes = Planes::new(SIDE, SIDE);
+    let mut state = 0x9E37_79B9u32;
+    let mut sizes = Vec::new();
+    for (n, (qp, nal)) in [(28, 5), (16, 1), (40, 1)].into_iter().enumerate() {
+        // New noise each frame, so no frame is free.
+        for sample in planes.y.iter_mut().chain(&mut planes.uv) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *sample = state as u8;
+        }
+        let mut unit = Vec::new();
+        anyhow::ensure!(
+            stream.frame(&planes, false, qp, &mut unit)?,
+            "the encoder made no frame {n}"
+        );
+        anyhow::ensure!(
+            super::nal_types(&unit).contains(&nal),
+            "frame {n} is not the kind asked"
+        );
+        sizes.push(unit.len());
+    }
+    anyhow::ensure!(
+        sizes[2] * 2 < sizes[1],
+        "a P frame at QP 40 weighs {} bytes and one at QP 16 {}: the quantizer does not move",
+        sizes[2],
+        sizes[1]
+    );
+    Ok(())
+}
+
+/// Whether this machine is said to have an encoder that works, by
+/// `WLSHARE_REQUIRE_VAAPI` set in the environment. The tests of the
+/// hardware, here and in the daemon, pass with a word on a machine [`find`]
+/// finds no encoder on, which is most that build this; with it set they fail
+/// there, saying what each encoder tried came to, so that on a machine with
+/// an encoder one that stopped working is not passed over as one never
+/// there.
+pub fn required() -> bool {
+    std::env::var_os("WLSHARE_REQUIRE_VAAPI").is_some_and(|set| !set.is_empty())
+}
+
 /// Which VA-API encoder: the fixed-function block or the shader one.
 fn kind(low_power: bool) -> &'static str {
     if low_power { "low-power" } else { "shader" }
 }
 
-/// A VA display on a render node, initialized: one session's.
+/// A VA display on a render node, initialized: one session's, or at an agent
+/// one daemon's, whose streams are each a thread's.
 pub struct Display {
     display: va::VADisplay,
     /// The node, open for as long as the display is.
     _node: File,
+    /// Held for as long as anything of this display's is in libva's hands: a
+    /// stream being opened, a frame being coded, a stream being closed. A
+    /// session's streams are coded one after another by its own thread and
+    /// never wait on it; an agent's are each a thread's, and a driver is not
+    /// trusted to be called on one display from several at once.
+    lock: Mutex<()>,
 }
 
-// SAFETY: the display is libva's, which locks its own state, and its encoders
-// are each one stream's, used from one thread at a time, the session's.
+// SAFETY: the display is libva's, and every call made on it or on anything
+// of its is made holding its lock, so from one thread at a time, whichever
+// thread that is.
 unsafe impl Send for Display {}
 unsafe impl Sync for Display {}
 
@@ -160,15 +225,21 @@ impl Display {
             Ok(Self {
                 display,
                 _node: file,
+                lock: Mutex::new(()),
             })
         }
+    }
+
+    /// The display's lock, held: libva is this thread's to call.
+    fn held(&self) -> MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl Drop for Display {
     fn drop(&mut self) {
         // SAFETY: the display is this value's, every stream on it gone first,
-        // since each holds the display.
+        // since each holds the display, and so nothing holds its lock.
         unsafe { va::vaTerminate(self.display) };
     }
 }
@@ -202,6 +273,16 @@ fn status(code: va::VAStatus, what: &str) -> anyhow::Result<()> {
     // SAFETY: libva's error strings are static and NUL-terminated.
     let message = unsafe { CStr::from_ptr(va::vaErrorStr(code)) }.to_string_lossy();
     anyhow::bail!("{what}: {message} ({code:#x})")
+}
+
+/// How many bytes `rows` rows of `width` samples reach to, `apart` bytes
+/// apart and the first `offset` in; `None` where that is past any count, as
+/// numbers that are not a picture's can be.
+fn reach(offset: usize, rows: usize, apart: usize, width: usize) -> Option<usize> {
+    rows.checked_sub(1)?
+        .checked_mul(apart)?
+        .checked_add(offset)?
+        .checked_add(width)
 }
 
 /// How a picture reaches the input surface: the surface mapped itself, or,
@@ -238,10 +319,17 @@ pub struct Stream {
     frame_num: u32,
     since_idr: u32,
     idr_pic_id: u32,
+    /// A picture was begun on the context and not seen through to its coded
+    /// frame: the context is made again before another is begun.
+    unfinished: bool,
+    /// The next picture is begun and left there, as a driver that refuses
+    /// what it is handed leaves one.
+    #[cfg(test)]
+    leave_begun: bool,
 }
 
 // SAFETY: as `Display`'s: the encoder is this value's, used from one thread at
-// a time.
+// a time, which holds the display's lock for as long as it calls libva.
 unsafe impl Send for Stream {}
 
 impl Stream {
@@ -252,6 +340,10 @@ impl Stream {
         low_power: bool,
         (width, height): (usize, usize),
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0,
+            "a {width}x{height} picture is not one of even sides"
+        );
         let mbs = (width.div_ceil(16) as u32, height.div_ceil(16) as u32);
         let mut stream = Self {
             display,
@@ -272,7 +364,14 @@ impl Stream {
             frame_num: 0,
             since_idr: 0,
             idr_pic_id: 0,
+            unfinished: false,
+            #[cfg(test)]
+            leave_begun: false,
         };
+        // Held past whatever of the stream a failure here drops, which locks
+        // for itself: the stream is declared first and so dropped last.
+        let display = stream.display.clone();
+        let _held = display.held();
         let dpy = stream.display.display;
         let profile = va::VAProfileH264High;
         let entrypoint = if low_power {
@@ -380,37 +479,66 @@ impl Stream {
                 ),
                 "making the reconstructed surfaces",
             )?;
+            stream.make_context()?;
+            stream.upload = Some(stream.upload_kind()?);
+        }
+        Ok(stream)
+    }
+
+    /// The encoder's context, on the stream's configuration and its
+    /// reconstructed surfaces, and the buffer its frames are coded into:
+    /// made with the stream, and again after a picture that was begun and
+    /// not coded.
+    unsafe fn make_context(&mut self) -> anyhow::Result<()> {
+        let dpy = self.display.display;
+        let mbs = self.sequence.mbs;
+        // SAFETY: the configuration and the surfaces are the stream's, and
+        // each id made is the stream's, freed by `drop_context`.
+        unsafe {
             status(
                 va::vaCreateContext(
                     dpy,
-                    stream.config,
-                    w as i32,
-                    h as i32,
+                    self.config,
+                    (mbs.0 * 16) as i32,
+                    (mbs.1 * 16) as i32,
                     va::VA_PROGRESSIVE,
-                    stream.recon.as_mut_ptr(),
+                    self.recon.as_mut_ptr(),
                     2,
-                    &mut stream.context,
+                    &mut self.context,
                 ),
                 "making the encoder",
             )?;
-            // Raw 4:2:0 is 384 bytes a macroblock; the rest is headroom for
-            // the headers and a coarse estimate.
-            let size = mbs.0 * mbs.1 * 400 + 64 * 1024;
+            let size = super::most_coded((mbs.0 as usize * 16, mbs.1 as usize * 16)) as u32;
             status(
                 va::vaCreateBuffer(
                     dpy,
-                    stream.context,
+                    self.context,
                     va::VAEncCodedBufferType,
                     size,
                     1,
                     ptr::null_mut(),
-                    &mut stream.coded,
+                    &mut self.coded,
                 ),
                 "making the coded buffer",
-            )?;
-            stream.upload = Some(stream.upload_kind()?);
+            )
         }
-        Ok(stream)
+    }
+
+    /// The coded buffer and the context, destroyed where they were made.
+    unsafe fn drop_context(&mut self) {
+        let dpy = self.display.display;
+        // SAFETY: each id is this stream's, made on its display, and the
+        // invalid ones were never made.
+        unsafe {
+            if self.coded != va::VA_INVALID_ID {
+                va::vaDestroyBuffer(dpy, self.coded);
+                self.coded = va::VA_INVALID_ID;
+            }
+            if self.context != va::VA_INVALID_ID {
+                va::vaDestroyContext(dpy, self.context);
+                self.context = va::VA_INVALID_ID;
+            }
+        }
     }
 
     /// Whether the input surface maps as NV12 itself, or wants an image of it
@@ -440,13 +568,34 @@ impl Stream {
         }
     }
 
-    /// Copy the planes onto the input surface.
+    /// Copy the planes onto the input surface: planes that are the stream's
+    /// picture and hold its rows, or an error and nothing copied.
     fn copy_in(&mut self, planes: &Planes) -> anyhow::Result<()> {
         let dpy = self.display.display;
         let (w, h) = planes.coded;
-        // SAFETY: the image is mapped for the copy alone, which stays inside
-        // its planes' pitches and the coded picture's rows; a derived image is
-        // destroyed once copied into.
+        // The planes are whoever calls's, their every field open to it: held
+        // to the stream's picture, and to holding the rows it has, before a
+        // sample of them is read.
+        let size = (self.sequence.size.0 as usize, self.sequence.size.1 as usize);
+        anyhow::ensure!(
+            planes.coded == size,
+            "planes of a {w}x{h} picture were handed to a stream of {}x{}",
+            size.0,
+            size.1
+        );
+        let stride = planes.stride;
+        let holds =
+            |plane: &[u8], rows| reach(0, rows, stride, w).is_some_and(|end| end <= plane.len());
+        anyhow::ensure!(
+            stride >= w && holds(&planes.y, h) && holds(&planes.uv, h / 2),
+            "planes of {} and {} bytes, their rows {stride} apart, do not hold a {w}x{h} picture",
+            planes.y.len(),
+            planes.uv.len()
+        );
+        // SAFETY: the image is mapped for the copy alone, which reads rows
+        // the planes were just held to and writes within the bytes the image
+        // says it has, each row held to them before the copy; a derived
+        // image is destroyed once copied into.
         unsafe {
             let mut derived: va::VAImage = std::mem::zeroed();
             let image = match self.upload.as_ref().expect("made with the stream") {
@@ -459,26 +608,45 @@ impl Stream {
                 }
                 Upload::Put(image) => *image,
             };
-            let mut mapped: *mut c_void = ptr::null_mut();
-            let copied = status(
-                va::vaMapBuffer(dpy, image.buf, &mut mapped),
-                "mapping the input picture",
-            )
-            .map(|()| {
-                let base = mapped.cast::<u8>();
-                for (plane, rows, source) in [(0, h, &planes.y), (1, h / 2, &planes.uv)] {
+            // Where each plane's rows go in the image, and that they end
+            // inside it.
+            let layout =
+                [(0, h, &planes.y), (1, h / 2, &planes.uv)].map(|(plane, rows, source)| {
                     let (offset, pitch) =
                         (image.offsets[plane] as usize, image.pitches[plane] as usize);
+                    let within = image.num_planes as usize > plane
+                        && pitch >= w
+                        && reach(offset, rows, pitch, w)
+                            .is_some_and(|end| end <= image.data_size as usize);
+                    (within, offset, pitch, rows, source)
+                });
+            let copied = (|| {
+                anyhow::ensure!(
+                    layout.iter().all(|(within, ..)| *within),
+                    "the input surface's image, {} planes in {} bytes, does not hold a {w}x{h} picture",
+                    image.num_planes,
+                    image.data_size
+                );
+                let mut mapped: *mut c_void = ptr::null_mut();
+                status(
+                    va::vaMapBuffer(dpy, image.buf, &mut mapped),
+                    "mapping the input picture",
+                )?;
+                let base = mapped.cast::<u8>();
+                for (_, offset, pitch, rows, source) in layout {
                     for row in 0..rows {
                         ptr::copy_nonoverlapping(
-                            source.as_ptr().add(row * planes.stride),
+                            source.as_ptr().add(row * stride),
                             base.add(offset + row * pitch),
                             w,
                         );
                     }
                 }
-                va::vaUnmapBuffer(dpy, image.buf);
-            });
+                status(
+                    va::vaUnmapBuffer(dpy, image.buf),
+                    "unmapping the input picture",
+                )
+            })();
             let put = match self.upload.as_ref().expect("made with the stream") {
                 Upload::Derive => {
                     va::vaDestroyImage(dpy, derived.image_id);
@@ -606,15 +774,38 @@ impl Backend for Stream {
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
-        let idr = keyframe || self.reference.is_none() || self.since_idr >= MAX_SINCE_IDR;
+        let display = self.display.clone();
+        let _held = display.held();
+        // The reference is the stream's again once this frame is coded: a
+        // frame that fails, at any step, leaves the stream none, so the
+        // frame after it is an IDR whatever it is asked as. A keyframe that
+        // failed is owed until one is coded, and no P frame is ever coded
+        // from counters a failed one had started again.
+        let held = self.reference.take();
+        // And a picture the driver was begun on and did not code left its
+        // context holding whatever of that picture it took, the packed
+        // headers among it, for the next to be coded with: nothing of it is
+        // kept, the context made again, on the same surfaces, which the IDR
+        // that follows writes anew.
+        if self.unfinished {
+            // SAFETY: the context and its buffer are this stream's, and
+            // nothing of theirs is in use: the picture's own buffers went
+            // with the frame that failed.
+            unsafe {
+                self.drop_context();
+                self.make_context()?;
+            }
+            self.unfinished = false;
+        }
+        let idr = keyframe || held.is_none() || self.since_idr >= MAX_SINCE_IDR;
         if idr {
             (self.frame_num, self.since_idr) = (0, 0);
         }
         self.copy_in(planes)?;
         let dpy = self.display.display;
-        let current = self.reference.map_or(0, |r| 1 - r.surface);
+        let current = held.map_or(0, |r| 1 - r.surface);
         let poc = (2 * self.since_idr) as i32;
-        let reference = self.reference.filter(|_| !idr);
+        let reference = held.filter(|_| !idr);
         let slice = Slice {
             idr,
             frame_num: self.frame_num,
@@ -740,10 +931,18 @@ impl Backend for Stream {
                 "making the slice's parameters",
             )?;
 
+            // Begun, as far as is known, from the call on, and until the
+            // coded frame has been read.
+            self.unfinished = true;
             status(
                 va::vaBeginPicture(dpy, self.context, self.input),
                 "beginning a picture",
             )?;
+            #[cfg(test)]
+            anyhow::ensure!(
+                !std::mem::take(&mut self.leave_begun),
+                "a picture begun and left, as the test asked"
+            );
             status(
                 va::vaRenderPicture(
                     dpy,
@@ -778,12 +977,19 @@ impl Backend for Stream {
                 ));
                 segment = s.next.cast::<va::VACodedBufferSegment>().cast_const();
             }
-            va::vaUnmapBuffer(dpy, self.coded);
-            // A flagged frame is neither sent nor made the reference: the
-            // stream stands on the frame before it.
-            if flags != 0 {
+            let unmapped = status(
+                va::vaUnmapBuffer(dpy, self.coded),
+                "unmapping the coded frame",
+            );
+            // A flagged frame, or one whose buffer the driver did not take
+            // back, is neither sent nor made the reference, and the frame
+            // after it is an IDR.
+            if flags != 0 || unmapped.is_err() {
                 out.truncate(start);
             }
+            unmapped?;
+            // Coded, whatever the driver says of the frame it made.
+            self.unfinished = false;
             anyhow::ensure!(
                 flags & va::VA_CODED_BUF_STATUS_SLICE_OVERFLOW_MASK == 0,
                 "the coded frame overflowed its buffer"
@@ -809,6 +1015,8 @@ impl Backend for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        let display = self.display.clone();
+        let _held = display.held();
         let dpy = self.display.display;
         // SAFETY: each id is this stream's, made on its display, and the
         // invalid ones were never made.
@@ -816,12 +1024,7 @@ impl Drop for Stream {
             if let Some(Upload::Put(image)) = self.upload.take() {
                 va::vaDestroyImage(dpy, image.image_id);
             }
-            if self.coded != va::VA_INVALID_ID {
-                va::vaDestroyBuffer(dpy, self.coded);
-            }
-            if self.context != va::VA_INVALID_ID {
-                va::vaDestroyContext(dpy, self.context);
-            }
+            self.drop_context();
             for surface in self
                 .recon
                 .iter_mut()
@@ -832,6 +1035,187 @@ impl Drop for Stream {
             }
             if self.config != va::VA_INVALID_ID {
                 va::vaDestroyConfig(dpy, self.config);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rows are held to a plane by where their last sample is, and rows whose
+    /// place is past any count are in no plane.
+    #[test]
+    fn rows_past_any_count_reach_nowhere() {
+        assert_eq!(reach(0, 64, 128, 96), Some(63 * 128 + 96));
+        assert_eq!(reach(4096, 1, 128, 96), Some(4096 + 96));
+        assert_eq!(reach(0, 0, 128, 96), None);
+        assert_eq!(reach(0, 64, usize::MAX / 32, 96), None);
+        assert_eq!(reach(usize::MAX - 100, 2, 64, 96), None);
+        assert_eq!(reach(0, 2, usize::MAX - 95, 96), None);
+    }
+
+    /// The encoder these tests run on: `None`, with a word, on a machine
+    /// with none that works, which `unexercised` says the cost of; and a
+    /// failure there instead where the machine is said to have one
+    /// ([`required`]), with what each encoder tried came to.
+    fn encoder(unexercised: &str) -> Option<(PathBuf, bool)> {
+        let tried = std::cell::RefCell::new(Vec::new());
+        let found = find(|node, low_power| {
+            moves_its_quantizer(node, low_power).inspect_err(|e| {
+                tried.borrow_mut().push(format!(
+                    "the {} encoder on {}: {e:#}",
+                    kind(low_power),
+                    node.display()
+                ));
+            })
+        });
+        if found.is_none() {
+            assert!(
+                !required(),
+                "WLSHARE_REQUIRE_VAAPI is set, and no VA-API H.264 encoder works on this machine: {:?}",
+                tried.borrow()
+            );
+            eprintln!("no VA-API H.264 encoder on this machine; {unexercised}");
+        }
+        found
+    }
+
+    /// One display's streams, each opened, coded and closed by a thread of
+    /// its own, as an agent's are for the daemon it codes for: every frame
+    /// of every one is made, an IDR first and P frames after it. Passes
+    /// with a word where this machine has no encoder.
+    #[test]
+    fn a_displays_streams_are_each_a_threads() {
+        let Some((node, low_power)) = encoder("its display is not shared") else {
+            return;
+        };
+        let display = Arc::new(Display::open(&node).unwrap());
+        let threads: Vec<_> = (0..4u16)
+            .map(|n| {
+                let display = display.clone();
+                std::thread::spawn(move || {
+                    let (w, h) = (96 + 32 * n, 64 + 16 * n);
+                    let mut stream =
+                        Stream::open(display, low_power, (w.into(), h.into())).unwrap();
+                    let mut planes = Planes::new(w, h);
+                    let mut state = 0x9E37_79B9u32 + u32::from(n);
+                    for frame in 0..40 {
+                        for sample in planes.y.iter_mut().chain(&mut planes.uv) {
+                            state ^= state << 13;
+                            state ^= state >> 17;
+                            state ^= state << 5;
+                            *sample = state as u8;
+                        }
+                        let mut unit = Vec::new();
+                        assert!(stream.frame(&planes, false, 28, &mut unit).unwrap());
+                        assert_eq!(
+                            crate::h264::nal_types(&unit).contains(&5),
+                            frame == 0,
+                            "stream {n}, frame {frame}"
+                        );
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    /// Planes that are not the stream's picture, or do not hold the rows
+    /// they say, fail the frame with nothing copied or coded; and the frame
+    /// after a failed one is an IDR whatever it is asked as, so a keyframe
+    /// that failed is still had. Passes with a word where this machine has
+    /// no encoder.
+    #[test]
+    fn planes_of_another_picture_fail_the_frame_and_the_next_is_an_idr() {
+        let Some((node, low_power)) = encoder("its stream is not exercised") else {
+            return;
+        };
+        let display = Arc::new(Display::open(&node).unwrap());
+        assert!(Stream::open(display.clone(), low_power, (96, 0)).is_err());
+        assert!(Stream::open(display.clone(), low_power, (95, 64)).is_err());
+        let mut stream = Stream::open(display, low_power, (96, 64)).unwrap();
+        let planes = Planes::new(96, 64);
+        let mut frame = |planes: &Planes, keyframe| {
+            let mut unit = vec![0xAA];
+            let made = stream.frame(planes, keyframe, 28, &mut unit);
+            if made.is_err() {
+                assert_eq!(unit, [0xAA], "nothing of a failed frame is kept");
+            }
+            made.map(|_| crate::h264::nal_types(&unit).contains(&5))
+        };
+        assert!(frame(&planes, false).unwrap(), "the first frame is an IDR");
+        assert!(!frame(&planes, false).unwrap(), "and the next a P frame");
+
+        let mut narrow = Planes::new(96, 64);
+        narrow.stride = 32;
+        let mut short = Planes::new(96, 64);
+        short.uv.truncate(short.stride * 8);
+        // Rows so far apart that where the last is wraps round to a place
+        // the plane has.
+        let mut apart = Planes::new(96, 64);
+        apart.stride = usize::MAX / 63 + 2;
+        for (wrong, keyframe) in [
+            (Planes::new(64, 64), true),
+            (Planes::new(96, 128), false),
+            (narrow, false),
+            (short, false),
+            (apart, false),
+        ] {
+            assert!(frame(&wrong, keyframe).is_err());
+            assert!(
+                frame(&planes, false).unwrap(),
+                "the frame after a failed one is an IDR"
+            );
+            assert!(!frame(&planes, false).unwrap(), "and the next a P frame");
+        }
+    }
+
+    /// A picture begun and left, as a driver that refuses what it is handed
+    /// leaves one, fails its frame with nothing of it kept; the frame after
+    /// it is coded by a context made again, an IDR whatever it is asked as,
+    /// and the stream goes on from that. Passes with a word where this
+    /// machine has no encoder.
+    #[test]
+    fn a_picture_begun_and_left_has_its_context_made_again() {
+        let Some((node, low_power)) = encoder("no context is made again") else {
+            return;
+        };
+        let display = Arc::new(Display::open(&node).unwrap());
+        let mut stream = Stream::open(display, low_power, (96, 64)).unwrap();
+        let mut planes = Planes::new(96, 64);
+        let mut state = 0x9E37_79B9u32;
+        // New noise each frame, and whether the frame made of it is an IDR.
+        let mut frame = |stream: &mut Stream| {
+            for sample in planes.y.iter_mut().chain(&mut planes.uv) {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                *sample = state as u8;
+            }
+            let mut unit = vec![0xAA];
+            let made = stream.frame(&planes, false, 28, &mut unit);
+            if made.is_err() {
+                assert_eq!(unit, [0xAA], "nothing of a failed frame is kept");
+            }
+            made.map(|_| crate::h264::nal_types(&unit).contains(&5))
+        };
+        assert!(frame(&mut stream).unwrap(), "the first frame is an IDR");
+        assert!(!frame(&mut stream).unwrap(), "and the next a P frame");
+        for _ in 0..3 {
+            stream.leave_begun = true;
+            assert!(frame(&mut stream).is_err());
+            assert!(stream.unfinished);
+            assert!(
+                frame(&mut stream).unwrap(),
+                "the frame after a picture left begun is an IDR"
+            );
+            assert!(!stream.unfinished);
+            for _ in 0..3 {
+                assert!(!frame(&mut stream).unwrap(), "and P frames after it");
             }
         }
     }

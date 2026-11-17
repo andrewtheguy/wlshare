@@ -1,0 +1,24 @@
+[Unit]
+Description=wlshare encoding agent, lending this machine's hardware H.264 encoder to a wlshare daemon
+Documentation=https://github.com/andrewtheguy/wlshare/blob/main/docs/enc-agent.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Where it listens and where its daemon is: LISTEN and ALLOW, both required.
+EnvironmentFile=/etc/default/wlshare-enc-agent
+# An account that exists for as long as the agent runs, with the GPU's render
+# node and nothing else of the machine's. The key the agent generates on first
+# start is kept in /var/lib/wlshare-enc-agent, which is root's to read.
+DynamicUser=yes
+SupplementaryGroups=render
+StateDirectory=wlshare-enc-agent
+ExecStart=/usr/bin/wlshare-enc-agent --listen ${LISTEN} --allow ${ALLOW} --key-file %S/wlshare-enc-agent/enc_agent.key
+Restart=on-failure
+RestartSec=5
+# A command line it refuses, LISTEN or ALLOW unset or wrong, is not tried again.
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=multi-user.target

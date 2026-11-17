@@ -1,6 +1,7 @@
 name: Release wlshare
 
-# Builds the .deb for Debian trixie and Ubuntu 26.04 (resolute), each on amd64 and
+# Builds the .debs, the daemon's and the encoding agent's, for Debian trixie and
+# Ubuntu 26.04 (resolute), each on amd64 and
 # arm64, with the same Docker build scripts/build-debs.sh runs locally, and
 # publishes them as the GitHub release
 # v<version>, where the version is the workspace's in Cargo.toml. Run it by hand;

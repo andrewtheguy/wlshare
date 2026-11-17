@@ -1,0 +1,12 @@
+#!/bin/sh
+# The agent's package, removed or purged. cargo-deb writes the unit's part in
+# place of the token below (crates/wlshare-enc-agent/Cargo.toml).
+set -e
+
+#DEBHELPER#
+
+# The key the agent generated, in the directory systemd kept for the unit's
+# dynamic account, and the link to it.
+if [ "$1" = "purge" ]; then
+	rm -rf /var/lib/private/wlshare-enc-agent /var/lib/wlshare-enc-agent
+fi

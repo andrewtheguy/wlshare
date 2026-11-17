@@ -62,6 +62,11 @@ pub struct Config {
     /// rules make a video of. Off by default.
     #[serde(default)]
     pub motion_debug: bool,
+    /// Experimental: another machine's hardware H.264 encoder, through the
+    /// agent it runs (`wlshare-enc-agent`), in place of this host's. Only
+    /// with `hardware_h264` on; then it is the one encoder, and a session
+    /// that needs H.264 while the agent is away fails.
+    pub enc_agent: Option<EncAgent>,
     /// The desktop name in ServerInit.
     #[serde(default = "default_name")]
     pub name: String,
@@ -120,6 +125,20 @@ pub struct Password {
     pub rsa_key_file: Option<PathBuf>,
 }
 
+/// The `[enc_agent]` table: where the agent listens, and the key it shares.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct EncAgent {
+    /// The agent's host and port.
+    pub address: String,
+    /// The pre-shared key, a copy of the agent's file. Absent means
+    /// `enc_agent.key` beside the configuration file.
+    pub key_file: Option<PathBuf>,
+}
+
+/// The key file's name where none is given, beside the configuration file.
+const ENC_AGENT_KEY: &str = "enc_agent.key";
+
 fn default_pam_service() -> String {
     "wlshare".to_owned()
 }
@@ -157,7 +176,8 @@ impl Config {
     }
 
     /// What the types cannot say: a rate that is a rate, a timeout a handshake
-    /// can finish inside, and one answer to the question of who may connect.
+    /// can finish inside, one answer to the question of who may connect, and
+    /// an agent somewhere a connection can be made to.
     fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(self.max_fps > 0, "max_fps must be at least 1");
         anyhow::ensure!(
@@ -172,6 +192,10 @@ impl Config {
             !(self.pam.is_some() && self.password.is_some()),
             "[pam] and [password] are two answers to the same question; keep one"
         );
+        if let Some(agent) = &self.enc_agent {
+            wlshare_core::agent::client::Agent::check(&agent.address)
+                .context("the [enc_agent] table's address")?;
+        }
         Ok(())
     }
 
@@ -189,6 +213,16 @@ impl Config {
                 .clone()
                 .unwrap_or_else(|| config_path.with_file_name("rsa_key.pem")),
         )
+    }
+}
+
+impl EncAgent {
+    /// Where the pre-shared key lives: the table's path, or
+    /// [`ENC_AGENT_KEY`] beside the configuration file at `config_path`.
+    pub fn key_file(&self, config_path: &Path) -> PathBuf {
+        self.key_file
+            .clone()
+            .unwrap_or_else(|| config_path.with_file_name(ENC_AGENT_KEY))
     }
 }
 
@@ -287,6 +321,35 @@ mod tests {
         );
         let c: Config = toml::from_str("").unwrap();
         assert_eq!(c.rsa_key_file(Path::new("/etc/x/config.toml")), None);
+    }
+
+    #[test]
+    fn an_enc_agent_is_an_address_and_a_key_beside_the_config() {
+        let c: Config = toml::from_str("").unwrap();
+        assert!(c.enc_agent.is_none());
+        let c: Config = toml::from_str("[enc_agent]\naddress = \"gpu.lan:5990\"").unwrap();
+        c.validate().unwrap();
+        let agent = c.enc_agent.as_ref().unwrap();
+        assert_eq!(agent.address, "gpu.lan:5990");
+        assert_eq!(
+            agent.key_file(Path::new("/etc/x/config.toml")),
+            PathBuf::from("/etc/x/enc_agent.key")
+        );
+        let c: Config =
+            toml::from_str("[enc_agent]\naddress = \"[::1]:5990\"\nkey_file = \"/k\"").unwrap();
+        assert_eq!(
+            c.enc_agent
+                .unwrap()
+                .key_file(Path::new("/etc/x/config.toml")),
+            PathBuf::from("/k")
+        );
+        // An agent is somewhere, at a port: an address with none is the
+        // configuration's mistake, said when it is read and not found out
+        // as an agent that never answers.
+        assert!(toml::from_str::<Config>("[enc_agent]\n").is_err());
+        let portless: Config = toml::from_str("[enc_agent]\naddress = \"gpu.lan\"").unwrap();
+        let why = format!("{:#}", portless.validate().unwrap_err());
+        assert!(why.contains("[enc_agent]") && why.contains("port"), "{why}");
     }
 
     #[test]

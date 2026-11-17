@@ -186,7 +186,7 @@ impl Slice {
 /// The lowest level whose decoder holds a `mbs` picture and decodes it at
 /// [`super::FPS`]: H.264's table A-1, its frame size and macroblock rate.
 pub fn level_idc(mbs: (u32, u32)) -> u8 {
-    const LEVELS: [(u8, u32, u32); 17] = [
+    const LEVELS: [(u8, u32, u32); 18] = [
         (10, 99, 1_485),
         (11, 396, 3_000),
         (12, 396, 6_000),
@@ -203,6 +203,7 @@ pub fn level_idc(mbs: (u32, u32)) -> u8 {
         (51, 36_864, 983_040),
         (52, 36_864, 2_073_600),
         (60, 139_264, 4_177_920),
+        (61, 139_264, 8_355_840),
         (62, 139_264, 16_711_680),
     ];
     let frame = mbs.0 * mbs.1;
@@ -339,6 +340,9 @@ mod tests {
         // of 8840 over level 4.2's frame.
         assert_eq!(level_idc((128, 64)), 42);
         assert_eq!(level_idc((130, 68)), 50);
+        // 7680x4320: 129600 a frame, at 60 over level 6's rate and within
+        // 6.1's.
+        assert_eq!(level_idc((480, 270)), 61);
     }
 
     /// ffmpeg's own reading of the headers, its `trace_headers` filter over a

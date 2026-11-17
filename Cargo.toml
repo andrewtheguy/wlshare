@@ -1,16 +1,19 @@
 # The daemon, with the RFB protocol it speaks inside it, is the package at the
 # root; beside it the bytes of its private extensions, `wlshare-proto`, which
-# the zDesk gateway depends on too (see docs/architecture.md). The FLAC coding
-# is sound-flac and the Opus coding sound-opus, each its own repository.
+# the zDesk gateway depends on too (see docs/architecture.md); what the daemon
+# shares with the encoding agent, `wlshare-core`, the hardware H.264 encoder
+# and the agent's link; and the agent, `wlshare-enc-agent`, experimental. The
+# FLAC coding is sound-flac and the Opus coding sound-opus, each its own
+# repository.
 #
-# Both are default members, so a plain `cargo test` and `cargo clippy` on the
+# All are default members, so a plain `cargo test` and `cargo clippy` on the
 # Linux host the daemon builds on check the whole workspace, the Opus tests
 # with the ffmpeg that machine has installed. The daemon needs libxkbcommon,
 # libpam, libpipewire and libavcodec and only runs against a Wayland
 # compositor; elsewhere the protocol crate is tested with `-p wlshare-proto`.
 [workspace]
-members = ["crates/wlshare-proto"]
-default-members = [".", "crates/wlshare-proto"]
+members = ["crates/wlshare-proto", "crates/wlshare-core", "crates/wlshare-enc-agent"]
+default-members = [".", "crates/wlshare-proto", "crates/wlshare-core", "crates/wlshare-enc-agent"]
 resolver = "3"
 
 [workspace.package]
@@ -40,6 +43,10 @@ path = "src/main.rs"
 # The private extensions' bytes (src/rfb/), the crate the zDesk gateway reads
 # and writes them with too.
 wlshare-proto = { path = "crates/wlshare-proto" }
+# What the daemon shares with the encoding agent (`wlshare-enc-agent`): the
+# hardware H.264 encoder through libva, and the link to an agent that lends
+# another machine's.
+wlshare-core = { path = "crates/wlshare-core" }
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true
@@ -122,9 +129,7 @@ ffmpeg-sys-next = { version = "9.0", default-features = false, features = ["avco
 # The H.264 encoders the video stream and the tiles' regions are coded by
 # (h264/): libx264 through its own API, which takes a quantizer on every
 # picture where libavcodec's wrapper fixes it at open, linked from the system's
-# libx264; and the GPU's through libva itself, the daemon writing the stream's
-# headers, its bindings written out by hand (h264/libva.rs) and linked from
-# the system's libva and libva-drm.
+# libx264. The GPU's, through libva itself, is `wlshare-core`'s.
 x264-sys = "0.2.3"
 # The conversion from the framebuffer's pixels to the NV12 the H.264
 # encoders take: pure Rust, AVX2 or NEON chosen at run time.
@@ -198,7 +203,7 @@ priority = "optional"
 # `pipewire` is that server alone, with no session manager to make the speaker
 # the default or link anything to it, and no PulseAudio server for most
 # applications to play through, so wireplumber and pipewire-pulse come with it.
-# libva's bindings are written out by hand (src/h264/libva.rs), not taken from
+# libva's bindings are written out by hand (wlshare-core's h264/libva.rs), not taken from
 # the headers built against, and hold for libva 2.1.0 onward: $auto's floor is
 # only the oldest version exporting each function, so this one is stated.
 # Trixie has 2.22, Ubuntu 26.04 2.23; libva2 is libva.so.2 alone, so a libva
@@ -225,6 +230,7 @@ assets = [
     ["wlshare.example.toml", "usr/share/doc/wlshare/", "644"],
     ["README.md", "usr/share/doc/wlshare/", "644"],
     ["docs/architecture.md", "usr/share/doc/wlshare/", "644"],
+    ["docs/enc-agent.md", "usr/share/doc/wlshare/", "644"],
 ]
 
 [profile.release]
