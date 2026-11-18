@@ -190,7 +190,9 @@ impl ZeroCopy {
     /// of every packet it holds, and wait until the kernel is done with every
     /// page sent zero-copy, those a network device has yet to send or drop
     /// among them, for as long as that takes. The connection is no use after
-    /// it.
+    /// it. Where the kernel's word cannot be read, it is asked again until it
+    /// can: this does not return while a page may still be sent, a session
+    /// stalled being better than its memory sent on.
     pub fn abandon(&mut self, stream: &std::net::TcpStream) {
         if self.done == self.sent {
             return;
@@ -215,16 +217,18 @@ impl ZeroCopy {
             );
         }
         let began = std::time::Instant::now();
-        let mut said = false;
+        let (mut said, mut unread) = (false, false);
         // A closed socket is always ready, so its error queue is looked at
         // every millisecond rather than polled for.
         while self.done != self.sent {
-            if let Err(e) = self.drain(stream) {
+            if let Err(e) = self.drain(stream)
+                && !unread
+            {
+                unread = true;
                 log::error!(
                     "the encoding agent's connection: no word from the kernel on what it still \
-                     holds of a picture: {e}"
+                     holds of a picture, asking again until there is: {e}"
                 );
-                return;
             }
             if !said && began.elapsed() > LATE {
                 said = true;
@@ -354,18 +358,20 @@ impl Write for Pinned<'_, '_, '_> {
     }
 }
 
-/// Whether the account may pin enough for the tests' pictures to go
-/// zero-copy: 8 MiB, the default, or no limit. Below it, a call may be
-/// refused and copied, which is no failure.
+/// Whether every zero-copy call of the tests is sure to be taken: only with
+/// no limit on what the account may pin, since what it pins is counted
+/// across all its processes and threads, the tests running beside each
+/// other among them. Otherwise a call may be refused and copied, which is no
+/// failure, and the tests hold to what the kernel took.
 #[cfg(test)]
-pub(crate) fn roomy() -> bool {
+pub(crate) fn unlimited() -> bool {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     // SAFETY: one `rlimit`, written by the call.
     let got = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &raw mut limit) };
-    got == 0 && (limit.rlim_cur == libc::RLIM_INFINITY || limit.rlim_cur >= 8 << 20)
+    got == 0 && limit.rlim_cur == libc::RLIM_INFINITY
 }
 
 #[cfg(test)]
@@ -430,7 +436,7 @@ mod tests {
         let mut link = Timed::new(&sender);
         link.within(FRAME_WITHIN);
         let sent = send_both(&mut sends, &mut link, &picture);
-        if roomy() {
+        if unlimited() {
             // Three megabytes in calls of a megabyte at most.
             assert!(sent > 3, "{sent} zero-copy calls");
         }
@@ -471,7 +477,7 @@ mod tests {
         link.within(Duration::from_millis(300));
         let late = sends.send(&mut link, &mut [IoSlice::new(&picture)]);
         assert!(late.is_err(), "sixteen megabytes in a window of 64 KiB");
-        if roomy() {
+        if unlimited() {
             assert!(sends.sent > 0, "nothing went zero-copy");
         }
         let began = std::time::Instant::now();

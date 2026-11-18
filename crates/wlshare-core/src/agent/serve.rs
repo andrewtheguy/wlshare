@@ -602,11 +602,11 @@ mod tests {
             echo(&planes, keyframe, qp, &mut expected);
             assert!(got == expected, "frame {n}: the agent's picture is another");
             // Only a picture large enough goes zero-copy, and only it is
-            // copied by loopback all the same; where the account may pin
-            // too little, its calls are refused and copied from the first.
+            // copied by loopback all the same; where its calls may be
+            // refused, they may be copied from the first.
             if w * h < 1 << 20 {
                 assert!(stream.zero_copy(), "frame {n}");
-            } else if crate::agent::zerocopy::roomy() {
+            } else if crate::agent::zerocopy::unlimited() {
                 assert!(!stream.zero_copy(), "frame {n}");
             }
             planes.coded_frame();
