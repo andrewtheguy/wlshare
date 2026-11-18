@@ -735,10 +735,10 @@ quantizer each was asked at.
 - **The link's bytes** are `wlshare-core`'s (`agent/link.rs`), both ends
   built and parsed there, big-endian, and laid out in that module: each end's
   hello (`WLEA`, the link's version, the random), the agent's proof, the
-  daemon's proof, the coded picture's size, the length of the memory it
-  shares with the agent and the places its streams hold there, the agent's
-  status and where in that memory the
-  stream's picture is, if anywhere, and then the daemon's mark there and
+  daemon's proof, the coded picture's size and the length of the memory it
+  shares with the agent, the agent's status, and where they share memory
+  the places the daemon's streams hold there and where in it the agent put
+  the stream's picture, if anywhere, and then the daemon's mark there and
   the agent's word on it; then for each frame the daemon's flags (a
   keyframe, a refinement), quantizer and rectangles, each with its luma and
   chroma rows where the picture is not in shared memory, and the agent's
@@ -870,11 +870,13 @@ quantizer each was asked at.
   until a frame finds the connection gone, and the agent may have let the
   place go before then, the stream's thread ended or the agent restarted:
   so each end keeps its own account of the places it holds, in its own
-  memory and not the shared one, and the daemon names its own as it asks
-  for a stream, every stream it has not dropped, a failed one's included;
-  the agent places the stream clear of both, the daemon's streams placed
-  one at a time so that each is placed knowing every other's, and the
-  daemon refuses a place over one of its own. An agent that restarts holds
+  memory and not the shared one, and once the agent has proved the key
+  and opened the stream's encoder the daemon names its own, every stream
+  it has not dropped, a failed one's included; the agent places the stream
+  clear of both, the daemon's streams placed one at a time, each knowing
+  every other's, though opened side by side, so an encoder slow to open
+  holds up no other stream, and the daemon refuses a place over one of its
+  own. An agent that restarts holds
   none, its streams having ended with it, and a daemon that restarts none
   either. A stream the memory has no room for while they are held has its
   pictures cross the connection, as an agent sharing none has. It is a second transport beside TCP and not one in its place:

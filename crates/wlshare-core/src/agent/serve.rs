@@ -38,9 +38,9 @@ use log::{info, warn};
 
 use crate::agent::allow::Net;
 use crate::agent::link::{
-    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MARK, MAX_SIDE, Mac as _, NO_FRAME, Role,
-    SEEN, Span, Timed, coded_head, failed, hello, keepalive, nonce, opened, proof, read_hello,
-    read_open_request,
+    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MARK, MAX_SIDE, Mac as _, NO_FRAME, OPENED,
+    Role, SEEN, Span, Timed, coded_head, failed, hello, keepalive, nonce, placed, proof,
+    read_hello, read_open_request, read_places,
 };
 use crate::agent::shared::Places;
 use crate::h264::{Backend, Planes};
@@ -392,10 +392,9 @@ fn connection(
             .into_bytes(),
     )
     .context("sending the proof of the key")?;
-    let request = read_open_request(&mut from)?;
-    let ((width, height), shared) = (request.size, request.shared);
+    let (its, (width, height), shared) = read_open_request(&mut from)?;
     proof(key, Role::Daemon, &theirs, &ours)?
-        .verify_slice(&request.proof)
+        .verify_slice(&its)
         .map_err(|_| anyhow::anyhow!("its key is not this agent's"))?;
 
     // A daemon's: its place among the unproved is another's to take, and it
@@ -433,20 +432,30 @@ fn connection(
         };
         let (coding, streams) = door.coding(address)?;
         let backend = streams((width, height))?;
-        // A place while there is room clear of the daemon's own, which its
-        // streams may still be writing, the stream's pictures over the
-        // connection while there is none.
-        let place = places.and_then(|places| places.take((width, height), &request.held));
-        Ok((coding, backend, place))
+        Ok((coding, backend, places))
     })();
-    let (_coding, mut backend, place) = match made {
+    let (_coding, mut backend, places) = match made {
         Ok(opened) => opened,
         Err(e) => {
             to.write_all(&failed(&format!("{e:#}")))?;
             return Err(e.context(format!("opening a {width}x{height} stream")));
         }
     };
-    to.write_all(&opened(place.as_ref().map(|place| place.at())))?;
+    to.write_all(&OPENED)?;
+    // Where the daemon shares memory, a place while there is room clear of
+    // the daemon's own, which its streams may still be writing, the
+    // stream's pictures over the connection while there is none: the
+    // daemon's places read once its key is proved, as many as the agent's
+    // own memory has pages.
+    let place = match places {
+        None => None,
+        Some(places) => {
+            let theirs = read_places(&mut from, places.region().len() as u64)?;
+            let place = places.take((width, height), &theirs);
+            to.write_all(&placed(place.as_ref().map(|place| place.at())))?;
+            place
+        }
+    };
     let (mut planes, shares) = match place {
         Some(place) => {
             // The daemon's mark, where the picture starts: the two ends map
@@ -750,7 +759,7 @@ mod tests {
             let proved = proof(&KEY, Role::Agent, &theirs, &ours).unwrap();
             to.write_all(&proved.finalize().into_bytes()).unwrap();
             read_open_request(&mut from).unwrap();
-            to.write_all(&opened(None)).unwrap();
+            to.write_all(&OPENED).unwrap();
             // Nothing more is read until the test says, and then the
             // connection goes with what it never read.
             let _ = ended.recv();
@@ -816,8 +825,10 @@ mod tests {
             let theirs = read_hello(&mut from).unwrap();
             let proved = proof(&KEY, Role::Agent, &theirs, &ours).unwrap();
             to.write_all(&proved.finalize().into_bytes()).unwrap();
-            read_open_request(&mut from).unwrap();
-            to.write_all(&opened(Some(0))).unwrap();
+            let (_, _, shared) = read_open_request(&mut from).unwrap();
+            to.write_all(&OPENED).unwrap();
+            read_places(&mut from, shared).unwrap();
+            to.write_all(&placed(Some(0))).unwrap();
             from.read_exact(&mut [0; MARK]).unwrap();
             to.write_all(&SEEN).unwrap();
             let _ = ended.recv();
@@ -889,6 +900,35 @@ mod tests {
         drop((old_planes, old));
         assert_eq!(region.held().len(), 1);
         assert!(Stream::open(&after, size).unwrap().shares());
+    }
+
+    /// The daemon's streams are placed one at a time and not opened one at
+    /// a time: an encoder slow to open holds up no other stream's handshake,
+    /// two of them each taking most of the time a handshake has.
+    #[test]
+    fn a_slow_encoder_holds_up_no_other_streams_placing() {
+        let size = (64, 64);
+        let (_file, region, places) = shared("slow", picture_bytes(size) * 2);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let slow: Arc<Open> = Arc::new(|| {
+            Ok(Arc::new(|_| {
+                std::thread::sleep(HANDSHAKE_WITHIN * 3 / 5);
+                Ok(Box::new(Echo) as Box<dyn Backend>)
+            }) as Arc<Streams>)
+        });
+        std::thread::spawn(move || serve(listener, KEY.into(), loopback(), Some(places), slow));
+        let agent = Agent::new(address, KEY.to_vec()).sharing(region.clone());
+        let opening: Vec<_> = (0..2)
+            .map(|_| {
+                let agent = agent.clone();
+                std::thread::spawn(move || Stream::open(&agent, size))
+            })
+            .collect();
+        for stream in opening {
+            let stream = stream.join().unwrap().unwrap();
+            assert!(stream.shares());
+        }
     }
 
     /// A daemon whose key is not the agent's is told so before it sends a
@@ -1035,16 +1075,10 @@ mod tests {
                 .finalize()
                 .into_bytes(),
         )?;
-        // No memory shared, and no places held in it.
-        link.write_all(&[&width.to_be_bytes()[..], &height.to_be_bytes(), &[0; 10]].concat())?;
+        // No memory shared, and so nothing more after the status.
+        link.write_all(&[&width.to_be_bytes()[..], &height.to_be_bytes(), &[0; 8]].concat())?;
         let mut status = [0];
         link.read_exact(&mut status)?;
-        if status[0] == OK {
-            // Where its picture is in shared memory: nowhere.
-            let mut at = [0; 8];
-            link.read_exact(&mut at)?;
-            assert_eq!(u64::from_be_bytes(at), crate::agent::link::SOCKET);
-        }
         Ok(status[0])
     }
 

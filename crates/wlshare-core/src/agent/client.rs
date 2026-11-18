@@ -28,8 +28,8 @@ use anyhow::Context as _;
 
 use crate::agent::link::{
     FRAME_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, PROOF, Role, SPAN_HEAD,
-    Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_opened,
-    read_proof, read_seen,
+    Span, Timed, hello, keepalive, nonce, open_request, places, proof, read_coded, read_hello,
+    read_opened, read_placed, read_proof, read_seen,
 };
 use crate::agent::shared::{Picture, Region};
 use crate::agent::zerocopy::ZeroCopy;
@@ -262,36 +262,44 @@ impl Stream {
             .finalize()
             .into_bytes()
             .into();
-        // The places this daemon's streams hold, for the agent to place
-        // the stream clear of, each stream of the daemon's placed in turn so
-        // that none is placed before another's place is one of them: the
-        // agent may have let a place go that a stream here still converts
-        // into, until a frame finds its connection gone.
-        let opening = agent.shared.as_ref().map(|region| region.opening());
-        let (shared, held) = agent.shared.as_ref().map_or((0, Vec::new()), |region| {
-            (region.len() as u64, region.held())
-        });
+        let shared = agent
+            .shared
+            .as_ref()
+            .map_or(0, |region| region.len() as u64);
         timed
-            .write_all(&open_request(&proved, (width, height), shared, &held))
+            .write_all(&open_request(&proved, (width, height), shared))
             .context("asking for a stream")?;
-        let at = read_opened(&mut timed).context("opening a stream")?;
-        let picture = match (at, &agent.shared) {
-            (None, _) => None,
-            (Some(_), None) => {
-                anyhow::bail!("it placed a picture in memory this daemon shares none of")
-            }
-            (Some(at), Some(region)) => {
-                let picture = Picture::new(region.clone(), at, (width, height))?;
-                drop(opening);
-                // Written where the picture starts, for the agent to find
-                // there: two ends that map other memory find out now.
-                let mark = nonce();
-                picture.mark(&mark);
-                timed.write_all(&mark).context("sending its mark")?;
-                read_seen(&mut timed).context("the shared memory")?;
-                Some(picture)
+        read_opened(&mut timed).context("opening a stream")?;
+        let picture = match &agent.shared {
+            None => None,
+            Some(region) => {
+                // The places this daemon's streams hold, for the agent to
+                // place the stream clear of, the daemon's streams placed one
+                // at a time so that none is placed before another's place is
+                // one of them: the agent may have let a place go that a
+                // stream here still converts into, until a frame finds its
+                // connection gone. Its encoder is open by now, so the wait
+                // is only on others' placing.
+                let placing = region.opening();
+                timed
+                    .write_all(&places(&region.held()))
+                    .context("naming its places in shared memory")?;
+                let at = read_placed(&mut timed).context("placing its picture")?;
+                let picture = at
+                    .map(|at| Picture::new(region.clone(), at, (width, height)))
+                    .transpose()?;
+                drop(placing);
+                picture
             }
         };
+        if let Some(picture) = &picture {
+            // Written where the picture starts, for the agent to find there:
+            // two ends that map other memory find out now.
+            let mark = nonce();
+            picture.mark(&mark);
+            timed.write_all(&mark).context("sending its mark")?;
+            read_seen(&mut timed).context("the shared memory")?;
+        }
         let sends = ZeroCopy::new(&link).context("sending zero-copy")?;
         Ok(Self {
             link,
@@ -336,10 +344,12 @@ impl Stream {
 
 impl Backend for Stream {
     fn planes(&mut self, width: u16, height: u16) -> Planes {
-        match &self.picture {
-            Some(picture) => picture.planes(),
-            None => Planes::new(width, height),
-        }
+        // The picture's planes once; planes of the daemon's own after that,
+        // which a frame refuses.
+        self.picture
+            .as_mut()
+            .and_then(Picture::planes)
+            .unwrap_or_else(|| Planes::new(width, height))
     }
 
     fn frame(

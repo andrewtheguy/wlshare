@@ -115,7 +115,7 @@ impl Region {
 
     /// Held by the daemon from naming its places ([`Self::held`]) to the new
     /// stream's picture's being one of them ([`Picture::new`]): one stream
-    /// at a time, so that each is placed knowing every other's.
+    /// placed at a time, so that each is placed knowing every other's.
     pub fn opening(&self) -> MutexGuard<'_, ()> {
         self.opening.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -192,6 +192,8 @@ impl Drop for Hold {
 pub struct Picture {
     region: Arc<Region>,
     hold: Arc<Hold>,
+    /// Its planes have been made, which they are once.
+    given: bool,
     at: usize,
     /// Where the chroma plane starts, after the luma.
     uv: usize,
@@ -235,6 +237,7 @@ impl Picture {
         Ok(Self {
             region,
             hold,
+            given: false,
             at,
             uv: at + y,
             size: (width, height),
@@ -251,9 +254,12 @@ impl Picture {
 
     /// The stream's planes, over the picture where it lies, black as
     /// [`Planes::new`]'s are: the daemon converts the desktop into them and
-    /// reads none of them, the mapping being write-combined. Made once, as
-    /// the stream opens.
-    pub fn planes(&self) -> Planes {
+    /// reads none of them, the mapping being write-combined. Made once, the
+    /// one way the daemon has to the picture's samples; none after.
+    pub fn planes(&mut self) -> Option<Planes> {
+        if std::mem::replace(&mut self.given, true) {
+            return None;
+        }
         let (width, height) = (self.size.0 as u16, self.size.1 as u16);
         let (_, y, uv) = Planes::layout(width, height);
         let view = |at, bytes| View {
@@ -270,7 +276,7 @@ impl Picture {
         );
         planes.y.fill(16);
         planes.uv.fill(128);
-        planes
+        Some(planes)
     }
 
     /// Whether `planes` are this picture's, as [`Self::planes`] made them.
@@ -506,13 +512,14 @@ pub(crate) mod tests {
         );
         let first = agent.take(size, &[]).unwrap();
         let place = agent.take(size, &[]).unwrap();
-        let picture = Picture::new(daemon, place.at(), size).unwrap();
+        let mut picture = Picture::new(daemon, place.at(), size).unwrap();
         let mark = [0xC3; MARK];
         assert!(!place.holds(&mark));
         picture.mark(&mark);
         assert!(place.holds(&mark));
 
-        let mut written = picture.planes();
+        let mut written = picture.planes().unwrap();
+        assert!(picture.planes().is_none(), "the planes are made once");
         assert!(
             !place.holds(&mark),
             "the planes are not black over the mark"
@@ -567,14 +574,14 @@ pub(crate) mod tests {
 
         assert!(daemon.held().is_empty());
         let first = 0..bytes as u64;
-        let picture = Picture::new(daemon.clone(), 0, size).unwrap();
+        let mut picture = Picture::new(daemon.clone(), 0, size).unwrap();
         assert_eq!(daemon.held(), std::slice::from_ref(&first));
         let why = Picture::new(daemon.clone(), 0, size)
             .err()
             .unwrap()
             .to_string();
         assert!(why.contains("another"), "{why}");
-        let planes = picture.planes();
+        let planes = picture.planes().unwrap();
         drop(picture);
         assert_eq!(daemon.held(), [first], "the planes hold it");
         drop(planes);
