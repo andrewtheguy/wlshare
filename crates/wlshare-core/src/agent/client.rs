@@ -5,7 +5,10 @@
 //! asked for an encoder over the picture's size; then every frame is what
 //! changed of the picture, sent from where it lies, and the access unit, read
 //! back. A stream dropped closes its connection, which ends the agent's
-//! encoder.
+//! encoder. Where the daemon shares memory with the agent
+//! ([`crate::agent::shared`]), the agent places each stream's picture in it
+//! as it opens the stream, the stream's planes are that picture, and what
+//! changed is converted there and not sent.
 //!
 //! A session waits on its stream, so every wait here has an end: a
 //! connection is made within three seconds an address, a handshake done within
@@ -25,9 +28,10 @@ use anyhow::Context as _;
 
 use crate::agent::link::{
     FRAME_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, PROOF, Role, SPAN_HEAD,
-    Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_opened,
-    read_proof,
+    Span, Timed, hello, keepalive, nonce, open_request, places, proof, read_coded, read_hello,
+    read_opened, read_placed, read_proof, read_seen,
 };
+use crate::agent::shared::{Picture, Region};
 use crate::agent::zerocopy::ZeroCopy;
 use crate::h264::{Backend, Planes, most_coded};
 
@@ -80,12 +84,13 @@ fn changed(planes: &Planes) -> Vec<Span> {
     spans
 }
 
-/// An encoding agent as the daemon is configured with it: where it listens, and
-/// the key it shares.
+/// An encoding agent as the daemon is configured with it: where it listens,
+/// the key it shares, and the memory it shares, if it does.
 #[derive(Clone)]
 pub struct Agent {
     address: String,
     key: Arc<[u8]>,
+    shared: Option<Arc<Region>>,
     /// The address the name was last found at, every clone's: none until a
     /// stream looks, and none again once a stream could not be opened there.
     found: Arc<Mutex<Option<SocketAddr>>>,
@@ -106,8 +111,16 @@ impl Agent {
         Self {
             address,
             key: key.into(),
+            shared: None,
             found: Arc::default(),
         }
+    }
+
+    /// The agent, sharing `region` with this daemon: its streams' pictures
+    /// written there.
+    pub fn sharing(mut self, region: Arc<Region>) -> Self {
+        self.shared = Some(region);
+        self
     }
 
     /// Whether `address` is one an agent can be at, a host and a port: an
@@ -192,6 +205,9 @@ fn connect(address: &SocketAddr) -> std::io::Result<TcpStream> {
 /// One stream on an agent: the connection it is coded over.
 pub struct Stream {
     link: TcpStream,
+    /// Where the stream's picture is in shared memory: none where its rows
+    /// cross the connection.
+    picture: Option<Picture>,
     /// A frame's request less its rows, which are sent from the planes: the
     /// frame's header and each rectangle's, kept for the next one's bytes.
     head: Vec<u8>,
@@ -246,13 +262,48 @@ impl Stream {
             .finalize()
             .into_bytes()
             .into();
+        let shared = agent
+            .shared
+            .as_ref()
+            .map_or(0, |region| region.len() as u64);
         timed
-            .write_all(&open_request(&proved, (width, height)))
+            .write_all(&open_request(&proved, (width, height), shared))
             .context("asking for a stream")?;
         read_opened(&mut timed).context("opening a stream")?;
+        let mut picture = match &agent.shared {
+            None => None,
+            Some(region) => {
+                // The places this daemon's streams hold, for the agent to
+                // place the stream clear of, the daemon's streams placed one
+                // at a time so that none is placed before another's place is
+                // one of them: the agent may have let a place go that a
+                // stream here still converts into, until a frame finds its
+                // connection gone. Its encoder is open by now, so the wait
+                // is only on others' placing.
+                let placing = region.opening();
+                timed
+                    .write_all(&places(&region.held())?)
+                    .context("naming its places in shared memory")?;
+                let at = read_placed(&mut timed).context("placing its picture")?;
+                let picture = at
+                    .map(|at| Picture::new(region.clone(), at, (width, height)))
+                    .transpose()?;
+                drop(placing);
+                picture
+            }
+        };
+        if let Some(picture) = &mut picture {
+            // Written where the picture starts, for the agent to find there:
+            // two ends that map other memory find out now.
+            let mark = nonce();
+            picture.mark(&mark)?;
+            timed.write_all(&mark).context("sending its mark")?;
+            read_seen(&mut timed).context("the shared memory")?;
+        }
         let sends = ZeroCopy::new(&link).context("sending zero-copy")?;
         Ok(Self {
             link,
+            picture,
             head: Vec::new(),
             // The agent's own buffer for one.
             most: most_coded((width, height)),
@@ -264,6 +315,11 @@ impl Stream {
 }
 
 impl Stream {
+    /// Whether the stream's picture is in shared memory.
+    pub fn shares(&self) -> bool {
+        self.picture.is_some()
+    }
+
     /// Whether the stream still sends its pictures zero-copy: not once the
     /// kernel has copied one anyway.
     #[cfg(test)]
@@ -287,6 +343,15 @@ impl Stream {
 }
 
 impl Backend for Stream {
+    fn planes(&mut self, width: u16, height: u16) -> Planes {
+        // The picture's planes once; planes of the daemon's own after that,
+        // which a frame refuses.
+        self.picture
+            .as_mut()
+            .and_then(Picture::planes)
+            .unwrap_or_else(|| Planes::new(width, height))
+    }
+
     fn frame(
         &mut self,
         planes: &mut Planes,
@@ -314,11 +379,26 @@ impl Backend for Stream {
         // The request as it is sent: the headers, and between them the rows
         // where they lie in the planes, so that a picture is not copied
         // into a buffer of its own on its way to the connection, nor, where
-        // it is large, into the kernel's ([`crate::agent::zerocopy`]).
+        // it is large, into the kernel's ([`crate::agent::zerocopy`]). In
+        // shared memory, the rows already there, converted into the planes
+        // that are its picture, and the headers alone sent, the agent being
+        // done with the picture since its last answer.
         let mut request = vec![IoSlice::new(&head[..FRAME_HEAD])];
-        for (span, header) in spans.iter().zip(head[FRAME_HEAD..].chunks(SPAN_HEAD)) {
-            request.push(IoSlice::new(header));
-            span.rows(planes, &mut request);
+        match &self.picture {
+            Some(picture) => {
+                anyhow::ensure!(
+                    picture.holds(planes),
+                    "the encoding agent's stream was handed planes of its own, not its picture in shared memory"
+                );
+                picture.written();
+                request.push(IoSlice::new(&head[FRAME_HEAD..]));
+            }
+            None => {
+                for (span, header) in spans.iter().zip(head[FRAME_HEAD..].chunks(SPAN_HEAD)) {
+                    request.push(IoSlice::new(header));
+                    span.rows(planes, &mut request);
+                }
+            }
         }
         // The picture sent and the access unit read back in the one time.
         let mut link = Timed::new(&self.link);
@@ -353,14 +433,25 @@ impl Backend for Stream {
             // planes, and of the headers, sent zero-copy and not settled,
             // which the caller is free to write again or let go once this
             // returns: those buffers are kept until the kernel is done with
-            // them, and the planes are given copies of them.
+            // them, and the planes are given copies of them. Planes that are
+            // the picture in shared memory, which the agent may be reading
+            // still, are the daemon's own from now on, and none of the
+            // region's, which the agent is free to give another stream once
+            // it is done.
             self.failed = true;
+            let pending = self.sends.pending();
             let mut buffers = Vec::new();
-            if self.sends.pending() {
+            if self.picture.is_some() {
+                let (_, y, uv) = Planes::layout(planes.coded.0 as u16, planes.coded.1 as u16);
+                planes.y = vec![16; y].into();
+                planes.uv = vec![128; uv].into();
+            } else if pending {
                 for plane in [&mut planes.y, &mut planes.uv] {
                     let copy = plane.clone();
-                    buffers.push(std::mem::replace(plane, copy));
+                    buffers.extend(std::mem::replace(plane, copy).into_vec());
                 }
+            }
+            if pending {
                 buffers.push(std::mem::take(&mut self.head));
             }
             self.sends.abandon(&self.link, buffers);

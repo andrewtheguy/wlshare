@@ -701,5 +701,56 @@ call's whole length against `RLIMIT_MEMLOCK` before it sends any. With the
 limit lowered to 2 MiB the first call goes and the rest of the frame is
 copied, 2.4 ms; at 512 KiB every frame is copied, 2.8 ms.
 
+**Shared memory.** The same stream, its picture in 64 MiB both machines
+map (the guest's `ivshmem-plain` device, the container's bind mount of the
+file behind it), against the same build's zero-copy socket, each run twice,
+310 frames each, the first 10 left out of the daemon's figures. The daemon's
+time is its thread's on a processor around a frame, to the nanosecond
+(`CLOCK_THREAD_CPUTIME_ID`); the agent's is its process's, and the host's
+`vhost-net` thread's, which moves the guest's packets onto the bridge, is
+its own, both read from `/proc` over the whole run. The access units were the
+same, byte for byte, and the encoder's own time (6.9 and 22 ms a frame) the
+same, uploading the picture from the shared memory as from the agent's own:
+
+| picture | daemon, ms a frame | agent | host's `vhost-net` | the three | a frame, ms |
+|---|---|---|---|---|---|
+| 1920×1080, socket | 0.24–0.25 | 2.9 | 1.1 | 4.2 | 8.2 |
+| 1920×1080, shared | 0.43–0.47 | 2.0 | 0.1 | 2.5 | 7.5–7.7 |
+| 3840×2160, socket | 0.49–0.53 | 9.7–9.8 | 3.6 | 13.9 | 25.5–25.6 |
+| 3840×2160, shared | 1.56–1.71 | 6.5–7.1 | 0.1 | 8.2–8.9 | 23.6–24.1 |
+
+The agent's figure is the encoder's work with the rest, which the shared
+memory leaves as it was. What the daemon spent more, as first built, was its
+copy of the picture into the device's memory, about 0.2 ms a 1920×1080
+picture and 1 ms a 3840×2160 one, where a zero-copy send leaves its copy to
+the host; what the host spends less, that copy and the agent's read, is six
+to nine times as much, and every frame is back sooner by what they took.
+
+**Converted straight into it.** The copy is gone since: the stream's planes
+at the daemon are its picture in the device's memory, and the daemon
+converts the desktop to NV12 there. Converting into the write-combined
+mapping costs what converting into the daemon's own memory does (1.36 ms
+against 1.39 a 1920×1080 picture, 5.26 against 5.27 a 3840×2160 one, in the
+guest, alone). Measured the same way, the daemon's whole frame, the whole
+desktop converted from `B, G, R, X` and the frame sent and answered, 310
+frames at 1920×1080 and 160 at 3840×2160, the first 10 left out, twice,
+each build against the same agent, their access units the same byte for
+byte:
+
+| picture | conversion, ms a frame | `frame()`, copied in | `frame()`, converted in | socket's `frame()` |
+|---|---|---|---|---|
+| 1920×1080 | 1.36–1.39 | 0.43 | 0.09–0.10 | 0.22 |
+| 3840×2160 | 5.16–5.24 | 1.55–1.56 | 0.11 | — |
+
+So the shared memory costs the daemon less than a send, not more. With the
+agent's and the host's figures above, which nothing on their side changed,
+a frame costs the host, past the daemon's conversion, about 2.2 ms at
+1920×1080 and 6.7–7.3 at 3840×2160, against 4.2 and 13.9 over the socket:
+about half. The conversion is the same either way, 1.37 ms and 5.2;
+counted in both, a frame is 3.6 ms against 5.6 at 1920×1080 and 11.9–12.5
+against 19.1 at 3840×2160, a little over a third less.
+
 The tools and logs are the artifacts' `bench/agent-link-20261117/`, the
-zero-copy runs in its `results/zerocopy-built-20261117/`.
+zero-copy runs in its `results/zerocopy-built-20261117/`, and the shared
+memory's in its `results/shared-memory-20261117/`, converted straight into
+it in `results/shared-memory-direct-20261117/`.

@@ -34,15 +34,25 @@
 //! link's version and 32 random bytes, and reads the other's; a version that
 //! is not this one ends the connection, since both ends are wlshare and are
 //! to be the same release. The agent sends its proof, 32 bytes; the daemon its
-//! own and the coded picture's width and height, each `u16`; the agent
-//! answers with a status byte, [`OK`] or [`FAILED`] and why (a `u16` length
-//! and that many bytes of UTF-8).
+//! own, the coded picture's width and height, each `u16`, and the length of
+//! the memory it shares with the agent, a `u64`, none for 0
+//! ([`crate::agent::shared`]); the agent answers with a status byte, [`OK`]
+//! or [`FAILED`] and why (a `u16` length and that many bytes of UTF-8), its
+//! encoder open after [`OK`]. Where the daemon shares memory, it then sends
+//! the places its streams hold in it ([`places`]), and the agent a `u64`:
+//! where in that memory the stream's picture is, clear of them, or
+//! [`SOCKET`] for none, the pictures then crossing the connection. Where it
+//! is in the memory, the daemon writes [`MARK`] random bytes where the
+//! picture starts and sends the same bytes, and the agent answers [`OK`] if
+//! its memory has them there, or [`FAILED`]: the two ends map other memory.
 //!
 //! Then a frame at a time. The daemon: [`FRAME`], a flags byte ([`KEYFRAME`],
 //! [`REFINE`]), the quantizer, a `u32` count of rectangles, and each
-//! rectangle as its `x`, `y`, width and height, each `u16` and even, its luma
-//! rows and then its chroma rows, half as many, each row the rectangle's
-//! width in bytes. The agent: [`OK`], a `u32` length and the access unit;
+//! rectangle as its `x`, `y`, width and height, each `u16` and even, and,
+//! where the picture is not in shared memory, its luma rows and then its
+//! chroma rows, half as many, each row the rectangle's width in bytes; in
+//! shared memory the rows are in the picture already. The agent: [`OK`], a
+//! `u32` length and the access unit;
 //! [`NONE`] where its encoder made no frame; or [`FAILED`] and why, after
 //! which the connection is closed. The daemon closes the connection to end
 //! the stream.
@@ -52,7 +62,9 @@
 //! down: a stream's first frame is the whole picture, a typed letter a few
 //! kilobytes, and a frame that only refines no pixels at all. A video filling
 //! the screen is the whole picture every frame, 3 MB at 1920×1080: 93 MB a
-//! second at 30 frames, three quarters of a gigabit link.
+//! second at 30 frames, three quarters of a gigabit link. Where the two ends
+//! share memory ([`crate::agent::shared`]), the rows are written there and
+//! the rectangles alone are sent.
 //!
 //! **No fallback.** An agent that is away, refuses the key or fails a frame
 //! fails the stream as any coder's failure does, and the session with it: a
@@ -84,13 +96,21 @@ const MAGIC: [u8; 4] = *b"WLEA";
 
 /// The link's version, which both ends must share: any change to its bytes
 /// is another.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// A hello's random.
 pub const NONCE: usize = 32;
 
 /// A proof: HMAC-SHA256's output, checked and made through [`Mac`].
 pub const PROOF: usize = 32;
+
+/// The random the daemon writes where a stream's picture starts in shared
+/// memory, for the agent to look for there.
+pub const MARK: usize = 32;
+
+/// Where a stream's picture is in the memory the agent and the daemon share,
+/// as the agent says it is none: the pictures cross the connection.
+pub const SOCKET: u64 = u64::MAX;
 
 /// A hello: the magic, the version and the random.
 pub const HELLO: usize = MAGIC.len() + 2 + NONCE;
@@ -361,28 +381,90 @@ pub fn read_proof(from: &mut impl Read) -> anyhow::Result<[u8; PROOF]> {
 }
 
 /// The daemon's request for a stream, which ends its handshake: its proof
-/// of the key, and the coded picture's width and height.
-pub const OPEN_REQUEST: usize = PROOF + 4;
+/// of the key, the coded picture's width and height, and the length of the
+/// memory it shares with the agent.
+pub const OPEN_REQUEST: usize = PROOF + 4 + 8;
 
-/// The daemon's request for a stream over a `width`×`height` picture.
-pub fn open_request(proof: &[u8; PROOF], (width, height): (usize, usize)) -> [u8; OPEN_REQUEST] {
+/// The daemon's request for a stream over a `width`×`height` picture,
+/// sharing `shared` bytes of memory with the agent, none for 0.
+pub fn open_request(
+    proof: &[u8; PROOF],
+    (width, height): (usize, usize),
+    shared: u64,
+) -> [u8; OPEN_REQUEST] {
     let mut request = [0; OPEN_REQUEST];
     request[..PROOF].copy_from_slice(proof);
     request[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
-    request[PROOF + 2..].copy_from_slice(&(height as u16).to_be_bytes());
+    request[PROOF + 2..PROOF + 4].copy_from_slice(&(height as u16).to_be_bytes());
+    request[PROOF + 4..].copy_from_slice(&shared.to_be_bytes());
     request
 }
 
 /// Read the daemon's request for a stream: its proof, for the agent to
-/// check, and the size of the picture it asks an encoder over.
-pub fn read_open_request(from: &mut impl Read) -> anyhow::Result<([u8; PROOF], (usize, usize))> {
+/// check, the size of the picture it asks an encoder over, and the length
+/// of the memory it shares.
+pub fn read_open_request(
+    from: &mut impl Read,
+) -> anyhow::Result<([u8; PROOF], (usize, usize), u64)> {
     let proof = read_proof(from)?;
-    let mut size = [0; 4];
-    from.read_exact(&mut size)
+    let mut rest = [0; OPEN_REQUEST - PROOF];
+    from.read_exact(&mut rest)
         .context("reading its picture's size")?;
     let [width, height] =
-        [0, 2].map(|at| usize::from(u16::from_be_bytes([size[at], size[at + 1]])));
-    Ok((proof, (width, height)))
+        [0, 2].map(|at| usize::from(u16::from_be_bytes([rest[at], rest[at + 1]])));
+    let shared = u64::from_be_bytes(rest[4..].try_into().expect("a u64"));
+    Ok((proof, (width, height), shared))
+}
+
+/// The places the daemon's streams hold in the memory it shares, which it
+/// may write into still ([`crate::agent::shared::Region::held`]): a `u16`
+/// count, and each place where it starts and its length, each a `u64`.
+/// An error for more places than a count names.
+pub fn places(held: &[std::ops::Range<u64>]) -> anyhow::Result<Vec<u8>> {
+    let count = u16::try_from(held.len()).map_err(|_| {
+        anyhow::anyhow!(
+            "its streams hold {} places in shared memory, past the {} the link names",
+            held.len(),
+            u16::MAX
+        )
+    })?;
+    let mut places = Vec::with_capacity(2 + held.len() * 16);
+    places.extend_from_slice(&count.to_be_bytes());
+    for place in held {
+        places.extend_from_slice(&place.start.to_be_bytes());
+        places.extend_from_slice(&(place.end - place.start).to_be_bytes());
+    }
+    Ok(places)
+}
+
+/// Read the places the daemon's streams hold in `shared` bytes of memory,
+/// the agent's own length of it: an error for a place past it or of no
+/// bytes, or more places than it has pages.
+pub fn read_places(from: &mut impl Read, shared: u64) -> anyhow::Result<Vec<std::ops::Range<u64>>> {
+    let mut count = [0; 2];
+    from.read_exact(&mut count)
+        .context("reading how many places it holds")?;
+    let count = u16::from_be_bytes(count);
+    anyhow::ensure!(
+        u64::from(count) * crate::agent::shared::ALIGN as u64 <= shared,
+        "it holds {count} places in {shared} bytes of shared memory"
+    );
+    let mut held = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let mut place = [0; 16];
+        from.read_exact(&mut place)
+            .context("reading the places it holds")?;
+        let [start, length] =
+            [0, 8].map(|at| u64::from_be_bytes(place[at..at + 8].try_into().expect("a u64")));
+        let end = start
+            .checked_add(length)
+            .filter(|end| *end <= shared && length > 0);
+        let end = end.with_context(|| {
+            format!("it holds a place of {length} bytes at {start}, past its {shared} bytes")
+        })?;
+        held.push(start..end);
+    }
+    Ok(held)
 }
 
 /// A status byte's failure, as the agent writes it: [`FAILED`] and why.
@@ -397,16 +479,45 @@ pub fn failed(why: &str) -> Vec<u8> {
 /// The agent's answer to a stream's request it has opened an encoder for.
 pub const OPENED: [u8; 1] = [OK];
 
+/// The agent's answer to the daemon's places: where in shared memory the
+/// stream's picture is, or none.
+pub fn placed(at: Option<u64>) -> [u8; 8] {
+    at.unwrap_or(SOCKET).to_be_bytes()
+}
+
+/// The agent's answer to the daemon's mark, found where the stream's picture
+/// is.
+pub const SEEN: [u8; 1] = [OK];
+
 /// The agent's answer to a frame its encoder made none of.
 pub const NO_FRAME: [u8; 1] = [NONE];
 
 /// Read the agent's answer to a stream's request: its reason as the error
-/// where it opened none, and an error for [`NONE`], which answers a frame
-/// and no request.
+/// where it opened no encoder, and an error for [`NONE`], which answers a
+/// frame and no request.
 pub fn read_opened(from: &mut impl Read) -> anyhow::Result<()> {
     anyhow::ensure!(
         read_status(from)?,
         "it answered {NONE}, a frame's status and none of a stream's opening"
+    );
+    Ok(())
+}
+
+/// Read the agent's answer to the daemon's places: where in shared memory
+/// the stream's picture is, or `None`.
+pub fn read_placed(from: &mut impl Read) -> anyhow::Result<Option<u64>> {
+    let mut at = [0; 8];
+    from.read_exact(&mut at)
+        .context("reading where its picture is")?;
+    Ok(Some(u64::from_be_bytes(at)).filter(|at| *at != SOCKET))
+}
+
+/// Read the agent's answer to the daemon's mark: its reason as the error
+/// where it did not find it.
+pub fn read_seen(from: &mut impl Read) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        read_status(from)?,
+        "it answered {NONE}, a frame's status and none of a mark's"
     );
     Ok(())
 }
@@ -537,7 +648,7 @@ impl Span {
 
     /// The rows of each plane the rectangle is, in the order they cross the
     /// link after its header: the luma's, then the chroma's, half as many.
-    fn plane_rows(&self) -> [Range<usize>; 2] {
+    pub(crate) fn plane_rows(&self) -> [Range<usize>; 2] {
         [self.y..self.y + self.h, self.y / 2..(self.y + self.h) / 2]
     }
 
@@ -598,18 +709,51 @@ mod tests {
     }
 
     /// Each message is read back as what it was written from, and is the
-    /// bytes the link's first version put on the wire.
+    /// bytes the link's second version puts on the wire.
     #[test]
     fn a_message_is_read_as_it_was_written() {
         let proof = [0xA5; PROOF];
-        let request = open_request(&proof, (1920, 1080));
+        let request = open_request(&proof, (1920, 1080), 64 << 20);
         assert_eq!(request[..PROOF], proof);
-        assert_eq!(request[PROOF..], [0x07, 0x80, 0x04, 0x38]);
+        assert_eq!(
+            request[PROOF..],
+            [0x07, 0x80, 0x04, 0x38, 0, 0, 0, 0, 0x04, 0, 0, 0]
+        );
         assert_eq!(
             read_open_request(&mut &request[..]).unwrap(),
-            (proof, (1920, 1080))
+            (proof, (1920, 1080), 64 << 20)
         );
         assert!(read_open_request(&mut &request[..OPEN_REQUEST - 1]).is_err());
+
+        // The places its streams hold, each where it starts and its length.
+        let held = [0x1000..0x5000, 0x10_0000..0x10_2000];
+        let sent = places(&held).unwrap();
+        assert_eq!(
+            sent,
+            [
+                0, 2, 0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0x10, 0,
+                0, 0, 0, 0, 0, 0, 0, 0x20, 0
+            ]
+        );
+        let read = |sent: &[u8], shared| read_places(&mut &sent[..], shared);
+        assert_eq!(read(&sent, 1 << 21).unwrap(), held);
+        assert_eq!(read(&places(&[]).unwrap(), 1 << 21).unwrap(), []);
+        assert!(read(&sent[..sent.len() - 1], 1 << 21).is_err());
+        // None past the memory, or of no bytes.
+        for place in [(1u64 << 21) - 0x1000..(1 << 21) + 0x1000, 0x1000..0x1000] {
+            let sent = places(std::slice::from_ref(&place)).unwrap();
+            assert!(read(&sent, 1 << 21).is_err(), "{place:?}");
+        }
+        // Nor more than the memory has pages, each place in it.
+        let why = read(&places(&[0..0x800, 0x800..0x1000]).unwrap(), 0x1000)
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("2 places in 4096 bytes"), "{why}");
+        // And no more places than the count names.
+        let many: Vec<_> = std::iter::repeat_n(0..0x1000u64, 1 << 16).collect();
+        assert!(places(&many[..(1 << 16) - 1]).is_ok());
+        let why = places(&many).unwrap_err().to_string();
+        assert!(why.contains("65536 places"), "{why}");
 
         let frame = Frame {
             keyframe: true,
@@ -644,13 +788,23 @@ mod tests {
         assert!(coded(&[7]).unwrap_err().to_string().contains("no status"));
         assert!(coded(&[OK, 0, 0]).is_err());
 
-        assert_eq!((OPENED, NO_FRAME), ([OK], [NONE]));
-        let opened = |answer: &[u8]| read_opened(&mut &answer[..]);
-        opened(&OPENED).unwrap();
-        let why = opened(&failed("no encoder")).unwrap_err().to_string();
+        assert_eq!((OPENED, SEEN, NO_FRAME), ([OK], [OK], [NONE]));
+        assert_eq!(placed(Some(0x1000)), [0, 0, 0, 0, 0, 0, 0x10, 0]);
+        assert_eq!(placed(None), [0xff; 8]);
+        let at = |answer: &[u8]| read_placed(&mut &answer[..]);
+        assert_eq!(at(&placed(Some(0x1000))).unwrap(), Some(0x1000));
+        assert_eq!(at(&placed(Some(0))).unwrap(), Some(0));
+        assert_eq!(at(&placed(None)).unwrap(), None);
+        assert!(at(&[0, 0]).is_err());
+        let read = |answer: &[u8]| read_opened(&mut &answer[..]);
+        read(&OPENED).unwrap();
+        let why = read(&failed("no encoder")).unwrap_err().to_string();
         assert_eq!(why, "no encoder");
-        let why = opened(&NO_FRAME).unwrap_err().to_string();
+        let why = read(&NO_FRAME).unwrap_err().to_string();
         assert!(why.contains("a frame's status"), "{why}");
+        read_seen(&mut &SEEN[..]).unwrap();
+        let why = read_seen(&mut &failed("not this memory")[..]).unwrap_err();
+        assert_eq!(why.to_string(), "not this memory");
     }
 
     /// A rectangle's rows cross the link as its luma rows and then its

@@ -275,10 +275,11 @@ impl H264Coder for Coder {
             // The encoder before the planes, so that a picture no encoder
             // takes, as one past an agent's longest side is, is refused
             // before it is made room for.
-            let backend = self.backend(Planes::coded_size(width, height))?;
+            let mut backend = self.backend(Planes::coded_size(width, height))?;
+            let planes = backend.planes(width, height);
             let stream: Box<dyn H264Stream> = Box::new(Stream {
                 backend,
-                picture: Picture::new(width, height),
+                picture: Picture::new(width, height, planes),
             });
             Ok(stream)
         })();
@@ -366,10 +367,11 @@ struct Picture {
 }
 
 impl Picture {
-    fn new(width: u16, height: u16) -> Self {
+    /// The picture over `planes`, its encoder's.
+    fn new(width: u16, height: u16, planes: Planes) -> Self {
         Self {
             size: (width, height),
-            planes: Planes::new(width, height),
+            planes,
             pair: Vec::new(),
             filled: false,
         }
@@ -1128,7 +1130,7 @@ mod tests {
         );
     }
 
-    use wlshare_core::agent::{link::MIN_KEY, serve};
+    use wlshare_core::agent::{link::MIN_KEY, serve, shared};
 
     /// The key the tests' agents and their daemons share.
     const KEY: [u8; MIN_KEY] = [0x5a; MIN_KEY];
@@ -1136,6 +1138,11 @@ mod tests {
     /// An agent on loopback whose streams are what `open` makes its daemon,
     /// for as long as the tests run; where it listens.
     fn agent_of(open: Arc<serve::Open>) -> String {
+        agent_sharing_of(None, open)
+    }
+
+    /// [`agent_of`], sharing the memory `places` are in.
+    fn agent_sharing_of(places: Option<Arc<shared::Places>>, open: Arc<serve::Open>) -> String {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
@@ -1143,25 +1150,72 @@ mod tests {
                 listener,
                 KEY.into(),
                 vec!["127.0.0.0/8".parse().unwrap()],
+                places,
                 open,
             )
         });
         address
     }
 
+    /// Memory a daemon and its agent share, a file of `bytes` mapped twice,
+    /// as two machines map it: the daemon's region and the agent's places.
+    /// The file goes once both are mapped.
+    fn shared_memory(bytes: u64) -> (Arc<shared::Region>, Arc<shared::Places>) {
+        static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "wlshare-h264-shared-{}-{}",
+            std::process::id(),
+            FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+        let ends = (
+            shared::Region::open(&path).unwrap(),
+            shared::Places::new(shared::Region::open(&path).unwrap()),
+        );
+        std::fs::remove_file(&path).unwrap();
+        ends
+    }
+
     /// An agent on loopback that codes by `encoder`, a coder a stream as a
     /// session would have; where it listens.
     fn agent_at(encoder: Encoder) -> String {
+        agent_sharing_at(None, encoder)
+    }
+
+    /// [`agent_at`], sharing the memory `places` are in.
+    fn agent_sharing_at(places: Option<Arc<shared::Places>>, encoder: Encoder) -> String {
         // A coder for the daemon it codes for, as a session has one.
-        agent_of(Arc::new(move || {
-            let coder = std::sync::Mutex::new(encoder.coder()?);
-            Ok(Arc::new(move |coded| coder.lock().unwrap().backend(coded)) as Arc<serve::Streams>)
-        }))
+        agent_sharing_of(
+            places,
+            Arc::new(move || {
+                let coder = std::sync::Mutex::new(encoder.coder()?);
+                Ok(Arc::new(move |coded| coder.lock().unwrap().backend(coded))
+                    as Arc<serve::Streams>)
+            }),
+        )
     }
 
     /// The encoder of a daemon set to an agent that codes by `encoder`.
     fn agent(encoder: Encoder) -> Encoder {
         Encoder::Remote(remote::Agent::new(agent_at(encoder), KEY.to_vec()))
+    }
+
+    /// [`agent`], the two sharing 16 MiB of memory for their pictures: a
+    /// stream opened on it has its picture there, and does not cross the
+    /// connection unseen.
+    fn sharing_agent(encoder: Encoder) -> Encoder {
+        let (region, places) = shared_memory(16 << 20);
+        let address = agent_sharing_at(Some(places), encoder);
+        let agent = remote::Agent::new(address, KEY.to_vec()).sharing(region);
+        let stream = remote::Stream::open(&agent, (64, 64)).unwrap();
+        assert!(
+            stream.shares(),
+            "the stream's picture is not in shared memory"
+        );
+        Encoder::Remote(agent)
     }
 
     /// A daemon set to an agent starts with the agent away, since it may be
@@ -1241,17 +1295,27 @@ mod tests {
     }
 
     /// The hardware's frames through an agent, as a daemon with no GPU is
-    /// sent them. Passes with a word where this machine has no encoder.
+    /// sent them, and as one that shares memory with the agent has the
+    /// encoder read them where it wrote them. Passes with a word where this
+    /// machine has no encoder.
     #[test]
     fn hardware_frames_through_an_agent_decode_to_the_picture() {
         let Some(hardware) = hardware("the hardware behind an agent is not exercised") else {
             return;
         };
-        let encoder = agent(hardware);
-        encoder.try_frames().expect("the hardware behind an agent");
-        frames_decode_to_the_picture(&encoder, (96, 70), 18);
-        frames_decode_to_the_picture(&encoder, (95, 69), 18);
-        the_quantizer_moves_frame_by_frame(&encoder, false);
+        let Encoder::Vaapi { device, low_power } = &hardware else {
+            unreachable!("the hardware is VA-API's")
+        };
+        let again = Encoder::Vaapi {
+            device: device.clone(),
+            low_power: *low_power,
+        };
+        for encoder in [agent(hardware), sharing_agent(again)] {
+            encoder.try_frames().expect("the hardware behind an agent");
+            frames_decode_to_the_picture(&encoder, (96, 70), 18);
+            frames_decode_to_the_picture(&encoder, (95, 69), 18);
+            the_quantizer_moves_frame_by_frame(&encoder, false);
+        }
     }
 
     /// What an agent codes is what its encoder codes of the same pictures on
@@ -1259,11 +1323,17 @@ mod tests {
     /// picture is the daemon's, and its encoder is told the same of it. A
     /// picture, damage in two places, a frame of none at a finer dial, one
     /// that refines, a keyframe, and a walk down the dial under more damage.
+    /// Over the connection, and through memory the two share.
     #[test]
     fn an_agent_codes_what_its_encoder_codes_at_home() {
+        an_agent_codes_what_its_encoder_codes_at_home_by(agent(Encoder::X264));
+        an_agent_codes_what_its_encoder_codes_at_home_by(sharing_agent(Encoder::X264));
+    }
+
+    fn an_agent_codes_what_its_encoder_codes_at_home_by(agent: Encoder) {
         let (w, h) = (163usize, 101usize);
         let mut home = Encoder::X264.coder().unwrap();
-        let mut away = agent(Encoder::X264).coder().unwrap();
+        let mut away = agent.coder().unwrap();
         let mut streams = [
             home.open(w as u16, h as u16).unwrap(),
             away.open(w as u16, h as u16).unwrap(),

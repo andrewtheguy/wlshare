@@ -134,6 +134,11 @@ pub struct EncAgent {
     /// The pre-shared key, a copy of the agent's file. Absent means
     /// `enc_agent.key` beside the configuration file.
     pub key_file: Option<PathBuf>,
+    /// Memory this machine shares with the agent's, which the pictures are
+    /// written into rather than sent: in a virtual machine, its
+    /// `ivshmem-plain` device's BAR as sysfs gives it to map. Absent means
+    /// the pictures cross the connection.
+    pub shared_memory: Option<PathBuf>,
 }
 
 /// The key file's name where none is given, beside the configuration file.

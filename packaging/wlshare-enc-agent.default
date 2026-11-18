@@ -13,3 +13,10 @@
 # daemon's own address and not its network: every address allowed may try the
 # key.
 #ALLOW=192.168.1.10/32
+
+# Memory shared with the daemon's virtual machine, where the agent is on its
+# host or in a container there: the file the guest's ivshmem-plain device is
+# backed by, which the daemon's pictures are written into rather than sent.
+# The agent's account has to read and write it; docs/enc-agent.md, "Shared
+# memory with the guest", says how. Unset, the pictures cross the network.
+#SHARED_MEMORY=/run/ivshmem-wlshare/wlshare
