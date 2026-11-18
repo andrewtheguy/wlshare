@@ -276,6 +276,14 @@ impl Stream {
     pub(crate) fn frames_within(&mut self, within: Duration) {
         self.within = within;
     }
+
+    /// A failed frame's pages left with the kernel until the agent's end
+    /// goes, and `freed` told once their buffers are freed
+    /// ([`crate::agent::zerocopy::ZeroCopy::hold`]).
+    #[cfg(test)]
+    pub(crate) fn hold_cleanup(&mut self, freed: std::sync::mpsc::Sender<()>) {
+        self.sends.hold(freed);
+    }
 }
 
 impl Backend for Stream {

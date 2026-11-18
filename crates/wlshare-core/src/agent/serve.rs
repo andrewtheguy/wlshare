@@ -620,9 +620,10 @@ mod tests {
     }
 
     /// A frame the agent never reads fails in its time, and the planes it
-    /// was sent from are the caller's again at once, as they were: where
-    /// their pages went zero-copy, their buffers are kept until the kernel
-    /// is done with them, and the planes are given copies.
+    /// was sent from are the caller's again at once, as they were, while
+    /// the kernel still holds their pages: their buffers are kept until it
+    /// lets go, which it does here only once the agent's end goes, and the
+    /// planes are given copies.
     #[test]
     fn a_frame_never_read_fails_in_its_time_and_keeps_its_planes() {
         let listener =
@@ -650,7 +651,8 @@ mod tests {
             to.write_all(&proved.finalize().into_bytes()).unwrap();
             read_open_request(&mut from).unwrap();
             to.write_all(&OPENED).unwrap();
-            // Nothing more is read until the test is over.
+            // Nothing more is read until the test says, and then the
+            // connection goes with what it never read.
             let _ = ended.recv();
         });
         let agent = Agent::new(address.to_string(), KEY.to_vec());
@@ -662,28 +664,36 @@ mod tests {
         let at = planes.y.as_ptr();
         let mut stream = Stream::open(&agent, planes.coded).unwrap();
         stream.frames_within(Duration::from_millis(300));
-        let began = std::time::Instant::now();
-        let why = stream
-            .frame(&mut planes, true, 28, &mut Vec::new())
-            .unwrap_err();
-        assert!(
-            began.elapsed() < Duration::from_secs(2),
-            "{:?}",
-            began.elapsed()
-        );
-        assert!(format!("{why:#}").contains("not done within"), "{why:#}");
+        let (freed, was_freed) = std::sync::mpsc::channel();
+        stream.hold_cleanup(freed);
+        // The frame on a thread of its own, so that one that waits on its
+        // pages fails the test rather than hanging it.
+        let (returned, has_returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let why = stream.frame(&mut planes, true, 28, &mut Vec::new()).err();
+            returned.send((why, planes, stream)).unwrap();
+        });
+        let (why, planes, _stream) = has_returned
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the frame waited for the kernel to let go of its pages");
+        let why = format!("{:#}", why.expect("a frame never read is no frame"));
+        assert!(why.contains("not done within"), "{why}");
         assert!(
             planes.y == before.0 && planes.uv == before.1,
             "the planes are not as they were"
         );
+        let handed = planes.y.as_ptr() != at;
         if crate::agent::zerocopy::unlimited() {
-            assert_ne!(
-                planes.y.as_ptr(),
-                at,
-                "the buffers the kernel holds were not kept"
-            );
+            assert!(handed, "the buffers the kernel holds were not kept");
         }
-        drop(over);
+        if handed {
+            // Kept for as long as the kernel holds them, past the frame.
+            assert!(was_freed.recv_timeout(Duration::from_millis(200)).is_err());
+            drop(over);
+            was_freed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the buffers were never freed");
+        }
     }
 
     /// A daemon whose key is not the agent's is told so before it sends a

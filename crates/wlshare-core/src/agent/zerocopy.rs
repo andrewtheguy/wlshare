@@ -27,6 +27,12 @@
 //!   yet to send or drop ([`ZeroCopy::abandon`]). The frame returns its error
 //!   in its time, and nothing of the daemon's memory is sent after: a buffer
 //!   the kernel never lets go of is never freed.
+//! - **So much and no more held.** A frame takes one of [`MOST_HELD`] places
+//!   before it goes zero-copy, the daemon's streams together, and gives it
+//!   back once the kernel is done with its pages; a failed frame's buffers
+//!   keep theirs until they are freed, and for good where they never are.
+//!   With every place taken, frames are copied, so what failed frames hold,
+//!   buffers, sockets and threads, is bounded however often they fail.
 //! - **Small writes are copied.** Pinning pages and the kernel's word cost
 //!   more than copying a few kilobytes, so a frame goes zero-copy only where
 //!   its slices are [`LEAST`] long on average: the whole picture, or rows
@@ -49,6 +55,7 @@
 
 use std::io::{ErrorKind, IoSlice, Write};
 use std::os::fd::AsRawFd as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::agent::link::{Timed, write_all_vectored};
@@ -63,10 +70,37 @@ pub const LEAST: usize = 16 * 1024;
 /// used before a call is refused.
 pub const CALL: usize = 1 << 20;
 
-/// How long the wait for a failed frame's pages goes on before it says so:
-/// the kernel lets go of what a reset frees at once, and a device of what it
-/// holds in milliseconds.
+/// How long the wait for a failed frame's pages goes on before it says so
+/// and looks less often: the kernel lets go of what a reset frees at once,
+/// and a device of what it holds in milliseconds.
 const LATE: Duration = Duration::from_secs(1);
+
+/// The most frames, the daemon's streams together, that hold pages the
+/// kernel may still send: frames sending zero-copy, and failed ones whose
+/// buffers are kept until it lets go. A frame past them is copied.
+pub const MOST_HELD: usize = 8;
+
+/// The places of [`MOST_HELD`] taken.
+struct Budget(AtomicUsize);
+
+impl Budget {
+    /// A place, where one is left.
+    fn take(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
+                (taken < MOST_HELD).then_some(taken + 1)
+            })
+            .is_ok()
+    }
+
+    /// A place given back.
+    fn give(&self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The daemon's.
+static BUDGET: Budget = Budget(AtomicUsize::new(0));
 
 /// `SO_ZEROCOPY`, which the `libc` crate does not have for every target:
 /// 60 on every architecture but MIPS, SPARC and PA-RISC, none of which the
@@ -87,6 +121,13 @@ pub struct ZeroCopy {
     done: u32,
     /// Whether frames go zero-copy at all: not once the kernel has copied.
     on: bool,
+    /// Whether these sends hold a place of [`MOST_HELD`].
+    placed: bool,
+    /// In the tests: a failed frame's connection is not reset, so that its
+    /// pages stay with the kernel until the other end goes, and this is
+    /// told when they are freed.
+    #[cfg(test)]
+    held: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl ZeroCopy {
@@ -111,7 +152,24 @@ impl ZeroCopy {
             sent: 0,
             done: 0,
             on: true,
+            placed: false,
+            #[cfg(test)]
+            held: None,
         })
+    }
+
+    /// The place these sends hold given back, if they hold one.
+    fn unplace(&mut self) {
+        if std::mem::take(&mut self.placed) {
+            BUDGET.give();
+        }
+    }
+
+    /// In the tests: a failed frame's pages left with the kernel, its
+    /// connection not reset, and `freed` told once they are freed.
+    #[cfg(test)]
+    pub(crate) fn hold(&mut self, freed: std::sync::mpsc::Sender<()>) {
+        self.held = Some(freed);
     }
 
     /// Whether the stream still sends zero-copy.
@@ -129,7 +187,8 @@ impl ZeroCopy {
         slices: &mut [IoSlice<'_>],
     ) -> std::io::Result<()> {
         let bytes: usize = slices.iter().map(|s| s.len()).sum();
-        if self.on && bytes >= LEAST * slices.len() {
+        if self.on && bytes >= LEAST * slices.len() && (self.placed || BUDGET.take()) {
+            self.placed = true;
             let mut pinned = Pinned {
                 link,
                 sends: self,
@@ -185,6 +244,7 @@ impl ZeroCopy {
                 }
             }
         }
+        self.unplace();
         Ok(())
     }
 
@@ -206,10 +266,20 @@ impl ZeroCopy {
             buffers,
             released: false,
         };
+        #[cfg(test)]
+        let reset_it = self.held.is_none();
+        #[cfg(not(test))]
+        let reset_it = true;
+        if self.pending() && reset_it {
+            reset(stream);
+            // What the reset let go of, at once, is freed here and needs no
+            // thread; an error reading it leaves the pages to the thread.
+            let _ = self.drain(stream);
+        }
         if !self.pending() {
+            self.unplace();
             return held.release();
         }
-        reset(stream);
         // The socket, open for as long as the thread waits on it, past the
         // stream that drops its own.
         let link = match stream.try_clone() {
@@ -219,13 +289,19 @@ impl ZeroCopy {
                     "the encoding agent's connection: no way to wait for the kernel to let go of \
                      a picture, whose buffers are kept for good: {e}"
                 );
+                // Their place with them.
+                self.placed = false;
                 return;
             }
         };
+        // The place goes with the buffers, given back once they are freed.
         let mut sends = Self {
             sent: self.sent,
             done: self.done,
             on: false,
+            placed: std::mem::take(&mut self.placed),
+            #[cfg(test)]
+            held: self.held.take(),
         };
         self.done = self.sent;
         let waits = std::thread::Builder::new()
@@ -233,6 +309,11 @@ impl ZeroCopy {
             .spawn(move || {
                 sends.release(&link);
                 held.release();
+                sends.unplace();
+                #[cfg(test)]
+                if let Some(freed) = sends.held.take() {
+                    let _ = freed.send(());
+                }
             });
         if let Err(e) = waits {
             log::error!(
@@ -268,7 +349,7 @@ impl ZeroCopy {
                      after {LATE:?}: waiting for the network device to let them go"
                 );
             }
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(Duration::from_millis(if said { 100 } else { 1 }));
         }
     }
 
@@ -326,6 +407,16 @@ impl ZeroCopy {
                 // SAFETY: as above.
                 header = unsafe { libc::CMSG_NXTHDR(&raw const message, header) };
             }
+        }
+    }
+}
+
+impl Drop for ZeroCopy {
+    fn drop(&mut self) {
+        // A place held for pages still in the kernel's hands is never given
+        // back; every way a frame ends leaves none.
+        if !self.pending() {
+            self.unplace();
         }
     }
 }
@@ -579,6 +670,18 @@ mod tests {
             .recv_timeout(LATE)
             .expect("the kernel kept the pages");
         assert!(!sends.pending());
+    }
+
+    /// So many places and no more, each given back free for the next.
+    #[test]
+    fn so_many_frames_hold_pages_and_no_more() {
+        let budget = Budget(AtomicUsize::new(0));
+        for _ in 0..MOST_HELD {
+            assert!(budget.take());
+        }
+        assert!(!budget.take(), "a place past the most");
+        budget.give();
+        assert!(budget.take());
     }
 
     /// A stream that copies, as one does once the kernel has copied, sends
