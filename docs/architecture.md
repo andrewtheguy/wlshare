@@ -735,10 +735,13 @@ quantizer each was asked at.
 - **The link's bytes** are `wlshare-core`'s (`agent/link.rs`), both ends
   built and parsed there, big-endian, and laid out in that module: each end's
   hello (`WLEA`, the link's version, the random), the agent's proof, the
-  daemon's proof and the coded picture's size, the agent's status; then for
-  each frame the daemon's flags (a keyframe, a refinement), quantizer and
-  rectangles, each with its luma and chroma rows, and the agent's access
-  unit. The version is the link's own, not the protocol version: both ends
+  daemon's proof, the coded picture's size and the length of the memory it
+  shares with the agent, the agent's status and where in that memory the
+  stream's picture is, if anywhere, and then the daemon's mark there and
+  the agent's word on it; then for each frame the daemon's flags (a
+  keyframe, a refinement), quantizer and rectangles, each with its luma and
+  chroma rows where the picture is not in shared memory, and the agent's
+  access unit. The version is the link's own, not the protocol version: both ends
   are wlshare, built from one release, and an end of another version is
   refused in the hello.
 - **No fallback.** A daemon set to an agent has no other H.264 encoder and
@@ -826,15 +829,65 @@ quantizer each was asked at.
   copies anyway (loopback, an interface that cannot gather pages) and says
   so, the stream copies from then on. Nothing on the link changes, nor its
   version: the agent reads the bytes as it did.
+- **In memory both map, where the agent is on the guest's own host**
+  (`agent/shared.rs`). On the link the agent was made for, every picture
+  still crosses a network, virtio-net, the bridge and a veth, which costs
+  the host's processor more than the daemon's send does. So a daemon in a
+  virtual machine and an agent on its host, or in a container there, can
+  share memory instead: QEMU's `ivshmem-plain` device gives the guest a PCI
+  device whose memory is a file on the host. Each end is told its file and
+  maps all of it, the daemon the device's BAR as sysfs gives it to map
+  (`resource2_wc`, write-combined, since the daemon only writes it), the
+  agent the host's file, bound into its container; the daemon names its
+  memory's length as it asks for a stream, and the agent places the stream's
+  picture in its own, laid out as the daemon's planes are, at a page of it.
+  The daemon then writes 32 random bytes where the picture starts and sends
+  the same bytes, and the agent looks for them there, so two ends set up
+  with other memory fail the stream with a word rather than code garbage; a
+  daemon sharing memory with an agent that shares none fails the same way,
+  and one that shares none with an agent that does sends its pictures over
+  the connection. The picture stays where it is from frame to frame: the
+  daemon writes what changed into it and sends the frame's header and its
+  rectangles, and the agent's encoder uploads it from where it lies, with no
+  read of it and no copy of the agent's. A stream's first frame is the
+  whole picture, so a place is written whole before it is first read, and
+  what an earlier stream left there never is. The link being request and
+  reply, the picture is the daemon's to write only between an access unit
+  back and the next header, when the agent is done with it, and a store
+  fence after the writes puts them ahead of the header that names them,
+  which a write-combined mapping would otherwise keep in its buffers. A
+  frame that fails, by its time or by its connection, leaves the agent
+  perhaps still uploading it, and the daemon is told nothing more on that
+  connection: so a failed stream writes its picture no more, and the agent
+  gives the place to no other stream until the thread that had it has
+  ended. Which places are held is the agent's own account, in its memory and
+  not the shared one, so an agent that restarts has them all free, its
+  streams having ended with it; a stream the memory has no room for while
+  they are held has its pictures cross the connection, as an agent sharing
+  none has. It is a second transport beside TCP and not one in its place:
+  the handshake, the frame's header and the access unit stay on the
+  connection, and an agent anywhere but the guest's own host has only the
+  connection. The pictures in the memory are past the key: whoever can open
+  the file on the host, or the device's resource in the guest, reads the
+  desktop and can write into it, so the file's permissions are its access
+  control. And the guest boots without Secure Boot, under which the
+  kernel's lockdown refuses a process the BAR's mapping. On the link it was
+  made for it takes about 40% off what a frame costs the host, the guest's
+  processor included, and a frame is back sooner
+  ([measured](video-performance.md#the-encoding-agents-link)); what the
+  daemon spends more is its copy into the device, which its conversion to
+  NV12 could one day write into directly and leave none.
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the
 picture back, a screen's sent zero-copy first and copied once loopback has
-said it copied, and the daemon's tests put libx264 behind an agent on loopback
+said it copied, and again with the two ends sharing a file as their memory,
+each mapping it as two machines would; and the daemon's tests put libx264
+behind an agent on loopback, over the connection and through shared memory,
 and hold its frames, byte for byte, to libx264's on the daemon's own side of
 the link, through damage, frames of none, refinements and keyframes, and
-decode them with libavcodec; the hardware behind an agent, where the machine
-has one.
+decode them with libavcodec; the hardware behind an agent both ways, where
+the machine has one.
 
 ## The tiles encoding
 

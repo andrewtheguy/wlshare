@@ -1159,7 +1159,7 @@ mod tests {
         let mut narrow = Planes::new(96, 64);
         narrow.stride = 32;
         let mut short = Planes::new(96, 64);
-        short.uv.truncate(short.stride * 8);
+        short.uv = short.uv[..short.stride * 8].to_vec().into();
         // Rows so far apart that where the last is wraps round to a place
         // the plane has.
         let mut apart = Planes::new(96, 64);

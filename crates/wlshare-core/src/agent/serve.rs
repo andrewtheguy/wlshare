@@ -38,9 +38,11 @@ use log::{info, warn};
 
 use crate::agent::allow::Net;
 use crate::agent::link::{
-    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, NO_FRAME, OPENED, Role,
-    Span, Timed, coded_head, failed, hello, keepalive, nonce, proof, read_hello, read_open_request,
+    CODED_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MARK, MAX_SIDE, Mac as _, NO_FRAME, Role,
+    SEEN, Span, Timed, coded_head, failed, hello, keepalive, nonce, opened, proof, read_hello,
+    read_open_request,
 };
+use crate::agent::shared::Places;
 use crate::h264::{Backend, Planes};
 
 /// The most streams an agent codes at once for the daemon it has, each a
@@ -111,6 +113,8 @@ struct User {
 struct Door {
     limits: Limits,
     allowed: Vec<Net>,
+    /// The memory the agent shares with its daemon, a picture a stream.
+    places: Option<Arc<Places>>,
     open: Arc<Open>,
     /// The connections yet to prove the key, the oldest first, each by its
     /// number and a handle of its socket to close it by.
@@ -245,11 +249,20 @@ fn peer(stream: &TcpStream) -> String {
 /// addresses `allowed` holds and no others, each a stream for whoever holds
 /// `key`, coded on a thread of its own by an encoder of what `open` makes
 /// its daemon: one daemon's at a time, and [`STREAMS`] of its at once.
-pub fn serve(listener: TcpListener, key: Arc<[u8]>, allowed: Vec<Net>, open: Arc<Open>) {
+/// With `places`, memory shared with the daemon, each stream that the
+/// daemon shares it for has its picture there while there is room.
+pub fn serve(
+    listener: TcpListener,
+    key: Arc<[u8]>,
+    allowed: Vec<Net>,
+    places: Option<Arc<Places>>,
+    open: Arc<Open>,
+) {
     accept(
         listener,
         key,
         allowed,
+        places,
         open,
         Limits {
             streams: STREAMS,
@@ -264,12 +277,14 @@ fn accept(
     listener: TcpListener,
     key: Arc<[u8]>,
     allowed: Vec<Net>,
+    places: Option<Arc<Places>>,
     open: Arc<Open>,
     limits: Limits,
 ) {
     let door = Arc::new(Door {
         limits,
         allowed,
+        places,
         open,
         unproved: Mutex::default(),
         user: Mutex::default(),
@@ -377,7 +392,7 @@ fn connection(
             .into_bytes(),
     )
     .context("sending the proof of the key")?;
-    let (its, (width, height)) = read_open_request(&mut from)?;
+    let (its, (width, height), shared) = read_open_request(&mut from)?;
     proof(key, Role::Daemon, &theirs, &ours)?
         .verify_slice(&its)
         .map_err(|_| anyhow::anyhow!("its key is not this agent's"))?;
@@ -388,7 +403,7 @@ fn connection(
     // refused before it is made room for; and the stream counted for as
     // long as its encoder is.
     drop(unproved);
-    let opened = (|| {
+    let made = (|| {
         anyhow::ensure!(
             width > 0
                 && height > 0
@@ -398,19 +413,68 @@ fn connection(
                 && height <= MAX_SIDE,
             "a {width}x{height} picture is not one an agent codes"
         );
+        let places = match (shared, &door.places) {
+            (0, _) => None,
+            (_, None) => anyhow::bail!(
+                "the daemon shares memory with this agent and the agent none with it: \
+                 start the agent with --shared-memory, or take shared_memory out of the \
+                 daemon's [enc_agent] table"
+            ),
+            (shared, Some(places)) => {
+                let ours = places.region().len();
+                anyhow::ensure!(
+                    shared == ours as u64,
+                    "the daemon shares {shared} bytes of memory and this agent {ours}: \
+                     the two are not the same memory"
+                );
+                Some(places)
+            }
+        };
         let (coding, streams) = door.coding(address)?;
-        Ok((coding, streams((width, height))?))
+        let backend = streams((width, height))?;
+        // A place while there is room, the stream's pictures over the
+        // connection while there is none.
+        let place = places.and_then(|places| places.take((width, height)));
+        Ok((coding, backend, place))
     })();
-    let (_coding, mut backend) = match opened {
+    let (_coding, mut backend, place) = match made {
         Ok(opened) => opened,
         Err(e) => {
             to.write_all(&failed(&format!("{e:#}")))?;
             return Err(e.context(format!("opening a {width}x{height} stream")));
         }
     };
-    let mut planes = Planes::new(width as u16, height as u16);
-    to.write_all(&OPENED)?;
-    info!("{peer}: a {width}x{height} stream");
+    to.write_all(&opened(place.as_ref().map(|place| place.at())))?;
+    let (mut planes, shares) = match place {
+        Some(place) => {
+            // The daemon's mark, where the picture starts: the two ends map
+            // the same memory, or are told they do not.
+            let mut mark = [0; MARK];
+            from.read_exact(&mut mark).context("reading its mark")?;
+            if !place.holds(&mark) {
+                let why = "the daemon's mark is not where its picture is in this agent's \
+                           shared memory: the two ends map other memory";
+                to.write_all(&failed(why))?;
+                anyhow::bail!(why);
+            }
+            to.write_all(&SEEN)?;
+            info!(
+                "{peer}: a {width}x{height} stream, its picture in shared memory at {}",
+                place.at()
+            );
+            (place.planes(), true)
+        }
+        None => {
+            match shared {
+                0 => info!("{peer}: a {width}x{height} stream"),
+                _ => info!(
+                    "{peer}: a {width}x{height} stream, over the connection: no room for its \
+                     picture in shared memory"
+                ),
+            }
+            (Planes::new(width as u16, height as u16), false)
+        }
+    };
 
     let mut from = BufReader::with_capacity(READ_AHEAD, from);
     let mut served = Served::default();
@@ -435,7 +499,10 @@ fn connection(
             let frame = Frame::read(tag[0], &mut from)?;
             for _ in 0..frame.spans {
                 let span = Span::read(&mut from, (width, height))?;
-                span.read_rows(&mut from, &mut planes)?;
+                // In shared memory the rows are where the daemon wrote them.
+                if !shares {
+                    span.read_rows(&mut from, &mut planes)?;
+                }
                 planes.touch((span.x, span.y), (span.x + span.w, span.y + span.h));
                 served.pictures += (span.w * span.h * 3 / 2) as u64;
             }
@@ -474,6 +541,8 @@ mod tests {
     use super::*;
     use crate::agent::client::{Agent, Stream};
     use crate::agent::link::{FAILED, FRAME, MIN_KEY, OK, PROOF};
+    use crate::agent::shared::tests::Scratch;
+    use crate::agent::shared::{Region, picture_bytes};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// The key the tests' agents and their daemons share.
@@ -530,6 +599,11 @@ mod tests {
     /// listens: [`Echo`] for every picture but one 32 across, which gets
     /// [`Broken`], and one 48 across, which no encoder opens for.
     fn agent() -> String {
+        agent_sharing(None)
+    }
+
+    /// [`agent`], sharing the memory `places` are in.
+    fn agent_sharing(places: Option<Arc<Places>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
         std::thread::spawn(move || {
@@ -537,6 +611,7 @@ mod tests {
                 listener,
                 KEY.into(),
                 loopback(),
+                places,
                 Arc::new(|| {
                     Ok(Arc::new(|(width, _): (usize, usize)| match width {
                         32 => Ok(Box::new(Broken) as Box<dyn Backend>),
@@ -557,20 +632,41 @@ mod tests {
     /// rows are sent as one run of each plane; and a screen's, whose first
     /// picture is sent zero-copy where the account may pin it, and copied
     /// from then on, loopback having copied it ([`crate::agent::zerocopy`]).
+    /// And each again in memory the two ends share, the rows written there.
     #[test]
     fn the_agents_picture_is_the_daemons() {
-        the_agents_picture_is_the_daemons_at(149, 89);
-        let across = Planes::new(128, 70);
-        assert_eq!(across.stride, across.coded.0);
-        the_agents_picture_is_the_daemons_at(128, 70);
-        the_agents_picture_is_the_daemons_at(1920, 1080);
+        for shared in [false, true] {
+            the_agents_picture_is_the_daemons_at(149, 89, shared);
+            let across = Planes::new(128, 70);
+            assert_eq!(across.stride, across.coded.0);
+            the_agents_picture_is_the_daemons_at(128, 70, shared);
+            the_agents_picture_is_the_daemons_at(1920, 1080, shared);
+        }
     }
 
-    fn the_agents_picture_is_the_daemons_at(width: u16, height: u16) {
-        let agent = Agent::new(agent(), KEY.to_vec());
+    /// The two ends of memory shared in a file of `bytes`, each its own
+    /// mapping of it, as each machine has: the daemon's region and the
+    /// agent's places.
+    fn shared(name: &str, bytes: usize) -> (Scratch, Arc<Region>, Arc<Places>) {
+        let file = Scratch::new(name, bytes as u64);
+        let daemon = Region::open(&file.0).unwrap();
+        let agent = Places::new(Region::open(&file.0).unwrap());
+        (file, daemon, agent)
+    }
+
+    fn the_agents_picture_is_the_daemons_at(width: u16, height: u16, sharing: bool) {
+        let size = Planes::coded_size(width, height);
+        let (_file, agent) = if sharing {
+            let (file, region, places) = shared("picture", picture_bytes(size));
+            let agent = Agent::new(agent_sharing(Some(places)), KEY.to_vec()).sharing(region);
+            (Some(file), agent)
+        } else {
+            (None, Agent::new(agent(), KEY.to_vec()))
+        };
         let mut planes = Planes::new(width, height);
         let (w, h) = planes.coded;
         let mut stream = Stream::open(&agent, planes.coded).unwrap();
+        assert_eq!(stream.shares(), sharing);
         let mut state = 0x2545_F491u32;
         let mut next = move || {
             state ^= state << 13;
@@ -610,7 +706,8 @@ mod tests {
             // Only a picture large enough goes zero-copy, and only it is
             // copied by loopback all the same; where its calls may be
             // refused, they may be copied from the first.
-            if w * h < 1 << 20 {
+            if sharing {
+            } else if w * h < 1 << 20 {
                 assert!(stream.zero_copy(), "frame {n}");
             } else if crate::agent::zerocopy::unlimited() {
                 assert!(!stream.zero_copy(), "frame {n}");
@@ -650,7 +747,7 @@ mod tests {
             let proved = proof(&KEY, Role::Agent, &theirs, &ours).unwrap();
             to.write_all(&proved.finalize().into_bytes()).unwrap();
             read_open_request(&mut from).unwrap();
-            to.write_all(&OPENED).unwrap();
+            to.write_all(&opened(None)).unwrap();
             // Nothing more is read until the test says, and then the
             // connection goes with what it never read.
             let _ = ended.recv();
@@ -787,7 +884,9 @@ mod tests {
     fn agent_within(limits: Limits) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        std::thread::spawn(move || accept(listener, KEY.into(), loopback(), echoes().0, limits));
+        std::thread::spawn(move || {
+            accept(listener, KEY.into(), loopback(), None, echoes().0, limits)
+        });
         address
     }
 
@@ -838,9 +937,16 @@ mod tests {
                 .finalize()
                 .into_bytes(),
         )?;
-        link.write_all(&[width.to_be_bytes(), height.to_be_bytes()].concat())?;
+        // No memory shared.
+        link.write_all(&[&width.to_be_bytes()[..], &height.to_be_bytes(), &[0; 8]].concat())?;
         let mut status = [0];
         link.read_exact(&mut status)?;
+        if status[0] == OK {
+            // Where its picture is in shared memory: nowhere.
+            let mut at = [0; 8];
+            link.read_exact(&mut at)?;
+            assert_eq!(u64::from_be_bytes(at), crate::agent::link::SOCKET);
+        }
         Ok(status[0])
     }
 
@@ -859,7 +965,7 @@ mod tests {
             unproved: 8,
             handshake: HANDSHAKE_WITHIN,
         };
-        std::thread::spawn(move || accept(listener, KEY.into(), loopback(), open, limits));
+        std::thread::spawn(move || accept(listener, KEY.into(), loopback(), None, open, limits));
         let one = Agent::new(format!("127.0.0.1:{port}"), KEY.to_vec());
 
         let streams = [in_time(&one), in_time(&one), in_time(&one)];
@@ -906,7 +1012,7 @@ mod tests {
             "127.0.0.2/32".parse().unwrap(),
             "127.0.3.0/24".parse().unwrap(),
         ];
-        std::thread::spawn(move || accept(listener, KEY.into(), allowed, open, limits));
+        std::thread::spawn(move || accept(listener, KEY.into(), allowed, None, open, limits));
 
         // A daemon the agent allows, at the hello and no further, which a
         // handshake begun elsewhere would close were it given a place.
@@ -928,6 +1034,7 @@ mod tests {
         let door = |allowed: &[&str]| Door {
             limits,
             allowed: allowed.iter().map(|net| net.parse().unwrap()).collect(),
+            places: None,
             open: echoes().0,
             unproved: Mutex::default(),
             user: Mutex::default(),
@@ -958,6 +1065,7 @@ mod tests {
                 handshake: HANDSHAKE_WITHIN,
             },
             allowed: Vec::new(),
+            places: None,
             open: echoes().0,
             unproved: Mutex::default(),
             user: Mutex::default(),
@@ -1123,5 +1231,59 @@ mod tests {
         assert_eq!(status[0], FAILED);
         let why = why(&mut link);
         assert!(why.contains("no part of a 64x48 picture"), "{why}");
+    }
+
+    /// A stream the shared memory has no room for, its places held, has its
+    /// pictures over the connection, and the place a stream held is
+    /// another's once it ends.
+    #[test]
+    fn a_stream_with_no_room_crosses_the_connection() {
+        let size = (64, 64);
+        let (_file, region, places) = shared("room", picture_bytes(size));
+        let agent = Agent::new(agent_sharing(Some(places)), KEY.to_vec()).sharing(region);
+        let first = Stream::open(&agent, size).unwrap();
+        assert!(first.shares());
+        let mut second = Stream::open(&agent, size).unwrap();
+        assert!(!second.shares());
+        let mut planes = Planes::new(64, 64);
+        planes.y.fill(77);
+        let mut got = Vec::new();
+        assert!(second.frame(&mut planes, true, 30, &mut got).unwrap());
+        let mut expected = Vec::new();
+        echo(&planes, true, 30, &mut expected);
+        assert!(got == expected);
+        drop(first);
+        // Its thread ends as the connection does, a moment after.
+        let began = std::time::Instant::now();
+        while !Stream::open(&agent, size).unwrap().shares() {
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "the place is still held"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Ends that do not share the same memory are told so as the stream
+    /// opens: a daemon sharing memory with an agent that shares none, two
+    /// of other lengths, and two of one length that are other memory.
+    #[test]
+    fn ends_sharing_other_memory_are_told_so() {
+        let size = (64, 64);
+        let bytes = picture_bytes(size);
+        let (_daemons, region, _) = shared("daemons", bytes);
+        let why = |agent: Agent| format!("{:#}", Stream::open(&agent, size).err().unwrap());
+        let none = Agent::new(agent(), KEY.to_vec()).sharing(region.clone());
+        assert!(why(none).contains("--shared-memory"));
+        let (_longer, _, longer) = shared("longer", 2 * bytes);
+        let other = Agent::new(agent_sharing(Some(longer)), KEY.to_vec()).sharing(region.clone());
+        assert!(why(other).contains("not the same memory"));
+        let (_agents, _, agents) = shared("agents", bytes);
+        let other = Agent::new(agent_sharing(Some(agents.clone())), KEY.to_vec()).sharing(region);
+        assert!(why(other).contains("other memory"));
+        // And a daemon that shares none with an agent that does sends its
+        // pictures over the connection.
+        let plain = Agent::new(agent_sharing(Some(agents)), KEY.to_vec());
+        assert!(!Stream::open(&plain, size).unwrap().shares());
     }
 }

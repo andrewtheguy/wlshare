@@ -12,7 +12,8 @@
 //! streams are otherwise libx264's, on its processor. The daemon's end is a
 //! [`Backend`] too: it sends the agent what changed of the picture and is
 //! sent the access unit back, over TCP behind a pre-shared key. The agent's
-//! end keeps a copy of the picture and an encoder over it.
+//! end keeps a copy of the picture and an encoder over it, or, in memory the
+//! two share, reads the picture where the daemon wrote it.
 
 mod libva;
 mod syntax;
@@ -48,8 +49,8 @@ pub struct Planes {
     pub stride: usize,
     /// The coded picture's rows and one to spare, so the bottom row pair's
     /// planes are a whole stride past its left edge.
-    pub y: Vec<u8>,
-    pub uv: Vec<u8>,
+    pub y: Plane,
+    pub uv: Plane,
     /// How many macroblocks the coded picture is across.
     pub across: usize,
     /// For each macroblock of the coded picture, row by row, how many frames
@@ -74,18 +75,43 @@ impl Planes {
         )
     }
 
-    /// Planes for a `width`×`height` picture, black, every macroblock new.
-    pub fn new(width: u16, height: u16) -> Self {
+    /// How a `width`×`height` picture's planes are laid out: the stride, and
+    /// the bytes of the luma plane and of the chroma plane.
+    pub fn layout(width: u16, height: u16) -> (usize, usize, usize) {
         let (w, h) = (usize::from(width), usize::from(height));
         let stride = w.next_multiple_of(64);
-        let across = w.next_multiple_of(2).div_ceil(16);
+        (
+            stride,
+            stride * (h.next_multiple_of(2) + 1),
+            stride * (h.div_ceil(2) + 1),
+        )
+    }
+
+    /// Planes for a `width`×`height` picture, black, every macroblock new.
+    pub fn new(width: u16, height: u16) -> Self {
+        let (_, y, uv) = Self::layout(width, height);
+        Self::over(width, height, vec![16; y].into(), vec![128; uv].into())
+    }
+
+    /// Planes for a `width`×`height` picture over samples that are already
+    /// somewhere, [`Self::layout`]'s bytes of each plane, every macroblock
+    /// new.
+    pub fn over(width: u16, height: u16, y: Plane, uv: Plane) -> Self {
+        let (stride, y_bytes, uv_bytes) = Self::layout(width, height);
+        assert!(
+            y.len() == y_bytes && uv.len() == uv_bytes,
+            "planes of {} and {} bytes for a {width}x{height} picture, which has {y_bytes} and {uv_bytes}",
+            y.len(),
+            uv.len()
+        );
+        let across = usize::from(width).next_multiple_of(2).div_ceil(16);
         Self {
             coded: Self::coded_size(width, height),
             stride,
-            y: vec![16; stride * (h.next_multiple_of(2) + 1)],
-            uv: vec![128; stride * (h.div_ceil(2) + 1)],
+            y,
+            uv,
             across,
-            still: vec![0; across * h.next_multiple_of(2).div_ceil(16)],
+            still: vec![0; across * usize::from(height).next_multiple_of(2).div_ceil(16)],
             refine: false,
         }
     }
@@ -106,6 +132,99 @@ impl Planes {
             self.still[row * self.across + left / 16..=row * self.across + (right - 1) / 16]
                 .fill(0);
         }
+    }
+}
+
+/// A plane's samples: its own, or where they lie in memory another machine
+/// writes them into, a picture of the encoding agent's shared memory
+/// ([`crate::agent::shared`]), which the agent's encoder reads from there.
+pub struct Plane(Samples);
+
+enum Samples {
+    Own(Vec<u8>),
+    Shared(crate::agent::shared::View),
+}
+
+impl Plane {
+    /// The samples as a buffer of their own: these, or a copy of shared ones.
+    pub fn into_vec(self) -> Vec<u8> {
+        match self.0 {
+            Samples::Own(samples) => samples,
+            Samples::Shared(view) => view.to_vec(),
+        }
+    }
+}
+
+impl From<Vec<u8>> for Plane {
+    fn from(samples: Vec<u8>) -> Self {
+        Self(Samples::Own(samples))
+    }
+}
+
+impl From<crate::agent::shared::View> for Plane {
+    fn from(view: crate::agent::shared::View) -> Self {
+        Self(Samples::Shared(view))
+    }
+}
+
+impl std::ops::Deref for Plane {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.0 {
+            Samples::Own(samples) => samples,
+            Samples::Shared(view) => view,
+        }
+    }
+}
+
+impl std::ops::DerefMut for Plane {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        match &mut self.0 {
+            Samples::Own(samples) => samples,
+            Samples::Shared(view) => view,
+        }
+    }
+}
+
+/// A copy is a plane's own, whatever the samples it was made from.
+impl Clone for Plane {
+    fn clone(&self) -> Self {
+        self.to_vec().into()
+    }
+}
+
+impl PartialEq for Plane {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl std::fmt::Debug for Plane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let whose = match self.0 {
+            Samples::Own(_) => "own",
+            Samples::Shared(_) => "shared",
+        };
+        write!(f, "Plane({} bytes, {whose})", self.len())
+    }
+}
+
+impl<'a> IntoIterator for &'a Plane {
+    type Item = &'a u8;
+    type IntoIter = std::slice::Iter<'a, u8>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Plane {
+    type Item = &'a mut u8;
+    type IntoIter = std::slice::IterMut<'a, u8>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
     }
 }
 

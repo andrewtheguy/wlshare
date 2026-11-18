@@ -20,7 +20,9 @@ Two machines with a wired link between them that is very fast:
   [A virtual machine and its host](#a-virtual-machine-and-its-host) is that
   setup from start to finish. A container is the same as a guest, and a
   guest or container beside it that has the host's GPU passed in does for
-  the host.
+  the host. A QEMU guest can also share memory with the agent and not send
+  it the pictures at all:
+  [Shared memory with the guest](#shared-memory-with-the-guest).
 - **Two wired machines on a LAN faster than gigabit**, 2.5 Gbit/s or more.
 
 How fast depends on what moves. Only what changed of a picture is sent, so a
@@ -232,6 +234,137 @@ A guest that reaches the host through another address than the one in
 `ALLOW` is closed unanswered, and the agent's log names the address it saw:
 see below.
 
+## Shared memory with the guest
+
+Where the agent is on the host of wlshare's virtual machine, or in a
+container on that host, the two can share memory, and the pictures are not
+sent at all: wlshare writes what changed of each one into memory the agent
+maps too, and the network carries the rest, which is little. It takes about
+40% off what a frame costs the host, and a frame comes back sooner
+([measured](https://github.com/andrewtheguy/wlshare/blob/main/docs/video-performance.md#the-encoding-agents-link)).
+Everything above still holds: the agent listens, allows the guest's
+address, and proves the key, and an agent anywhere else has only the
+network.
+
+The memory is QEMU's `ivshmem-plain` device: a PCI device in the guest whose
+memory is a file on the host. What it costs:
+
+- **The guest boots without Secure Boot.** Under it, the guest's kernel
+  refuses a process the device's memory.
+- **The file is the access control.** Whoever can open the file on the
+  host, or the device in the guest, reads the desktop's pictures and can
+  write into them. The key covers the network alone.
+
+The memory is laid out by the agent, a picture a stream: about 3.1 MB a
+1920×1080 picture and 12.4 MB a 3840×2160 one. A stream it has no room for
+is sent over the network as before, so 64 MiB is plenty for a session or
+two.
+
+1. **On the host, the file.** It has to be readable and writable by the
+   agent's account and no other, and to stay the same file while the agent
+   runs. With plain QEMU it is the device's backing file:
+
+   ```sh
+   -object memory-backend-file,id=wlshare,share=on,mem-path=/dev/shm/wlshare,size=64M
+   -device ivshmem-plain,memdev=wlshare
+   ```
+
+   **On Proxmox**, `qm set <vmid> --ivshmem size=64,name=wlshare` adds the
+   device, backed by `/dev/shm/pve-shm-wlshare`. Proxmox removes that file
+   each time the guest stops and QEMU makes it again, root's, as it starts,
+   and Proxmox refuses a container a bind mount from `/dev`. So make the
+   file somewhere else, at boot, and have a hookscript point Proxmox's name
+   at it before each start:
+
+   ```sh
+   # /etc/tmpfiles.d/ivshmem.conf: the agent's account owns it. For an
+   # unprivileged container that is its uid on the host, 100000 more.
+   d /run/ivshmem-wlshare 0750 101000 101000 -
+   f /run/ivshmem-wlshare/wlshare 0600 101000 101000 -
+   ```
+
+   ```sh
+   #!/bin/sh
+   # /var/lib/vz/snippets/ivshmem-wlshare.sh
+   set -eu
+   if [ "$2" = pre-start ]; then
+       ln -sfn /run/ivshmem-wlshare/wlshare /dev/shm/pve-shm-wlshare
+   fi
+   ```
+
+   ```sh
+   systemd-tmpfiles --create /etc/tmpfiles.d/ivshmem.conf
+   chmod 755 /var/lib/vz/snippets/ivshmem-wlshare.sh
+   qm set <vmid> --ivshmem size=64,name=wlshare --hookscript local:snippets/ivshmem-wlshare.sh
+   # the agent in a container: the file's directory, bound into it
+   pct set <ctid> --mp0 /run/ivshmem-wlshare,mp=/mnt/ivshmem
+   ```
+
+   QEMU opens the file through the link and sizes it, and Proxmox's removal
+   at a stop takes the link and leaves the file. Stop the guest and start it
+   again (a reboot from inside it does not add a device), and restart the
+   container for its mount.
+
+2. **In the guest**, turn Secure Boot off in its firmware setup (on
+   Proxmox's OVMF: Esc as it boots, then Device Manager, Secure Boot
+   Configuration, untick Attempt Secure Boot, F10);
+   `cat /sys/kernel/security/lockdown` says `[none]` once it is. Find the
+   device, and give its memory to the account wlshare runs as, here `me`,
+   with a udev rule:
+
+   ```sh
+   lspci -D -d 1af4:1110
+   # 0000:00:14.0 RAM memory: Red Hat, Inc. QEMU Inter-VM shared memory device (rev 01)
+   echo 'ACTION!="remove", SUBSYSTEM=="pci", ATTR{vendor}=="0x1af4", ATTR{device}=="0x1110", RUN+="/usr/bin/chown me /sys%p/resource2 /sys%p/resource2_wc"' |
+       sudo tee /etc/udev/rules.d/70-ivshmem.rules
+   sudo udevadm trigger --action=change --subsystem-match=pci --attr-match=vendor=0x1af4
+   ```
+
+   Then name the device's memory in the `[enc_agent]` table:
+
+   ```toml
+   [enc_agent]
+   address = "192.168.1.20:5990"
+   shared_memory = "/sys/bus/pci/devices/0000:00:14.0/resource2_wc"
+   ```
+
+3. **On the agent's machine**, name the file in
+   `/etc/default/wlshare-enc-agent`, and let the unit's account open it: the
+   unit's own account is made up as it starts and cannot own the file, and
+   it sees the rest of the system read-only. A drop-in has it run as the
+   file's owner, here `me`, with the file's directory writable:
+
+   ```sh
+   # /etc/default/wlshare-enc-agent
+   SHARED_MEMORY=/mnt/ivshmem/wlshare
+   ```
+
+   ```sh
+   sudo systemctl edit wlshare-enc-agent
+   ```
+
+   ```ini
+   [Service]
+   User=me
+   ReadWritePaths=/mnt/ivshmem
+   ```
+
+   Run by hand, the agent takes `--shared-memory /mnt/ivshmem/wlshare`.
+
+Restart the agent and wlshare. The agent's log names the memory, and each
+stream where its picture went:
+
+```
+the daemon's pictures in 64 MiB of memory shared with it, /mnt/ivshmem/wlshare
+10.22.38.224:58102: a 1920x1080 stream, its picture in shared memory at 0
+```
+
+and wlshare's, as it starts:
+
+```
+the encoding agent's pictures in 64 MiB of memory shared with it, /sys/bus/pci/devices/0000:00:14.0/resource2_wc
+```
+
 ## When it does not work
 
 What the logs say, the agent's (`journalctl -u wlshare-enc-agent`) and the
@@ -245,6 +378,11 @@ daemon's:
 | agent: `closed unanswered, the agent being the daemon at …'s` | Another daemon has a stream open. An agent is one daemon's at a time. |
 | daemon: `connecting: Connection refused`, or a timeout | Nothing listens at `address`: the agent is not running, `LISTEN` is another address or port, or a firewall is in the way. |
 | daemon: `not done within 5s` | The agent stopped answering mid-stream, or the link is too slow for the pictures. The session ends. |
+| agent or daemon: `the shared memory`, then `Permission denied` | The account cannot open the file, or the device's memory in the guest: see [Shared memory with the guest](#shared-memory-with-the-guest). `Read-only file system` is the agent's unit without `ReadWritePaths`. |
+| daemon: `the daemon shares memory with this agent and the agent none with it` | wlshare has `shared_memory` and the agent no `SHARED_MEMORY`. |
+| daemon: `the two are not the same memory`, or `the two ends map other memory` | The guest's device and the agent's file are not the same memory: another file, or a guest started before the file was made. |
+| daemon: `Operation not permitted` mapping the device | The guest booted with Secure Boot on. |
+| agent: `over the connection: no room for its picture in shared memory` | The memory is full of other streams' pictures: this stream's cross the network, which works, more slowly. A larger `size` makes room. |
 
 The agent's unit does not start again by itself after refusing its command
 line, which is what an unset or mistyped `LISTEN` or `ALLOW` is:

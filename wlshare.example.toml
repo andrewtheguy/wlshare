@@ -227,9 +227,17 @@ name = "wlshare"
 # a picture is sent, and that is all the key does: the pictures cross the
 # network in the clear, unauthenticated, so the link is a trusted LAN or a
 # tunnel (WireGuard, SSH), never the internet.
+#
+# A daemon in a virtual machine whose agent is on its host, or in a container
+# there, can share memory with it instead of sending it the pictures: QEMU's
+# ivshmem-plain device, whose memory the daemon maps here and the agent maps
+# as the file on the host behind it (its --shared-memory). The agent places
+# each stream's picture in it, and the daemon writes what changed there.
+# docs/enc-agent.md, "Shared memory with the guest", says how to set it up.
 # [enc_agent]
 # address = "192.168.1.20:5990"
 # key_file = "/home/me/.config/wlshare/enc_agent.key"   # default: beside this file
+# shared_memory = "/sys/bus/pci/devices/0000:00:14.0/resource2_wc"   # default: none
 
 # The keymap the virtual keyboard uploads and keysyms are resolved through, as
 # XKB rules/model/layout/variant/options names. Empty means the library default.

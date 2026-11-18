@@ -14,6 +14,12 @@
 //! virtual machine or container with no GPU and the host it runs on, or a
 //! sibling of it there, that has the host's encoder; or a machine wired to a
 //! LAN faster than gigabit and another on it.
+//!
+//! Where it is on the host of the daemon's virtual machine, or in a
+//! container there, the two can share memory (`--shared-memory`, the file
+//! the guest's `ivshmem-plain` device is backed by): the daemon writes its
+//! pictures there and the agent's encoder reads them from where they lie
+//! ([`wlshare_core::agent::shared`]).
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -22,7 +28,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::Parser;
 use log::info;
-use wlshare_core::agent::{allow::Net, link, serve};
+use wlshare_core::agent::{allow::Net, link, serve, shared};
 use wlshare_core::h264::{Backend, vaapi};
 
 #[derive(Parser, Debug)]
@@ -45,6 +51,12 @@ struct Args {
     /// (default: $XDG_CONFIG_HOME/wlshare/enc_agent.key).
     #[arg(long, value_name = "FILE")]
     key_file: Option<PathBuf>,
+    /// Memory shared with the daemon's machine, which its pictures are
+    /// written into rather than sent: the file the daemon's virtual machine's
+    /// ivshmem-plain device is backed by, read and written by this account
+    /// alone. The daemon's [enc_agent] table names its own end, the device.
+    #[arg(long, value_name = "FILE", env = "SHARED_MEMORY")]
+    shared_memory: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,6 +73,18 @@ fn main() -> anyhow::Result<()> {
     let (device, low_power) = vaapi::find(vaapi::moves_its_quantizer).context(
         "this machine has no hardware H.264 encoder to lend (RUST_LOG=debug says what was tried)",
     )?;
+    let places = match &args.shared_memory {
+        Some(path) => {
+            let region = shared::Region::open(path).context("the shared memory")?;
+            info!(
+                "the daemon's pictures in {} MiB of memory shared with it, {}",
+                region.len() >> 20,
+                path.display()
+            );
+            Some(shared::Places::new(region))
+        }
+        None => None,
+    };
     let listener =
         TcpListener::bind(args.listen).with_context(|| format!("listening on {}", args.listen))?;
     info!(
@@ -80,6 +104,7 @@ fn main() -> anyhow::Result<()> {
         listener,
         key.into(),
         args.allow,
+        places,
         Arc::new(move || {
             let display = Arc::new(vaapi::Display::open(&device)?);
             Ok(Arc::new(move |coded| {

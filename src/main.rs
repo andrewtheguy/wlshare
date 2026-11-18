@@ -187,7 +187,18 @@ fn enc_agent(
         return Ok(None);
     }
     let key = read_key(&agent.key_file(config_path)).context("the [enc_agent] table's key")?;
-    Ok(Some(Agent::new(agent.address.clone(), key)))
+    let mut lent = Agent::new(agent.address.clone(), key);
+    if let Some(path) = &agent.shared_memory {
+        let region = wlshare_core::agent::shared::Region::open(path)
+            .context("the [enc_agent] table's shared memory")?;
+        info!(
+            "the encoding agent's pictures in {} MiB of memory shared with it, {}",
+            region.len() >> 20,
+            path.display()
+        );
+        lent = lent.sharing(region);
+    }
+    Ok(Some(lent))
 }
 
 /// A capture is a run somebody started by hand and will stop: it writes every
@@ -529,6 +540,26 @@ mod tests {
         assert!(enc_agent(&config(false), &path).unwrap().is_none());
         let agent = enc_agent(&config(true), &path).unwrap().expect("an agent");
         assert_eq!(agent.address(), "192.0.2.1:5990");
+
+        // Memory shared with it is mapped as the daemon starts, and memory
+        // that is not there stops it.
+        let sharing = |memory: &std::path::Path| -> config::Config {
+            toml::from_str(&format!(
+                "[enc_agent]\naddress = \"192.0.2.1:5990\"\nshared_memory = {:?}\n",
+                memory.display().to_string()
+            ))
+            .unwrap()
+        };
+        let memory = dir.join("memory");
+        let why = format!("{:#}", enc_agent(&sharing(&memory), &path).unwrap_err());
+        assert!(why.contains("shared memory"), "{why}");
+        std::fs::File::create(&memory)
+            .unwrap()
+            .set_len(1 << 20)
+            .unwrap();
+        enc_agent(&sharing(&memory), &path)
+            .unwrap()
+            .expect("an agent");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

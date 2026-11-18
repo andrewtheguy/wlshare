@@ -7,6 +7,7 @@ After=network-online.target
 [Service]
 Type=simple
 # Where it listens and where its daemon is: LISTEN and ALLOW, both required.
+# SHARED_MEMORY, optional, is read by the agent from its environment.
 EnvironmentFile=/etc/default/wlshare-enc-agent
 # An account that exists for as long as the agent runs, with the GPU's render
 # node and nothing else of the machine's. The key the agent generates on first
