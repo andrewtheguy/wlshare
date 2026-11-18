@@ -160,11 +160,12 @@ enum Samples {
 }
 
 impl Plane {
-    /// The samples as a buffer of their own: these, or a copy of shared ones.
-    pub fn into_vec(self) -> Vec<u8> {
+    /// The samples' buffer, where they are the plane's own: none where they
+    /// lie in shared memory, which the daemon writes and never reads.
+    pub fn into_vec(self) -> Option<Vec<u8>> {
         match self.0 {
-            Samples::Own(samples) => samples,
-            Samples::Shared(view) => view.to_vec(),
+            Samples::Own(samples) => Some(samples),
+            Samples::Shared(_) => None,
         }
     }
 }

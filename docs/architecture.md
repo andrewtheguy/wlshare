@@ -886,13 +886,8 @@ quantizer each was asked at.
   the file on the host, or the device's resource in the guest, reads the
   desktop and can write into it, so the file's permissions are its access
   control. And the guest boots without Secure Boot, under which the
-  kernel's lockdown refuses a process the BAR's mapping. On the link it was
-  made for it takes a little over a third off what a frame costs the
-  host's processor, the guest's included and its conversion of the desktop
-  with it, and about half off what is left past that conversion, which is
-  the same either way; the daemon's share is less than a send's, and a
-  frame is back sooner
-  ([measured](video-performance.md#the-encoding-agents-link)).
+  kernel's lockdown refuses a process the BAR's mapping. What it saves a
+  frame is [measured](video-performance.md#the-encoding-agents-link).
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the

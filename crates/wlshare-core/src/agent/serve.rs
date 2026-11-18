@@ -69,6 +69,10 @@ const ACCEPT_AGAIN: Duration = Duration::from_secs(1);
 /// How much of a picture is read from the connection at a time.
 const READ_AHEAD: usize = 256 * 1024;
 
+/// How much is read at a time of a frame whose picture is in shared memory:
+/// its header and its rectangles'.
+const HEADS_AHEAD: usize = 8 * 1024;
+
 /// What opens an encoder over a coded picture of even sides, for one stream
 /// of the daemon it was made for.
 pub type Streams = dyn Fn((usize, usize)) -> anyhow::Result<Box<dyn Backend>> + Send + Sync;
@@ -340,8 +344,9 @@ fn accept(
 }
 
 /// What a stream came to, for the log: the frames coded, the bytes of
-/// picture they were sent as and of stream they were coded into, and how
-/// long the encoder took over them.
+/// picture they were sent as over the connection (none in shared memory)
+/// and of stream they were coded into, and how long the encoder took over
+/// them.
 #[derive(Default)]
 struct Served {
     frames: u64,
@@ -487,7 +492,8 @@ fn connection(
         }
     };
 
-    let mut from = BufReader::with_capacity(READ_AHEAD, from);
+    // In shared memory only the headers cross the connection.
+    let mut from = BufReader::with_capacity(if shares { HEADS_AHEAD } else { READ_AHEAD }, from);
     let mut served = Served::default();
     let mut reply = Vec::new();
     loop {
@@ -513,9 +519,9 @@ fn connection(
                 // In shared memory the rows are where the daemon wrote them.
                 if !shares {
                     span.read_rows(&mut from, &mut planes)?;
+                    served.pictures += (span.w * span.h * 3 / 2) as u64;
                 }
                 planes.touch((span.x, span.y), (span.x + span.w, span.y + span.h));
-                served.pictures += (span.w * span.h * 3 / 2) as u64;
             }
             planes.refine = frame.refine;
             let began = std::time::Instant::now();

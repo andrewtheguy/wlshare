@@ -419,14 +419,22 @@ pub fn read_open_request(
 /// The places the daemon's streams hold in the memory it shares, which it
 /// may write into still ([`crate::agent::shared::Region::held`]): a `u16`
 /// count, and each place where it starts and its length, each a `u64`.
-pub fn places(held: &[std::ops::Range<u64>]) -> Vec<u8> {
+/// An error for more places than a count names.
+pub fn places(held: &[std::ops::Range<u64>]) -> anyhow::Result<Vec<u8>> {
+    let count = u16::try_from(held.len()).map_err(|_| {
+        anyhow::anyhow!(
+            "its streams hold {} places in shared memory, past the {} the link names",
+            held.len(),
+            u16::MAX
+        )
+    })?;
     let mut places = Vec::with_capacity(2 + held.len() * 16);
-    places.extend_from_slice(&(held.len() as u16).to_be_bytes());
+    places.extend_from_slice(&count.to_be_bytes());
     for place in held {
         places.extend_from_slice(&place.start.to_be_bytes());
         places.extend_from_slice(&(place.end - place.start).to_be_bytes());
     }
-    places
+    Ok(places)
 }
 
 /// Read the places the daemon's streams hold in `shared` bytes of memory,
@@ -719,7 +727,7 @@ mod tests {
 
         // The places its streams hold, each where it starts and its length.
         let held = [0x1000..0x5000, 0x10_0000..0x10_2000];
-        let sent = places(&held);
+        let sent = places(&held).unwrap();
         assert_eq!(
             sent,
             [
@@ -729,21 +737,23 @@ mod tests {
         );
         let read = |sent: &[u8], shared| read_places(&mut &sent[..], shared);
         assert_eq!(read(&sent, 1 << 21).unwrap(), held);
-        assert_eq!(read(&places(&[]), 1 << 21).unwrap(), []);
+        assert_eq!(read(&places(&[]).unwrap(), 1 << 21).unwrap(), []);
         assert!(read(&sent[..sent.len() - 1], 1 << 21).is_err());
-        // None past the memory, of no bytes, or more than it has pages.
-        for (shared, place) in [
-            (1u64 << 21, (1u64 << 21) - 0x1000..(1 << 21) + 0x1000),
-            (1 << 21, 0x1000..0x1000),
-            (0x1000, 0..0x1000),
-        ] {
-            let mut sent = places(&[]);
-            sent[..2].copy_from_slice(&[0, 1]);
-            sent.extend_from_slice(&place.start.to_be_bytes());
-            sent.extend_from_slice(&(place.end - place.start).to_be_bytes());
-            let shared = if shared == 0x1000 { 0xfff } else { shared };
-            assert!(read(&sent, shared).is_err(), "{shared}: {place:?}");
+        // None past the memory, or of no bytes.
+        for place in [(1u64 << 21) - 0x1000..(1 << 21) + 0x1000, 0x1000..0x1000] {
+            let sent = places(std::slice::from_ref(&place)).unwrap();
+            assert!(read(&sent, 1 << 21).is_err(), "{place:?}");
         }
+        // Nor more than the memory has pages, each place in it.
+        let why = read(&places(&[0..0x800, 0x800..0x1000]).unwrap(), 0x1000)
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("2 places in 4096 bytes"), "{why}");
+        // And no more places than the count names.
+        let many: Vec<_> = std::iter::repeat_n(0..0x1000u64, 1 << 16).collect();
+        assert!(places(&many[..(1 << 16) - 1]).is_ok());
+        let why = places(&many).unwrap_err().to_string();
+        assert!(why.contains("65536 places"), "{why}");
 
         let frame = Frame {
             keyframe: true,

@@ -282,7 +282,7 @@ impl Stream {
                 // is only on others' placing.
                 let placing = region.opening();
                 timed
-                    .write_all(&places(&region.held()))
+                    .write_all(&places(&region.held())?)
                     .context("naming its places in shared memory")?;
                 let at = read_placed(&mut timed).context("placing its picture")?;
                 let picture = at
@@ -448,7 +448,7 @@ impl Backend for Stream {
             } else if pending {
                 for plane in [&mut planes.y, &mut planes.uv] {
                     let copy = plane.clone();
-                    buffers.push(std::mem::replace(plane, copy).into_vec());
+                    buffers.extend(std::mem::replace(plane, copy).into_vec());
                 }
             }
             if pending {
