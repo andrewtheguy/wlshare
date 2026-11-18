@@ -16,15 +16,17 @@
 //!   access unit is back, so a frame waits for the kernel's word on every
 //!   call that sent zero-copy ([`ZeroCopy::settle`]) before it returns and
 //!   the planes are read into again, within the frame's time.
-//! - **A frame that fails returns once the kernel is done too.** A frame
-//!   that fails mid-send, or whose access unit is not back in its time, has
-//!   pages the kernel may still send, and the caller is then free to write
-//!   the planes or let them go, their memory the allocator's to give to
-//!   anything. So the stream resets its connection, which frees every packet
-//!   TCP holds, and waits for the kernel's word on what the network device
-//!   has yet to send or drop ([`ZeroCopy::abandon`]), with no limit but the
-//!   device's: nothing of the daemon's memory is sent after the frame has
-//!   returned.
+//! - **A frame that fails leaves its pages to an owner of their own.** A
+//!   frame that fails mid-send, or whose access unit is not back in its
+//!   time, has pages the kernel may still send, and the caller is then free
+//!   to write the planes or let them go, their memory the allocator's to give
+//!   to anything. So the stream resets its connection, which frees every
+//!   packet TCP holds, keeps the buffers those pages are of, the planes given
+//!   copies of them in their place, and hands them to a thread that frees
+//!   them once the kernel says it is done with what the network device has
+//!   yet to send or drop ([`ZeroCopy::abandon`]). The frame returns its error
+//!   in its time, and nothing of the daemon's memory is sent after: a buffer
+//!   the kernel never lets go of is never freed.
 //! - **Small writes are copied.** Pinning pages and the kernel's word cost
 //!   more than copying a few kilobytes, so a frame goes zero-copy only where
 //!   its slices are [`LEAST`] long on average: the whole picture, or rows
@@ -61,8 +63,8 @@ pub const LEAST: usize = 16 * 1024;
 /// used before a call is refused.
 pub const CALL: usize = 1 << 20;
 
-/// How long [`ZeroCopy::abandon`] waits before it says it is waiting: the
-/// kernel lets go of what a reset frees at once, and a device of what it
+/// How long the wait for a failed frame's pages goes on before it says so:
+/// the kernel lets go of what a reset frees at once, and a device of what it
 /// holds in milliseconds.
 const LATE: Duration = Duration::from_secs(1);
 
@@ -186,41 +188,70 @@ impl ZeroCopy {
         Ok(())
     }
 
-    /// After a frame has failed: reset the connection, so that TCP lets go
-    /// of every packet it holds, and wait until the kernel is done with every
-    /// page sent zero-copy, those a network device has yet to send or drop
-    /// among them, for as long as that takes. The connection is no use after
-    /// it. Where the kernel's word cannot be read, it is asked again until it
-    /// can: this does not return while a page may still be sent, a session
-    /// stalled being better than its memory sent on.
-    pub fn abandon(&mut self, stream: &std::net::TcpStream) {
-        if self.done == self.sent {
-            return;
-        }
-        // A connect to no address disconnects a TCP socket: its queues are
-        // purged and the other end is sent a reset, and the socket, still
-        // open, is told of the pages as they are let go.
-        // SAFETY: a `sockaddr` of no family, as long as it is said to be.
-        let reset = unsafe {
-            let mut none: libc::sockaddr = std::mem::zeroed();
-            none.sa_family = libc::AF_UNSPEC as libc::sa_family_t;
-            libc::connect(
-                stream.as_raw_fd(),
-                &raw const none,
-                size_of::<libc::sockaddr>() as libc::socklen_t,
-            )
+    /// Whether pages sent zero-copy are still in the kernel's hands.
+    pub fn pending(&self) -> bool {
+        self.done != self.sent
+    }
+
+    /// After a frame has failed with pages still in the kernel's hands
+    /// ([`Self::pending`]): reset the connection, so that TCP lets go of
+    /// every packet it holds, and hand `buffers`, the ones those pages are
+    /// of, to a thread of their own, which keeps them from everyone until the
+    /// kernel is done with them, those a network device has yet to send or
+    /// drop among them, for as long as that takes. It returns at once; the
+    /// connection is no use after it. Where no thread can be had for them,
+    /// the buffers are never freed.
+    pub fn abandon(&mut self, stream: &std::net::TcpStream, buffers: Vec<Vec<u8>>) {
+        let held = Held {
+            buffers,
+            released: false,
         };
-        if reset != 0 {
-            log::warn!(
-                "the encoding agent's connection: resetting it: {}",
-                std::io::Error::last_os_error()
+        if !self.pending() {
+            return held.release();
+        }
+        reset(stream);
+        // The socket, open for as long as the thread waits on it, past the
+        // stream that drops its own.
+        let link = match stream.try_clone() {
+            Ok(link) => link,
+            Err(e) => {
+                log::error!(
+                    "the encoding agent's connection: no way to wait for the kernel to let go of \
+                     a picture, whose buffers are kept for good: {e}"
+                );
+                return;
+            }
+        };
+        let mut sends = Self {
+            sent: self.sent,
+            done: self.done,
+            on: false,
+        };
+        self.done = self.sent;
+        let waits = std::thread::Builder::new()
+            .name("agent-release".into())
+            .spawn(move || {
+                sends.release(&link);
+                held.release();
+            });
+        if let Err(e) = waits {
+            log::error!(
+                "the encoding agent's connection: no thread to wait for the kernel to let go of \
+                 a picture, whose buffers are kept for good: {e}"
             );
         }
+    }
+
+    /// Wait until the kernel is done with every page sent zero-copy, for as
+    /// long as that takes, on a connection [`reset`] has let go of what TCP
+    /// holds. Where the kernel's word cannot be read, it is asked again until
+    /// it can: this does not return while a page may still be sent.
+    fn release(&mut self, stream: &std::net::TcpStream) {
         let began = std::time::Instant::now();
         let (mut said, mut unread) = (false, false);
         // A closed socket is always ready, so its error queue is looked at
         // every millisecond rather than polled for.
-        while self.done != self.sent {
+        while self.pending() {
             if let Err(e) = self.drain(stream)
                 && !unread
             {
@@ -294,6 +325,54 @@ impl ZeroCopy {
                 }
                 // SAFETY: as above.
                 header = unsafe { libc::CMSG_NXTHDR(&raw const message, header) };
+            }
+        }
+    }
+}
+
+/// Disconnect a TCP socket by a connect to no address: its queues are purged
+/// and the other end is sent a reset, and the socket, still open, is told of
+/// the pages as they are let go.
+fn reset(stream: &std::net::TcpStream) {
+    // SAFETY: a `sockaddr` of no family, as long as it is said to be.
+    let reset = unsafe {
+        let mut none: libc::sockaddr = std::mem::zeroed();
+        none.sa_family = libc::AF_UNSPEC as libc::sa_family_t;
+        libc::connect(
+            stream.as_raw_fd(),
+            &raw const none,
+            size_of::<libc::sockaddr>() as libc::socklen_t,
+        )
+    };
+    if reset != 0 {
+        log::warn!(
+            "the encoding agent's connection: resetting it: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+/// Buffers the kernel may still send from: freed once [`Held::release`] says
+/// it is done with them, and never freed otherwise, so that a way out of
+/// [`ZeroCopy::abandon`] that lost them, no thread to wait in, leaves them
+/// to nobody.
+struct Held {
+    buffers: Vec<Vec<u8>>,
+    released: bool,
+}
+
+impl Held {
+    /// The kernel is done with them.
+    fn release(mut self) {
+        self.released = true;
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if !self.released {
+            for buffer in self.buffers.drain(..) {
+                std::mem::forget(buffer);
             }
         }
     }
@@ -451,9 +530,10 @@ mod tests {
     }
 
     /// A frame cut short by its time, its pages in the kernel's queues for
-    /// an agent that reads nothing, is let go of whole once abandoned.
+    /// an agent that reads nothing, is let go of whole once the connection
+    /// is reset: what the thread [`ZeroCopy::abandon`] starts waits for.
     #[test]
-    fn a_frame_abandoned_is_let_go_of() {
+    fn a_frame_reset_is_let_go_of() {
         let listener =
             socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
         // A small window, so that most of the picture waits in the
@@ -477,13 +557,28 @@ mod tests {
         link.within(Duration::from_millis(300));
         let late = sends.send(&mut link, &mut [IoSlice::new(&picture)]);
         assert!(late.is_err(), "sixteen megabytes in a window of 64 KiB");
-        if unlimited() {
-            assert!(sends.sent > 0, "nothing went zero-copy");
+        if sends.sent == 0 {
+            // Every call refused for what the account may pin, and copied:
+            // nothing is left to prove here.
+            assert!(!unlimited(), "nothing went zero-copy with no limit to pin");
+            return;
         }
-        let began = std::time::Instant::now();
-        sends.abandon(&sender);
-        assert_eq!(sends.done, sends.sent);
-        assert!(began.elapsed() < LATE, "{:?}", began.elapsed());
+        // Pages still held, the window shut on them.
+        std::thread::sleep(Duration::from_millis(100));
+        sends.drain(&sender).unwrap();
+        assert!(sends.pending(), "the kernel let go of a picture never read");
+        // Waited for outside the wait, so that one that never ends fails
+        // the test rather than hanging it.
+        reset(&sender);
+        let (done, waited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            sends.release(&sender);
+            done.send(sends).unwrap();
+        });
+        let sends = waited
+            .recv_timeout(LATE)
+            .expect("the kernel kept the pages");
+        assert!(!sends.pending());
     }
 
     /// A stream that copies, as one does once the kernel has copied, sends

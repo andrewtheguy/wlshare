@@ -141,7 +141,7 @@ pub fn moves_its_quantizer(node: &Path, low_power: bool) -> anyhow::Result<()> {
         }
         let mut unit = Vec::new();
         anyhow::ensure!(
-            stream.frame(&planes, false, qp, &mut unit)?,
+            stream.frame(&mut planes, false, qp, &mut unit)?,
             "the encoder made no frame {n}"
         );
         anyhow::ensure!(
@@ -769,7 +769,7 @@ fn picture(surface: va::VASurfaceID, frame_num: u32, poc: i32, flags: u32) -> va
 impl Backend for Stream {
     fn frame(
         &mut self,
-        planes: &Planes,
+        planes: &mut Planes,
         keyframe: bool,
         qp: u8,
         out: &mut Vec<u8>,
@@ -1109,7 +1109,7 @@ mod tests {
                             *sample = state as u8;
                         }
                         let mut unit = Vec::new();
-                        assert!(stream.frame(&planes, false, 28, &mut unit).unwrap());
+                        assert!(stream.frame(&mut planes, false, 28, &mut unit).unwrap());
                         assert_eq!(
                             crate::h264::nal_types(&unit).contains(&5),
                             frame == 0,
@@ -1138,8 +1138,8 @@ mod tests {
         assert!(Stream::open(display.clone(), low_power, (96, 0)).is_err());
         assert!(Stream::open(display.clone(), low_power, (95, 64)).is_err());
         let mut stream = Stream::open(display, low_power, (96, 64)).unwrap();
-        let planes = Planes::new(96, 64);
-        let mut frame = |planes: &Planes, keyframe| {
+        let mut planes = Planes::new(96, 64);
+        let mut frame = |planes: &mut Planes, keyframe| {
             let mut unit = vec![0xAA];
             let made = stream.frame(planes, keyframe, 28, &mut unit);
             if made.is_err() {
@@ -1147,8 +1147,14 @@ mod tests {
             }
             made.map(|_| crate::h264::nal_types(&unit).contains(&5))
         };
-        assert!(frame(&planes, false).unwrap(), "the first frame is an IDR");
-        assert!(!frame(&planes, false).unwrap(), "and the next a P frame");
+        assert!(
+            frame(&mut planes, false).unwrap(),
+            "the first frame is an IDR"
+        );
+        assert!(
+            !frame(&mut planes, false).unwrap(),
+            "and the next a P frame"
+        );
 
         let mut narrow = Planes::new(96, 64);
         narrow.stride = 32;
@@ -1158,19 +1164,22 @@ mod tests {
         // the plane has.
         let mut apart = Planes::new(96, 64);
         apart.stride = usize::MAX / 63 + 2;
-        for (wrong, keyframe) in [
+        for (mut wrong, keyframe) in [
             (Planes::new(64, 64), true),
             (Planes::new(96, 128), false),
             (narrow, false),
             (short, false),
             (apart, false),
         ] {
-            assert!(frame(&wrong, keyframe).is_err());
+            assert!(frame(&mut wrong, keyframe).is_err());
             assert!(
-                frame(&planes, false).unwrap(),
+                frame(&mut planes, false).unwrap(),
                 "the frame after a failed one is an IDR"
             );
-            assert!(!frame(&planes, false).unwrap(), "and the next a P frame");
+            assert!(
+                !frame(&mut planes, false).unwrap(),
+                "and the next a P frame"
+            );
         }
     }
 
@@ -1197,7 +1206,7 @@ mod tests {
                 *sample = state as u8;
             }
             let mut unit = vec![0xAA];
-            let made = stream.frame(&planes, false, 28, &mut unit);
+            let made = stream.frame(&mut planes, false, 28, &mut unit);
             if made.is_err() {
                 assert_eq!(unit, [0xAA], "nothing of a failed frame is kept");
             }

@@ -322,7 +322,7 @@ impl H264Stream for Stream {
             );
             let made = self
                 .backend
-                .frame(&self.picture.planes, keyframe, qp(quality), out)?;
+                .frame(&mut self.picture.planes, keyframe, qp(quality), out)?;
             if made {
                 self.picture.planes.coded_frame();
             }
@@ -1190,7 +1190,7 @@ mod tests {
         impl Backend for Deaf {
             fn frame(
                 &mut self,
-                planes: &Planes,
+                planes: &mut Planes,
                 keyframe: bool,
                 _: u8,
                 out: &mut Vec<u8>,

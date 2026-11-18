@@ -201,6 +201,9 @@ pub struct Stream {
     sends: ZeroCopy,
     /// Whether a frame has failed, after which none is sent.
     failed: bool,
+    /// How long a frame may take, sent and answered: [`FRAME_WITHIN`], and
+    /// less in the tests.
+    within: Duration,
 }
 
 impl Stream {
@@ -255,6 +258,7 @@ impl Stream {
             most: most_coded((width, height)),
             sends,
             failed: false,
+            within: FRAME_WITHIN,
         })
     }
 }
@@ -266,12 +270,18 @@ impl Stream {
     pub(crate) fn zero_copy(&self) -> bool {
         self.sends.on()
     }
+
+    /// Frames given `within` each, sent and answered.
+    #[cfg(test)]
+    pub(crate) fn frames_within(&mut self, within: Duration) {
+        self.within = within;
+    }
 }
 
 impl Backend for Stream {
     fn frame(
         &mut self,
-        planes: &Planes,
+        planes: &mut Planes,
         keyframe: bool,
         qp: u8,
         out: &mut Vec<u8>,
@@ -304,7 +314,7 @@ impl Backend for Stream {
         }
         // The picture sent and the access unit read back in the one time.
         let mut link = Timed::new(&self.link);
-        link.within(FRAME_WITHIN);
+        link.within(self.within);
         let coded = (|| {
             self.sends
                 .send(&mut link, &mut request)
@@ -331,12 +341,21 @@ impl Backend for Stream {
             Ok(true)
         })();
         if coded.is_err() {
-            // The kernel may still hold pages of the planes, and of the
-            // headers, sent zero-copy and not settled, which are the
-            // caller's to write again or let go once this returns: not
-            // before the kernel is done with them. No frame is sent after.
+            // No frame is sent after. The kernel may still hold pages of the
+            // planes, and of the headers, sent zero-copy and not settled,
+            // which the caller is free to write again or let go once this
+            // returns: those buffers are kept until the kernel is done with
+            // them, and the planes are given copies of them.
             self.failed = true;
-            self.sends.abandon(&self.link);
+            let mut buffers = Vec::new();
+            if self.sends.pending() {
+                for plane in [&mut planes.y, &mut planes.uv] {
+                    let copy = plane.clone();
+                    buffers.push(std::mem::replace(plane, copy));
+                }
+                buffers.push(std::mem::take(&mut self.head));
+            }
+            self.sends.abandon(&self.link, buffers);
         }
         coded.context("the encoding agent")
     }
