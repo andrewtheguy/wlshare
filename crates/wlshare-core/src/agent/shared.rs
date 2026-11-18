@@ -245,11 +245,18 @@ impl Picture {
     }
 
     /// Write `mark` where the picture starts, for the agent to look for
-    /// there, and fence it.
-    pub fn mark(&self, mark: &[u8; MARK]) {
-        // SAFETY: the picture is inside the region, and longer than a mark.
+    /// there, and fence it: before the planes are made, which are then the
+    /// one way to those bytes.
+    pub fn mark(&mut self, mark: &[u8; MARK]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.given,
+            "the picture's planes were made before its mark was written"
+        );
+        // SAFETY: the picture is inside the region, and longer than a mark;
+        // no view of it is made yet.
         unsafe { std::ptr::copy_nonoverlapping(mark.as_ptr(), self.region.at(self.at), MARK) };
         fence();
+        Ok(())
     }
 
     /// The stream's planes, over the picture where it lies, black as
@@ -515,11 +522,15 @@ pub(crate) mod tests {
         let mut picture = Picture::new(daemon, place.at(), size).unwrap();
         let mark = [0xC3; MARK];
         assert!(!place.holds(&mark));
-        picture.mark(&mark);
+        picture.mark(&mark).unwrap();
         assert!(place.holds(&mark));
 
         let mut written = picture.planes().unwrap();
         assert!(picture.planes().is_none(), "the planes are made once");
+        assert!(
+            picture.mark(&mark).is_err(),
+            "no mark over the planes once made"
+        );
         assert!(
             !place.holds(&mark),
             "the planes are not black over the mark"

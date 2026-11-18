@@ -270,7 +270,7 @@ impl Stream {
             .write_all(&open_request(&proved, (width, height), shared))
             .context("asking for a stream")?;
         read_opened(&mut timed).context("opening a stream")?;
-        let picture = match &agent.shared {
+        let mut picture = match &agent.shared {
             None => None,
             Some(region) => {
                 // The places this daemon's streams hold, for the agent to
@@ -292,11 +292,11 @@ impl Stream {
                 picture
             }
         };
-        if let Some(picture) = &picture {
+        if let Some(picture) = &mut picture {
             // Written where the picture starts, for the agent to find there:
             // two ends that map other memory find out now.
             let mark = nonce();
-            picture.mark(&mark);
+            picture.mark(&mark)?;
             timed.write_all(&mark).context("sending its mark")?;
             read_seen(&mut timed).context("the shared memory")?;
         }
