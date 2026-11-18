@@ -720,12 +720,34 @@ same, uploading the picture from the shared memory as from the agent's own:
 | 3840×2160, shared | 1.56–1.71 | 6.5–7.1 | 0.1 | 8.2–8.9 | 23.6–24.1 |
 
 The agent's figure is the encoder's work with the rest, which the shared
-memory leaves as it was. What the daemon spends more is its copy of the
-picture into the device's memory, about 0.2 ms a 1920×1080 picture and 1 ms
-a 3840×2160 one, where a zero-copy send leaves its copy to the host; what
-the host spends less, that copy and the agent's read, is six to nine times
-as much, and every frame is back sooner by what they took.
+memory leaves as it was. What the daemon spent more, as first built, was its
+copy of the picture into the device's memory, about 0.2 ms a 1920×1080
+picture and 1 ms a 3840×2160 one, where a zero-copy send leaves its copy to
+the host; what the host spends less, that copy and the agent's read, is six
+to nine times as much, and every frame is back sooner by what they took.
+
+**Converted straight into it.** The copy is gone since: the stream's planes
+at the daemon are its picture in the device's memory, and the daemon
+converts the desktop to NV12 there. Converting into the write-combined
+mapping costs what converting into the daemon's own memory does (1.36 ms
+against 1.39 a 1920×1080 picture, 5.26 against 5.27 a 3840×2160 one, in the
+guest, alone). Measured the same way, the daemon's whole frame, the whole
+desktop converted from `B, G, R, X` and the frame sent and answered, 310
+frames at 1920×1080 and 160 at 3840×2160, the first 10 left out, twice,
+each build against the same agent, their access units the same byte for
+byte:
+
+| picture | conversion, ms a frame | `frame()`, copied in | `frame()`, converted in | socket's `frame()` |
+|---|---|---|---|---|
+| 1920×1080 | 1.36–1.39 | 0.43 | 0.09–0.10 | 0.22 |
+| 3840×2160 | 5.16–5.24 | 1.55–1.56 | 0.11 | — |
+
+So the shared memory costs the daemon less than a send, not more. With the
+agent's and the host's figures above, which nothing on their side changed,
+a frame costs the host about 2.2 ms at 1920×1080 and 6.7–7.3 at 3840×2160,
+against 4.2 and 13.9 over the socket: about half.
 
 The tools and logs are the artifacts' `bench/agent-link-20261117/`, the
 zero-copy runs in its `results/zerocopy-built-20261117/`, and the shared
-memory's in its `results/shared-memory-20261117/`.
+memory's in its `results/shared-memory-20261117/`, converted straight into
+it in `results/shared-memory-direct-20261117/`.

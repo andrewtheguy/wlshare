@@ -238,9 +238,10 @@ see below.
 
 Where the agent is on the host of wlshare's virtual machine, or in a
 container on that host, the two can share memory, and the pictures are not
-sent at all: wlshare writes what changed of each one into memory the agent
-maps too, and the network carries the rest, which is little. It takes about
-40% off what a frame costs the host, and a frame comes back sooner
+sent at all: wlshare converts what changed of each one straight into
+memory the agent maps too, and the network carries the rest, which is
+little. It takes about half off what a frame costs the host, and a frame
+comes back sooner
 ([measured](https://github.com/andrewtheguy/wlshare/blob/main/docs/video-performance.md#the-encoding-agents-link)).
 Everything above still holds: the agent listens, allows the guest's
 address, and proves the key, and an agent anywhere else has only the

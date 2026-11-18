@@ -7,7 +7,8 @@
 //! back. A stream dropped closes its connection, which ends the agent's
 //! encoder. Where the daemon shares memory with the agent
 //! ([`crate::agent::shared`]), the agent places each stream's picture in it
-//! as it opens the stream, and what changed is written there and not sent.
+//! as it opens the stream, the stream's planes are that picture, and what
+//! changed is converted there and not sent.
 //!
 //! A session waits on its stream, so every wait here has an end: a
 //! connection is made within three seconds an address, a handshake done within
@@ -328,6 +329,13 @@ impl Stream {
 }
 
 impl Backend for Stream {
+    fn planes(&mut self, width: u16, height: u16) -> Planes {
+        match &self.picture {
+            Some(picture) => picture.planes(),
+            None => Planes::new(width, height),
+        }
+    }
+
     fn frame(
         &mut self,
         planes: &mut Planes,
@@ -356,12 +364,17 @@ impl Backend for Stream {
         // where they lie in the planes, so that a picture is not copied
         // into a buffer of its own on its way to the connection, nor, where
         // it is large, into the kernel's ([`crate::agent::zerocopy`]). In
-        // shared memory, the rows written there and the headers alone sent,
-        // the agent being done with the picture since its last answer.
+        // shared memory, the rows already there, converted into the planes
+        // that are its picture, and the headers alone sent, the agent being
+        // done with the picture since its last answer.
         let mut request = vec![IoSlice::new(&head[..FRAME_HEAD])];
         match &self.picture {
             Some(picture) => {
-                picture.write(planes, &spans);
+                anyhow::ensure!(
+                    picture.holds(planes),
+                    "the encoding agent's stream was handed planes of its own, not its picture in shared memory"
+                );
+                picture.written();
                 request.push(IoSlice::new(&head[FRAME_HEAD..]));
             }
             None => {
@@ -404,14 +417,25 @@ impl Backend for Stream {
             // planes, and of the headers, sent zero-copy and not settled,
             // which the caller is free to write again or let go once this
             // returns: those buffers are kept until the kernel is done with
-            // them, and the planes are given copies of them.
+            // them, and the planes are given copies of them. Planes that are
+            // the picture in shared memory, which the agent may be reading
+            // still, are the daemon's own from now on, and none of the
+            // region's, which the agent is free to give another stream once
+            // it is done.
             self.failed = true;
+            let pending = self.sends.pending();
             let mut buffers = Vec::new();
-            if self.sends.pending() {
+            if self.picture.is_some() {
+                let (_, y, uv) = Planes::layout(planes.coded.0 as u16, planes.coded.1 as u16);
+                planes.y = vec![16; y].into();
+                planes.uv = vec![128; uv].into();
+            } else if pending {
                 for plane in [&mut planes.y, &mut planes.uv] {
                     let copy = plane.clone();
                     buffers.push(std::mem::replace(plane, copy).into_vec());
                 }
+            }
+            if pending {
                 buffers.push(std::mem::take(&mut self.head));
             }
             self.sends.abandon(&self.link, buffers);

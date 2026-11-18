@@ -846,19 +846,24 @@ quantizer each was asked at.
   with other memory fail the stream with a word rather than code garbage; a
   daemon sharing memory with an agent that shares none fails the same way,
   and one that shares none with an agent that does sends its pictures over
-  the connection. The picture stays where it is from frame to frame: the
-  daemon writes what changed into it and sends the frame's header and its
-  rectangles, and the agent's encoder uploads it from where it lies, with no
-  read of it and no copy of the agent's. A stream's first frame is the
-  whole picture, so a place is written whole before it is first read, and
-  what an earlier stream left there never is. The link being request and
+  the connection. The picture stays where it is from frame to frame, and
+  the stream's planes at both ends are views of it: the daemon's, black as
+  the stream opens as its own would be, are where it converts what changed
+  of the desktop, straight from the framebuffer, and it sends the frame's
+  header and its rectangles; the agent's encoder uploads the picture from
+  where it lies. Neither end copies it, and the daemon never reads it. A
+  stream's first frame is the whole picture, so a place is written whole
+  before it is first read, and what an earlier stream left there never is,
+  the coded picture's column past an odd width being the black the planes
+  were made. The link being request and
   reply, the picture is the daemon's to write only between an access unit
   back and the next header, when the agent is done with it, and a store
   fence after the writes puts them ahead of the header that names them,
   which a write-combined mapping would otherwise keep in its buffers. A
   frame that fails, by its time or by its connection, leaves the agent
   perhaps still uploading it, and the daemon is told nothing more on that
-  connection: so a failed stream writes its picture no more, and the agent
+  connection: so a failed stream's planes are the daemon's own from then
+  on, black and none of the memory's, and the agent
   gives the place to no other stream until the thread that had it has
   ended. Which places are held is the agent's own account, in its memory and
   not the shared one, so an agent that restarts has them all free, its
@@ -872,17 +877,17 @@ quantizer each was asked at.
   desktop and can write into it, so the file's permissions are its access
   control. And the guest boots without Secure Boot, under which the
   kernel's lockdown refuses a process the BAR's mapping. On the link it was
-  made for it takes about 40% off what a frame costs the host, the guest's
-  processor included, and a frame is back sooner
-  ([measured](video-performance.md#the-encoding-agents-link)); what the
-  daemon spends more is its copy into the device, which its conversion to
-  NV12 could one day write into directly and leave none.
+  made for it takes about half off what a frame costs the host, the
+  guest's processor included, the daemon's share less than a send's, and a
+  frame is back sooner
+  ([measured](video-performance.md#the-encoding-agents-link)).
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the
 picture back, a screen's sent zero-copy first and copied once loopback has
 said it copied, and again with the two ends sharing a file as their memory,
-each mapping it as two machines would; and the daemon's tests put libx264
+each mapping it as two machines would, and a failed frame leaving the
+daemon's planes its own; and the daemon's tests put libx264
 behind an agent on loopback, over the connection and through shared memory,
 and hold its frames, byte for byte, to libx264's on the daemon's own side of
 the link, through damage, frames of none, refinements and keyframes, and

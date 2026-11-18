@@ -25,11 +25,25 @@ pub const FPS: u32 = 60;
 
 /// What an encoder does with a picture: code it, at `qp`, as an IDR where
 /// `keyframe` says so, and append the access unit to `out`. Whether it made a
-/// frame. The planes are its to read and not to change, but for one thing:
-/// an encoder whose frame failed with their buffers still in the kernel's
-/// hands (the agent's stream, sending zero-copy) keeps those buffers and
-/// leaves the planes copies of them, sample for sample.
+/// frame. The planes are the ones it made ([`Self::planes`]), its to read
+/// and not to change, but for two things, after a frame that failed, which
+/// is a stream's last: an encoder whose frame failed with their buffers
+/// still in the kernel's hands (the agent's stream, sending zero-copy)
+/// keeps those buffers and leaves the planes copies of them, sample for
+/// sample; and one whose planes are memory the agent reads (its stream in
+/// shared memory) leaves them planes of the daemon's own, black, since the
+/// agent may read that memory still and a stream that failed codes nothing
+/// more.
 pub trait Backend: Send {
+    /// The planes a `width`×`height` picture is read into for this encoder,
+    /// made once, before its first frame: the daemon's own
+    /// ([`Planes::new`]), but where the encoder reads its pictures from
+    /// memory it shares with the daemon, planes over that memory, so that
+    /// the desktop is converted straight to where it is read.
+    fn planes(&mut self, width: u16, height: u16) -> Planes {
+        Planes::new(width, height)
+    }
+
     fn frame(
         &mut self,
         planes: &mut Planes,

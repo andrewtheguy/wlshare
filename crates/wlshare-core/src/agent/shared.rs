@@ -15,10 +15,11 @@
 //! **A picture a stream**, whole, laid out as [`Planes`] lays its planes
 //! out, luma then chroma, at a page of the region the agent gives the stream
 //! as it opens it ([`Places`]). The picture stays there from frame to
-//! frame: the daemon writes what changed into it and sends the frame's
-//! header and its rectangles, so what did not change is still there from
-//! the frames before; and the agent's encoder uploads it from where it
-//! lies, the agent copying none of it. A stream's first frame is the whole
+//! frame: the stream's planes at each end are views of it, so the daemon
+//! converts what changed of the desktop straight into it and sends the
+//! frame's header and its rectangles, what did not change being still there
+//! from the frames before; and the agent's encoder uploads it from where it
+//! lies. Neither end copies any of it. A stream's first frame is the whole
 //! picture, so a place is written whole before its stream first reads it,
 //! and what an earlier stream left there is never read.
 //!
@@ -29,7 +30,8 @@
 //! write-combined mapping would otherwise leave in its buffers. A frame that
 //! fails, by its time or by its connection, leaves the agent perhaps still
 //! uploading it, and the daemon, having reset the connection, is told no
-//! more on it: so the daemon writes no picture of a failed stream again, and
+//! more on it: so a failed stream's planes at the daemon are its own again,
+//! none of the region, and
 //! the agent gives a place to no other stream until the one that had it is
 //! done, its thread having ended. The agent's account of its places is the
 //! one there is, its own memory and not the region's, so an agent that
@@ -48,7 +50,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Context as _;
 
-use crate::agent::link::{MARK, Span};
+use crate::agent::link::MARK;
 use crate::h264::Planes;
 
 /// Where every picture starts in the region: a page.
@@ -134,7 +136,7 @@ pub struct Picture {
     at: usize,
     /// Where the chroma plane starts, after the luma.
     uv: usize,
-    stride: usize,
+    size: (usize, usize),
 }
 
 impl Picture {
@@ -155,12 +157,12 @@ impl Picture {
                 region.len()
             )
         })?;
-        let (stride, y, _) = Planes::layout(width as u16, height as u16);
+        let (_, y, _) = Planes::layout(width as u16, height as u16);
         Ok(Self {
             region,
             at,
             uv: at + y,
-            stride,
+            size: (width, height),
         })
     }
 
@@ -172,38 +174,39 @@ impl Picture {
         fence();
     }
 
-    /// Write the rows of `spans` from `planes`, whose picture this is, into
-    /// the picture, and fence them.
-    pub fn write(&self, planes: &Planes, spans: &[Span]) {
-        assert_eq!(planes.stride, self.stride, "the stream's own planes");
-        let stride = self.stride;
-        for span in spans {
-            for ((plane, start), rows) in [(&planes.y, self.at), (&planes.uv, self.uv)]
-                .into_iter()
-                .zip(span.plane_rows())
-            {
-                // Rows the whole stride across are one run; any other, a row
-                // at a time.
-                let (runs, width) = if span.w == stride {
-                    (rows.start..rows.start + 1, rows.len() * stride)
-                } else {
-                    (rows, span.w)
-                };
-                for row in runs {
-                    let from = &plane[row * stride + span.x..][..width];
-                    // SAFETY: the rectangle is inside the planes' picture,
-                    // just sliced out of them, and the picture inside the
-                    // region, laid out as the planes are.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            from.as_ptr(),
-                            self.region.at(start + row * stride + span.x),
-                            width,
-                        );
-                    }
-                }
-            }
-        }
+    /// The stream's planes, over the picture where it lies, black as
+    /// [`Planes::new`]'s are: the daemon converts the desktop into them and
+    /// reads none of them, the mapping being write-combined. Made once, as
+    /// the stream opens.
+    pub fn planes(&self) -> Planes {
+        let (width, height) = (self.size.0 as u16, self.size.1 as u16);
+        let (_, y, uv) = Planes::layout(width, height);
+        let view = |at, bytes| View {
+            region: self.region.clone(),
+            _place: None,
+            at,
+            bytes,
+        };
+        let mut planes = Planes::over(
+            width,
+            height,
+            view(self.at, y).into(),
+            view(self.uv, uv).into(),
+        );
+        planes.y.fill(16);
+        planes.uv.fill(128);
+        planes
+    }
+
+    /// Whether `planes` are this picture's, as [`Self::planes`] made them.
+    pub fn holds(&self, planes: &Planes) -> bool {
+        planes.y.as_ptr() == self.region.at(self.at).cast_const()
+            && planes.uv.as_ptr() == self.region.at(self.uv).cast_const()
+    }
+
+    /// The planes were written: put what was written ahead of the frame's
+    /// header, which names it, a write-combined mapping's buffers included.
+    pub fn written(&self) {
         fence();
     }
 }
@@ -299,9 +302,11 @@ impl Place {
         let (width, height) = (self.size.0 as u16, self.size.1 as u16);
         let (_, y, uv) = Planes::layout(width, height);
         let start = self.range.start;
+        let region = self.places.region.clone();
         let place = Arc::new(self);
         let view = |at, bytes| View {
-            place: place.clone(),
+            region: region.clone(),
+            _place: Some(place.clone()),
             at,
             bytes,
         };
@@ -314,9 +319,12 @@ impl Place {
     }
 }
 
-/// A plane of a place's picture, where it lies in the region.
+/// A plane of a stream's picture, where it lies in the region: the
+/// daemon's, or the agent's, which holds its place.
 pub struct View {
-    place: Arc<Place>,
+    region: Arc<Region>,
+    /// The agent's place, held for as long as its planes are.
+    _place: Option<Arc<Place>>,
     at: usize,
     bytes: usize,
 }
@@ -325,19 +333,19 @@ impl std::ops::Deref for View {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        // SAFETY: inside the place, which is inside the region. The daemon
+        // SAFETY: inside the picture, which is inside the region. The daemon
         // writes these bytes only while the agent is not reading them, the
-        // link being request and reply, and never again after a failed frame,
-        // which leaves them to the agent.
-        unsafe { std::slice::from_raw_parts(self.place.places.region.at(self.at), self.bytes) }
+        // link being request and reply, and never again after a failed
+        // frame, which leaves them to the agent.
+        unsafe { std::slice::from_raw_parts(self.region.at(self.at), self.bytes) }
     }
 }
 
 impl std::ops::DerefMut for View {
     fn deref_mut(&mut self) -> &mut [u8] {
-        // SAFETY: as for reading them, and the view is the one way the agent
+        // SAFETY: as for reading them, and the view is the one way its end
         // has to its plane.
-        unsafe { std::slice::from_raw_parts_mut(self.place.places.region.at(self.at), self.bytes) }
+        unsafe { std::slice::from_raw_parts_mut(self.region.at(self.at), self.bytes) }
     }
 }
 
@@ -399,90 +407,52 @@ pub(crate) mod tests {
         drop(first);
     }
 
-    /// What the daemon writes is what the agent's planes read, where the
-    /// rectangles are, and nowhere else; and the mark is found where it was
-    /// written and nowhere it was not.
+    /// The daemon's planes and the agent's are the one picture: black as
+    /// the daemon's are made, over the mark the agent found, and every
+    /// sample the daemon writes the agent's to read, none of it outside the
+    /// picture; and only the agent's planes hold its place.
     #[test]
-    fn the_agents_planes_are_what_the_daemon_wrote() {
+    fn the_daemons_planes_are_the_agents() {
         let size = (150, 90);
         let file = Scratch::new("pictures", (picture_bytes(size) * 2) as u64);
         let (daemon, agent) = (
             Region::open(&file.0).unwrap(),
             Places::new(Region::open(&file.0).unwrap()),
         );
-        let _first = agent.take(size).unwrap();
+        let first = agent.take(size).unwrap();
         let place = agent.take(size).unwrap();
-        let picture = Picture::new(daemon.clone(), place.at(), size).unwrap();
+        let picture = Picture::new(daemon, place.at(), size).unwrap();
         let mark = [0xC3; MARK];
         assert!(!place.holds(&mark));
         picture.mark(&mark);
         assert!(place.holds(&mark));
 
-        let mut planes = Planes::new(150, 90);
-        for (at, sample) in planes.y.iter_mut().chain(&mut planes.uv).enumerate() {
+        let mut written = picture.planes();
+        assert!(
+            !place.holds(&mark),
+            "the planes are not black over the mark"
+        );
+        assert!(picture.holds(&written));
+        assert!(!picture.holds(&Planes::new(150, 90)));
+        let seen = place.planes();
+        let black = Planes::new(150, 90);
+        assert!(seen.y == black.y && seen.uv == black.uv);
+        for (at, sample) in written.y.iter_mut().chain(&mut written.uv).enumerate() {
             *sample = (at % 253) as u8;
         }
-        let whole = Span {
-            x: 0,
-            y: 0,
-            w: 150,
-            h: 90,
-        };
-        picture.write(&planes, &[whole]);
-        let mut seen = place.planes();
-        let rows = |plane: &[u8], rows: usize| -> Vec<u8> {
-            (0..rows)
-                .flat_map(|row| plane[row * 192..][..150].to_vec())
-                .collect()
-        };
-        assert_eq!(rows(&seen.y, 90), rows(&planes.y, 90));
-        assert_eq!(rows(&seen.uv, 45), rows(&planes.uv, 45));
-
-        // A rectangle's samples and none around it.
-        seen.y.fill(0);
-        seen.uv.fill(0);
-        let span = Span {
-            x: 16,
-            y: 32,
-            w: 36,
-            h: 4,
-        };
-        picture.write(&planes, &[span]);
-        for (plane, there, rows) in [(&planes.y, &seen.y, 32..36), (&planes.uv, &seen.uv, 16..18)] {
-            for row in 0..there.len() / 192 {
-                for x in 0..192 {
-                    let sample = there[row * 192 + x];
-                    if rows.contains(&row) && (16..52).contains(&x) {
-                        assert_eq!(sample, plane[row * 192 + x], "{row},{x}");
-                    } else {
-                        assert_eq!(sample, 0, "{row},{x}");
-                    }
-                }
-            }
-        }
-        // One the whole stride across.
-        let mut wide = Planes::new(128, 32);
-        wide.y
-            .iter_mut()
-            .enumerate()
-            .for_each(|(at, s)| *s = at as u8);
-        let place = agent.take((128, 32));
-        assert!(place.is_none(), "the region holds two pictures and no more");
-        drop(seen);
-        let place = agent.take((128, 32)).unwrap();
-        let picture = Picture::new(daemon, place.at(), (128, 32)).unwrap();
-        picture.write(
-            &wide,
-            &[Span {
-                x: 0,
-                y: 16,
-                w: 128,
-                h: 16,
-            }],
+        picture.written();
+        assert!(seen.y == written.y && seen.uv == written.uv);
+        let before = first.planes();
+        assert!(
+            before.y.iter().chain(&before.uv).all(|sample| *sample == 0),
+            "written past the picture"
         );
-        let seen = place.planes();
-        assert_eq!(seen.y[16 * 128..32 * 128], wide.y[16 * 128..32 * 128]);
-        assert_eq!(seen.uv[8 * 128..16 * 128], wide.uv[8 * 128..16 * 128]);
+        drop(seen);
+        assert!(
+            agent.take(size).is_some(),
+            "the daemon's planes hold the place"
+        );
+        drop(written);
     }
 
     /// The daemon takes no place the agent could not have given: one off a

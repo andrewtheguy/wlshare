@@ -540,7 +540,7 @@ fn connection(
 mod tests {
     use super::*;
     use crate::agent::client::{Agent, Stream};
-    use crate::agent::link::{FAILED, FRAME, MIN_KEY, OK, PROOF};
+    use crate::agent::link::{FAILED, FRAME, MARK, MIN_KEY, OK, PROOF, SEEN};
     use crate::agent::shared::tests::Scratch;
     use crate::agent::shared::{Region, picture_bytes};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -632,7 +632,8 @@ mod tests {
     /// rows are sent as one run of each plane; and a screen's, whose first
     /// picture is sent zero-copy where the account may pin it, and copied
     /// from then on, loopback having copied it ([`crate::agent::zerocopy`]).
-    /// And each again in memory the two ends share, the rows written there.
+    /// And each again in memory the two ends share, the stream's planes
+    /// being its picture there.
     #[test]
     fn the_agents_picture_is_the_daemons() {
         for shared in [false, true] {
@@ -663,10 +664,10 @@ mod tests {
         } else {
             (None, Agent::new(agent(), KEY.to_vec()))
         };
-        let mut planes = Planes::new(width, height);
-        let (w, h) = planes.coded;
-        let mut stream = Stream::open(&agent, planes.coded).unwrap();
+        let mut stream = Stream::open(&agent, Planes::coded_size(width, height)).unwrap();
         assert_eq!(stream.shares(), sharing);
+        let mut planes = stream.planes(width, height);
+        let (w, h) = planes.coded;
         let mut state = 0x2545_F491u32;
         let mut next = move || {
             state ^= state << 13;
@@ -791,6 +792,67 @@ mod tests {
                 .recv_timeout(Duration::from_secs(2))
                 .expect("the buffers were never freed");
         }
+    }
+
+    /// A frame in shared memory the agent never answers fails in its time,
+    /// and leaves the daemon planes of its own, black, so that what it
+    /// converts after is not written where the agent may still read, or
+    /// where it may have placed another stream; and planes not the stream's
+    /// picture are refused.
+    #[test]
+    fn a_failed_frame_in_shared_memory_leaves_the_picture() {
+        let size = (64, 32);
+        let (file, region, _) = shared("failed", picture_bytes(size));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (over, ended) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (link, _) = listener.accept().unwrap();
+            let (mut to, mut from) = (&link, &link);
+            let ours = nonce();
+            to.write_all(&hello(&ours)).unwrap();
+            let theirs = read_hello(&mut from).unwrap();
+            let proved = proof(&KEY, Role::Agent, &theirs, &ours).unwrap();
+            to.write_all(&proved.finalize().into_bytes()).unwrap();
+            read_open_request(&mut from).unwrap();
+            to.write_all(&opened(Some(0))).unwrap();
+            from.read_exact(&mut [0; MARK]).unwrap();
+            to.write_all(&SEEN).unwrap();
+            let _ = ended.recv();
+        });
+        let agent = Agent::new(address.to_string(), KEY.to_vec()).sharing(region);
+        let mut stream = Stream::open(&agent, size).unwrap();
+        assert!(stream.shares());
+        let why = format!(
+            "{:#}",
+            stream
+                .frame(&mut Planes::new(64, 32), true, 28, &mut Vec::new())
+                .err()
+                .unwrap()
+        );
+        assert!(why.contains("not its picture"), "{why}");
+        let mut planes = stream.planes(64, 32);
+        planes.y.fill(200);
+        stream.frames_within(Duration::from_millis(300));
+        let why = format!(
+            "{:#}",
+            stream
+                .frame(&mut planes, true, 28, &mut Vec::new())
+                .err()
+                .unwrap()
+        );
+        assert!(why.contains("not done within"), "{why}");
+        let there = std::fs::read(&file.0).unwrap();
+        assert!(planes.y.iter().all(|s| *s == 16) && planes.uv.iter().all(|s| *s == 128));
+        planes.y.fill(7);
+        planes.uv.fill(7);
+        assert_eq!(
+            std::fs::read(&file.0).unwrap(),
+            there,
+            "written to the picture"
+        );
+        assert!(there.contains(&200), "the picture was not the planes");
+        drop(over);
     }
 
     /// A daemon whose key is not the agent's is told so before it sends a

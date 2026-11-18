@@ -275,10 +275,11 @@ impl H264Coder for Coder {
             // The encoder before the planes, so that a picture no encoder
             // takes, as one past an agent's longest side is, is refused
             // before it is made room for.
-            let backend = self.backend(Planes::coded_size(width, height))?;
+            let mut backend = self.backend(Planes::coded_size(width, height))?;
+            let planes = backend.planes(width, height);
             let stream: Box<dyn H264Stream> = Box::new(Stream {
                 backend,
-                picture: Picture::new(width, height),
+                picture: Picture::new(width, height, planes),
             });
             Ok(stream)
         })();
@@ -366,10 +367,11 @@ struct Picture {
 }
 
 impl Picture {
-    fn new(width: u16, height: u16) -> Self {
+    /// The picture over `planes`, its encoder's.
+    fn new(width: u16, height: u16, planes: Planes) -> Self {
         Self {
             size: (width, height),
-            planes: Planes::new(width, height),
+            planes,
             pair: Vec::new(),
             filled: false,
         }
