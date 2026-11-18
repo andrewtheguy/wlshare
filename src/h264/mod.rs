@@ -1203,11 +1203,19 @@ mod tests {
         Encoder::Remote(remote::Agent::new(agent_at(encoder), KEY.to_vec()))
     }
 
-    /// [`agent`], the two sharing 16 MiB of memory for their pictures.
+    /// [`agent`], the two sharing 16 MiB of memory for their pictures: a
+    /// stream opened on it has its picture there, and does not cross the
+    /// connection unseen.
     fn sharing_agent(encoder: Encoder) -> Encoder {
         let (region, places) = shared_memory(16 << 20);
         let address = agent_sharing_at(Some(places), encoder);
-        Encoder::Remote(remote::Agent::new(address, KEY.to_vec()).sharing(region))
+        let agent = remote::Agent::new(address, KEY.to_vec()).sharing(region);
+        let stream = remote::Stream::open(&agent, (64, 64)).unwrap();
+        assert!(
+            stream.shares(),
+            "the stream's picture is not in shared memory"
+        );
+        Encoder::Remote(agent)
     }
 
     /// A daemon set to an agent starts with the agent away, since it may be

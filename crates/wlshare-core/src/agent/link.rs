@@ -34,9 +34,11 @@
 //! link's version and 32 random bytes, and reads the other's; a version that
 //! is not this one ends the connection, since both ends are wlshare and are
 //! to be the same release. The agent sends its proof, 32 bytes; the daemon its
-//! own, the coded picture's width and height, each `u16`, and the length of
-//! the memory it shares with the agent, a `u64`, none for 0
-//! ([`crate::agent::shared`]); the agent answers with a status byte, [`OK`]
+//! own, the coded picture's width and height, each `u16`, the length of the
+//! memory it shares with the agent, a `u64`, none for 0
+//! ([`crate::agent::shared`]), and the places its streams hold in it: a
+//! `u16` count, and each place as where it starts and its length, each a
+//! `u64`, none where it shares none; the agent answers with a status byte, [`OK`]
 //! or [`FAILED`] and why (a `u16` length and that many bytes of UTF-8), and
 //! after [`OK`] a `u64`: where in that memory the stream's picture is, or
 //! [`SOCKET`] for none, the pictures then crossing the connection. Where it
@@ -378,40 +380,84 @@ pub fn read_proof(from: &mut impl Read) -> anyhow::Result<[u8; PROOF]> {
     Ok(proof)
 }
 
-/// The daemon's request for a stream, which ends its handshake: its proof
-/// of the key, the coded picture's width and height, and the length of the
-/// memory it shares with the agent.
-pub const OPEN_REQUEST: usize = PROOF + 4 + 8;
+/// The daemon's request for a stream, which ends its handshake, as far as
+/// its places: its proof of the key, the coded picture's width and height,
+/// the length of the memory it shares with the agent, and how many places
+/// its streams hold there.
+pub const OPEN_REQUEST: usize = PROOF + 4 + 8 + 2;
+
+/// What the daemon asks of a stream ([`read_open_request`]).
+#[derive(Debug, PartialEq)]
+pub struct OpenRequest {
+    /// Its proof of the key, for the agent to check.
+    pub proof: [u8; PROOF],
+    /// The coded picture's width and height.
+    pub size: (usize, usize),
+    /// The length of the memory the daemon shares with the agent, none for 0.
+    pub shared: u64,
+    /// The places the daemon's streams hold in that memory, which it may
+    /// write into still ([`crate::agent::shared::Region::held`]).
+    pub held: Vec<std::ops::Range<u64>>,
+}
 
 /// The daemon's request for a stream over a `width`×`height` picture,
-/// sharing `shared` bytes of memory with the agent, none for 0.
+/// sharing `shared` bytes of memory with the agent, none for 0, its streams
+/// holding `held` of them.
 pub fn open_request(
     proof: &[u8; PROOF],
     (width, height): (usize, usize),
     shared: u64,
-) -> [u8; OPEN_REQUEST] {
-    let mut request = [0; OPEN_REQUEST];
-    request[..PROOF].copy_from_slice(proof);
-    request[PROOF..PROOF + 2].copy_from_slice(&(width as u16).to_be_bytes());
-    request[PROOF + 2..PROOF + 4].copy_from_slice(&(height as u16).to_be_bytes());
-    request[PROOF + 4..].copy_from_slice(&shared.to_be_bytes());
+    held: &[std::ops::Range<u64>],
+) -> Vec<u8> {
+    let mut request = Vec::with_capacity(OPEN_REQUEST + held.len() * 16);
+    request.extend_from_slice(proof);
+    request.extend_from_slice(&(width as u16).to_be_bytes());
+    request.extend_from_slice(&(height as u16).to_be_bytes());
+    request.extend_from_slice(&shared.to_be_bytes());
+    request.extend_from_slice(&(held.len() as u16).to_be_bytes());
+    for place in held {
+        request.extend_from_slice(&place.start.to_be_bytes());
+        request.extend_from_slice(&(place.end - place.start).to_be_bytes());
+    }
     request
 }
 
-/// Read the daemon's request for a stream: its proof, for the agent to
-/// check, the size of the picture it asks an encoder over, and the length
-/// of the memory it shares.
-pub fn read_open_request(
-    from: &mut impl Read,
-) -> anyhow::Result<([u8; PROOF], (usize, usize), u64)> {
+/// Read the daemon's request for a stream: an error for places past the
+/// memory it shares, or more of them than it has pages.
+pub fn read_open_request(from: &mut impl Read) -> anyhow::Result<OpenRequest> {
     let proof = read_proof(from)?;
     let mut rest = [0; OPEN_REQUEST - PROOF];
     from.read_exact(&mut rest)
         .context("reading its picture's size")?;
     let [width, height] =
         [0, 2].map(|at| usize::from(u16::from_be_bytes([rest[at], rest[at + 1]])));
-    let shared = u64::from_be_bytes(rest[4..].try_into().expect("a u64"));
-    Ok((proof, (width, height), shared))
+    let shared = u64::from_be_bytes(rest[4..12].try_into().expect("a u64"));
+    let count = u16::from_be_bytes([rest[12], rest[13]]);
+    anyhow::ensure!(
+        u64::from(count) * crate::agent::shared::ALIGN as u64 <= shared,
+        "it holds {count} places in {shared} bytes of shared memory"
+    );
+    let mut held = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let mut place = [0; 16];
+        from.read_exact(&mut place)
+            .context("reading the places it holds")?;
+        let [start, length] =
+            [0, 8].map(|at| u64::from_be_bytes(place[at..at + 8].try_into().expect("a u64")));
+        let end = start
+            .checked_add(length)
+            .filter(|end| *end <= shared && length > 0);
+        let end = end.with_context(|| {
+            format!("it holds a place of {length} bytes at {start}, past its {shared} bytes")
+        })?;
+        held.push(start..end);
+    }
+    Ok(OpenRequest {
+        proof,
+        size: (width, height),
+        shared,
+        held,
+    })
 }
 
 /// A status byte's failure, as the agent writes it: [`FAILED`] and why.
@@ -654,17 +700,47 @@ mod tests {
     #[test]
     fn a_message_is_read_as_it_was_written() {
         let proof = [0xA5; PROOF];
-        let request = open_request(&proof, (1920, 1080), 64 << 20);
+        let request = open_request(&proof, (1920, 1080), 64 << 20, &[]);
         assert_eq!(request[..PROOF], proof);
         assert_eq!(
             request[PROOF..],
-            [0x07, 0x80, 0x04, 0x38, 0, 0, 0, 0, 0x04, 0, 0, 0]
+            [0x07, 0x80, 0x04, 0x38, 0, 0, 0, 0, 0x04, 0, 0, 0, 0, 0]
         );
+        let read = |request: &[u8]| read_open_request(&mut &request[..]);
         assert_eq!(
-            read_open_request(&mut &request[..]).unwrap(),
-            (proof, (1920, 1080), 64 << 20)
+            read(&request).unwrap(),
+            OpenRequest {
+                proof,
+                size: (1920, 1080),
+                shared: 64 << 20,
+                held: Vec::new(),
+            }
         );
-        assert!(read_open_request(&mut &request[..OPEN_REQUEST - 1]).is_err());
+        assert!(read(&request[..OPEN_REQUEST - 1]).is_err());
+        // The places its streams hold, each where it starts and its length.
+        let held = [0x1000..0x5000, 0x10_0000..0x10_2000];
+        let request = open_request(&proof, (64, 64), 1 << 21, &held);
+        assert_eq!(
+            request[OPEN_REQUEST - 2..],
+            [
+                0, 2, 0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0x10, 0,
+                0, 0, 0, 0, 0, 0, 0, 0x20, 0
+            ]
+        );
+        assert_eq!(read(&request).unwrap().held, held);
+        assert!(read(&request[..request.len() - 1]).is_err());
+        // None past the memory, of no bytes, or more than it has pages.
+        for (shared, place) in [
+            (1u64 << 21, (1u64 << 21) - 0x1000..(1 << 21) + 0x1000),
+            (1 << 21, 0x1000..0x1000),
+            (0, 0..0x1000),
+        ] {
+            let mut request = open_request(&proof, (64, 64), shared, &[]);
+            request[OPEN_REQUEST - 2..].copy_from_slice(&[0, 1]);
+            request.extend_from_slice(&place.start.to_be_bytes());
+            request.extend_from_slice(&(place.end - place.start).to_be_bytes());
+            assert!(read(&request).is_err(), "{shared}: {place:?}");
+        }
 
         let frame = Frame {
             keyframe: true,

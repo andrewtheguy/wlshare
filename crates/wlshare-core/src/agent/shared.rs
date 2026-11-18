@@ -31,13 +31,17 @@
 //! fails, by its time or by its connection, leaves the agent perhaps still
 //! uploading it, and the daemon, having reset the connection, is told no
 //! more on it: so a failed stream's planes at the daemon are its own again,
-//! none of the region, and
-//! the agent gives a place to no other stream until the one that had it is
-//! done, its thread having ended. The agent's account of its places is the
-//! one there is, its own memory and not the region's, so an agent that
-//! restarts has every place free, its streams having ended with it, and a
-//! daemon that restarts asks for places anew. A stream the region has no
-//! room for, while the places are held, has its pictures cross the socket.
+//! none of the region, and the agent gives a place to no other stream until
+//! the one that had it is done, its thread having ended. The other way
+//! round, the daemon converts into a stream's planes until a frame finds
+//! its connection gone, and the agent may have let the place go before
+//! then, its stream's thread ended or the agent restarted: so each end
+//! keeps its own account of the places it holds, in its own memory and not
+//! the region's, and a stream is placed where neither holds one, the daemon
+//! naming its own as it asks ([`Region::held`]). An agent that restarts
+//! holds none, its streams having ended with it, and a daemon that restarts
+//! none either. A stream the region has no room for, while the places are
+//! held, has its pictures cross the socket.
 //!
 //! **The file's permissions are its access control.** Whoever can open the
 //! file in the agent's machine, or the device's resource in the guest, reads
@@ -46,7 +50,7 @@
 
 use std::ops::Range;
 use std::path::Path;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Context as _;
 
@@ -59,6 +63,10 @@ pub const ALIGN: usize = 4096;
 /// A file both ends map, all of it.
 pub struct Region {
     map: memmap2::MmapRaw,
+    /// The daemon's: the bytes its streams' pictures hold, in no order.
+    held: Mutex<Vec<Range<usize>>>,
+    /// The daemon's: held while a stream is asked for and placed.
+    opening: Mutex<()>,
 }
 
 impl Region {
@@ -84,7 +92,32 @@ impl Region {
             .len(length)
             .map_raw(&file)
             .with_context(|| format!("mapping {}", path.display()))?;
-        Ok(Arc::new(Self { map }))
+        Ok(Arc::new(Self {
+            map,
+            held: Mutex::default(),
+            opening: Mutex::default(),
+        }))
+    }
+
+    /// The daemon's places in the region: every picture one of its streams
+    /// may still write into, a failed stream's included until it is
+    /// dropped, for the agent to place no other stream over. Taken under
+    /// [`Self::opening`], so that no stream is placed between this and its
+    /// own picture's being counted.
+    pub fn held(&self) -> Vec<Range<u64>> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|range| range.start as u64..range.end as u64)
+            .collect()
+    }
+
+    /// Held by the daemon from naming its places ([`Self::held`]) to the new
+    /// stream's picture's being one of them ([`Picture::new`]): one stream
+    /// at a time, so that each is placed knowing every other's.
+    pub fn opening(&self) -> MutexGuard<'_, ()> {
+        self.opening.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// How many bytes the region is.
@@ -117,7 +150,10 @@ pub fn picture_bytes((width, height): (usize, usize)) -> usize {
 }
 
 /// Put every write before this one ahead of what is sent after it, a
-/// write-combined mapping's included.
+/// write-combined mapping's included: on x86-64 `SFENCE`, which drains its
+/// buffers; on AArch64 `DSB ST`, Linux's `wmb()`, since the mapping is
+/// non-cacheable memory, which the `DMB ISH` of an atomic fence orders only
+/// within the inner shareable domain; elsewhere an atomic fence.
 fn fence() {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: SFENCE is in the baseline of x86-64, and only orders stores.
@@ -125,14 +161,37 @@ fn fence() {
     unsafe {
         std::arch::x86_64::_mm_sfence();
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: DSB is in the baseline of AArch64, and only waits for stores.
+    unsafe {
+        std::arch::asm!("dsb st", options(nostack, preserves_flags));
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+}
+
+/// A picture of the daemon's, counted among its places ([`Region::held`])
+/// for as long as its stream or its planes are.
+struct Hold {
+    region: Arc<Region>,
+    range: Range<usize>,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.region
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|range| *range != self.range);
+    }
 }
 
 /// The daemon's picture of a stream: where the agent placed it in the
 /// region, which the daemon writes and never reads.
 pub struct Picture {
     region: Arc<Region>,
+    hold: Arc<Hold>,
     at: usize,
     /// Where the chroma plane starts, after the luma.
     uv: usize,
@@ -157,9 +216,25 @@ impl Picture {
                 region.len()
             )
         })?;
+        let range = at..at + bytes;
+        {
+            let mut held = region.held.lock().unwrap_or_else(PoisonError::into_inner);
+            anyhow::ensure!(
+                !held
+                    .iter()
+                    .any(|other| other.start < range.end && range.start < other.end),
+                "it placed a picture over another of this daemon's streams' in shared memory"
+            );
+            held.push(range.clone());
+        }
+        let hold = Arc::new(Hold {
+            region: region.clone(),
+            range,
+        });
         let (_, y, _) = Planes::layout(width as u16, height as u16);
         Ok(Self {
             region,
+            hold,
             at,
             uv: at + y,
             size: (width, height),
@@ -183,7 +258,7 @@ impl Picture {
         let (_, y, uv) = Planes::layout(width, height);
         let view = |at, bytes| View {
             region: self.region.clone(),
-            _place: None,
+            _held: self.hold.clone(),
             at,
             bytes,
         };
@@ -233,20 +308,29 @@ impl Places {
         &self.region
     }
 
-    /// A place for a `width`×`height` picture, the first free one that fits;
-    /// none while the region has no room for one.
-    pub fn take(self: &Arc<Self>, size: (usize, usize)) -> Option<Place> {
+    /// A place for a `width`×`height` picture, the first free one that fits
+    /// clear of the places the daemon says it holds (`theirs`); none while
+    /// the region has no room for one.
+    pub fn take(self: &Arc<Self>, size: (usize, usize), theirs: &[Range<u64>]) -> Option<Place> {
         let bytes = picture_bytes(size);
         let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        held.sort_by_key(|range| range.start);
-        let mut at = 0;
-        for range in held.iter() {
-            if range.start >= at + bytes {
+        let mut taken: Vec<Range<usize>> = theirs
+            .iter()
+            .map(|range| {
+                let clamp = |at: u64| usize::try_from(at).unwrap_or(usize::MAX);
+                clamp(range.start)..clamp(range.end)
+            })
+            .chain(held.iter().cloned())
+            .collect();
+        taken.sort_by_key(|range| range.start);
+        let mut at: usize = 0;
+        for range in &taken {
+            if range.start >= at.saturating_add(bytes) {
                 break;
             }
             at = at.max(range.end);
         }
-        if at + bytes > self.region.len() {
+        if at.saturating_add(bytes) > self.region.len() {
             return None;
         }
         held.push(at..at + bytes);
@@ -306,7 +390,7 @@ impl Place {
         let place = Arc::new(self);
         let view = |at, bytes| View {
             region: region.clone(),
-            _place: Some(place.clone()),
+            _held: place.clone(),
             at,
             bytes,
         };
@@ -320,11 +404,12 @@ impl Place {
 }
 
 /// A plane of a stream's picture, where it lies in the region: the
-/// daemon's, or the agent's, which holds its place.
+/// daemon's or the agent's, each holding its place.
 pub struct View {
     region: Arc<Region>,
-    /// The agent's place, held for as long as its planes are.
-    _place: Option<Arc<Place>>,
+    /// The place, held for as long as its planes are: the agent's
+    /// [`Place`], or the daemon's count of its own.
+    _held: Arc<dyn Send + Sync>,
     at: usize,
     bytes: usize,
 }
@@ -385,25 +470,25 @@ pub(crate) mod tests {
         assert_eq!(bytes % ALIGN, 0);
         let file = Scratch::new("places", (bytes * 3) as u64);
         let places = Places::new(Region::open(&file.0).unwrap());
-        let first = places.take((1920, 1080)).unwrap();
-        let second = places.take((1920, 1080)).unwrap();
-        let third = places.take((1920, 1080)).unwrap();
+        let first = places.take((1920, 1080), &[]).unwrap();
+        let second = places.take((1920, 1080), &[]).unwrap();
+        let third = places.take((1920, 1080), &[]).unwrap();
         assert_eq!(
             [first.at(), second.at(), third.at()],
             [0, bytes as u64, 2 * bytes as u64]
         );
-        assert!(places.take((64, 64)).is_none(), "the region is full");
+        assert!(places.take((64, 64), &[]).is_none(), "the region is full");
         drop(second);
         // A small one where the middle one was, and no large one beside it.
-        let small = places.take((64, 64)).unwrap();
+        let small = places.take((64, 64), &[]).unwrap();
         assert_eq!(small.at(), bytes as u64);
-        assert!(places.take((1920, 1080)).is_none());
+        assert!(places.take((1920, 1080), &[]).is_none());
         // Held for as long as its planes are.
         let planes = third.planes();
-        assert!(places.take((1920, 1080)).is_none());
+        assert!(places.take((1920, 1080), &[]).is_none());
         drop(planes);
-        assert!(places.take((1920, 1080)).is_some());
-        assert!(places.take((3840, 2160)).is_none(), "past the region");
+        assert!(places.take((1920, 1080), &[]).is_some());
+        assert!(places.take((3840, 2160), &[]).is_none(), "past the region");
         drop(first);
     }
 
@@ -419,8 +504,8 @@ pub(crate) mod tests {
             Region::open(&file.0).unwrap(),
             Places::new(Region::open(&file.0).unwrap()),
         );
-        let first = agent.take(size).unwrap();
-        let place = agent.take(size).unwrap();
+        let first = agent.take(size, &[]).unwrap();
+        let place = agent.take(size, &[]).unwrap();
         let picture = Picture::new(daemon, place.at(), size).unwrap();
         let mark = [0xC3; MARK];
         assert!(!place.holds(&mark));
@@ -449,10 +534,52 @@ pub(crate) mod tests {
         );
         drop(seen);
         assert!(
-            agent.take(size).is_some(),
+            agent.take(size, &[]).is_some(),
             "the daemon's planes hold the place"
         );
         drop(written);
+    }
+
+    /// The agent places a stream clear of the places the daemon says it
+    /// holds; the daemon counts a picture of its own for as long as its
+    /// stream or its planes are, and takes none over another of its own.
+    #[test]
+    fn neither_ends_places_are_given_again() {
+        let size = (64, 64);
+        let bytes = picture_bytes(size);
+        let file = Scratch::new("theirs", (bytes * 3) as u64);
+        let (daemon, agent) = (
+            Region::open(&file.0).unwrap(),
+            Places::new(Region::open(&file.0).unwrap()),
+        );
+        let theirs = [0..bytes as u64, 2 * bytes as u64..3 * bytes as u64];
+        let place = agent.take(size, &theirs).unwrap();
+        assert_eq!(place.at(), bytes as u64);
+        assert!(
+            agent
+                .take(size, &theirs[..1])
+                .is_some_and(|other| other.at() == 2 * bytes as u64)
+        );
+        assert!(agent.take(size, &theirs).is_none());
+        // Past the region, or bigger than it: clear of it all the same.
+        let everything = 0..u64::MAX;
+        assert!(agent.take(size, &[everything]).is_none());
+
+        assert!(daemon.held().is_empty());
+        let first = 0..bytes as u64;
+        let picture = Picture::new(daemon.clone(), 0, size).unwrap();
+        assert_eq!(daemon.held(), std::slice::from_ref(&first));
+        let why = Picture::new(daemon.clone(), 0, size)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(why.contains("another"), "{why}");
+        let planes = picture.planes();
+        drop(picture);
+        assert_eq!(daemon.held(), [first], "the planes hold it");
+        drop(planes);
+        assert!(daemon.held().is_empty());
+        assert!(Picture::new(daemon, 0, size).is_ok());
     }
 
     /// The daemon takes no place the agent could not have given: one off a

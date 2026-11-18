@@ -744,8 +744,11 @@ byte:
 
 So the shared memory costs the daemon less than a send, not more. With the
 agent's and the host's figures above, which nothing on their side changed,
-a frame costs the host about 2.2 ms at 1920×1080 and 6.7–7.3 at 3840×2160,
-against 4.2 and 13.9 over the socket: about half.
+a frame costs the host, past the daemon's conversion, about 2.2 ms at
+1920×1080 and 6.7–7.3 at 3840×2160, against 4.2 and 13.9 over the socket:
+about half. The conversion is the same either way, 1.37 ms and 5.2;
+counted in both, a frame is 3.6 ms against 5.6 at 1920×1080 and 11.9–12.5
+against 19.1 at 3840×2160, a little over a third less.
 
 The tools and logs are the artifacts' `bench/agent-link-20261117/`, the
 zero-copy runs in its `results/zerocopy-built-20261117/`, and the shared

@@ -735,8 +735,9 @@ quantizer each was asked at.
 - **The link's bytes** are `wlshare-core`'s (`agent/link.rs`), both ends
   built and parsed there, big-endian, and laid out in that module: each end's
   hello (`WLEA`, the link's version, the random), the agent's proof, the
-  daemon's proof, the coded picture's size and the length of the memory it
-  shares with the agent, the agent's status and where in that memory the
+  daemon's proof, the coded picture's size, the length of the memory it
+  shares with the agent and the places its streams hold there, the agent's
+  status and where in that memory the
   stream's picture is, if anywhere, and then the daemon's mark there and
   the agent's word on it; then for each frame the daemon's flags (a
   keyframe, a refinement), quantizer and rectangles, each with its luma and
@@ -865,11 +866,18 @@ quantizer each was asked at.
   connection: so a failed stream's planes are the daemon's own from then
   on, black and none of the memory's, and the agent
   gives the place to no other stream until the thread that had it has
-  ended. Which places are held is the agent's own account, in its memory and
-  not the shared one, so an agent that restarts has them all free, its
-  streams having ended with it; a stream the memory has no room for while
-  they are held has its pictures cross the connection, as an agent sharing
-  none has. It is a second transport beside TCP and not one in its place:
+  ended. The other way round, the daemon converts into a stream's planes
+  until a frame finds the connection gone, and the agent may have let the
+  place go before then, the stream's thread ended or the agent restarted:
+  so each end keeps its own account of the places it holds, in its own
+  memory and not the shared one, and the daemon names its own as it asks
+  for a stream, every stream it has not dropped, a failed one's included;
+  the agent places the stream clear of both, the daemon's streams placed
+  one at a time so that each is placed knowing every other's, and the
+  daemon refuses a place over one of its own. An agent that restarts holds
+  none, its streams having ended with it, and a daemon that restarts none
+  either. A stream the memory has no room for while they are held has its
+  pictures cross the connection, as an agent sharing none has. It is a second transport beside TCP and not one in its place:
   the handshake, the frame's header and the access unit stay on the
   connection, and an agent anywhere but the guest's own host has only the
   connection. The pictures in the memory are past the key: whoever can open
@@ -877,8 +885,10 @@ quantizer each was asked at.
   desktop and can write into it, so the file's permissions are its access
   control. And the guest boots without Secure Boot, under which the
   kernel's lockdown refuses a process the BAR's mapping. On the link it was
-  made for it takes about half off what a frame costs the host, the
-  guest's processor included, the daemon's share less than a send's, and a
+  made for it takes a little over a third off what a frame costs the
+  host's processor, the guest's included and its conversion of the desktop
+  with it, and about half off what is left past that conversion, which is
+  the same either way; the daemon's share is less than a send's, and a
   frame is back sooner
   ([measured](video-performance.md#the-encoding-agents-link)).
 
@@ -886,8 +896,9 @@ The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the
 picture back, a screen's sent zero-copy first and copied once loopback has
 said it copied, and again with the two ends sharing a file as their memory,
-each mapping it as two machines would, and a failed frame leaving the
-daemon's planes its own; and the daemon's tests put libx264
+each mapping it as two machines would, a failed frame leaving the
+daemon's planes its own, and a restarted agent placing no stream where one
+of the daemon's still is; and the daemon's tests put libx264
 behind an agent on loopback, over the connection and through shared memory,
 and hold its frames, byte for byte, to libx264's on the daemon's own side of
 the link, through damage, frames of none, refinements and keyframes, and

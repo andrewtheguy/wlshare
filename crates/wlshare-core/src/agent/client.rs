@@ -262,12 +262,17 @@ impl Stream {
             .finalize()
             .into_bytes()
             .into();
-        let shared = agent
-            .shared
-            .as_ref()
-            .map_or(0, |region| region.len() as u64);
+        // The places this daemon's streams hold, for the agent to place
+        // the stream clear of, each stream of the daemon's placed in turn so
+        // that none is placed before another's place is one of them: the
+        // agent may have let a place go that a stream here still converts
+        // into, until a frame finds its connection gone.
+        let opening = agent.shared.as_ref().map(|region| region.opening());
+        let (shared, held) = agent.shared.as_ref().map_or((0, Vec::new()), |region| {
+            (region.len() as u64, region.held())
+        });
         timed
-            .write_all(&open_request(&proved, (width, height), shared))
+            .write_all(&open_request(&proved, (width, height), shared, &held))
             .context("asking for a stream")?;
         let at = read_opened(&mut timed).context("opening a stream")?;
         let picture = match (at, &agent.shared) {
@@ -277,6 +282,7 @@ impl Stream {
             }
             (Some(at), Some(region)) => {
                 let picture = Picture::new(region.clone(), at, (width, height))?;
+                drop(opening);
                 // Written where the picture starts, for the agent to find
                 // there: two ends that map other memory find out now.
                 let mark = nonce();

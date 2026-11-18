@@ -240,8 +240,9 @@ Where the agent is on the host of wlshare's virtual machine, or in a
 container on that host, the two can share memory, and the pictures are not
 sent at all: wlshare converts what changed of each one straight into
 memory the agent maps too, and the network carries the rest, which is
-little. It takes about half off what a frame costs the host, and a frame
-comes back sooner
+little. It takes a little over a third off the processor time a frame
+costs the host, the conversion of each picture included, and a frame comes
+back sooner
 ([measured](https://github.com/andrewtheguy/wlshare/blob/main/docs/video-performance.md#the-encoding-agents-link)).
 Everything above still holds: the agent listens, allows the guest's
 address, and proves the key, and an agent anywhere else has only the
@@ -366,6 +367,24 @@ and wlshare's, as it starts:
 the encoding agent's pictures in 64 MiB of memory shared with it, /sys/bus/pci/devices/0000:00:14.0/resource2_wc
 ```
 
+To change the size later: the file keeps the length QEMU gave it until the
+host reboots, which makes it again, empty, for QEMU to size, and both ends
+map it at the length they found as they started. So stop the guest and the
+agent, give the file the new length, then start the guest with the new size
+and start the agent:
+
+```sh
+qm shutdown <vmid>                      # and stop the agent: systemctl stop wlshare-enc-agent
+truncate -s 128M /run/ivshmem-wlshare/wlshare
+qm set <vmid> --ivshmem size=128,name=wlshare
+qm start <vmid>                         # then start the agent
+```
+
+`truncate` keeps the file's owner and mode. The agent is stopped first
+because the file is cut or grown under its mapping; and a file left at
+another length than the device's is one wlshare and the agent do not share
+all of: the daemon's log says the two are not the same memory.
+
 ## When it does not work
 
 What the logs say, the agent's (`journalctl -u wlshare-enc-agent`) and the
@@ -383,7 +402,7 @@ daemon's:
 | daemon: `the daemon shares memory with this agent and the agent none with it` | wlshare has `shared_memory` and the agent no `SHARED_MEMORY`. |
 | daemon: `the two are not the same memory`, or `the two ends map other memory` | The guest's device and the agent's file are not the same memory: another file, or a guest started before the file was made. |
 | daemon: `Operation not permitted` mapping the device | The guest booted with Secure Boot on. |
-| agent: `over the connection: no room for its picture in shared memory` | The memory is full of other streams' pictures: this stream's cross the network, which works, more slowly. A larger `size` makes room. |
+| agent: `over the connection: no room for its picture in shared memory` | The memory is full of other streams' pictures: this stream's cross the network, which works, more slowly. A larger `size` makes room: see [Shared memory with the guest](#shared-memory-with-the-guest) for changing it. |
 
 The agent's unit does not start again by itself after refusing its command
 line, which is what an unset or mistyped `LISTEN` or `ALLOW` is:

@@ -392,9 +392,10 @@ fn connection(
             .into_bytes(),
     )
     .context("sending the proof of the key")?;
-    let (its, (width, height), shared) = read_open_request(&mut from)?;
+    let request = read_open_request(&mut from)?;
+    let ((width, height), shared) = (request.size, request.shared);
     proof(key, Role::Daemon, &theirs, &ours)?
-        .verify_slice(&its)
+        .verify_slice(&request.proof)
         .map_err(|_| anyhow::anyhow!("its key is not this agent's"))?;
 
     // A daemon's: its place among the unproved is another's to take, and it
@@ -432,9 +433,10 @@ fn connection(
         };
         let (coding, streams) = door.coding(address)?;
         let backend = streams((width, height))?;
-        // A place while there is room, the stream's pictures over the
+        // A place while there is room clear of the daemon's own, which its
+        // streams may still be writing, the stream's pictures over the
         // connection while there is none.
-        let place = places.and_then(|places| places.take((width, height)));
+        let place = places.and_then(|places| places.take((width, height), &request.held));
         Ok((coding, backend, place))
     })();
     let (_coding, mut backend, place) = match made {
@@ -855,6 +857,40 @@ mod tests {
         drop(over);
     }
 
+    /// A place a stream of the daemon's still converts into is given no
+    /// other stream, though the agent let it go: here the agent restarted,
+    /// every place free to the new one, and the daemon named its own.
+    #[test]
+    fn a_place_the_daemon_still_holds_is_given_no_other_stream() {
+        let size = (64, 64);
+        let (file, region, places) = shared("restarted", picture_bytes(size) * 2);
+        let before = Agent::new(agent_sharing(Some(places)), KEY.to_vec()).sharing(region.clone());
+        let mut old = Stream::open(&before, size).unwrap();
+        let mut old_planes = old.planes(64, 64);
+        let again = Places::new(Region::open(&file.0).unwrap());
+        let after = Agent::new(agent_sharing(Some(again)), KEY.to_vec()).sharing(region.clone());
+        let mut new = Stream::open(&after, size).unwrap();
+        assert!(new.shares());
+        let held = region.held();
+        assert_eq!(held.len(), 2, "{held:?}");
+        assert!(
+            held[0].end <= held[1].start || held[1].end <= held[0].start,
+            "{held:?}"
+        );
+        let new_planes = new.planes(64, 64);
+        old_planes.y.fill(9);
+        assert!(
+            new_planes.y.iter().all(|sample| *sample == 16),
+            "the old stream wrote into the new one's picture"
+        );
+        // No room for a third while the two are held, and room once the old
+        // stream and its planes go.
+        assert!(!Stream::open(&after, size).unwrap().shares());
+        drop((old_planes, old));
+        assert_eq!(region.held().len(), 1);
+        assert!(Stream::open(&after, size).unwrap().shares());
+    }
+
     /// A daemon whose key is not the agent's is told so before it sends a
     /// picture, the agent serving on; and one whose agent is not there is
     /// told where it looked.
@@ -999,8 +1035,8 @@ mod tests {
                 .finalize()
                 .into_bytes(),
         )?;
-        // No memory shared.
-        link.write_all(&[&width.to_be_bytes()[..], &height.to_be_bytes(), &[0; 8]].concat())?;
+        // No memory shared, and no places held in it.
+        link.write_all(&[&width.to_be_bytes()[..], &height.to_be_bytes(), &[0; 10]].concat())?;
         let mut status = [0];
         link.read_exact(&mut status)?;
         if status[0] == OK {
