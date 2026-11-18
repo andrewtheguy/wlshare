@@ -33,18 +33,22 @@ with the picture and the frame rate: a 3840×2160 picture is four times a
 1920×1080 one.
 
 - **The pictures in a region both machines map.** QEMU's `ivshmem-plain`
-  device gives the guest a PCI device whose memory is a file in the host's
-  `/dev/shm`; Proxmox makes one from the VM's configuration (`ivshmem:
-  size=64,name=wlshare`, `/dev/shm/pve-shm-wlshare`), and the agent's
-  container is given the file by a bind mount. Proxmox makes the file anew
-  each time the VM starts and removes it when the VM stops, and a bind mount
-  holds the file as it was when the container started, so after the VM
-  restarts the two map different memory: the container is restarted after
-  the VM, by a hookscript on the VM's `post-start`, or the agent opens the
-  file through a bind mount of a directory the hookscript links it into,
-  and opens it again with each stream. The daemon maps the device's
-  memory (BAR2, through sysfs's `resource2_wc`: write-combined, since the
-  daemon only writes it; uncached `resource2` is slow). The region holds
+  device gives the guest a PCI device whose memory is a file on the host;
+  Proxmox makes the device from the VM's configuration (`ivshmem:
+  size=64,name=wlshare`), backed by `/dev/shm/pve-shm-wlshare`. Proxmox
+  removes that file each time the VM stops, so QEMU would make a new one,
+  root's, at each start, and it refuses a container a bind mount from `/dev`
+  or through a symlink. So the memory is a file of the host's elsewhere, in
+  `/run`, made at boot (tmpfiles.d) and owned by the container's user, mode
+  0600; a hookscript on the VM's `pre-start` makes Proxmox's
+  `/dev/shm/pve-shm-wlshare` a symlink to it, which QEMU opens and sizes;
+  and the container bind-mounts the file's directory. Proxmox's removal at
+  a stop takes the link, never the file, so the agent opens the file once
+  and holds the same memory across the VM's restarts, what was in it
+  included. The daemon maps the device's memory (BAR2, through sysfs's
+  `resource2_wc`: write-combined, since the daemon only writes it;
+  uncached `resource2` is slow), which sysfs makes root's and a udev rule
+  on the device (`1af4:1110`) gives to the daemon's user. The region holds
   one picture a stream, whole, where it stays from frame to frame, as the
   agent's copy of the picture stays now: the daemon writes what changed
   into it, so what did not change is still there from the frames before,
@@ -53,8 +57,9 @@ with the picture and the frame rate: a 3840×2160 picture is four times a
   as it is on the link now, so a stream's picture is written whole before
   the agent first uploads it; and a region mapped anew, after either end
   restarts, is only ever a new stream's, the old ones having failed with
-  their connections. The agent uploads the picture to the VA surface
-  from where it lies, so its read is gone. The link is request and reply
+  their connections, so what an earlier stream left in it is never read.
+  The agent uploads the picture to the VA surface from where it lies, so
+  its read is gone. The link is request and reply
   already, so the picture is the daemon's to write only between an access
   unit back and the next header, when the agent is done with it, and a
   store fence (`sfence`) after the writes puts them ahead of the header
@@ -69,16 +74,18 @@ with the picture and the frame rate: a 3840×2160 picture is four times a
   one, until the word is clear. Until then a new stream has another picture
   of the region, or none and the socket as now. Further on, the daemon's
   conversion to NV12 could write into the region and leave its send no copy
-  at all. Looking Glass's `kvmfr` module binds the same device in a Linux
-  guest as a device node with permissions of its own, in place of sysfs.
+  at all.
 - **What it costs.** It is a second transport beside TCP, not one in its
   place: an agent across a LAN, or anywhere but the guest's own hypervisor,
   is still TCP. It is new messages on the link, and its `VERSION` with them.
   And the pictures are past the key: whoever can open the file in the
   container, or the PCI resource in the guest, reads the desktop and can
   write into it, so the file's permissions are its access control, and the
-  key holds the socket alone. What it would save is estimated, not
-  measured.
+  key holds the socket alone. The guest boots without Secure Boot: under
+  it, the kernel's lockdown refuses userspace a mapping of a PCI BAR, and
+  an unsigned module such as Looking Glass's `kvmfr`, which binds the same
+  device as a device node, does not load either. What it would save is
+  estimated, not measured.
 
 ## A drag from one display onto the other
 
