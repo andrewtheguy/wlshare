@@ -22,6 +22,64 @@ text's colour, which 4:2:0 halves.
   does, and 4:4:4 on fewer, so the gateway keeps a 4:2:0 stream for the
   rest.
 
+## The encoding agent's pictures through shared memory
+
+The agent was made for a virtual machine and its host's container, and there
+every picture still crosses a network: virtio-net, the bridge, a veth
+([The encoding agent](architecture.md#the-encoding-agent)). The daemon's
+send is zero-copy, and what is left is the agent's read and the time on the
+link ([measured](video-performance.md#the-encoding-agents-link)), which grow
+with the picture and the frame rate: a 3840×2160 picture is four times a
+1920×1080 one.
+
+- **The pictures in a region both machines map.** QEMU's `ivshmem-plain`
+  device gives the guest a PCI device whose memory is a file in the host's
+  `/dev/shm`; Proxmox makes one from the VM's configuration (`ivshmem:
+  size=64,name=wlshare`, `/dev/shm/pve-shm-wlshare`), and the agent's
+  container is given the file by a bind mount. Proxmox makes the file anew
+  each time the VM starts and removes it when the VM stops, and a bind mount
+  holds the file as it was when the container started, so after the VM
+  restarts the two map different memory: the container is restarted after
+  the VM, by a hookscript on the VM's `post-start`, or the agent opens the
+  file through a bind mount of a directory the hookscript links it into,
+  and opens it again with each stream. The daemon maps the device's
+  memory (BAR2, through sysfs's `resource2_wc`: write-combined, since the
+  daemon only writes it; uncached `resource2` is slow). The region holds
+  one picture a stream, whole, where it stays from frame to frame, as the
+  agent's copy of the picture stays now: the daemon writes what changed
+  into it, so what did not change is still there from the frames before,
+  and the socket carries the rest, the frame's header and its rectangles,
+  and the access unit back. A stream's first frame is the whole picture,
+  as it is on the link now, so a stream's picture is written whole before
+  the agent first uploads it; and a region mapped anew, after either end
+  restarts, is only ever a new stream's, the old ones having failed with
+  their connections. The agent uploads the picture to the VA surface
+  from where it lies, so its read is gone. The link is request and reply
+  already, so the picture is the daemon's to write only between an access
+  unit back and the next header, when the agent is done with it, and a
+  store fence (`sfence`) after the writes puts them ahead of the header
+  that names them. A frame that fails, by its time or by its connection,
+  leaves the agent perhaps still uploading, and the daemon, having reset
+  the connection, is told nothing more on it; so each picture in the region
+  has a word beside it that the agent sets while its stream holds the
+  picture and clears once that stream's thread is done with it, every word
+  cleared as the agent starts, so one that died holding a picture holds it
+  no longer; and a
+  failed stream's picture is written again by no stream, its own or a new
+  one, until the word is clear. Until then a new stream has another picture
+  of the region, or none and the socket as now. Further on, the daemon's
+  conversion to NV12 could write into the region and leave its send no copy
+  at all. Looking Glass's `kvmfr` module binds the same device in a Linux
+  guest as a device node with permissions of its own, in place of sysfs.
+- **What it costs.** It is a second transport beside TCP, not one in its
+  place: an agent across a LAN, or anywhere but the guest's own hypervisor,
+  is still TCP. It is new messages on the link, and its `VERSION` with them.
+  And the pictures are past the key: whoever can open the file in the
+  container, or the PCI resource in the guest, reads the desktop and can
+  write into it, so the file's permissions are its access control, and the
+  key holds the socket alone. What it would save is estimated, not
+  measured.
+
 ## A drag from one display onto the other
 
 On *All Displays* each display is a connection of its own, with a pointer of

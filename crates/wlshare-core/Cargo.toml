@@ -21,3 +21,6 @@ hmac = "0.13"
 # The keepalive that tells an agent its daemon is gone
 # (src/h264/agent/serve.rs).
 socket2 = { version = "0.6", features = ["all"] }
+# The daemon's pictures sent by MSG_ZEROCOPY (src/agent/zerocopy.rs): the
+# socket option, and the kernel's word on the error queue.
+libc = "0.2"

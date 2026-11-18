@@ -169,7 +169,7 @@ impl Stream {
 impl Backend for Stream {
     fn frame(
         &mut self,
-        planes: &Planes,
+        planes: &mut Planes,
         keyframe: bool,
         qp: u8,
         out: &mut Vec<u8>,

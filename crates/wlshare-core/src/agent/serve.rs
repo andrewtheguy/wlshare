@@ -441,7 +441,7 @@ fn connection(
             }
             planes.refine = frame.refine;
             let began = std::time::Instant::now();
-            let made = backend.frame(&planes, frame.keyframe, frame.qp, &mut reply)?;
+            let made = backend.frame(&mut planes, frame.keyframe, frame.qp, &mut reply)?;
             served.coding += began.elapsed();
             if made {
                 planes.coded_frame();
@@ -504,7 +504,7 @@ mod tests {
     impl Backend for Echo {
         fn frame(
             &mut self,
-            planes: &Planes,
+            planes: &mut Planes,
             keyframe: bool,
             qp: u8,
             out: &mut Vec<u8>,
@@ -515,7 +515,13 @@ mod tests {
     }
 
     impl Backend for Broken {
-        fn frame(&mut self, _: &Planes, _: bool, _: u8, _: &mut Vec<u8>) -> anyhow::Result<bool> {
+        fn frame(
+            &mut self,
+            _: &mut Planes,
+            _: bool,
+            _: u8,
+            _: &mut Vec<u8>,
+        ) -> anyhow::Result<bool> {
             anyhow::bail!("the encoder is unplugged")
         }
     }
@@ -547,14 +553,17 @@ mod tests {
     /// through frames that change it here and there, frames that change
     /// nothing, and what each is asked: a keyframe, a refinement, a
     /// quantizer. A picture of odd sides, coded a pixel larger, its rows
-    /// sent one by one; and one as wide as its planes' stride, whose whole
-    /// rows are sent as one run of each plane.
+    /// sent one by one; one as wide as its planes' stride, whose whole
+    /// rows are sent as one run of each plane; and a screen's, whose first
+    /// picture is sent zero-copy where the account may pin it, and copied
+    /// from then on, loopback having copied it ([`crate::agent::zerocopy`]).
     #[test]
     fn the_agents_picture_is_the_daemons() {
         the_agents_picture_is_the_daemons_at(149, 89);
         let across = Planes::new(128, 70);
         assert_eq!(across.stride, across.coded.0);
         the_agents_picture_is_the_daemons_at(128, 70);
+        the_agents_picture_is_the_daemons_at(1920, 1080);
     }
 
     fn the_agents_picture_is_the_daemons_at(width: u16, height: u16) {
@@ -595,10 +604,95 @@ mod tests {
             planes.refine = n % 7 == 3;
             let (keyframe, qp) = (n % 11 == 5, (16 + n % 30) as u8);
             let (mut got, mut expected) = (Vec::new(), Vec::new());
-            assert!(stream.frame(&planes, keyframe, qp, &mut got).unwrap());
+            assert!(stream.frame(&mut planes, keyframe, qp, &mut got).unwrap());
             echo(&planes, keyframe, qp, &mut expected);
             assert!(got == expected, "frame {n}: the agent's picture is another");
+            // Only a picture large enough goes zero-copy, and only it is
+            // copied by loopback all the same; where its calls may be
+            // refused, they may be copied from the first.
+            if w * h < 1 << 20 {
+                assert!(stream.zero_copy(), "frame {n}");
+            } else if crate::agent::zerocopy::unlimited() {
+                assert!(!stream.zero_copy(), "frame {n}");
+            }
             planes.coded_frame();
+        }
+    }
+
+    /// A frame the agent never reads fails in its time, and the planes it
+    /// was sent from are the caller's again at once, as they were, while
+    /// the kernel still holds their pages: their buffers are kept until it
+    /// lets go, which it does here only once the agent's end goes, and the
+    /// planes are given copies.
+    #[test]
+    fn a_frame_never_read_fails_in_its_time_and_keeps_its_planes() {
+        let listener =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        listener.set_recv_buffer_size(64 << 10).unwrap();
+        listener
+            .bind(
+                &"127.0.0.1:0"
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
+            .unwrap();
+        listener.listen(1).unwrap();
+        let listener: TcpListener = listener.into();
+        let address = listener.local_addr().unwrap();
+        let (over, ended) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (link, _) = listener.accept().unwrap();
+            let (mut to, mut from) = (&link, &link);
+            let ours = nonce();
+            to.write_all(&hello(&ours)).unwrap();
+            let theirs = read_hello(&mut from).unwrap();
+            let proved = proof(&KEY, Role::Agent, &theirs, &ours).unwrap();
+            to.write_all(&proved.finalize().into_bytes()).unwrap();
+            read_open_request(&mut from).unwrap();
+            to.write_all(&OPENED).unwrap();
+            // Nothing more is read until the test says, and then the
+            // connection goes with what it never read.
+            let _ = ended.recv();
+        });
+        let agent = Agent::new(address.to_string(), KEY.to_vec());
+        let mut planes = Planes::new(1920, 1080);
+        for (n, sample) in planes.y.iter_mut().chain(&mut planes.uv).enumerate() {
+            *sample = (n * 7 + n / 4093) as u8;
+        }
+        let before = (planes.y.clone(), planes.uv.clone());
+        let at = planes.y.as_ptr();
+        let mut stream = Stream::open(&agent, planes.coded).unwrap();
+        stream.frames_within(Duration::from_millis(300));
+        let (freed, was_freed) = std::sync::mpsc::channel();
+        stream.hold_cleanup(freed);
+        // The frame on a thread of its own, so that one that waits on its
+        // pages fails the test rather than hanging it.
+        let (returned, has_returned) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let why = stream.frame(&mut planes, true, 28, &mut Vec::new()).err();
+            returned.send((why, planes, stream)).unwrap();
+        });
+        let (why, planes, _stream) = has_returned
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the frame waited for the kernel to let go of its pages");
+        let why = format!("{:#}", why.expect("a frame never read is no frame"));
+        assert!(why.contains("not done within"), "{why}");
+        assert!(
+            planes.y == before.0 && planes.uv == before.1,
+            "the planes are not as they were"
+        );
+        let handed = planes.y.as_ptr() != at;
+        if crate::agent::zerocopy::unlimited() {
+            assert!(handed, "the buffers the kernel holds were not kept");
+        }
+        if handed {
+            // Kept for as long as the kernel holds them, past the frame.
+            assert!(was_freed.recv_timeout(Duration::from_millis(200)).is_err());
+            drop(over);
+            was_freed
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the buffers were never freed");
         }
     }
 
@@ -658,13 +752,21 @@ mod tests {
         let mut stream = Stream::open(&agent, (32, 32)).unwrap();
         let mut out = vec![1, 2, 3];
         let why = stream
-            .frame(&Planes::new(32, 32), false, 28, &mut out)
+            .frame(&mut Planes::new(32, 32), false, 28, &mut out)
             .unwrap_err();
         assert!(
             format!("{why:#}").contains("the encoder is unplugged"),
             "{why:#}"
         );
         assert_eq!(out, [1, 2, 3], "nothing of a failed frame is kept");
+        // And no frame is sent on the stream after it.
+        let why = stream
+            .frame(&mut Planes::new(32, 32), false, 28, &mut out)
+            .unwrap_err();
+        assert!(
+            format!("{why:#}").contains("failed a frame before"),
+            "{why:#}"
+        );
     }
 
     /// What makes a daemon its streams in these tests, coding by [`Echo`],

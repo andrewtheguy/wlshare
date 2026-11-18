@@ -24,11 +24,14 @@ pub const FPS: u32 = 60;
 
 /// What an encoder does with a picture: code it, at `qp`, as an IDR where
 /// `keyframe` says so, and append the access unit to `out`. Whether it made a
-/// frame.
+/// frame. The planes are its to read and not to change, but for one thing:
+/// an encoder whose frame failed with their buffers still in the kernel's
+/// hands (the agent's stream, sending zero-copy) keeps those buffers and
+/// leaves the planes copies of them, sample for sample.
 pub trait Backend: Send {
     fn frame(
         &mut self,
-        planes: &Planes,
+        planes: &mut Planes,
         keyframe: bool,
         qp: u8,
         out: &mut Vec<u8>,

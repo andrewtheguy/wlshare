@@ -801,12 +801,36 @@ quantizer each was asked at.
   it has, as a WireGuard endpoint's is, with no other tried: on the link
   this is for a name has one address, and an agent whose name has more —
   an IPv6 one, say, beside the IPv4 its allowlist was written for — is
-  named by its address. The daemon sends a picture's rows from where they
-  lie, with no copy of the picture gathered first.
+  named by its address.
+- **From where they lie, zero-copy.** The daemon sends a picture's rows from
+  where they lie, with no copy of the picture gathered first, and a frame
+  whose slices are large (the whole picture, or rows the planes' whole
+  width) goes by `MSG_ZEROCOPY` (`agent/zerocopy.rs`): the kernel sends the
+  planes' own pages, pinned, rather than copying them into the socket, and
+  the frame waits, within its time, for the kernel to say it is done with
+  them before the planes are written again, a frame that fails no less
+  ([measured](video-performance.md#the-encoding-agents-link)). A frame
+  that fails returns its error in its time all the same: it resets its
+  connection, which frees what TCP holds, and keeps the buffers the kernel
+  may still send from, the planes given copies of them, for a thread that
+  frees them once the kernel has let go of what a network device still
+  has; one the kernel never lets go of is never freed, so nothing of the
+  daemon's memory is sent once the planes are the caller's again. At most
+  eight frames, the daemon's streams together, hold pages the kernel may
+  still send, in flight or kept after a failure, and a frame past them is
+  copied, so what failed frames keep is bounded however often they fail. A call
+  sends at most a megabyte, since the
+  kernel charges a call's whole length against the account's
+  `RLIMIT_MEMLOCK` (8 MiB by default) before it sends any, and a call
+  refused for it is copied, with the rest of its frame; where the kernel
+  copies anyway (loopback, an interface that cannot gather pages) and says
+  so, the stream copies from then on. Nothing on the link changes, nor its
+  version: the agent reads the bytes as it did.
 
 The link is tested without a GPU: `wlshare-core` holds the agent's copy of a
 picture to the daemon's sample for sample, through an encoder that hands the
-picture back, and the daemon's tests put libx264 behind an agent on loopback
+picture back, a screen's sent zero-copy first and copied once loopback has
+said it copied, and the daemon's tests put libx264 behind an agent on loopback
 and hold its frames, byte for byte, to libx264's on the daemon's own side of
 the link, through damage, frames of none, refinements and keyframes, and
 decode them with libavcodec; the hardware behind an agent, where the machine

@@ -26,8 +26,9 @@ use anyhow::Context as _;
 use crate::agent::link::{
     FRAME_HEAD, FRAME_WITHIN, Frame, HANDSHAKE_WITHIN, MAX_SIDE, Mac as _, PROOF, Role, SPAN_HEAD,
     Span, Timed, hello, keepalive, nonce, open_request, proof, read_coded, read_hello, read_opened,
-    read_proof, write_all_vectored,
+    read_proof,
 };
+use crate::agent::zerocopy::ZeroCopy;
 use crate::h264::{Backend, Planes, most_coded};
 
 /// How long a connection to the agent may take to open.
@@ -196,6 +197,13 @@ pub struct Stream {
     head: Vec<u8>,
     /// The most bytes an access unit of this picture is taken to be.
     most: usize,
+    /// The pictures' pages handed to the kernel to send.
+    sends: ZeroCopy,
+    /// Whether a frame has failed, after which none is sent.
+    failed: bool,
+    /// How long a frame may take, sent and answered: [`FRAME_WITHIN`], and
+    /// less in the tests.
+    within: Duration,
 }
 
 impl Stream {
@@ -242,23 +250,54 @@ impl Stream {
             .write_all(&open_request(&proved, (width, height)))
             .context("asking for a stream")?;
         read_opened(&mut timed).context("opening a stream")?;
+        let sends = ZeroCopy::new(&link).context("sending zero-copy")?;
         Ok(Self {
             link,
             head: Vec::new(),
             // The agent's own buffer for one.
             most: most_coded((width, height)),
+            sends,
+            failed: false,
+            within: FRAME_WITHIN,
         })
+    }
+}
+
+impl Stream {
+    /// Whether the stream still sends its pictures zero-copy: not once the
+    /// kernel has copied one anyway.
+    #[cfg(test)]
+    pub(crate) fn zero_copy(&self) -> bool {
+        self.sends.on()
+    }
+
+    /// Frames given `within` each, sent and answered.
+    #[cfg(test)]
+    pub(crate) fn frames_within(&mut self, within: Duration) {
+        self.within = within;
+    }
+
+    /// A failed frame's pages left with the kernel until the agent's end
+    /// goes, and `freed` told once their buffers are freed
+    /// ([`crate::agent::zerocopy::ZeroCopy::hold`]).
+    #[cfg(test)]
+    pub(crate) fn hold_cleanup(&mut self, freed: std::sync::mpsc::Sender<()>) {
+        self.sends.hold(freed);
     }
 }
 
 impl Backend for Stream {
     fn frame(
         &mut self,
-        planes: &Planes,
+        planes: &mut Planes,
         keyframe: bool,
         qp: u8,
         out: &mut Vec<u8>,
     ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            !self.failed,
+            "the encoding agent's stream failed a frame before"
+        );
         let spans = changed(planes);
         let head = &mut self.head;
         head.clear();
@@ -274,7 +313,8 @@ impl Backend for Stream {
         }
         // The request as it is sent: the headers, and between them the rows
         // where they lie in the planes, so that a picture is not copied
-        // into a buffer of its own on its way to the connection.
+        // into a buffer of its own on its way to the connection, nor, where
+        // it is large, into the kernel's ([`crate::agent::zerocopy`]).
         let mut request = vec![IoSlice::new(&head[..FRAME_HEAD])];
         for (span, header) in spans.iter().zip(head[FRAME_HEAD..].chunks(SPAN_HEAD)) {
             request.push(IoSlice::new(header));
@@ -282,10 +322,18 @@ impl Backend for Stream {
         }
         // The picture sent and the access unit read back in the one time.
         let mut link = Timed::new(&self.link);
-        link.within(FRAME_WITHIN);
+        link.within(self.within);
         let coded = (|| {
-            write_all_vectored(&mut link, &mut request).context("sending it a picture")?;
-            let Some(length) = read_coded(&mut link)? else {
+            self.sends
+                .send(&mut link, &mut request)
+                .context("sending it a picture")?;
+            let coded = read_coded(&mut link)?;
+            // The planes are read into again once this returns: not before
+            // the kernel is done sending them.
+            self.sends
+                .settle(&link)
+                .context("waiting for the kernel to be done with the picture")?;
+            let Some(length) = coded else {
                 return Ok(false);
             };
             anyhow::ensure!(
@@ -300,6 +348,23 @@ impl Backend for Stream {
             }
             Ok(true)
         })();
+        if coded.is_err() {
+            // No frame is sent after. The kernel may still hold pages of the
+            // planes, and of the headers, sent zero-copy and not settled,
+            // which the caller is free to write again or let go once this
+            // returns: those buffers are kept until the kernel is done with
+            // them, and the planes are given copies of them.
+            self.failed = true;
+            let mut buffers = Vec::new();
+            if self.sends.pending() {
+                for plane in [&mut planes.y, &mut planes.uv] {
+                    let copy = plane.clone();
+                    buffers.push(std::mem::replace(plane, copy));
+                }
+                buffers.push(std::mem::take(&mut self.head));
+            }
+            self.sends.abandon(&self.link, buffers);
+        }
         coded.context("the encoding agent")
     }
 }

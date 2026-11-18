@@ -14,7 +14,9 @@ is set for the processor's time ahead of the bytes
 ([The processor ahead of the bytes](#the-processor-ahead-of-the-bytes)),
 and the processor times measured before that day, libx264's on more than
 one thread, read low ([The clock](#the-clock)). What the hardware's encoder
-sends beside it is [The hardware beside libx264](#the-hardware-beside-libx264).
+sends beside it is [The hardware beside libx264](#the-hardware-beside-libx264),
+and what the encoding agent's link costs is
+[The encoding agent's link](#the-encoding-agents-link).
 
 **How.** lab1 (8 vCPUs of an AMD EPYC Rome, 4 cores with 2 threads each,
 16 GB), idle and alone, swap off, libx264 by `--libx264`, so the encoder had
@@ -663,3 +665,41 @@ its samples:
   quantization, a third more bytes of the drag and a seventh more of the
   scroll; its rounding offsets, within 3% of the bytes for a page 0.2 to
   0.7 dB further; and the lowest quality level, a quarter more of the drag.
+
+## The encoding agent's link
+
+Measured on 2026-11-17 on the link the encoding agent was made for, a
+virtual machine to its host's container
+([The encoding agent](architecture.md#the-encoding-agent)): testdesktop, a
+KVM guest of 4 vCPUs of an i5-8400T, idle, sending to testdesktop2, a
+container on the same Proxmox host with its UHD 630 (VA-API, the shader
+encoder), vmbr0 between them: virtio-net, the bridge, a veth. The
+account's `RLIMIT_MEMLOCK` was the default 8 MiB.
+
+**The link as it was.** A whole 1920×1080 picture, 3.11 MB, and a 20 kB
+access unit back cross in 1.2–1.3 ms, for about 0.76 ms of the daemon's
+system time and 0.77 ms of the agent's to read it. Compressing the
+pictures on that link costs processor and time and saves bytes nobody is
+short of: LZ4 at its fastest packs a scroll's picture in about 1.3 ms and a
+camera's video in 3.7–4.3 ms, where the whole picture crosses raw in 1.3.
+
+**`MSG_ZEROCOPY`.** A real stream to a real agent, every frame the whole
+picture changed, 20 ms apart, the calling thread's system time around a
+frame, its first 10 left out; `main` before it (`f0d1b1e`, a copying
+`writev`) against it, each run twice or more. The access units were the
+same, byte for byte, and a frame took as long:
+
+| picture | copied, system ms a frame | zero-copy, system ms a frame | a frame, ms |
+|---|---|---|---|
+| 1920×1080 | 0.76–0.87 | 0.16–0.22 | 8.2–8.5 |
+| 3840×2160 | 2.7–3.0 | 0.39–0.46 | 25.8–26.9 |
+
+At 3840×2160 every call went zero-copy, 12 a frame of a megabyte at most,
+none refused. One call of the whole 12 MB picture, before calls were cut to
+a megabyte, was refused outright and the frame copied: the kernel charges a
+call's whole length against `RLIMIT_MEMLOCK` before it sends any. With the
+limit lowered to 2 MiB the first call goes and the rest of the frame is
+copied, 2.4 ms; at 512 KiB every frame is copied, 2.8 ms.
+
+The tools and logs are the artifacts' `bench/agent-link-20261117/`, the
+zero-copy runs in its `results/zerocopy-built-20261117/`.

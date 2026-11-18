@@ -6,7 +6,8 @@
 //! the daemon's end, an encoder like any other to the stream it codes, and
 //! [`serve`] the agent's, which the agent's binary runs in front of its
 //! machine's encoder ([`crate::h264::vaapi`]), for a daemon where it allows
-//! one ([`allow`]).
+//! one ([`allow`]). [`zerocopy`] is how the daemon hands its pictures to the
+//! kernel, the link's bytes as they are.
 //!
 //! What crosses the link today is H.264 alone; the agent is named for
 //! encoding at large, since another codec's hardware encoder would be lent
@@ -16,3 +17,4 @@ pub mod allow;
 pub mod client;
 pub mod link;
 pub mod serve;
+pub mod zerocopy;
