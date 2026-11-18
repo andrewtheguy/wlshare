@@ -49,12 +49,25 @@ with the picture and the frame rate: a 3840×2160 picture is four times a
   agent's copy of the picture stays now: the daemon writes what changed
   into it, so what did not change is still there from the frames before,
   and the socket carries the rest, the frame's header and its rectangles,
-  and the access unit back. The agent uploads the picture to the VA surface
+  and the access unit back. A stream's first frame is the whole picture,
+  as it is on the link now, so a stream's picture is written whole before
+  the agent first uploads it; and a region mapped anew, after either end
+  restarts, is only ever a new stream's, the old ones having failed with
+  their connections. The agent uploads the picture to the VA surface
   from where it lies, so its read is gone. The link is request and reply
   already, so the picture is the daemon's to write only between an access
   unit back and the next header, when the agent is done with it, and a
   store fence (`sfence`) after the writes puts them ahead of the header
-  that names them. Further on, the daemon's
+  that names them. A frame that fails, by its time or by its connection,
+  leaves the agent perhaps still uploading, and the daemon, having reset
+  the connection, is told nothing more on it; so each picture in the region
+  has a word beside it that the agent sets while its stream holds the
+  picture and clears once that stream's thread is done with it, every word
+  cleared as the agent starts, so one that died holding a picture holds it
+  no longer; and a
+  failed stream's picture is written again by no stream, its own or a new
+  one, until the word is clear. Until then a new stream has another picture
+  of the region, or none and the socket as now. Further on, the daemon's
   conversion to NV12 could write into the region and leave its send no copy
   at all. Looking Glass's `kvmfr` module binds the same device in a Linux
   guest as a device node with permissions of its own, in place of sysfs.
